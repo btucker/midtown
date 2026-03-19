@@ -328,7 +328,7 @@ pub enum Effect {
     /// When spawn fails (e.g. missing worktree), the session→task link must be
     /// broken so dispatch doesn't retry the same dead session every tick.
     /// Clears `task_id` from the SessionRecord and removes the in-memory
-    /// `task_to_session` entry.
+    /// session record task_id entry.
     ClearSessionForTask { task_id: String },
     /// Clear persisted session IDs and session-record bindings for a coworker.
     ///
@@ -397,7 +397,7 @@ pub enum Effect {
         issue_type: PrIssueType,
     },
     /// Record a task assignment: updates in-memory busy tracking, persistent
-    /// session state (`sessions[].task_id`), and the `task_to_session` reverse map.
+    /// session state (`sessions[].task_id`).
     ///
     /// Defers the mutation from the decision phase to the effect executor,
     /// keeping decision functions pure.
@@ -657,7 +657,7 @@ pub enum Effect {
         reason: super::wake_reason::WakeReason,
     },
     /// Nudge a session (by session ID).
-    /// Resolves session_id → name via session_to_name, sends nudge message.
+    /// Resolves session_id → name via persistent state, sends nudge message.
     NudgeSession {
         session_id: String,
         reason: super::wake_reason::WakeReason,
@@ -670,26 +670,20 @@ pub enum Effect {
     },
 
     // ── Session-centric effects ─────────────────────────────────────────
-    /// Shut down a running session. Releases the name back to the NamePool.
+    /// Shut down a running session.
     ///
     /// Session-centric counterpart to `ShutdownCoworker`. Looks up the session's
-    /// current name via `session_to_name` reverse map and performs shutdown +
+    /// current name via persistent state and performs shutdown +
     /// cleanup through `cleanup_coworker_state`.
     ShutdownSession { session_id: String, reason: String },
 
     /// Record a session record in persistent state.
     ///
     /// Upserts the `SessionRecord` into `DaemonPersistentState::sessions` and
-    /// updates in-memory reverse maps (name_to_session, session_to_name, task_to_session).
+    /// updates the SessionRecord in persistent state.
     RecordSession {
         record: Box<crate::daemon::state::SessionRecord>,
     },
-
-    /// Release a name back to the NamePool (session stopped, name no longer needed).
-    ///
-    /// Standalone effect for releasing a name without full shutdown. Used when
-    /// a session is suspended (process stopped but session state preserved for later resume).
-    ReleaseName { name: String },
 
     /// Merge a PR using `gh pr merge --squash --auto`.
     ///
@@ -1088,12 +1082,10 @@ async fn send_session_nudge(
     session_id: &str,
     reason: &super::wake_reason::WakeReason,
 ) -> Option<Vec<Effect>> {
-    let name = state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .get(session_id)
-        .cloned();
+    let name = {
+        let ps = state.persistent_state.lock().await;
+        ps.sessions.get(session_id).map(|s| s.name.clone())
+    };
     let Some(name) = name else {
         warn!(
             "NudgeSession: no name found for session {} — cannot deliver",
@@ -1107,12 +1099,13 @@ async fn send_session_nudge(
             state.record_pending_nudge(&name, &msg);
 
             // Build a PostToChannel effect for the coworker's DM channel.
-            // Only for real coworkers (pool names like "lexington"), not fork sessions
-            // ("lexington-web-push-a1b2") or other ephemeral sessions.
+            // Only for non-fork sessions (sessions without a bound thread ID).
+            // Fork sessions are ephemeral and don't have their own DM channels.
             // Skip DmFromUser — the user's message is already in the DM channel
             // (written by rpc_channel.rs before the nudge effect was created).
             let mut follow_up = Vec::new();
-            if !reason.already_in_dm_channel() && crate::coworker::is_coworker_name(&name) {
+            let is_fork = state.fork_bound_threads.lock().unwrap().contains_key(&name);
+            if !reason.already_in_dm_channel() && !is_fork {
                 follow_up.push(Effect::PostToChannel {
                     sender: reason.sender().to_owned(),
                     message: msg,
@@ -1173,17 +1166,6 @@ async fn clear_stale_task_session_binding(
     task_id: &str,
     expected_session_id: Option<&str>,
 ) -> usize {
-    {
-        let mut t2s = state.task_to_session.lock().unwrap();
-        let should_remove = t2s
-            .get(task_id)
-            .map(|sid| expected_session_id.map(|exp| exp == sid).unwrap_or(true))
-            .unwrap_or(false);
-        if should_remove {
-            t2s.remove(task_id);
-        }
-    }
-
     // clear_task_binding_in_records below handles session record cleanup
     // (clearing task_id, resume_on_startup, is_running with expected_session_id logic).
     let mut ps = state.persistent_state.lock().await;
@@ -1558,17 +1540,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::ClearSavedSessionId { name } => {
-                // Gather candidate stale session IDs for this coworker from
-                // in-memory maps and persisted headless/channel entries.
-                let mapped_sid = state
-                    .name_to_session
-                    .lock()
-                    .unwrap()
-                    .get(&name)
-                    .cloned()
-                    .unwrap_or_default();
-
                 let mut ps = state.persistent_state.lock().await;
+                // Gather candidate stale session IDs for this coworker from
+                // persistent state and channel entries.
+                let mapped_sid = ps
+                    .session_by_name(&name)
+                    .map(|s| s.session_id.clone())
+                    .unwrap_or_default();
                 let mut candidate_ids: std::collections::HashSet<String> =
                     std::collections::HashSet::new();
                 if !mapped_sid.is_empty() {
@@ -1576,11 +1554,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 // Also check ps.sessions for a record matching this name
                 // (covers sessions that may have been persisted under a
-                // different session_id than name_to_session currently maps).
+                // different session_id).
                 for record in ps.sessions.values() {
-                    if record.current_name.as_deref().is_some_and(|n| n == name)
-                        && !record.session_id.is_empty()
-                    {
+                    if record.name == name && !record.session_id.is_empty() {
                         candidate_ids.insert(record.session_id.clone());
                     }
                 }
@@ -1594,16 +1570,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // stale so the session won't be auto-resumed under this name.
                 let mut stale_ids_for_spans: Vec<String> = Vec::new();
                 for record in ps.sessions.values_mut() {
-                    if record.current_name.as_deref().is_some_and(|n| n == name)
-                        && record.is_running
-                    {
+                    if record.name == name && record.is_running {
                         info!(
                             "Clearing stale session record for '{}': {}",
                             name, record.session_id
                         );
                         record.is_running = false;
                         record.resume_on_startup = false;
-                        record.current_name = None;
                         stale_ids_for_spans.push(record.session_id.clone());
                     }
                 }
@@ -1626,15 +1599,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let mut cleared_task_ids: Vec<String> = Vec::new();
                 for record in ps.sessions.values_mut() {
                     let matches_id = candidate_ids.contains(&record.session_id);
-                    let matches_running_name = record.is_running
-                        && (record
-                            .current_name
-                            .as_deref()
-                            .is_some_and(|n| n.eq_ignore_ascii_case(&name))
-                            || record
-                                .preferred_name
-                                .as_deref()
-                                .is_some_and(|n| n.eq_ignore_ascii_case(&name)));
+                    let matches_running_name =
+                        record.is_running && record.name.eq_ignore_ascii_case(&name);
                     if !(matches_id || matches_running_name) {
                         continue;
                     }
@@ -1643,7 +1609,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                     record.is_running = false;
                     record.resume_on_startup = false;
-                    record.current_name = None;
                     stale_ids_for_spans.push(record.session_id.clone());
                 }
 
@@ -1660,14 +1625,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 drop(ps);
 
-                if !cleared_task_ids.is_empty() {
-                    let mut t2s = state.task_to_session.lock().unwrap();
-                    for task_id in &cleared_task_ids {
-                        t2s.remove(task_id);
-                    }
-                    // Session records already cleared above (task_id.take()),
-                    // no separate clear_task_assignment_by_task needed.
-                }
+                // Session records already cleared above (task_id.take()),
+                // no separate clear_task_assignment_by_task needed.
             }
             Effect::ClearSessionWorkingDir { session_id } => {
                 let mut ps = state.persistent_state.lock().await;
@@ -1736,22 +1695,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 extra_success_cooldowns,
                 reviewer,
             } => {
-                // 1. Allocate name from pool
-                let channel_lead_names = {
-                    let ps = state.persistent_state.lock().await;
-                    ps.channel_lead_names()
-                };
-                let name = {
-                    let mut pool = state.name_pool.lock().unwrap();
-                    pool.allocate_excluding(preferred_name.as_deref(), &channel_lead_names)
-                };
-                let Some(name) = name else {
-                    warn!("SpawnForTask: no available names for task !{}", task_id);
+                // Use the task's agent_name as the session name (names are
+                // generated at task creation and never recycled).
+                let Some(name) = preferred_name else {
+                    warn!("SpawnForTask: no agent_name for task !{}", task_id);
                     state.clear_task_spawn_in_flight(&task_id);
                     continue;
                 };
 
-                // 2. Update config with allocated name
                 config.name = name.clone();
 
                 // 3. Spawn via state.spawn_coworker
@@ -1759,18 +1710,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     Ok(_) => {
                         info!("SpawnForTask: spawned {} for task !{}", name, task_id);
 
-                        // Update task_to_session mapping
-                        let session_id = state.name_to_session.lock().unwrap().get(&name).cloned();
-                        if let Some(ref sid) = session_id {
+                        // Update session record's task_id
+                        {
                             let mut ps = state.persistent_state.lock().await;
-                            if let Some(record) = ps.sessions.get_mut(sid) {
+                            if let Some(record) = ps.session_by_name_mut(&name) {
                                 record.task_id = Some(task_id.clone());
                             }
-                            state
-                                .task_to_session
-                                .lock()
-                                .unwrap()
-                                .insert(task_id.clone(), sid.clone());
                             if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                                 warn!(
                                     "Failed to save persistent state after SpawnForTask task_id update: {}",
@@ -1834,7 +1779,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                         // Reviewer-specific extras (need real name + session_id)
                         if let Some(info) = reviewer {
-                            let sid = session_id.unwrap_or_default();
+                            let sid = {
+                                let ps = state.persistent_state.lock().await;
+                                ps.session_by_name(&name)
+                                    .map(|s| s.session_id.clone())
+                                    .unwrap_or_default()
+                            };
                             Box::pin(execute_effects(
                                 vec![
                                     Effect::CreateTaskSessionSpan {
@@ -1955,30 +1905,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::RecordTaskAssignment { coworker, task_id } => {
                 // Update sessions[].task_id — the single source of truth for
-                // coworker→task mapping. Also maintains the task_to_session
-                // reverse map.
-                let session_id = state
-                    .name_to_session
-                    .lock()
-                    .unwrap()
-                    .get(&coworker.to_lowercase())
-                    .cloned();
-                if let Some(sid) = session_id {
-                    let mut ps = state.persistent_state.lock().await;
-                    if let Some(record) = ps.sessions.get_mut(&sid) {
-                        record.task_id = Some(task_id.clone());
-                    }
-                    state
-                        .task_to_session
-                        .lock()
-                        .unwrap()
-                        .insert(task_id.clone(), sid);
-                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                        warn!(
-                            "Failed to save persistent state after RecordTaskAssignment: {}",
-                            e
-                        );
-                    }
+                // coworker→task mapping.
+                let mut ps = state.persistent_state.lock().await;
+                if let Some(record) = ps.session_by_name_mut(&coworker.to_lowercase()) {
+                    record.task_id = Some(task_id.clone());
+                }
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                    warn!(
+                        "Failed to save persistent state after RecordTaskAssignment: {}",
+                        e
+                    );
                 }
             }
             Effect::CreateTaskSessionSpan {
@@ -2002,6 +1938,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "Failed to save daemon-state.json after CreateTaskSessionSpan: {}",
                         e
                     );
+                }
+                // Also update TaskStore with session_id and pr
+                if let Ok(mut store_task) = state.task_store.load(&task_id) {
+                    store_task.session_id = Some(session_id.clone());
+                    if let Some(pr) = pr_number {
+                        store_task.pr = Some(pr);
+                    }
+                    if let Err(e) = state.task_store.save(&store_task) {
+                        warn!("Failed to update TaskStore task {} session: {}", task_id, e);
+                    }
                 }
             }
             Effect::CloseTaskSessionSpan {
@@ -2236,6 +2182,36 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         }
                         if let Err(e) = ps.save_for_repo(&dir_key) {
                             warn!("Failed to save review task metadata: {}", e);
+                        }
+                        // Also write to TaskStore for new task storage layer
+                        let parent_thread = parent_task_id
+                            .as_ref()
+                            .and_then(|pid| ps.task_thread_id.get(pid).cloned());
+                        drop(ps);
+                        let store_task = crate::task_store::Task {
+                            id: task_id.clone(),
+                            subject: format!("Review PR #{}", pr_number),
+                            status: crate::task_store::TaskStatus::Pending,
+                            description: None,
+                            blocked_by: vec![],
+                            channel: channel.clone(),
+                            pr: Some(pr_number),
+                            agent_name: task_id.clone(), // Will be set properly by task dispatch
+                            agent_type: "midtown-code-reviewer".to_string(),
+                            session_id: None,
+                            parent: parent_task_id.clone(),
+                            message_id: None,
+                            thread_id: parent_thread,
+                            model: None,
+                            plan: None,
+                            placeholder_comment_id: None,
+                            restart_count: 0,
+                            execution_skill: None,
+                            created_at: chrono::Utc::now(),
+                            updated_at: chrono::Utc::now(),
+                        };
+                        if let Err(e) = state.task_store.save(&store_task) {
+                            warn!("Failed to save review task to TaskStore: {}", e);
                         }
                     }
                     Err(e) => {
@@ -2757,13 +2733,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 let mut removed_session = false;
                                 let mut stopped_ids: Vec<String> = Vec::new();
                                 for record in ps.sessions.values_mut() {
-                                    if record
-                                        .current_name
-                                        .as_deref()
-                                        .is_some_and(|n| n == lead_session_name)
-                                    {
+                                    if record.name == lead_session_name {
                                         record.is_running = false;
-                                        record.current_name = None;
                                         record.resume_on_startup = false;
                                         removed_session = true;
                                         stopped_ids.push(record.session_id.clone());
@@ -2840,6 +2811,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         warn!("Failed to save task_channel after merge: {}", e);
                     }
                 }
+                // Also update TaskStore tasks that reference the merged channel
+                for mut task in state.task_store.load_all() {
+                    if task.channel.as_deref() == Some(&from) {
+                        task.channel = Some(into.clone());
+                        if let Err(e) = state.task_store.save(&task) {
+                            warn!(
+                                "Failed to update TaskStore task {} channel after merge: {}",
+                                task.id, e
+                            );
+                        }
+                    }
+                }
 
                 // Post merge notice to target channel
                 let msg = Message::for_channel(
@@ -2900,6 +2883,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     None, // pr
                 ) {
                     warn!("Failed to update task file channel for !{}: {}", task_id, e);
+                }
+                // Also update TaskStore
+                if let Ok(mut task) = state.task_store.load(&task_id) {
+                    task.channel = Some(channel.clone());
+                    if let Err(e) = state.task_store.save(&task) {
+                        warn!("Failed to update TaskStore task {} channel: {}", task_id, e);
+                    }
                 }
             }
             Effect::UnassignTask { task_id, dir_key } => {
@@ -2994,10 +2984,24 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 ps.task_message_id
                                     .insert(task_id.clone(), message_id.clone());
                                 if !ps.task_thread_id.contains_key(&task_id) {
-                                    ps.task_thread_id.insert(task_id.clone(), message_id);
+                                    ps.task_thread_id
+                                        .insert(task_id.clone(), message_id.clone());
                                 }
                                 if let Err(e) = ps.save_for_repo(&dir_key) {
                                     warn!("Failed to save task message_id mapping: {}", e);
+                                }
+                                // Also update TaskStore
+                                if let Ok(mut store_task) = state.task_store.load(&task_id) {
+                                    store_task.message_id = Some(message_id.clone());
+                                    if store_task.thread_id.is_none() {
+                                        store_task.thread_id = Some(message_id);
+                                    }
+                                    if let Err(e) = state.task_store.save(&store_task) {
+                                        warn!(
+                                            "Failed to update TaskStore task {} message_id: {}",
+                                            task_id, e
+                                        );
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -3072,7 +3076,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 config.model = super::helpers::resolve_model_for_role(
                     state.paths.dir_key(),
                     config.auth_provider,
-                    &config.role,
+                    &config.agent_type,
                 );
                 config.cwd_subdir = channel_directory;
 
@@ -3088,27 +3092,25 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             // ── Session-centric effects ──────────────────────────────────
             Effect::ShutdownSession { session_id, reason } => {
-                // Look up name from session_to_name
-                let name = state
-                    .session_to_name
-                    .lock()
-                    .unwrap()
-                    .get(&session_id)
-                    .cloned();
+                // Look up name from persistent state
+                let name = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.sessions.get(&session_id).map(|s| s.name.clone())
+                };
                 if let Some(name) = name {
                     info!(
                         "ShutdownSession: shutting down session {} (name: {}, reason: {})",
                         session_id, name, reason
                     );
                     // shutdown_coworker_impl → cleanup_coworker_state handles all
-                    // cleanup: NamePool release, reverse maps, and SessionRecord
-                    // update in persistent state.
+                    // cleanup: reverse maps and SessionRecord update in
+                    // persistent state.
                     let _ = shutdown_coworker_impl(&name, &reason, state).await;
 
                     state.broadcast_coworker_update(&name, "stopped", None);
                 } else {
-                    // No name mapped — session may have been suspended via ReleaseName
-                    // or already partially cleaned up. Still mark SessionRecord as stopped
+                    // No name mapped — session may have already been partially
+                    // cleaned up. Still mark SessionRecord as stopped
                     // so persistent state doesn't show a stale is_running=true.
                     warn!(
                         "ShutdownSession: no name found for session {} — marking record as stopped",
@@ -3143,12 +3145,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let msg = reason.to_nudge_message();
 
                     // 1. Try to nudge the active session (covers all types)
-                    let session_id = state
-                        .name_to_session
-                        .lock()
-                        .unwrap()
-                        .get(agent_name)
-                        .cloned();
+                    let session_id = {
+                        let ps = state.persistent_state.lock().await;
+                        ps.session_by_name(agent_name)
+                            .filter(|s| s.is_running)
+                            .map(|s| s.session_id.clone())
+                    };
                     let mut nudge_delivered = false;
 
                     if let Some(ref sid) = session_id
@@ -3205,10 +3207,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             let ps = state.persistent_state.lock().await;
                             ps.sessions
                                 .iter()
-                                .find(|(_, r)| {
-                                    r.preferred_name.as_deref() == Some(agent_name)
-                                        || r.current_name.as_deref() == Some(agent_name)
-                                })
+                                .find(|(_, r)| r.name == agent_name)
                                 .map(|(sid, r)| (sid.clone(), r.clone()))
                         };
 
@@ -3551,27 +3550,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::RecordSession { record } => {
                 let session_id = record.session_id.clone();
 
-                // Update in-memory reverse maps
-                if let Some(ref name) = record.current_name {
-                    state
-                        .name_to_session
-                        .lock()
-                        .unwrap()
-                        .insert(name.clone(), session_id.clone());
-                    state
-                        .session_to_name
-                        .lock()
-                        .unwrap()
-                        .insert(session_id.clone(), name.clone());
-                }
-                if let Some(ref task_id) = record.task_id {
-                    state
-                        .task_to_session
-                        .lock()
-                        .unwrap()
-                        .insert(task_id.clone(), session_id.clone());
-                }
-
                 // Persist session record
                 {
                     let mut ps = state.persistent_state.lock().await;
@@ -3581,19 +3559,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
                 info!("RecordSession: saved session {}", session_id);
-            }
-
-            Effect::ReleaseName { name } => {
-                {
-                    let mut pool = state.name_pool.lock().unwrap();
-                    pool.release(&name);
-                }
-                // Clean up reverse maps
-                let session_id = state.name_to_session.lock().unwrap().remove(&name);
-                if let Some(session_id) = session_id {
-                    state.session_to_name.lock().unwrap().remove(&session_id);
-                }
-                info!("ReleaseName: released '{}' back to NamePool", name);
             }
 
             Effect::AutoDetachCoworker { name } => {
@@ -4000,9 +3965,11 @@ async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &st
                 .filter(|s| ps.task_pr_number.get(&s.task_id) == Some(&pr_number))
                 .map(|s| s.task_id.clone())
                 .collect();
-            for tid in task_ids {
-                ps.task_placeholder_comment_id.insert(tid, comment_id);
+            for tid in &task_ids {
+                ps.task_placeholder_comment_id
+                    .insert(tid.clone(), comment_id);
             }
+            // TODO: migrate placeholder_comment_id to frontmatter lookup
             serde_json::to_string_pretty(&*ps).ok()
         };
         if let Some(json) = serialized {
@@ -4230,7 +4197,7 @@ async fn dispatch_workflow_event(
     );
 
     // Convert plugin actions to Effect variants and execute them.
-    let effects = plugin_actions_to_effects(&dispatch_result.actions, state);
+    let effects = plugin_actions_to_effects(&dispatch_result.actions, state).await;
     if !effects.is_empty() {
         // Use Box::pin to execute effects recursively without growing the stack.
         Box::pin(execute_effects(effects, state)).await;
@@ -4246,7 +4213,7 @@ async fn dispatch_workflow_event(
 /// to the corresponding `Effect` variants in the daemon's effect pipeline.
 ///
 /// Unknown methods are logged and skipped.
-fn plugin_actions_to_effects(
+async fn plugin_actions_to_effects(
     actions: &[super::plugin_daemon::PluginAction],
     state: &DaemonState,
 ) -> Vec<Effect> {
@@ -4289,7 +4256,7 @@ fn plugin_actions_to_effects(
                     .to_string();
                 if !name.is_empty() {
                     effects.push(Effect::nudge_session(
-                        state.session_id_for_name(&name),
+                        state.session_id_for_name(&name).await,
                         message,
                     ));
                 }
@@ -4529,20 +4496,13 @@ async fn respawn_fork(
     // Create SessionRecord for the new fork
     {
         let mut ps = state.persistent_state.lock().await;
-        // Clear current_name/preferred_name on any old session records that
-        // still claim this name. Same cleanup as SpawnForTask (PR #1819) —
-        // prevents ambiguous find-by-name lookups when multiple records share
-        // the same name. Must check both fields because rpc_auth.rs matches
-        // sessions by either preferred_name or current_name.
+        // Clear old session records that still claim this name. Same cleanup
+        // as SpawnForTask (PR #1819) — prevents ambiguous find-by-name lookups
+        // when multiple records share the same name.
         let mut displaced_fork_ids: Vec<String> = Vec::new();
         for record in ps.sessions.values_mut() {
-            if record.session_id != fork_session_id
-                && (record.preferred_name.as_deref() == Some(&name)
-                    || record.current_name.as_deref() == Some(&name))
-            {
+            if record.session_id != fork_session_id && record.name == name {
                 record.is_running = false;
-                record.current_name = None;
-                record.preferred_name = None;
                 displaced_fork_ids.push(record.session_id.clone());
             }
         }
@@ -4554,17 +4514,15 @@ async fn respawn_fork(
             crate::daemon::state::SessionRecord {
                 session_id: fork_session_id.clone(),
                 task_id: None,
-                current_name: Some(name.clone()),
-                preferred_name: Some(name.clone()),
+                name: name.clone(),
                 working_dir: working_dir.unwrap_or_default().to_string(),
                 branch: None,
                 pr_number: None,
                 initial_prompt: initial_prompt.map(String::from),
-                is_reviewer: false,
-                coworker_type: if is_channel_lead {
-                    "channel-lead".to_string()
+                agent_type: if is_channel_lead {
+                    "midtown-channel-lead".to_string()
                 } else {
-                    "dev".to_string()
+                    "midtown-code-author".to_string()
                 },
                 is_running: true,
                 created_at: chrono::Utc::now(),
@@ -4580,24 +4538,13 @@ async fn respawn_fork(
                 provider: Some(auth_provider),
                 platform: Some(crate::platform::Platform::from_provider(auth_provider)),
                 profile: None,
+                restart_count: 0,
             },
         );
         if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
             warn!("Failed to persist session record for respawned fork: {}", e);
         }
     }
-
-    // Populate in-memory reverse maps
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert(name.clone(), fork_session_id.clone());
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(fork_session_id.clone(), name.clone());
 
     // Cache the bound thread mapping for the output binding hot path
     state
@@ -4663,7 +4610,7 @@ async fn respawn_fork(
             let ps = state.persistent_state.lock().await;
             ps.channel_lead_sessions
                 .get(ch)
-                .and_then(|lead_sid| state.session_to_name.lock().unwrap().get(lead_sid).cloned())
+                .and_then(|lead_sid| ps.sessions.get(lead_sid).map(|s| s.name.clone()))
         };
         state.broadcast_web_update(crate::web::WebUpdate::ThreadOwnership(
             crate::web::ThreadOwnershipData {
@@ -4714,11 +4661,10 @@ async fn post_insight(state: &DaemonState, agent: &str, insight: &str) {
     // Suppress insights from channel leads (they auto-post all output).
     {
         let ps = state.persistent_state.lock().await;
-        let is_channel_lead = ps.sessions.values().any(|s| {
-            s.is_running
-                && s.current_name.as_deref() == Some(agent)
-                && s.coworker_type == "channel-lead"
-        });
+        let is_channel_lead = ps
+            .sessions
+            .values()
+            .any(|s| s.is_running && s.name == agent && s.agent_type == "midtown-channel-lead");
         if is_channel_lead {
             debug!(
                 "post_insight: suppressing insight from channel lead {}, already auto-posted",
@@ -4734,15 +4680,22 @@ async fn post_insight(state: &DaemonState, agent: &str, insight: &str) {
         let task_id = ps
             .sessions
             .values()
-            .find(|r| r.is_running && r.current_name.as_deref() == Some(agent))
-            .or_else(|| {
-                ps.sessions
-                    .values()
-                    .find(|r| r.current_name.as_deref() == Some(agent))
-            })
+            .find(|r| r.is_running && r.name == agent)
+            .or_else(|| ps.sessions.values().find(|r| r.name == agent))
             .and_then(|r| r.task_id.as_deref());
-        let ch = task_id.and_then(|tid| ps.task_channel.get(tid).cloned());
-        let thread = task_id.and_then(|tid| ps.task_thread_id.get(tid).cloned());
+        // Try TaskStore first, then fall back to persistent state HashMaps
+        let (ch, thread) = if let Some(tid) = task_id {
+            if let Ok(store_task) = state.task_store.load(tid) {
+                (store_task.channel.clone(), store_task.thread_id.clone())
+            } else {
+                (
+                    ps.task_channel.get(tid).cloned(),
+                    ps.task_thread_id.get(tid).cloned(),
+                )
+            }
+        } else {
+            (None, None)
+        };
         (ch, thread)
     };
 

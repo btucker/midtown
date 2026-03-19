@@ -54,7 +54,7 @@ mod u64_key_map {
 ///   after daemon restart until sessions reconnect.
 /// - **GitHub-title-derived** (`github_task_to_pr`): survives restarts (repopulated
 ///   from GitHub API) but depends on `[Midtown !{id}]` in PR titles.
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct PrTaskIndex {
     /// task_id → pr_number from SessionRecord (primary source).
     #[serde(default, alias = "tasks_with_open_prs")]
@@ -518,6 +518,10 @@ pub struct WorldSnapshot {
     /// Used by dispatch.rs to spawn tasks with the correct agent definition.
     #[serde(default)]
     pub task_agent_type_map: HashMap<String, String>,
+    /// Task agent names from TaskStore (task_id → agent_name).
+    /// Used by dispatch.rs to use the lead-assigned name instead of generating one.
+    #[serde(default)]
+    pub task_agent_name_map: HashMap<String, String>,
     /// Channel lead session mapping for nudge routing.
     /// Maps channel name → session ID. Used by effects.rs to deliver
     /// `NudgeChannelLead` effects without locking persistent state.
@@ -527,6 +531,13 @@ pub struct WorldSnapshot {
     /// Avoids re-allocating a HashSet on every call to `channel_lead_names()`.
     #[serde(default)]
     pub channel_lead_names: HashSet<String>,
+
+    // ── Session identity state ──────────────────────────────────────────────
+    /// All session names with active/running sessions (lowercase).
+    /// Used by rules.rs to validate task owners as real sessions
+    /// (replaces the old `is_coworker_name()` avenue-name check).
+    #[serde(default)]
+    pub active_session_names: HashSet<String>,
 
     // ── Dependency state ──────────────────────────────────────────────────
     /// Coworkers whose completed tasks have unblocked pending follow-ups.
@@ -889,7 +900,13 @@ impl WorldSnapshot {
         self.sessions
             .values()
             .filter(|s| s.pr_number.is_some_and(|pr| open_pr_numbers.contains(&pr)))
-            .filter_map(|s| s.current_name.clone().or_else(|| s.preferred_name.clone()))
+            .filter_map(|s| {
+                if s.name.is_empty() {
+                    None
+                } else {
+                    Some(s.name.clone())
+                }
+            })
             .collect()
     }
 
@@ -905,7 +922,13 @@ impl WorldSnapshot {
                 s.pr_number
                     .is_some_and(|pr| self.pr.merged_pr_numbers.contains(&pr))
             })
-            .filter_map(|s| s.current_name.clone().or_else(|| s.preferred_name.clone()))
+            .filter_map(|s| {
+                if s.name.is_empty() {
+                    None
+                } else {
+                    Some(s.name.clone())
+                }
+            })
             .collect()
     }
 
@@ -1069,8 +1092,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
                     .as_deref()
                     .is_some_and(|tid| in_progress_task_ids.contains(tid))
             })
-            .filter_map(|s| s.current_name.clone())
-            .map(|n| n.to_lowercase())
+            .filter(|s| !s.name.is_empty())
+            .map(|s| s.name.to_lowercase())
             .collect()
     };
 
@@ -1080,7 +1103,11 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
 
     // Task-to-channel, task-to-model, task-to-plan, task-to-execution-skill,
     // task-to-thread, task-to-message, task-to-parent, task-to-agent-type,
-    // channel-lead, and lead-driven mappings
+    // channel-lead, and lead-driven mappings.
+    //
+    // Primary source: TaskStore (file-per-task JSON). Falls back to
+    // DaemonPersistentState HashMap fields for data that hasn't been
+    // migrated yet (see Task 9 migration).
     let (
         task_channel,
         task_model_map,
@@ -1090,21 +1117,95 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         task_message_id_map,
         task_parent_map,
         task_agent_type_map,
+        task_agent_name_map,
         channel_lead_sessions,
         lead_driven_channels,
     ) = {
+        let all_store_tasks = state.task_store.load_all();
+        let mut task_channel = HashMap::new();
+        let mut task_model_map = HashMap::new();
+        let mut task_plan_map = HashMap::new();
+        let mut task_execution_skill_map = HashMap::new();
+        let mut task_thread_id_map = HashMap::new();
+        let mut task_message_id_map = HashMap::new();
+        let mut task_parent_map = HashMap::new();
+        let mut task_agent_type_map = HashMap::new();
+        let mut task_agent_name_map = HashMap::new();
+        for t in &all_store_tasks {
+            if let Some(ref ch) = t.channel {
+                task_channel.insert(t.id.clone(), ch.clone());
+            }
+            if let Some(ref m) = t.model {
+                task_model_map.insert(t.id.clone(), m.clone());
+            }
+            if let Some(ref p) = t.plan {
+                task_plan_map.insert(t.id.clone(), p.clone());
+            }
+            if let Some(ref tid) = t.thread_id {
+                task_thread_id_map.insert(t.id.clone(), tid.clone());
+            }
+            if let Some(ref mid) = t.message_id {
+                task_message_id_map.insert(t.id.clone(), mid.clone());
+            }
+            if let Some(ref pid) = t.parent {
+                task_parent_map.insert(t.id.clone(), pid.clone());
+            }
+            task_agent_type_map.insert(t.id.clone(), t.agent_type.clone());
+            if !t.agent_name.is_empty() {
+                task_agent_name_map.insert(t.id.clone(), t.agent_name.clone());
+            }
+        }
+        // Merge with persistent state HashMap fields for backward compatibility
+        // (pre-migration data). TaskStore entries take precedence.
         let ps = state.persistent_state.lock().await;
+        for (k, v) in &ps.task_channel {
+            task_channel.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        for (k, v) in &ps.task_model {
+            task_model_map.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        for (k, v) in &ps.task_plan {
+            task_plan_map.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+        for (k, v) in &ps.task_execution_skill {
+            task_execution_skill_map
+                .entry(k.clone())
+                .or_insert_with(|| v.clone());
+        }
+        for (k, v) in &ps.task_thread_id {
+            task_thread_id_map
+                .entry(k.clone())
+                .or_insert_with(|| v.clone());
+        }
+        for (k, v) in &ps.task_message_id {
+            task_message_id_map
+                .entry(k.clone())
+                .or_insert_with(|| v.clone());
+        }
+        for (k, v) in &ps.task_parent {
+            task_parent_map
+                .entry(k.clone())
+                .or_insert_with(|| v.clone());
+        }
+        for (k, v) in &ps.task_agent_type {
+            task_agent_type_map
+                .entry(k.clone())
+                .or_insert_with(|| v.clone());
+        }
+        let channel_lead_sessions = ps.channel_lead_sessions.clone();
+        let lead_driven_channels = ps.lead_driven_channels.clone();
         (
-            ps.task_channel.clone(),
-            ps.task_model.clone(),
-            ps.task_plan.clone(),
-            ps.task_execution_skill.clone(),
-            ps.task_thread_id.clone(),
-            ps.task_message_id.clone(),
-            ps.task_parent.clone(),
-            ps.task_agent_type.clone(),
-            ps.channel_lead_sessions.clone(),
-            ps.lead_driven_channels.clone(),
+            task_channel,
+            task_model_map,
+            task_plan_map,
+            task_execution_skill_map,
+            task_thread_id_map,
+            task_message_id_map,
+            task_parent_map,
+            task_agent_type_map,
+            task_agent_name_map,
+            channel_lead_sessions,
+            lead_driven_channels,
         )
     };
 
@@ -1152,7 +1253,9 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         // This is required for decide_dead_reviewer_respawns to detect and
         // respawn reviewers whose processes have exited without posting a review.
         let assignments = build_reviewer_pr_assignments_from_spans(&ps);
-        // Collect PR → restart_count for stuck reviewer backoff (from task_restart_count).
+        // Collect PR → restart_count for stuck reviewer backoff.
+        // Primary source: task_restart_count + task_pr_number on persistent state
+        // (these fields stay on DaemonPersistentState until SessionRecord migration).
         let restart_counts: HashMap<u64, u32> = ps
             .task_restart_count
             .iter()
@@ -1194,14 +1297,14 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .filter(|pr| !reviewed_prs.contains(pr))
             .collect();
 
-        // Pre-fetch stored placeholder IDs from persistent state (single lock acquisition).
-        // Read from task_placeholder_comment_id keyed by task_id, mapped to pr via task_pr_number.
+        // Pre-fetch stored placeholder IDs from persistent state.
         let stored_placeholder_ids: HashMap<u64, Option<u64>> = {
             let ps = state.persistent_state.lock().await;
             assigned_unreviewed_prs
                 .iter()
                 .map(|&pr| {
-                    // Find a task_id for this PR via task_pr_number reverse lookup
+                    // Try TaskStore first: find task with this PR and a placeholder_comment_id
+                    // Look up placeholder_comment_id from persistent state
                     let id = ps
                         .task_pr_number
                         .iter()
@@ -1428,23 +1531,20 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             "global",
             crate::daemon::constants::SESSION_DISPATCH_COOLDOWN,
         );
-        // Collect all coworker names that are on the spawn failure cooldown.
-        // Check ALL pool names (AVENUE_NAMES + OVERFLOW_NAMES), not just active
-        // coworkers. A failed spawn never makes the coworker "active", so checking
-        // only active_coworkers would miss cooldowns for freshly-allocated names
-        // that failed to spawn (e.g., unowned task dispatch).
-        let all_pool_names = crate::coworker::AVENUE_NAMES
+        // Collect session names that are on the spawn failure cooldown.
+        // Check active names and any names tracked in cooldown state.
+        // With task-based naming, names are dynamic so we check what's
+        // currently known (active sessions + any cooldown keys).
+        let on_cooldown: HashSet<String> = active_names
             .iter()
-            .chain(crate::coworker::OVERFLOW_NAMES.iter());
-        let on_cooldown: HashSet<String> = all_pool_names
             .filter(|name| {
                 !cooldowns.check(
                     "spawn_failure",
-                    &name.to_lowercase(),
+                    name,
                     crate::daemon::constants::SPAWN_FAILURE_COOLDOWN,
                 )
             })
-            .map(|name| name.to_lowercase())
+            .cloned()
             .collect();
         (orphan_active, session_active, on_cooldown)
     };
@@ -1560,9 +1660,9 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             {
                 session_task_map.insert(task_id.clone(), session_id.clone());
             }
-            if let Some(name) = &record.current_name {
-                session_name_map.insert(session_id.clone(), name.clone());
-                name_session_map.insert(name.clone(), session_id.clone());
+            if !record.name.is_empty() {
+                session_name_map.insert(session_id.clone(), record.name.clone());
+                name_session_map.insert(record.name.clone(), session_id.clone());
             }
         }
         (
@@ -1671,6 +1771,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .map(|task| task.id.clone())
         .collect();
 
+    let all_active_session_names = active_names.clone();
     let snapshot = WorldSnapshot {
         coworkers: SnapshotCoworkerState {
             active_coworkers,
@@ -1725,8 +1826,10 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         task_message_id_map,
         task_parent_map,
         task_agent_type_map,
+        task_agent_name_map,
         channel_lead_sessions,
         channel_lead_names,
+        active_session_names: all_active_session_names,
         lead_driven_channels,
         coworkers_with_unblocked_deps,
         archived_channels,
@@ -1807,8 +1910,10 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         task_message_id_map: HashMap::new(),
         task_parent_map: HashMap::new(),
         task_agent_type_map: HashMap::new(),
+        task_agent_name_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         channel_lead_names: HashSet::new(),
+        active_session_names: HashSet::new(),
         lead_driven_channels: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
         archived_channels: HashSet::new(),
@@ -1923,7 +2028,7 @@ const WORKTREE_FRESHNESS_CACHE_SECS: u64 = 25;
 /// at ~30s and TaskDispatchTick at ~5s).
 ///
 /// Returns the set of channel names whose worktrees are behind.
-async fn collect_stale_channel_lead_worktrees(
+pub(super) async fn collect_stale_channel_lead_worktrees(
     state: &DaemonState,
     channel_lead_sessions: &HashMap<String, String>,
     sessions: &HashMap<String, crate::daemon::state::SessionRecord>,

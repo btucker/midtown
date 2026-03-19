@@ -814,7 +814,6 @@ async fn test_completed_with_open_pr_defers_to_merge_path() {
                 task_id: Some(task_id.to_string()),
                 pr_number: Some(42),
                 branch: Some("park/add-new-feature".to_string()),
-                preferred_name: Some("park".to_string()),
                 ..Default::default()
             },
         );
@@ -923,7 +922,12 @@ async fn test_reviewer_idle_not_nudged_when_review_cached() {
     // Create a reviewer span and mark review as completed
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.create_span("review-42", reviewer_name, "reviewer", "sess-rev-42");
+        ps.create_span(
+            "review-42",
+            reviewer_name,
+            "midtown-code-reviewer",
+            "sess-rev-42",
+        );
         ps.task_pr_number.insert("review-42".to_string(), pr_number);
         // Mark the review as completed (simulates webhook having arrived)
         ps.github.mark_reviewed_pr(pr_number);
@@ -1020,7 +1024,7 @@ async fn test_reviewer_idle_nudged_when_review_not_posted() {
     // Create reviewer span for a PR but do NOT mark the review as completed
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.create_span("task-43", reviewer_name, "reviewer", "");
+        ps.create_span("task-43", reviewer_name, "midtown-code-reviewer", "");
         ps.task_pr_number.insert("task-43".to_string(), pr_number);
         // Deliberately NOT calling mark_reviewed_pr — review hasn't been posted
     }
@@ -1392,46 +1396,25 @@ fn test_serialize_tool_activity_headers_multiple_agents() {
 /// should NOT allocate "park" for a new coworker.
 ///
 /// We can't call handle_coworker_spawn directly (it spawns a real process), so we
-/// test the name exclusion logic it uses: SessionManager.list_names() + is_alive()
-/// fed into next_available_name_excluding().
+/// With task-based naming, names are generated from task IDs and are always unique.
+/// Active sessions are excluded from name generation via collision detection.
 #[tokio::test]
-async fn test_spawn_name_excludes_active_sessions() {
+async fn test_spawn_task_based_name_avoids_collisions() {
     use super::super::sessions::SessionStatus;
 
     let (state, _tmp, _guard) = make_test_state();
 
-    // Register all AVENUE_NAMES except "park" in CoworkerManager.
-    // From CoworkerManager's perspective, "park" is the only free name.
-    for (i, name) in crate::coworker::AVENUE_NAMES
-        .iter()
-        .filter(|&&n| n != "park")
-        .enumerate()
-    {
-        state
-            .coworkers
-            .register(
-                &format!("slot-{i}"),
-                name,
-                "/tmp".to_string(),
-                None,
-                "claude-sonnet".to_string(),
-                crate::auth::AuthProvider::Claude,
-                "default".to_string(),
-            )
-            .unwrap();
-    }
-
-    // "park" has an active session in SessionManager (not in CoworkerManager).
+    // "task-42" has an active session in SessionManager.
     state
         .session_manager
-        .insert_test_session("park", SessionStatus::Running)
+        .insert_test_session("task-42", SessionStatus::Running)
         .await;
 
-    // Configure is_alive hook to return true for "park".
+    // Configure is_alive hook to return true for "task-42".
     state
         .session_manager
         .set_test_is_alive_hook(Some(std::sync::Arc::new(|name: &str| {
-            name.eq_ignore_ascii_case("park")
+            name.eq_ignore_ascii_case("task-42")
         })));
 
     // Replicate the exclusion logic from handle_coworker_spawn:
@@ -1446,21 +1429,19 @@ async fn test_spawn_name_excludes_active_sessions() {
         }
     }
 
-    let allocated = state
-        .coworkers
-        .next_available_name_excluding(&excluded_names);
+    // Generate a name for task 42 — should detect collision and add suffix
+    let candidate = "task-42".to_string();
+    let allocated = if excluded_names.contains(&candidate) {
+        format!("{}-{}", candidate, fastrand::u32(1000..9999))
+    } else {
+        candidate
+    };
 
-    // "park" should be excluded — the allocator should fall through to overflow names.
-    assert!(
-        allocated.is_some(),
-        "Should still allocate a name (overflow names available)"
-    );
+    // The generated name should NOT be "task-42" since that's active
     assert_ne!(
-        allocated.as_deref(),
-        Some("park"),
-        "Should NOT allocate 'park' — it has an active session in SessionManager \
-         even though it's not in CoworkerManager. Before fix: only channel_lead_names \
-         were excluded, so 'park' would be allocated causing a name collision."
+        allocated, "task-42",
+        "Should NOT allocate 'task-42' — it has an active session in SessionManager. \
+         The collision detection should generate a suffixed variant instead."
     );
 }
 
@@ -1488,14 +1469,12 @@ async fn test_thread_binding_populates_fork_bound_threads_and_session_record() {
             super::super::state::SessionRecord {
                 session_id: "sess-test".to_string(),
                 task_id: None,
-                current_name: Some(coworker_name.to_string()),
-                preferred_name: Some(coworker_name.to_string()),
+                name: coworker_name.to_string(),
                 working_dir: "/tmp".to_string(),
                 branch: None,
                 pr_number: None,
                 initial_prompt: None,
-                is_reviewer: false,
-                coworker_type: "dev".to_string(),
+                agent_type: "midtown-code-author".to_string(),
                 is_running: true,
                 created_at: chrono::Utc::now(),
                 resume_on_startup: false,
@@ -1507,6 +1486,7 @@ async fn test_thread_binding_populates_fork_bound_threads_and_session_record() {
                 provider: Some(crate::auth::AuthProvider::Claude),
                 platform: None,
                 profile: None,
+                restart_count: 0,
             },
         );
     }
@@ -1521,11 +1501,7 @@ async fn test_thread_binding_populates_fork_bound_threads_and_session_record() {
     }
     {
         let mut ps = state.persistent_state.lock().await;
-        if let Some(record) = ps
-            .sessions
-            .values_mut()
-            .find(|r| r.current_name.as_deref() == Some(coworker_name))
-        {
+        if let Some(record) = ps.sessions.values_mut().find(|r| r.name == coworker_name) {
             record.bound_thread_id = Some(thread_id.to_string());
         }
     }
@@ -1546,7 +1522,7 @@ async fn test_thread_binding_populates_fork_bound_threads_and_session_record() {
         let record = ps
             .sessions
             .values()
-            .find(|r| r.current_name.as_deref() == Some(coworker_name))
+            .find(|r| r.name == coworker_name)
             .expect("SessionRecord should exist");
         assert_eq!(
             record.bound_thread_id.as_deref(),
@@ -1784,11 +1760,7 @@ async fn test_thread_binding_no_session_record_still_sets_in_memory() {
     {
         let mut ps = state.persistent_state.lock().await;
         // This find will return None — no record matches
-        if let Some(record) = ps
-            .sessions
-            .values_mut()
-            .find(|r| r.current_name.as_deref() == Some(coworker_name))
-        {
+        if let Some(record) = ps.sessions.values_mut().find(|r| r.name == coworker_name) {
             record.bound_thread_id = Some(thread_id.to_string());
         }
         // No save error — just no record found
@@ -1807,10 +1779,7 @@ async fn test_thread_binding_no_session_record_still_sets_in_memory() {
     // Verify: no SessionRecord was created (we don't create records here)
     {
         let ps = state.persistent_state.lock().await;
-        let record = ps
-            .sessions
-            .values()
-            .find(|r| r.current_name.as_deref() == Some(coworker_name));
+        let record = ps.sessions.values().find(|r| r.name == coworker_name);
         assert!(
             record.is_none(),
             "No SessionRecord should exist — binding logic doesn't create records"

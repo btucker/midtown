@@ -60,7 +60,7 @@ pub struct TaskSessionSpan {
     pub task_id: String,
     /// Coworker name at the time of this span.
     pub agent_name: String,
-    /// Role: "dev", "reviewer", or "channel-lead".
+    /// Agent type: e.g., "midtown-code-author", "midtown-code-reviewer", "midtown-channel-lead".
     pub agent_type: String,
     /// Claude Code session ID.
     pub session_id: String,
@@ -82,10 +82,8 @@ pub struct SessionRecord {
     pub session_id: String,
     /// Task this session is working on (e.g., "1561").
     pub task_id: Option<String>,
-    /// Current name allocation (None if suspended/name released).
-    pub current_name: Option<String>,
-    /// Preferred name for next resume (the name it had last time).
-    pub preferred_name: Option<String>,
+    /// Stable name for this session (assigned at creation, never changes).
+    pub name: String,
     /// Worktree path for this session.
     pub working_dir: String,
     /// Git branch the session is working on.
@@ -94,10 +92,8 @@ pub struct SessionRecord {
     pub pr_number: Option<u64>,
     /// Initial prompt used to start the session (for restart/clear).
     pub initial_prompt: Option<String>,
-    /// Whether this is a reviewer session (ephemeral, never resumed after shutdown).
-    pub is_reviewer: bool,
-    /// Coworker type: "dev", "reviewer", or "channel-lead".
-    pub coworker_type: String,
+    /// Agent type: "midtown-code-author", "midtown-code-reviewer", or "midtown-channel-lead".
+    pub agent_type: String,
     /// Whether the session process is currently running.
     pub is_running: bool,
     /// When the session was created.
@@ -132,6 +128,9 @@ pub struct SessionRecord {
     /// Auth profile name (e.g., "ben@example.com") — account identity.
     #[serde(default)]
     pub profile: Option<String>,
+    /// How many times this session has been restarted.
+    #[serde(default)]
+    pub restart_count: u32,
 }
 
 impl Default for SessionRecord {
@@ -139,14 +138,12 @@ impl Default for SessionRecord {
         Self {
             session_id: String::new(),
             task_id: None,
-            current_name: None,
-            preferred_name: None,
+            name: String::new(),
             working_dir: String::new(),
             branch: None,
             pr_number: None,
             initial_prompt: None,
-            is_reviewer: false,
-            coworker_type: "dev".to_string(),
+            agent_type: "midtown-code-author".to_string(),
             is_running: false,
             created_at: Utc::now(),
             resume_on_startup: true,
@@ -158,6 +155,7 @@ impl Default for SessionRecord {
             provider: None,
             platform: None,
             profile: None,
+            restart_count: 0,
         }
     }
 }
@@ -170,7 +168,7 @@ impl SessionRecord {
     /// as PR owners or task dispatch targets. Regular dev coworkers also carry
     /// bound_thread_id (for thread routing) but ARE genuine task owners.
     pub fn is_fork_session(&self) -> bool {
-        self.coworker_type == "channel-lead" && self.bound_thread_id.is_some()
+        self.agent_type == "midtown-channel-lead" && self.bound_thread_id.is_some()
     }
 }
 
@@ -350,6 +348,153 @@ pub struct DaemonPersistentState {
     /// populates SessionRecord.pr_number.
     #[serde(default)]
     pub task_pr_number: HashMap<String, u64>,
+
+    /// Write-through task index for fast lookups without directory scanning.
+    ///
+    /// Populated from `TaskStore::build_index()` on daemon startup.
+    /// Updated after every `TaskStore::save()` call. Contains task status,
+    /// parent, and agent_name for each task.
+    #[serde(default)]
+    pub task_index: HashMap<String, crate::task_store::TaskIndexEntry>,
+
+    // ── Per-tick ephemeral state ──────────────────────────────────────────
+    // Populated by `prepare_tick()` before each tick evaluation.
+    // Not persisted to daemon-state.json.
+    /// Process health for headless coworkers, keyed by name.
+    #[serde(skip)]
+    pub tick_process_health: HashMap<String, crate::daemon::snapshot::ProcessHealth>,
+
+    /// Cached open PR data from last GitHub poll.
+    #[serde(skip)]
+    pub tick_open_prs: Vec<serde_json::Value>,
+
+    /// Number of PRs needing review.
+    #[serde(skip)]
+    pub tick_prs_needing_review: usize,
+
+    /// Merged PR numbers from last poll.
+    #[serde(skip)]
+    pub tick_merged_pr_numbers: HashSet<u64>,
+
+    /// GitHub API rate limit state.
+    #[serde(skip)]
+    pub tick_rate_limit: crate::github_rate_limit::GitHubRateLimit,
+
+    /// Freshly fetched rate limit (only during RateLimitCheckTick).
+    #[serde(skip)]
+    pub tick_fresh_rate_limit: Option<crate::github_rate_limit::GitHubRateLimit>,
+
+    /// PR↔task index built from sessions + GitHub PR titles.
+    #[serde(skip)]
+    pub tick_pr_task_index: crate::daemon::snapshot::PrTaskIndex,
+
+    /// Pre-evaluated cooldown states.
+    #[serde(skip)]
+    pub tick_orphan_spawn_cooldown_active: bool,
+    #[serde(skip)]
+    pub tick_session_dispatch_cooldown_active: bool,
+    #[serde(skip)]
+    pub tick_spawn_failure_cooldown_names: HashSet<String>,
+    #[serde(skip)]
+    pub tick_note_staleness_cooldown_channels: HashSet<String>,
+    #[serde(skip)]
+    pub tick_merge_rebase_nudge_cooldown_names: HashSet<String>,
+    #[serde(skip)]
+    pub tick_rebase_nudge_processed_prs: HashSet<u64>,
+    #[serde(skip)]
+    pub tick_rebase_regression_cooldown_names: HashSet<String>,
+    #[serde(skip)]
+    pub tick_lead_worktree_freshness_cooldown_channels: HashSet<String>,
+    #[serde(skip)]
+    pub tick_task_nudge_cooldown_ids: HashSet<String>,
+    #[serde(skip)]
+    pub tick_recently_recovered_session_ids: HashSet<String>,
+    #[serde(skip)]
+    pub tick_in_flight_task_spawns: HashSet<String>,
+
+    /// Coworker start/stop times from DaemonState caches.
+    #[serde(skip)]
+    pub tick_coworker_start_times: HashMap<String, DateTime<Utc>>,
+    #[serde(skip)]
+    pub tick_coworker_stop_times: HashMap<String, DateTime<Utc>>,
+
+    /// Attached coworkers with attach timestamp.
+    #[serde(skip)]
+    pub tick_attached_coworkers: HashMap<String, DateTime<Utc>>,
+
+    /// Config constants from DaemonState.
+    #[serde(skip)]
+    pub tick_dir_key: String,
+    #[serde(skip)]
+    pub tick_project_name: String,
+    #[serde(skip)]
+    pub tick_default_channel: String,
+    #[serde(skip)]
+    pub tick_default_branch: String,
+    #[serde(skip)]
+    pub tick_repo_owner: Option<String>,
+    #[serde(skip)]
+    pub tick_max_in_progress_tasks: usize,
+    #[serde(skip)]
+    pub tick_lead_refresh_interval_secs: u64,
+    #[serde(skip)]
+    pub tick_now: DateTime<Utc>,
+
+    /// Stale channel lead worktrees (behind origin/main).
+    #[serde(skip)]
+    pub tick_stale_lead_worktrees: HashSet<String>,
+
+    /// Topic/fork sessions: thread_parent_id → session_id.
+    #[serde(skip)]
+    pub tick_topic_sessions: HashMap<String, String>,
+
+    /// Session profile mapping: coworker name → auth profile email.
+    #[serde(skip)]
+    pub tick_session_profile_map: HashMap<String, String>,
+
+    /// Pool profiles currently at usage limit.
+    #[serde(skip)]
+    pub tick_limited_pool_profiles: HashSet<String>,
+
+    /// Channel messages for debugging context.
+    #[serde(skip)]
+    pub tick_channel_messages: Vec<crate::message::Message>,
+
+    /// Daemon log tail for debugging context.
+    #[serde(skip)]
+    pub tick_daemon_logs: Vec<String>,
+
+    /// Reviewer escalations already posted.
+    #[serde(skip)]
+    pub tick_reviewer_escalations_posted: HashSet<u64>,
+
+    /// Orphaned PR lead nudges already sent.
+    #[serde(skip)]
+    pub tick_orphaned_pr_nudges_sent: HashSet<u64>,
+
+    /// Archived channels.
+    #[serde(skip)]
+    pub tick_archived_channels: HashSet<String>,
+
+    /// Stale channel notes.
+    #[serde(skip)]
+    pub tick_stale_channel_notes: HashMap<String, Vec<String>>,
+
+    /// Active session names (lowercase) — running coworkers + alive headless sessions.
+    #[serde(skip)]
+    pub tick_active_session_names: HashSet<String>,
+
+    /// Active coworker data from CoworkerManager.
+    #[serde(skip)]
+    pub tick_active_coworkers: Vec<crate::coworker::Coworker>,
+
+    /// Running coworker data from CoworkerManager.
+    #[serde(skip)]
+    pub tick_running_coworkers: Vec<crate::coworker::Coworker>,
+
+    /// Session name string (e.g., "midtown-projectname").
+    #[serde(skip)]
+    pub tick_session_name: String,
 }
 
 impl DaemonPersistentState {
@@ -543,7 +688,7 @@ impl DaemonPersistentState {
     pub fn active_reviewer_for_pr(&self, pr_number: u64) -> Option<&TaskSessionSpan> {
         self.task_session_spans
             .iter()
-            .filter(|s| s.end_time.is_none() && s.agent_type == "reviewer")
+            .filter(|s| s.end_time.is_none() && s.agent_type == "midtown-code-reviewer")
             .find(|s| {
                 self.task_pr_number.get(&s.task_id) == Some(&pr_number)
                     || self.sessions.get(&s.session_id).and_then(|r| r.pr_number) == Some(pr_number)
@@ -551,22 +696,36 @@ impl DaemonPersistentState {
     }
 
     /// Returns true if PR has an active reviewer session that is currently running.
+    ///
+    /// Checks both task_session_spans (legacy) and sessions directly.
     pub fn pr_has_active_reviewer(&self, pr_number: u64) -> bool {
-        self.active_reviewer_for_pr(pr_number)
-            .map(|span| {
-                self.sessions
-                    .get(&span.session_id)
-                    .map(|s| s.is_running)
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false)
+        // Check spans (legacy path)
+        if let Some(span) = self.active_reviewer_for_pr(pr_number)
+            && self
+                .sessions
+                .get(&span.session_id)
+                .map(|s| s.is_running)
+                .unwrap_or(false)
+        {
+            return true;
+        }
+        // Check sessions directly (new path — sessions may exist without spans)
+        self.sessions.values().any(|s| {
+            s.agent_type == "midtown-code-reviewer"
+                && s.is_running
+                && (s.pr_number == Some(pr_number)
+                    || s.task_id
+                        .as_ref()
+                        .and_then(|tid| self.task_pr_number.get(tid))
+                        == Some(&pr_number))
+        })
     }
 
     /// Returns all open spans with agent_type == "reviewer".
     pub fn active_reviewer_spans(&self) -> Vec<&TaskSessionSpan> {
         self.task_session_spans
             .iter()
-            .filter(|s| s.end_time.is_none() && s.agent_type == "reviewer")
+            .filter(|s| s.end_time.is_none() && s.agent_type == "midtown-code-reviewer")
             .collect()
     }
 
@@ -677,6 +836,8 @@ impl DaemonPersistentState {
             permanent_pr_nudges: Vec::new(),
             task_session_spans: Vec::new(),
             task_pr_number: HashMap::new(),
+            task_index: HashMap::new(),
+            ..Default::default()
         };
 
         // Save the unified file
@@ -709,15 +870,15 @@ impl DaemonPersistentState {
     ///
     /// When resuming a stopped session, `entry().or_insert_with()` alone won't update
     /// `is_running` because the entry already exists. This method uses `and_modify` to
-    /// mark existing sessions as running and refresh `current_name` before falling back
+    /// mark existing sessions as running and refresh `name` before falling back
     /// to insert for new sessions.
     pub fn upsert_session_running(&mut self, session_id: String, new_record: SessionRecord) {
-        let current_name = new_record.current_name.clone();
+        let name = new_record.name.clone();
         self.sessions
             .entry(session_id)
             .and_modify(|r| {
                 r.is_running = true;
-                r.current_name = current_name;
+                r.name = name;
             })
             .or_insert(new_record);
     }
@@ -729,32 +890,86 @@ impl DaemonPersistentState {
     /// Used by both RPC handlers (coworker.break) and Effect handlers to avoid
     /// duplicating the cleanup logic.
     pub fn clear_reviewer_assignment(&mut self, reviewer_name: &str, repo: &str) -> bool {
-        // Find active reviewer spans for this agent name and close them.
-        let task_ids: Vec<String> = self
+        // Close active reviewer spans (legacy path)
+        let span_task_ids: Vec<String> = self
             .active_reviewer_spans()
             .iter()
             .filter(|s| s.agent_name == reviewer_name)
             .map(|s| s.task_id.clone())
             .collect();
-        if task_ids.is_empty() {
-            return false;
-        }
-        for tid in &task_ids {
+        for tid in &span_task_ids {
             tracing::info!("Cleared reviewer span for {} (task {})", reviewer_name, tid);
             self.close_spans_for_task(tid);
         }
-        if let Err(e) = self.save_for_repo(repo) {
+
+        // Also mark matching reviewer sessions as not running
+        let session_ids: Vec<String> = self
+            .sessions
+            .values()
+            .filter(|s| {
+                s.name == reviewer_name && s.agent_type == "midtown-code-reviewer" && s.is_running
+            })
+            .map(|s| s.session_id.clone())
+            .collect();
+        for sid in &session_ids {
+            if let Some(record) = self.sessions.get_mut(sid) {
+                tracing::info!("Cleared reviewer session {} for {}", sid, reviewer_name);
+                record.is_running = false;
+                record.resume_on_startup = false;
+            }
+        }
+
+        let cleared = !span_task_ids.is_empty() || !session_ids.is_empty();
+        if cleared && let Err(e) = self.save_for_repo(repo) {
             tracing::warn!(
                 "Failed to save persistent state after clearing reviewer assignment: {}",
                 e
             );
         }
-        true
+        cleared
     }
 
     /// Returns the set of active channel lead names (keys of `channel_lead_sessions`).
     pub fn channel_lead_names(&self) -> std::collections::HashSet<String> {
         self.channel_lead_sessions.keys().cloned().collect()
+    }
+
+    /// Find a session record by coworker name (exact match).
+    pub fn session_by_name(&self, name: &str) -> Option<&SessionRecord> {
+        self.sessions.values().find(|s| s.name == name)
+    }
+
+    /// Find a mutable session record by coworker name.
+    pub fn session_by_name_mut(&mut self, name: &str) -> Option<&mut SessionRecord> {
+        self.sessions.values_mut().find(|s| s.name == name)
+    }
+
+    /// Find a session record by task ID.
+    pub fn session_by_task(&self, task_id: &str) -> Option<&SessionRecord> {
+        self.sessions
+            .values()
+            .find(|s| s.task_id.as_deref() == Some(task_id))
+    }
+
+    /// All running reviewer sessions.
+    pub fn running_reviewer_sessions(&self) -> Vec<&SessionRecord> {
+        self.sessions
+            .values()
+            .filter(|s| s.agent_type == "midtown-code-reviewer" && s.is_running)
+            .collect()
+    }
+
+    /// Name → task assignments derived from sessions.
+    pub fn name_task_assignments(&self) -> HashMap<String, String> {
+        self.sessions
+            .values()
+            .filter(|s| !s.name.is_empty())
+            .filter_map(|s| {
+                s.task_id
+                    .as_ref()
+                    .map(|tid| (s.name.to_lowercase(), tid.clone()))
+            })
+            .collect()
     }
 
     /// Migrate per-channel `workflow-state.json` files into in-memory state.

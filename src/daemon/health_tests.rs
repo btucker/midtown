@@ -94,8 +94,10 @@ fn test_usage_limit_nudge_only_targets_running_coworkers() {
         task_message_id_map: HashMap::new(),
         task_parent_map: HashMap::new(),
         task_agent_type_map: HashMap::new(),
+        task_agent_name_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         channel_lead_names: HashSet::new(),
+        active_session_names: HashSet::new(),
         lead_driven_channels: HashSet::new(),
         pending_task_owners: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
@@ -261,8 +263,10 @@ fn test_usage_limit_nudge_includes_reviewers_and_leads_with_sessions() {
         task_message_id_map: HashMap::new(),
         task_parent_map: HashMap::new(),
         task_agent_type_map: HashMap::new(),
+        task_agent_name_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         channel_lead_names: HashSet::new(),
+        active_session_names: HashSet::new(),
         lead_driven_channels: HashSet::new(),
         pending_task_owners: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
@@ -461,8 +465,10 @@ fn test_check_for_usage_limits_with_reset_time() {
         task_message_id_map: HashMap::new(),
         task_parent_map: HashMap::new(),
         task_agent_type_map: HashMap::new(),
+        task_agent_name_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         channel_lead_names: HashSet::new(),
+        active_session_names: HashSet::new(),
         lead_driven_channels: HashSet::new(),
         pending_task_owners: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
@@ -583,8 +589,10 @@ fn test_check_for_usage_limits_already_scheduled() {
         task_message_id_map: HashMap::new(),
         task_parent_map: HashMap::new(),
         task_agent_type_map: HashMap::new(),
+        task_agent_name_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         channel_lead_names: HashSet::new(),
+        active_session_names: HashSet::new(),
         lead_driven_channels: HashSet::new(),
         pending_task_owners: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
@@ -740,8 +748,10 @@ fn empty_snap() -> snapshot::WorldSnapshot {
         task_message_id_map: HashMap::new(),
         task_parent_map: HashMap::new(),
         task_agent_type_map: HashMap::new(),
+        task_agent_name_map: HashMap::new(),
         channel_lead_sessions: HashMap::new(),
         channel_lead_names: HashSet::new(),
+        active_session_names: HashSet::new(),
         lead_driven_channels: HashSet::new(),
         pending_task_owners: HashSet::new(),
         coworkers_with_unblocked_deps: HashSet::new(),
@@ -1517,7 +1527,7 @@ fn unrecoverable_session_error_restarts_project_lead_immediately() {
                 e,
                 Effect::SpawnCoworker(config)
                     if config.name == "midtown"
-                        && matches!(config.role, crate::launch::CoworkerRole::Lead)
+                        && config.agent_type == "midtown-project-lead"
                         && matches!(config.session_mode, crate::launch::SessionMode::Fresh)
             )
         }),
@@ -2045,15 +2055,14 @@ fn make_session(
     crate::daemon::state::SessionRecord {
         session_id: session_id.to_string(),
         is_running,
-        is_reviewer,
         resume_on_startup,
         last_active,
         task_id: task_id.map(|s| s.to_string()),
         initial_prompt: Some("test prompt".to_string()),
-        coworker_type: if is_reviewer {
-            "reviewer".to_string()
+        agent_type: if is_reviewer {
+            "midtown-code-reviewer".to_string()
         } else {
-            "dev".to_string()
+            "midtown-code-author".to_string()
         },
         ..Default::default()
     }
@@ -2698,7 +2707,7 @@ fn state_gc_preserves_channel_lead_sessions() {
         now - chrono::Duration::hours(48),
         None,
     );
-    channel_lead.coworker_type = "channel-lead".to_string();
+    channel_lead.agent_type = "midtown-channel-lead".to_string();
     sessions.insert("cl-ops".to_string(), channel_lead);
 
     // Dead dev session, same age — should be pruned
@@ -2771,7 +2780,7 @@ fn state_gc_preserves_dead_fork_sessions() {
         now - chrono::Duration::hours(48), // well past 24h retention
         None,
     );
-    fork_session.coworker_type = "channel-lead".to_string();
+    fork_session.agent_type = "midtown-channel-lead".to_string();
     // bound_thread_id is set for fixture realism (real fork sessions have it),
     // but it is NOT part of the GC predicate — coworker_type alone guards protection.
     fork_session.bound_thread_id = Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".to_string());
@@ -2838,7 +2847,7 @@ fn state_gc_handles_mixed_fork_and_dev_sessions() {
         now,
         None,
     );
-    running_fork.coworker_type = "channel-lead".to_string();
+    running_fork.agent_type = "midtown-channel-lead".to_string();
     // bound_thread_id set for realism; not part of GC predicate.
     running_fork.bound_thread_id = Some("11111111-1111-1111-1111-111111111111".to_string());
     sessions.insert("fork-ops-running".to_string(), running_fork);
@@ -2852,7 +2861,7 @@ fn state_gc_handles_mixed_fork_and_dev_sessions() {
         now - chrono::Duration::hours(72),
         None,
     );
-    dead_fork.coworker_type = "channel-lead".to_string();
+    dead_fork.agent_type = "midtown-channel-lead".to_string();
     // bound_thread_id set for realism; not part of GC predicate.
     dead_fork.bound_thread_id = Some("22222222-2222-2222-2222-222222222222".to_string());
     sessions.insert("fork-ops-dead".to_string(), dead_fork);
@@ -2948,7 +2957,7 @@ fn state_gc_fork_session_preserves_task_metadata() {
         now - chrono::Duration::hours(48),
         Some("55"),
     );
-    fork_with_task.coworker_type = "channel-lead".to_string();
+    fork_with_task.agent_type = "midtown-channel-lead".to_string();
     // bound_thread_id set for realism; not part of GC predicate.
     fork_with_task.bound_thread_id = Some("33333333-3333-3333-3333-333333333333".to_string());
     sessions.insert("fork-ops-task".to_string(), fork_with_task);
@@ -3010,7 +3019,7 @@ fn state_gc_channel_lead_without_bound_thread_survives() {
         now - chrono::Duration::hours(48),
         None,
     );
-    lead_no_thread.coworker_type = "channel-lead".to_string();
+    lead_no_thread.agent_type = "midtown-channel-lead".to_string();
     // Deliberately NOT setting bound_thread_id — proving it's not the guard.
     sessions.insert("lead-no-thread".to_string(), lead_no_thread);
 
@@ -3269,7 +3278,7 @@ fn build_reviewer_respawn_task_id_is_some_when_matching_task_exists() {
                     ..
                 } = inner
                 {
-                    if agent_type == "reviewer" {
+                    if agent_type == "midtown-code-reviewer" {
                         Some(task_id.clone())
                     } else {
                         None
@@ -3359,7 +3368,7 @@ fn build_reviewer_respawn_task_id_is_empty_when_no_matching_task() {
                     ..
                 } = inner
                 {
-                    if agent_type == "reviewer" {
+                    if agent_type == "midtown-code-reviewer" {
                         Some(task_id.clone())
                     } else {
                         None

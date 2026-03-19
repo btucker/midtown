@@ -4,14 +4,30 @@ use crate::rules::{UsageLimitExpiryDecision, decide_usage_limit_expiry};
 
 #[test]
 fn test_dm_mirror_agent_names_excludes_leads_and_forks() {
-    let name_to_session = std::collections::HashMap::from([
-        ("midtown".to_string(), "sess-lead".to_string()),
-        ("auth".to_string(), "sess-auth".to_string()),
-        ("park".to_string(), "sess-park".to_string()),
-        ("reviewer-42".to_string(), "sess-reviewer".to_string()),
-        ("auth-discuss-a1b2".to_string(), "sess-fork".to_string()),
+    fn make_record(session_id: &str, name: &str) -> state::SessionRecord {
+        state::SessionRecord {
+            session_id: session_id.to_string(),
+            name: name.to_string(),
+            ..Default::default()
+        }
+    }
+    let sessions = std::collections::HashMap::from([
+        ("sess-lead".to_string(), make_record("sess-lead", "midtown")),
+        ("sess-auth".to_string(), make_record("sess-auth", "auth")),
+        ("sess-park".to_string(), make_record("sess-park", "park")),
+        (
+            "sess-reviewer".to_string(),
+            make_record("sess-reviewer", "reviewer-42"),
+        ),
+        (
+            "sess-fork".to_string(),
+            make_record("sess-fork", "auth-discuss-a1b2"),
+        ),
         // Regular coworker with a thread binding (task thread) — should still get DM
-        ("broadway".to_string(), "sess-broadway".to_string()),
+        (
+            "sess-broadway".to_string(),
+            make_record("sess-broadway", "broadway"),
+        ),
     ]);
     let channel_lead_sessions =
         std::collections::HashMap::from([("auth".to_string(), "sess-auth".to_string())]);
@@ -20,7 +36,7 @@ fn test_dm_mirror_agent_names_excludes_leads_and_forks() {
         std::collections::HashMap::from([("auth-discuss-a1b2".to_string(), "auth".to_string())]);
 
     let dm_names = dm_mirror_agent_names(
-        &name_to_session,
+        &sessions,
         &channel_lead_sessions,
         &fork_bound_channels,
         "midtown",
@@ -1309,7 +1325,7 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
         effects::Effect::SpawnForTask {
             task_id: "874".to_string(),
             dir_key: "test-repo".to_string(),
-            preferred_name: Some("park".to_string()),
+            preferred_name: None,
             config: Box::new(crate::launch::LaunchConfig::coworker(
                 String::new(),
                 "test-repo".to_string(),
@@ -1341,7 +1357,7 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
         effects::Effect::SpawnForTask {
             task_id: "876".to_string(),
             dir_key: "test-repo".to_string(),
-            preferred_name: Some("amsterdam".to_string()),
+            preferred_name: None,
             config: Box::new(crate::launch::LaunchConfig::coworker(
                 String::new(),
                 "test-repo".to_string(),
@@ -1683,15 +1699,13 @@ async fn test_cleanup_dead_coworker_without_session_id_clears_binding() {
     }
 
     // No session entry is intentionally recorded for this coworker name.
-    assert!(
-        state
-            .name_to_session
-            .lock()
-            .unwrap()
-            .get("riverside")
-            .is_none(),
-        "precondition: no name_to_session mapping"
-    );
+    {
+        let ps = state.persistent_state.lock().await;
+        assert!(
+            ps.session_by_name("riverside").is_none(),
+            "precondition: no session record"
+        );
+    }
 
     state.cleanup_dead_coworker_state("riverside").await;
 
@@ -1750,393 +1764,213 @@ async fn test_cleanup_dead_coworker_sets_completed_at_on_worktree() {
 }
 
 // ============================================================================
-// NamePool + session registry tests
+// Session registry tests
 // ============================================================================
 
-#[test]
-fn test_daemon_state_initializes_name_pool_with_all_coworker_names() {
-    let (state, _tmp, _guard) = make_cleanup_test_state();
-    let pool = state.name_pool.lock().unwrap();
-    let total = crate::coworker::AVENUE_NAMES.len() + crate::coworker::OVERFLOW_NAMES.len();
-    assert_eq!(
-        pool.available_count(),
-        total,
-        "fresh DaemonState should have all names available"
+/// Helper to insert a test session record.
+async fn insert_test_session_record(
+    state: &DaemonState,
+    session_id: &str,
+    name: &str,
+    task_id: Option<&str>,
+) {
+    let mut ps = state.persistent_state.lock().await;
+    ps.sessions.insert(
+        session_id.to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: session_id.to_string(),
+            name: name.to_string(),
+            task_id: task_id.map(|t| t.to_string()),
+            is_running: true,
+            ..Default::default()
+        },
     );
-    assert_eq!(pool.allocated_count(), 0);
 }
 
-#[test]
-fn test_session_id_for_name_returns_empty_when_no_session() {
+#[tokio::test]
+async fn test_session_id_for_name_returns_empty_when_no_session() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
-    assert_eq!(state.session_id_for_name("park"), "");
+    assert_eq!(state.session_id_for_name("park").await, "");
 }
 
-#[test]
-fn test_name_for_session_returns_none_when_empty() {
+#[tokio::test]
+async fn test_name_for_session_returns_none_when_empty() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
-    assert_eq!(state.name_for_session("sid-123"), None);
+    assert_eq!(state.name_for_session("sid-123").await, None);
 }
 
-#[test]
-fn test_session_for_task_returns_none_when_empty() {
+#[tokio::test]
+async fn test_session_for_task_returns_none_when_empty() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
-    assert_eq!(state.session_for_task("42"), None);
+    assert_eq!(state.session_for_task("42").await, None);
 }
 
-#[test]
-fn test_session_id_for_name_after_manual_population() {
+#[tokio::test]
+async fn test_session_id_for_name_after_manual_population() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert("park".to_string(), "sid-park-1".to_string());
+    insert_test_session_record(&state, "sid-park-1", "park", None).await;
 
-    assert_eq!(state.session_id_for_name("park"), "sid-park-1");
-    assert_eq!(state.session_id_for_name("madison"), "");
+    assert_eq!(state.session_id_for_name("park").await, "sid-park-1");
+    assert_eq!(state.session_id_for_name("madison").await, "");
 }
 
-#[test]
-fn test_name_for_session_after_manual_population() {
+#[tokio::test]
+async fn test_name_for_session_after_manual_population() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert("sid-park-1".to_string(), "park".to_string());
+    insert_test_session_record(&state, "sid-park-1", "park", None).await;
 
     assert_eq!(
-        state.name_for_session("sid-park-1"),
+        state.name_for_session("sid-park-1").await,
         Some("park".to_string())
     );
-    assert_eq!(state.name_for_session("sid-nonexistent"), None);
+    assert_eq!(state.name_for_session("sid-nonexistent").await, None);
 }
 
-#[test]
-fn test_session_for_task_after_manual_population() {
+#[tokio::test]
+async fn test_session_for_task_after_manual_population() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
-    state
-        .task_to_session
-        .lock()
-        .unwrap()
-        .insert("42".to_string(), "sid-park-1".to_string());
+    insert_test_session_record(&state, "sid-park-1", "park", Some("42")).await;
 
-    assert_eq!(state.session_for_task("42"), Some("sid-park-1".to_string()));
-    assert_eq!(state.session_for_task("99"), None);
+    assert_eq!(
+        state.session_for_task("42").await,
+        Some("sid-park-1".to_string())
+    );
+    assert_eq!(state.session_for_task("99").await, None);
 }
 
-#[test]
-fn test_reverse_maps_bidirectional_consistency() {
+#[tokio::test]
+async fn test_session_lookups_bidirectional_consistency() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
-
-    // Populate both directions
-    {
-        let mut n2s = state.name_to_session.lock().unwrap();
-        let mut s2n = state.session_to_name.lock().unwrap();
-        n2s.insert("park".to_string(), "sid-park".to_string());
-        s2n.insert("sid-park".to_string(), "park".to_string());
-        n2s.insert("madison".to_string(), "sid-madison".to_string());
-        s2n.insert("sid-madison".to_string(), "madison".to_string());
-    }
+    insert_test_session_record(&state, "sid-park", "park", None).await;
+    insert_test_session_record(&state, "sid-madison", "madison", None).await;
 
     // Verify both directions work
-    assert_eq!(state.session_id_for_name("park"), "sid-park");
-    assert_eq!(state.name_for_session("sid-park"), Some("park".to_string()));
-    assert_eq!(state.session_id_for_name("madison"), "sid-madison");
+    assert_eq!(state.session_id_for_name("park").await, "sid-park");
     assert_eq!(
-        state.name_for_session("sid-madison"),
+        state.name_for_session("sid-park").await,
+        Some("park".to_string())
+    );
+    assert_eq!(state.session_id_for_name("madison").await, "sid-madison");
+    assert_eq!(
+        state.name_for_session("sid-madison").await,
         Some("madison".to_string())
     );
 }
 
 #[tokio::test]
-async fn test_cleanup_releases_name_from_pool() {
+async fn test_cleanup_marks_session_stopped() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
-    // Allocate a name from the pool
-    let name = {
-        let mut pool = state.name_pool.lock().unwrap();
-        pool.allocate(Some("madison")).unwrap()
-    };
-    assert_eq!(name, "madison");
-    assert!(state.name_pool.lock().unwrap().is_allocated("madison"));
+    // Populate session record
+    insert_test_session_record(&state, "sid-madison", "madison", Some("42")).await;
 
-    // Populate reverse maps for this name
-    {
-        state
-            .name_to_session
-            .lock()
-            .unwrap()
-            .insert("madison".to_string(), "sid-madison".to_string());
-        state
-            .session_to_name
-            .lock()
-            .unwrap()
-            .insert("sid-madison".to_string(), "madison".to_string());
-        state
-            .task_to_session
-            .lock()
-            .unwrap()
-            .insert("42".to_string(), "sid-madison".to_string());
-    }
-
-    // cleanup_coworker_state handles all transient state AND name pool + reverse maps.
+    // cleanup_coworker_state handles all transient state.
     state.cleanup_coworker_state("madison").await;
 
-    // Verify cleanup
+    // After cleanup, is_running should be false (session record still exists
+    // but is marked stopped). session_by_name only finds by name, so the
+    // record is still there but marked as not running.
+    let ps = state.persistent_state.lock().await;
+    let record = ps
+        .sessions
+        .get("sid-madison")
+        .expect("record should still exist");
     assert!(
-        !state.name_pool.lock().unwrap().is_allocated("madison"),
-        "name should be released back to pool"
-    );
-    assert_eq!(
-        state.session_id_for_name("madison"),
-        "",
-        "name_to_session should be cleared"
-    );
-    assert_eq!(
-        state.name_for_session("sid-madison"),
-        None,
-        "session_to_name should be cleared"
-    );
-    assert_eq!(
-        state.session_for_task("42"),
-        None,
-        "task_to_session should be cleared"
+        !record.is_running,
+        "is_running should be false after cleanup"
     );
 }
 
 #[tokio::test]
-async fn test_cleanup_preserves_other_sessions_reverse_maps() {
+async fn test_cleanup_preserves_other_sessions() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
-    // Allocate two names
-    {
-        let mut pool = state.name_pool.lock().unwrap();
-        pool.allocate(Some("madison")).unwrap();
-        pool.allocate(Some("park")).unwrap();
-    }
-
-    // Populate reverse maps for both
-    {
-        let mut n2s = state.name_to_session.lock().unwrap();
-        n2s.insert("madison".to_string(), "sid-madison".to_string());
-        n2s.insert("park".to_string(), "sid-park".to_string());
-    }
-    {
-        let mut s2n = state.session_to_name.lock().unwrap();
-        s2n.insert("sid-madison".to_string(), "madison".to_string());
-        s2n.insert("sid-park".to_string(), "park".to_string());
-    }
-    {
-        let mut t2s = state.task_to_session.lock().unwrap();
-        t2s.insert("42".to_string(), "sid-madison".to_string());
-        t2s.insert("43".to_string(), "sid-park".to_string());
-    }
+    // Populate sessions for both
+    insert_test_session_record(&state, "sid-madison", "madison", Some("42")).await;
+    insert_test_session_record(&state, "sid-park", "park", Some("43")).await;
 
     // Clean up only madison via cleanup_coworker_state (used by both
     // intentional shutdown and session-death paths).
     state.cleanup_coworker_state("madison").await;
 
     // Park's state should be untouched
-    assert!(
-        state.name_pool.lock().unwrap().is_allocated("park"),
-        "park should still be allocated"
-    );
     assert_eq!(
-        state.session_id_for_name("park"),
+        state.session_id_for_name("park").await,
         "sid-park",
-        "park's name_to_session should be preserved"
+        "park's session should be preserved"
     );
     assert_eq!(
-        state.name_for_session("sid-park"),
+        state.name_for_session("sid-park").await,
         Some("park".to_string()),
-        "park's session_to_name should be preserved"
+        "park's session should be preserved"
     );
     assert_eq!(
-        state.session_for_task("43"),
+        state.session_for_task("43").await,
         Some("sid-park".to_string()),
-        "park's task_to_session should be preserved"
+        "park's task mapping should be preserved"
     );
-
-    // Madison's state should be cleared
-    assert!(!state.name_pool.lock().unwrap().is_allocated("madison"));
-    assert_eq!(state.session_id_for_name("madison"), "");
-    assert_eq!(state.name_for_session("sid-madison"), None);
-    assert_eq!(state.session_for_task("42"), None);
-}
-
-#[test]
-fn test_name_pool_allocate_and_release_round_trip() {
-    let (state, _tmp, _guard) = make_cleanup_test_state();
-
-    // Allocate a name
-    let name = {
-        let mut pool = state.name_pool.lock().unwrap();
-        pool.allocate(None).unwrap()
-    };
-
-    // Name should be the first avenue name (LRU order)
-    assert_eq!(name, crate::coworker::AVENUE_NAMES[0]);
-
-    // Release it
-    {
-        state.name_pool.lock().unwrap().release(&name);
-    }
-
-    // It should now be available again (at the back of the queue)
-    let pool = state.name_pool.lock().unwrap();
-    let total = crate::coworker::AVENUE_NAMES.len() + crate::coworker::OVERFLOW_NAMES.len();
-    assert_eq!(pool.available_count(), total);
-    assert_eq!(pool.allocated_count(), 0);
 }
 
 #[tokio::test]
-async fn test_cleanup_with_no_session_id_is_noop_for_reverse_maps() {
+async fn test_cleanup_with_no_session_is_noop() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
-    // Allocate a name but don't populate reverse maps
-    {
-        state
-            .name_pool
-            .lock()
-            .unwrap()
-            .allocate(Some("madison"))
-            .unwrap();
-    }
-
-    // cleanup_coworker_state should handle releasing the name even when
-    // no reverse maps were populated (no panic, no stale state).
+    // Don't populate sessions — cleanup should be a no-op (no panic).
     state.cleanup_coworker_state("madison").await;
 
-    // Verify pool state is correct
-    assert!(!state.name_pool.lock().unwrap().is_allocated("madison"));
-    assert_eq!(state.session_id_for_name("madison"), "");
+    assert_eq!(state.session_id_for_name("madison").await, "");
 }
 
 #[tokio::test]
-async fn test_task_to_session_cleanup_removes_all_tasks_for_session() {
+async fn test_cleanup_session_is_marked_stopped() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
-    // Allocate madison and populate reverse maps
-    {
-        state
-            .name_pool
-            .lock()
-            .unwrap()
-            .allocate(Some("madison"))
-            .unwrap();
-    }
-    {
-        state
-            .name_to_session
-            .lock()
-            .unwrap()
-            .insert("madison".to_string(), "sid-madison".to_string());
-        state
-            .session_to_name
-            .lock()
-            .unwrap()
-            .insert("sid-madison".to_string(), "madison".to_string());
-    }
-    // Simulate a session with multiple tasks (unlikely but possible)
-    {
-        let mut t2s = state.task_to_session.lock().unwrap();
-        t2s.insert("42".to_string(), "sid-madison".to_string());
-        t2s.insert("43".to_string(), "sid-madison".to_string());
-        t2s.insert("44".to_string(), "sid-park".to_string());
-    }
+    // Populate session
+    insert_test_session_record(&state, "sid-madison", "madison", Some("42")).await;
+    insert_test_session_record(&state, "sid-park", "park", Some("44")).await;
 
-    // cleanup_coworker_state should remove all tasks for this session
+    // cleanup_coworker_state should mark session as stopped
     state.cleanup_coworker_state("madison").await;
 
-    // Only park's task should remain
-    let t2s = state.task_to_session.lock().unwrap();
-    assert_eq!(t2s.len(), 1);
-    assert_eq!(t2s.get("44"), Some(&"sid-park".to_string()));
+    // Park's session should still be running
+    let ps = state.persistent_state.lock().await;
+    let park = ps.sessions.get("sid-park").expect("park exists");
+    assert!(park.is_running);
+    let madison = ps.sessions.get("sid-madison").expect("madison exists");
+    assert!(!madison.is_running);
 }
 
-/// Regression test: repeated shutdown/spawn cycles must not exhaust the NamePool.
+/// Regression test: repeated shutdown/spawn cycles must not leak entries.
 ///
-/// Before this fix, cleanup_coworker_state didn't release names back to the pool
-/// or clear reverse maps. After enough shutdown/spawn cycles, the pool would have
-/// no names left even though no coworkers were active. This test simulates 3 full
-/// cycles of allocate → register → cleanup, then verifies the name is still
-/// available for reuse.
+/// Simulates 3 full cycles of register → cleanup and verifies session records
+/// are properly updated after each cycle.
 #[tokio::test]
-async fn test_repeated_shutdown_spawn_cycles_do_not_exhaust_name_pool() {
+async fn test_repeated_shutdown_spawn_cycles() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
 
     for cycle in 0..3 {
         let session_id = format!("sid-madison-{cycle}");
         let task_id = format!("{}", 100 + cycle);
 
-        // Simulate spawn: allocate name + populate reverse maps
+        // Simulate spawn: insert session record.
+        // Remove old records for this name first (as spawn_coworker would overwrite).
         {
-            state
-                .name_pool
-                .lock()
-                .unwrap()
-                .allocate(Some("madison"))
-                .unwrap();
+            let mut ps = state.persistent_state.lock().await;
+            ps.sessions.retain(|_, r| r.name != "madison");
         }
-        {
-            state
-                .name_to_session
-                .lock()
-                .unwrap()
-                .insert("madison".to_string(), session_id.clone());
-            state
-                .session_to_name
-                .lock()
-                .unwrap()
-                .insert(session_id.clone(), "madison".to_string());
-            state
-                .task_to_session
-                .lock()
-                .unwrap()
-                .insert(task_id.clone(), session_id.clone());
-        }
-
-        // Verify name is allocated before cleanup
-        assert!(
-            state.name_pool.lock().unwrap().is_allocated("madison"),
-            "cycle {cycle}: madison should be allocated before cleanup"
-        );
+        insert_test_session_record(&state, &session_id, "madison", Some(&task_id)).await;
 
         // Simulate shutdown/session-death: cleanup_coworker_state
         state.cleanup_coworker_state("madison").await;
 
-        // Verify cleanup released everything
+        // Verify cleanup marked session as stopped
+        let ps = state.persistent_state.lock().await;
+        let record = ps.sessions.get(&session_id).expect("record should exist");
         assert!(
-            !state.name_pool.lock().unwrap().is_allocated("madison"),
-            "cycle {cycle}: madison should be released after cleanup"
-        );
-        assert_eq!(
-            state.session_id_for_name("madison"),
-            "",
-            "cycle {cycle}: name_to_session should be cleared"
-        );
-        assert_eq!(
-            state.name_for_session(&session_id),
-            None,
-            "cycle {cycle}: session_to_name should be cleared"
-        );
-        assert_eq!(
-            state.session_for_task(&task_id),
-            None,
-            "cycle {cycle}: task_to_session should be cleared"
+            !record.is_running,
+            "cycle {cycle}: session should be marked stopped"
         );
     }
-
-    // After 3 full cycles, the pool should be fully available (no leaked names)
-    let pool = state.name_pool.lock().unwrap();
-    let total = crate::coworker::AVENUE_NAMES.len() + crate::coworker::OVERFLOW_NAMES.len();
-    assert_eq!(
-        pool.available_count(),
-        total,
-        "all names should be available after repeated cleanup cycles"
-    );
 }
 
 /// Verify that cleanup_coworker_state marks the SessionRecord as stopped
@@ -2147,33 +1981,7 @@ async fn test_cleanup_marks_session_record_stopped_in_persistent_state() {
     let (state, _tmp, _guard) = make_cleanup_test_state();
     let session_id = "sid-madison-001";
 
-    // 1. Set up a running session: allocate name, populate reverse maps,
-    //    and insert a SessionRecord into persistent state.
-    {
-        state
-            .name_pool
-            .lock()
-            .unwrap()
-            .allocate(Some("madison"))
-            .unwrap();
-    }
-    {
-        state
-            .name_to_session
-            .lock()
-            .unwrap()
-            .insert("madison".to_string(), session_id.to_string());
-        state
-            .session_to_name
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string(), "madison".to_string());
-        state
-            .task_to_session
-            .lock()
-            .unwrap()
-            .insert("42".to_string(), session_id.to_string());
-    }
+    // 1. Set up a running session with a SessionRecord in persistent state.
     {
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
@@ -2181,8 +1989,7 @@ async fn test_cleanup_marks_session_record_stopped_in_persistent_state() {
             crate::daemon::state::SessionRecord {
                 session_id: session_id.to_string(),
                 task_id: Some("42".to_string()),
-                current_name: Some("madison".to_string()),
-                preferred_name: Some("madison".to_string()),
+                name: "madison".to_string(),
                 working_dir: "/tmp/worktree".to_string(),
                 is_running: true,
                 ..Default::default()
@@ -2203,14 +2010,9 @@ async fn test_cleanup_marks_session_record_stopped_in_persistent_state() {
         !record.is_running,
         "SessionRecord.is_running should be false after cleanup"
     );
-    assert!(
-        record.current_name.is_none(),
-        "SessionRecord.current_name should be None after cleanup"
-    );
     assert_eq!(
-        record.preferred_name.as_deref(),
-        Some("madison"),
-        "SessionRecord.preferred_name should be preserved for future resume"
+        record.name, "madison",
+        "SessionRecord.name should be preserved after cleanup"
     );
     assert_eq!(
         record.task_id.as_deref(),
@@ -2227,21 +2029,6 @@ async fn test_cleanup_preserves_other_session_records_in_persistent_state() {
 
     // Set up two sessions
     {
-        let mut pool = state.name_pool.lock().unwrap();
-        pool.allocate(Some("madison")).unwrap();
-        pool.allocate(Some("park")).unwrap();
-    }
-    {
-        let mut n2s = state.name_to_session.lock().unwrap();
-        n2s.insert("madison".to_string(), "sid-madison".to_string());
-        n2s.insert("park".to_string(), "sid-park".to_string());
-    }
-    {
-        let mut s2n = state.session_to_name.lock().unwrap();
-        s2n.insert("sid-madison".to_string(), "madison".to_string());
-        s2n.insert("sid-park".to_string(), "park".to_string());
-    }
-    {
         let mut ps = state.persistent_state.lock().await;
         for (sid, name, task) in [("sid-madison", "madison", "42"), ("sid-park", "park", "43")] {
             ps.sessions.insert(
@@ -2249,8 +2036,7 @@ async fn test_cleanup_preserves_other_session_records_in_persistent_state() {
                 crate::daemon::state::SessionRecord {
                     session_id: sid.to_string(),
                     task_id: Some(task.to_string()),
-                    current_name: Some(name.to_string()),
-                    preferred_name: Some(name.to_string()),
+                    name: name.to_string(),
                     working_dir: "/tmp/worktree".to_string(),
                     is_running: true,
                     ..Default::default()
@@ -2269,11 +2055,7 @@ async fn test_cleanup_preserves_other_session_records_in_persistent_state() {
         .get("sid-park")
         .expect("park's SessionRecord should exist");
     assert!(park_record.is_running, "park should still be running");
-    assert_eq!(
-        park_record.current_name.as_deref(),
-        Some("park"),
-        "park's current_name should be preserved"
-    );
+    assert_eq!(park_record.name, "park", "park's name should be preserved");
 
     // Madison's SessionRecord should be marked stopped
     let madison_record = ps
@@ -2281,5 +2063,8 @@ async fn test_cleanup_preserves_other_session_records_in_persistent_state() {
         .get("sid-madison")
         .expect("madison's SessionRecord should still exist");
     assert!(!madison_record.is_running);
-    assert!(madison_record.current_name.is_none());
+    assert_eq!(
+        madison_record.name, "madison",
+        "name should be stable after cleanup"
+    );
 }

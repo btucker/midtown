@@ -743,6 +743,21 @@ pub enum ExecutionRole {
     HeadlessExecute,
 }
 
+/// Map an agent type string (the `--agent` flag value) to an `ExecutionRole`.
+///
+/// Built-in agent types have hardcoded mappings. User-defined agent types
+/// default to `Coworker`. `Specialized` and `HeadlessExecute` are not
+/// reachable through this mapping — they are used by other code paths.
+pub fn execution_role_for_agent_type(agent_type: &str) -> ExecutionRole {
+    match agent_type {
+        "midtown-code-author" => ExecutionRole::Coworker,
+        "midtown-code-reviewer" => ExecutionRole::Reviewer,
+        "midtown-channel-lead" => ExecutionRole::ChannelLead,
+        "midtown-project-lead" => ExecutionRole::Lead,
+        _ => ExecutionRole::Coworker,
+    }
+}
+
 /// Claude provider configuration within `[providers.claude]`.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ClaudeProviderConfig {
@@ -1215,18 +1230,6 @@ pub fn get_project_config(dir_key: &str) -> ProjectConfig {
 /// If it doesn't exist, a minimal config is created with the project name
 /// and repo path inferred from the working directory.
 pub fn ensure_project_config(dir_key: &str, workdir: &Path) -> std::io::Result<()> {
-    // Reject coworker names to prevent worktree directories from being
-    // registered as projects (e.g., "broadway" instead of "midtown").
-    if crate::coworker::is_coworker_name(dir_key) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "Refusing to create project config for '{}': this is a coworker name, not a project",
-                dir_key
-            ),
-        ));
-    }
-
     let path = project_config_path(dir_key);
     if path.exists() {
         return Ok(());
@@ -2010,22 +2013,8 @@ name = "solo"
         assert_eq!(loaded.project.primary_repo(), Some("/tmp/repo"));
     }
 
-    #[test]
-    fn test_ensure_project_config_rejects_coworker_names() {
-        let workdir = Path::new("/tmp/fake-repo");
-
-        // Coworker avenue names should be rejected
-        let result = ensure_project_config("broadway", workdir);
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
-
-        let result = ensure_project_config("amsterdam", workdir);
-        assert!(result.is_err());
-
-        // Overflow names should also be rejected
-        let result = ensure_project_config("bleecker", workdir);
-        assert!(result.is_err());
-    }
+    // Coworker avenue name rejection test removed — with task-based naming,
+    // avenue names are no longer reserved.
 
     #[test]
     fn test_full_project_config_load_nonexistent() {

@@ -230,3 +230,32 @@ fn external_url_roundtrips_through_serde() {
         Some("https://example.com:47022")
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// execution_role_for_agent_type
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_execution_role_for_agent_type() {
+    assert_eq!(
+        execution_role_for_agent_type("midtown-code-author"),
+        ExecutionRole::Coworker,
+    );
+    assert_eq!(
+        execution_role_for_agent_type("midtown-code-reviewer"),
+        ExecutionRole::Reviewer,
+    );
+    assert_eq!(
+        execution_role_for_agent_type("midtown-channel-lead"),
+        ExecutionRole::ChannelLead,
+    );
+    assert_eq!(
+        execution_role_for_agent_type("midtown-project-lead"),
+        ExecutionRole::Lead,
+    );
+    // User-defined agents default to Coworker
+    assert_eq!(
+        execution_role_for_agent_type("my-custom-agent"),
+        ExecutionRole::Coworker,
+    );
+}

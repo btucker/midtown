@@ -33,14 +33,12 @@ fn fork_session_record(
     SessionRecord {
         session_id: session_id.to_string(),
         task_id: None,
-        current_name: Some(name.to_string()),
-        preferred_name: Some(name.to_string()),
+        name: name.to_string(),
         working_dir: "/tmp/test-worktree".to_string(),
         branch: None,
         pr_number: None,
         initial_prompt: None,
-        is_reviewer: false,
-        coworker_type: "channel-lead".to_string(),
+        agent_type: "midtown-channel-lead".to_string(),
         is_running: true,
         created_at: Utc::now(),
         resume_on_startup: false,
@@ -52,6 +50,7 @@ fn fork_session_record(
         provider: Some(crate::auth::AuthProvider::Claude),
         platform: Some(crate::platform::Platform::Claude),
         profile: None,
+        restart_count: 0,
     }
 }
 
@@ -160,12 +159,14 @@ fn multiple_dead_forks_are_detected() {
 }
 
 #[test]
-fn fork_with_no_name_uses_preferred_name() {
+fn fork_with_empty_name_is_skipped() {
+    // With the unified agent sessions model, names are stable and never cleared.
+    // If a session somehow has an empty name, it should be skipped (not respawned).
     let mut topic_sessions = HashMap::new();
     topic_sessions.insert("thread-abc".to_string(), "session-fork-1".to_string());
 
     let mut record = fork_session_record("session-fork-1", "fork-abc", "thread-abc", Some("ops"));
-    record.current_name = None; // Name released (stopped but not cleaned up from topic_sessions)
+    record.name = String::new(); // Hypothetical empty name
 
     let mut sessions = HashMap::new();
     sessions.insert("session-fork-1".to_string(), record);
@@ -174,8 +175,7 @@ fn fork_with_no_name_uses_preferred_name() {
     health.insert("fork-abc".to_string(), dead_health(1));
 
     let respawns = decide_dead_fork_respawns(&topic_sessions, &sessions, &health);
-    assert_eq!(respawns.len(), 1);
-    assert_eq!(respawns[0].name, "fork-abc");
+    assert_eq!(respawns.len(), 0, "Empty-name sessions should be skipped");
 }
 
 #[test]

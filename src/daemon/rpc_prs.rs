@@ -677,7 +677,7 @@ pub(super) async fn handle_pr_review(
                 ..
             } = e
             {
-                if agent_type == "reviewer" {
+                if agent_type == "midtown-code-reviewer" {
                     Some(agent_name.clone())
                 } else {
                     None

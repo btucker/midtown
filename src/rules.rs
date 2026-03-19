@@ -442,13 +442,10 @@ pub(crate) fn decide_dead_fork_respawns(
         };
 
         // Get the fork's process name
-        let Some(name) = record
-            .current_name
-            .as_ref()
-            .or(record.preferred_name.as_ref())
-        else {
+        if record.name.is_empty() {
             continue;
-        };
+        }
+        let name = &record.name;
 
         // Check if the process is dead.
         // Note: `exit_code` is not reliably populated by `collect_health()` (always None
@@ -474,7 +471,7 @@ pub(crate) fn decide_dead_fork_respawns(
             channel: record.channel.clone(),
             working_dir,
             auth_provider: record.provider.unwrap_or(crate::auth::AuthProvider::Claude),
-            is_channel_lead: record.coworker_type == "channel-lead",
+            is_channel_lead: record.agent_type == "midtown-channel-lead",
         });
     }
 
@@ -813,8 +810,6 @@ pub fn review_comment_creates_followup(task_status: &crate::tasks::TaskStatus) -
 pub(crate) enum OwnedPendingSkipReason {
     /// Owner is empty, "lead", or a channel lead.
     LeadOrEmpty,
-    /// Owner name is not a valid coworker name.
-    InvalidCoworkerName,
     /// Owner already has an in_progress task (one-task-per-coworker invariant).
     OwnerHasInProgressTask,
     /// Owner is serving as an active reviewer.
@@ -835,7 +830,6 @@ impl std::fmt::Display for OwnedPendingSkipReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::LeadOrEmpty => write!(f, "owner is lead, channel lead, or empty"),
-            Self::InvalidCoworkerName => write!(f, "owner is not a valid coworker name"),
             Self::OwnerHasInProgressTask => write!(f, "owner already has an in_progress task"),
             Self::ActiveReviewer => write!(f, "owner is an active reviewer"),
             Self::NudgeCooldown => write!(f, "nudge cooldown active"),
@@ -894,10 +888,8 @@ pub(crate) fn decide_pending_task_action(
         return PendingTaskAction::Skip(OwnedPendingSkipReason::LeadOrEmpty);
     }
 
-    // Skip invalid coworker names — can't spawn or nudge an invalid name
-    if !crate::coworker::is_coworker_name(&owner.to_lowercase()) {
-        return PendingTaskAction::Skip(OwnedPendingSkipReason::InvalidCoworkerName);
-    }
+    // With task-based naming, all non-empty, non-lead owners are valid coworker names.
+    // The old avenue-name validation is no longer needed.
 
     // Skip coworkers that already have an in_progress task.
     // Enforces the one-task-per-coworker invariant: never assign a new task
@@ -1075,10 +1067,13 @@ pub(crate) fn decide_orphan_recovery(ctx: &OrphanRecoveryContext<'_>) -> Option<
         // Skip non-coworker owners and owners that shouldn't be recovered.
         // Channel leads are domain-expert leads for topic channels — they must
         // not be orphan-recovered (they manage themselves, like the lead).
+        // A valid coworker for orphan recovery must be a non-empty name that
+        // isn't the lead or a channel lead. We no longer require the name to be
+        // from the avenue-names pool; any session name that was once active
+        // qualifies (the caller already filters by active_names in should_skip_owner).
         let is_valid_coworker = !owner_clean.is_empty()
             && !owner_clean.eq_ignore_ascii_case("lead")
-            && !ctx.channel_lead_names.contains(&owner_lower)
-            && crate::coworker::is_coworker_name(&owner_lower);
+            && !ctx.channel_lead_names.contains(&owner_lower);
 
         if !is_valid_coworker || ctx.should_skip_owner(&owner_lower) {
             continue;
@@ -1227,12 +1222,11 @@ pub(crate) fn decide_session_recovery(
     }
 
     // Resolve the coworker name for recovery.
-    let coworker_name = record
-        .preferred_name
-        .as_deref()
-        .or(record.current_name.as_deref())
-        .unwrap_or(owner)
-        .to_string();
+    let coworker_name = if !record.name.is_empty() {
+        record.name.clone()
+    } else {
+        owner.to_string()
+    };
 
     // Skip if this coworker is currently serving as a reviewer.
     if snap

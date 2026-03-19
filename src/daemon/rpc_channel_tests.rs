@@ -59,6 +59,20 @@ fn make_test_state(
     (state, temp_dir, _guard)
 }
 
+/// Insert a minimal session record into persistent state for testing.
+async fn insert_test_session(state: &DaemonState, session_id: &str, name: &str) {
+    let mut ps = state.persistent_state.lock().await;
+    ps.sessions.insert(
+        session_id.to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: session_id.to_string(),
+            name: name.to_string(),
+            is_running: true,
+            ..Default::default()
+        },
+    );
+}
+
 /// Post a parent message and return its ID for use in thread reply tests.
 async fn post_parent_message(state: &DaemonState, channel: Option<&str>) -> String {
     let response = handle_channel_post(
@@ -827,8 +841,8 @@ async fn test_crash_loop_guard_skips_resume_when_headless_cleared() {
             "stale-session-id-xyz".to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: "stale-session-id-xyz".to_string(),
-                current_name: Some("auth-refactor".to_string()),
-                coworker_type: "channel-lead".to_string(),
+                name: "auth-refactor".to_string(),
+                agent_type: "midtown-channel-lead".to_string(),
                 channel: Some("auth-refactor".to_string()),
                 is_running: false,
                 resume_on_startup: false,
@@ -1227,8 +1241,8 @@ async fn test_handle_channel_archive_cleans_up_channel_lead_sessions() {
             "session-fx-123".to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: "session-fx-123".to_string(),
-                current_name: Some("feature-x".to_string()),
-                coworker_type: "channel-lead".to_string(),
+                name: "feature-x".to_string(),
+                agent_type: "midtown-channel-lead".to_string(),
                 channel: Some("feature-x".to_string()),
                 is_running: true,
                 resume_on_startup: false,
@@ -1519,12 +1533,8 @@ async fn test_thread_routing_with_topic_session_routes_to_fork() {
         .lock()
         .unwrap()
         .insert(thread_id.clone(), fork_session_id.to_string());
-    // Register session_to_name so the lazy respawn check can look up the fork name
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(fork_session_id.to_string(), fork_name.to_string());
+    // Register session record so the lazy respawn check can look up the fork name
+    insert_test_session(&state, fork_session_id, fork_name).await;
     // Mark the fork as alive so it's not treated as dead
     state
         .session_manager
@@ -1599,12 +1609,8 @@ async fn test_topic_sessions_dedup_returns_existing() {
         .lock()
         .unwrap()
         .insert(thread_id.to_string(), first_fork.to_string());
-    // Set up session_to_name + is_alive so liveness check passes.
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(first_fork.to_string(), "fork-dedup".to_string());
+    // Set up session record + is_alive so liveness check passes.
+    insert_test_session(&state, first_fork, "fork-dedup").await;
     let fork_name_alive = "fork-dedup".to_string();
     state
         .session_manager
@@ -1678,8 +1684,8 @@ async fn test_channel_rename_success() {
             "session-auth-123".to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: "session-auth-123".to_string(),
-                current_name: Some(old_lead_session_name.clone()),
-                coworker_type: "channel-lead".to_string(),
+                name: old_lead_session_name.clone(),
+                agent_type: "midtown-channel-lead".to_string(),
                 channel: Some("auth-v1".to_string()),
                 is_running: true,
                 resume_on_startup: false,
@@ -1865,20 +1871,8 @@ async fn test_channel_rename_path_traversal_old_name() {
     );
 }
 
-/// Renaming to a reserved avenue name returns an error.
-#[tokio::test]
-async fn test_channel_rename_reserved_avenue_name() {
-    let (state, tmp, _guard) = make_test_state("midtown-test-rename-avenue-name");
-    let base_dir = tmp.path();
-
-    crate::Channel::new(base_dir, "my-channel").expect("create channel");
-
-    let response = handle_channel_rename(8_i64.into(), "my-channel", "park", &state).await;
-    assert!(
-        response.error.is_some(),
-        "renaming to a reserved avenue name should return an error"
-    );
-}
+// Avenue name rename rejection test removed — with task-based naming,
+// avenue names are no longer reserved.
 
 // ── DM channel routing tests ──────────────────────────────────────────────────
 
@@ -1931,13 +1925,9 @@ async fn test_dm_post_active_coworker_does_not_nudge_lead() {
         .await
         .expect("register headed adapter");
 
-    // Register "amsterdam" as an active coworker in name_to_session
+    // Register "amsterdam" as an active coworker via session record
     let coworker_session_id = "session-amsterdam-xyz";
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert("amsterdam".to_string(), coworker_session_id.to_string());
+    insert_test_session(&state, coworker_session_id, "amsterdam").await;
 
     // User posts a DM to amsterdam
     let response = handle_channel_post(
@@ -2057,12 +2047,8 @@ async fn test_thread_reply_routes_to_existing_fork_session() {
         .lock()
         .unwrap()
         .insert(thread_parent_id.clone(), fork_session_id.to_string());
-    // Register session_to_name so the lazy respawn check can look up the fork name
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(fork_session_id.to_string(), fork_name.to_string());
+    // Register session record so the lazy respawn check can look up the fork name
+    insert_test_session(&state, fork_session_id, fork_name).await;
     // Mark the fork as alive so it's not treated as dead
     state
         .session_manager
@@ -2185,25 +2171,15 @@ async fn test_thread_reply_to_dead_fork_cleans_up_stale_entry() {
     let dead_fork_sid = "dead-fork-session-after-restart";
     let dead_fork_name = "web-thread-abc123";
 
-    // Simulate post-restart state: topic_sessions and session_to_name have
-    // entries rebuilt from persisted state, but no process is running.
+    // Simulate post-restart state: topic_sessions has entries rebuilt
+    // from persisted state, but no process is running.
     state
         .topic_sessions
         .lock()
         .unwrap()
         .insert(thread_parent_id.clone(), dead_fork_sid.to_string());
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(dead_fork_sid.to_string(), dead_fork_name.to_string());
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert(dead_fork_name.to_string(), dead_fork_sid.to_string());
 
-    // Also insert a persisted SessionRecord so respawn metadata can be read
+    // Insert a persisted SessionRecord so respawn metadata can be read
     {
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
@@ -2211,14 +2187,12 @@ async fn test_thread_reply_to_dead_fork_cleans_up_stale_entry() {
             crate::daemon::state::SessionRecord {
                 session_id: dead_fork_sid.to_string(),
                 task_id: None,
-                current_name: Some(dead_fork_name.to_string()),
-                preferred_name: Some(dead_fork_name.to_string()),
+                name: dead_fork_name.to_string(),
                 working_dir: String::new(),
                 branch: None,
                 pr_number: None,
                 initial_prompt: None,
-                is_reviewer: false,
-                coworker_type: "channel-lead".to_string(),
+                agent_type: "midtown-channel-lead".to_string(),
                 is_running: false,
                 created_at: chrono::Utc::now(),
                 resume_on_startup: false,
@@ -2230,6 +2204,7 @@ async fn test_thread_reply_to_dead_fork_cleans_up_stale_entry() {
                 provider: Some(crate::auth::AuthProvider::Claude),
                 platform: None,
                 profile: None,
+                restart_count: 0,
             },
         );
     }
@@ -2272,17 +2247,13 @@ async fn test_thread_reply_to_alive_fork_routes_normally() {
     let fork_sid = "alive-fork-session-id";
     let fork_name = "web-thread-xyz789";
 
-    // Register the fork in topic_sessions and session_to_name
+    // Register the fork in topic_sessions and persistent state
     state
         .topic_sessions
         .lock()
         .unwrap()
         .insert(thread_parent_id.clone(), fork_sid.to_string());
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(fork_sid.to_string(), fork_name.to_string());
+    insert_test_session(&state, fork_sid, fork_name).await;
 
     // Hook is_alive to return true for this fork
     state
@@ -2510,11 +2481,7 @@ async fn test_fork_bound_threads_skipped_for_dm_channels() {
         .insert(coworker_name.to_string(), topic_thread_id.clone());
 
     // Register the coworker as an active session so DM validation passes
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert(coworker_name.to_string(), "session-123".to_string());
+    insert_test_session(&state, "session-123", coworker_name).await;
 
     // Post from the coworker to their DM channel WITHOUT explicit thread_parent_id.
     // This should NOT apply fork_bound_threads (the thread is in another channel).
@@ -2564,23 +2531,13 @@ async fn test_non_user_thread_reply_to_dead_fork_triggers_respawn() {
     let dead_fork_sid = "dead-fork-for-non-user-test";
     let dead_fork_name = "web-thread-nonuser-fork";
 
-    // Set up a dead fork: topic_sessions + session_to_name mappings exist,
+    // Set up a dead fork: topic_sessions + session record exist,
     // but no process is running (is_alive returns false by default).
     state
         .topic_sessions
         .lock()
         .unwrap()
         .insert(thread_parent_id.clone(), dead_fork_sid.to_string());
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(dead_fork_sid.to_string(), dead_fork_name.to_string());
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert(dead_fork_name.to_string(), dead_fork_sid.to_string());
 
     // Add a persisted SessionRecord so respawn metadata can be read
     {
@@ -2589,10 +2546,9 @@ async fn test_non_user_thread_reply_to_dead_fork_triggers_respawn() {
             dead_fork_sid.to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: dead_fork_sid.to_string(),
-                current_name: Some(dead_fork_name.to_string()),
-                preferred_name: Some(dead_fork_name.to_string()),
+                name: dead_fork_name.to_string(),
                 working_dir: String::new(),
-                coworker_type: "channel-lead".to_string(),
+                agent_type: "midtown-channel-lead".to_string(),
                 is_running: false,
                 bound_thread_id: Some(thread_parent_id.clone()),
                 channel: Some("web".to_string()),
@@ -2645,11 +2601,7 @@ async fn test_non_user_thread_reply_to_alive_fork_routes_normally() {
         .lock()
         .unwrap()
         .insert(thread_parent_id.clone(), fork_sid.to_string());
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(fork_sid.to_string(), fork_name.to_string());
+    insert_test_session(&state, fork_sid, fork_name).await;
 
     // Mark fork as alive
     state
@@ -2696,12 +2648,8 @@ async fn test_is_known_agent_name_checks_all_registries() {
     // Unknown name
     assert!(!state.is_known_agent_name("nobody").await);
 
-    // Active coworker via name_to_session
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert("park".to_string(), "sess-1".to_string());
+    // Active coworker via session record
+    insert_test_session(&state, "sess-1", "park").await;
     assert!(state.is_known_agent_name("park").await);
 
     // Channel lead via channel_lead_sessions
@@ -2727,9 +2675,9 @@ async fn test_is_known_agent_name_checks_all_registries() {
             "sess-stopped".to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: "sess-stopped".to_string(),
-                preferred_name: Some("stopped-cw".to_string()),
+                name: "stopped-cw".to_string(),
                 working_dir: "/tmp/test".to_string(),
-                coworker_type: "dev".to_string(),
+                agent_type: "midtown-code-author".to_string(),
                 ..Default::default()
             },
         );
@@ -2743,9 +2691,9 @@ async fn test_is_known_agent_name_checks_all_registries() {
             "sess-active-rec".to_string(),
             crate::daemon::state::SessionRecord {
                 session_id: "sess-active-rec".to_string(),
-                current_name: Some("active-rec".to_string()),
+                name: "active-rec".to_string(),
                 working_dir: "/tmp/test".to_string(),
-                coworker_type: "dev".to_string(),
+                agent_type: "midtown-code-author".to_string(),
                 ..Default::default()
             },
         );
@@ -2783,15 +2731,8 @@ async fn test_channel_lead_mention_in_topic_channel_routes_to_coworker() {
             profile: String::new(),
         });
 
-    // Set up session mappings so NudgeSession can resolve the coworker
-    {
-        let mut n2s = state.name_to_session.lock().unwrap();
-        n2s.insert("amsterdam".to_string(), "sess-amsterdam-1".to_string());
-    }
-    {
-        let mut s2n = state.session_to_name.lock().unwrap();
-        s2n.insert("sess-amsterdam-1".to_string(), "amsterdam".to_string());
-    }
+    // Set up session record so NudgeSession can resolve the coworker
+    insert_test_session(&state, "sess-amsterdam-1", "amsterdam").await;
 
     // Channel lead "ops" posts a message with @amsterdam mention in the "ops" topic channel
     let response = handle_channel_post(
@@ -2858,14 +2799,7 @@ async fn test_skip_senders_do_not_route_mentions_in_topic_channels() {
                 profile: String::new(),
             });
 
-        {
-            let mut n2s = state.name_to_session.lock().unwrap();
-            n2s.insert("amsterdam".to_string(), "sess-amsterdam-1".to_string());
-        }
-        {
-            let mut s2n = state.session_to_name.lock().unwrap();
-            s2n.insert("sess-amsterdam-1".to_string(), "amsterdam".to_string());
-        }
+        insert_test_session(&state, "sess-amsterdam-1", "amsterdam").await;
 
         // Protected sender posts a message with @amsterdam mention in a topic channel
         let response = handle_channel_post(

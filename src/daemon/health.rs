@@ -489,7 +489,7 @@ pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> 
             config.model = super::helpers::resolve_model_for_role(
                 &snap.dir_key,
                 config.auth_provider,
-                &config.role,
+                &config.agent_type,
             );
             let lead_wt = crate::paths::lead_worktree_path(&snap.dir_key);
             if lead_wt.exists() {
@@ -646,8 +646,11 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     warn!("Lead session is not running — respawning");
 
     let mut config = crate::launch::LaunchConfig::lead(&snap.dir_key, None);
-    config.model =
-        super::helpers::resolve_model_for_role(&snap.dir_key, config.auth_provider, &config.role);
+    config.model = super::helpers::resolve_model_for_role(
+        &snap.dir_key,
+        config.auth_provider,
+        &config.agent_type,
+    );
     let lead_wt = crate::paths::lead_worktree_path(&snap.dir_key);
     if lead_wt.exists() {
         config.working_dir = Some(lead_wt);
@@ -1037,14 +1040,14 @@ pub(super) fn check_for_state_gc(
         }
 
         // Dead reviewer sessions: prune immediately (ephemeral lifecycle).
-        if record.is_reviewer {
+        if record.agent_type == "midtown-code-reviewer" {
             dead_session_ids.push(session_id.clone());
             continue;
         }
 
         // Channel lead sessions are long-lived and should always be available
         // for resume — never garbage-collect them.
-        if record.coworker_type == "channel-lead" {
+        if record.agent_type == "midtown-channel-lead" {
             if let Some(ref tid) = record.task_id {
                 surviving_task_ids.insert(tid.clone());
             }
@@ -1083,7 +1086,12 @@ pub(super) fn check_for_state_gc(
             dead_session_ids.len(),
             dead_session_ids
                 .iter()
-                .filter(|sid| sessions.get(*sid).map(|r| r.is_reviewer).unwrap_or(false))
+                .filter(|sid| {
+                    sessions
+                        .get(*sid)
+                        .map(|r| r.agent_type == "midtown-code-reviewer")
+                        .unwrap_or(false)
+                })
                 .count()
         );
     }
@@ -1165,7 +1173,7 @@ fn build_reviewer_respawn_effects(
     config.model = super::helpers::normalize_model_for_provider_role(
         &config.model,
         config.auth_provider,
-        &config.role,
+        &config.agent_type,
     );
     config.working_dir = Some(wt_path.clone());
 
@@ -1224,7 +1232,7 @@ fn build_reviewer_respawn_effects(
                 .map(|t| t.id.clone())
                 .unwrap_or_default(),
             agent_name: name.to_string(),
-            agent_type: "reviewer".to_string(),
+            agent_type: "midtown-code-reviewer".to_string(),
             session_id: String::new(),
             pr_number: Some(pr_number),
             restart_count: new_restart_count,

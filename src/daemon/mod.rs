@@ -13,6 +13,7 @@ pub(crate) mod effects;
 pub(crate) mod events;
 mod health;
 pub mod helpers;
+mod migration;
 pub(crate) mod plugin_daemon;
 mod pr;
 pub(crate) mod profile_pool;
@@ -35,6 +36,7 @@ pub mod snapshot;
 mod startup;
 pub(crate) mod state;
 mod stream;
+pub(crate) mod tick;
 mod trackers;
 pub(crate) mod wake_reason;
 mod webhook_fwd;
@@ -103,17 +105,19 @@ use crate::webhook::{WebhookConfig, start_webhook_server};
 use crate::worktree::WorktreeManager;
 
 fn dm_mirror_agent_names(
-    name_to_session: &HashMap<String, String>,
+    sessions: &HashMap<String, state::SessionRecord>,
     channel_lead_sessions: &HashMap<String, String>,
     fork_bound_channels: &HashMap<String, String>,
     project_name: &str,
 ) -> HashSet<String> {
-    name_to_session
-        .keys()
+    sessions
+        .values()
+        .filter(|r| !r.name.is_empty())
+        .map(|r| &r.name)
         .filter(|name| {
             name.as_str() != project_name
-                && !channel_lead_sessions.contains_key(*name)
-                && !fork_bound_channels.contains_key(*name)
+                && !channel_lead_sessions.contains_key(name.as_str())
+                && !fork_bound_channels.contains_key(name.as_str())
         })
         .cloned()
         .collect()
@@ -672,27 +676,6 @@ pub(crate) struct DaemonState {
     /// None means "no placeholder found" (negative result).
     /// Positive results (Some(comment_id)) are kept until the reviewer completes.
     reviewer_placeholder_cache: std::sync::Mutex<HashMap<u64, (Option<u64>, std::time::Instant)>>,
-    /// LRU pool for coworker name allocation.
-    ///
-    /// Tracks available and allocated names. Names at the front of the queue are
-    /// least-recently-used and will be allocated first. Released names go to the
-    /// back. Restored from `persistent_state.sessions` on startup.
-    pub(crate) name_pool: std::sync::Mutex<crate::name_pool::NamePool>,
-    /// Reverse map: coworker name → session ID.
-    ///
-    /// Maintained in memory alongside `persistent_state.sessions`. Updated when
-    /// a session init event arrives with a session ID, and cleared when a session
-    /// stops. Enables O(1) lookup of the session ID for a given name.
-    pub(crate) name_to_session: std::sync::Mutex<HashMap<String, String>>,
-    /// Reverse map: session ID → coworker name.
-    ///
-    /// Inverse of `name_to_session`. Updated and cleared together with that map.
-    pub(crate) session_to_name: std::sync::Mutex<HashMap<String, String>>,
-    /// Reverse map: task ID → session ID.
-    ///
-    /// Enables O(1) lookup of the session working on a given task. Updated when
-    /// a session is initialised with a task and cleared when the session stops.
-    pub(crate) task_to_session: std::sync::Mutex<HashMap<String, String>>,
     /// Pending questions from coworkers waiting for Lead input (AskUserQuestion tool).
     ///
     /// Ephemeral — lost on daemon restart. Entries are added by `handle_coworker_asking`
@@ -758,6 +741,17 @@ pub(crate) struct DaemonState {
     /// Spawns `uv run python -m midtown` when plugins are detected in
     /// discovery paths. Communicates via Unix socket.
     pub(crate) plugin_daemon: plugin_daemon::PluginDaemonManager,
+    /// File-per-task storage for Midtown's own task persistence.
+    ///
+    /// Each task is stored as a JSON file in `~/.midtown/<project>/tasks/`.
+    /// Replaces the scattered `task_*` HashMaps on `DaemonPersistentState`.
+    /// Not behind a Mutex — only does file I/O (no shared mutable state).
+    pub(crate) task_store: crate::task_store::TaskStore,
+    /// Write-through task index for fast lookups without directory scanning.
+    ///
+    /// Updated after every `task_store.save()` call. Reconciled from disk
+    /// via `task_store.build_index()` on daemon startup.
+    pub(crate) task_index: std::sync::Mutex<HashMap<String, crate::task_store::TaskIndexEntry>>,
 }
 
 impl DaemonState {
@@ -853,12 +847,8 @@ impl DaemonState {
                 let sid = ps.channel_lead_sessions.get(ops_channel).cloned();
                 // Check if the SessionRecord for this channel lead has a cleared session_id
                 // (indicating a failed resume that invalidated the session data).
-                let cleared = self
-                    .name_to_session
-                    .lock()
-                    .unwrap()
-                    .get(ops_channel)
-                    .and_then(|session_id| ps.sessions.get(session_id))
+                let cleared = ps
+                    .session_by_name(ops_channel)
                     .is_some_and(|record| record.session_id.is_empty());
                 (sid, cleared)
             };
@@ -953,9 +943,8 @@ impl DaemonState {
     ///
     /// Handles: coworker deregistration, stop-time recording, coworker records,
     /// cooldowns, pending nudges, task assignments, recent tool activity,
-    /// NamePool release, session reverse-map cleanup (name_to_session,
-    /// session_to_name, task_to_session), SessionRecord persistent state update
-    /// (marks `is_running=false` and `current_name=None`), optional worktree
+    /// topic_sessions cleanup, SessionRecord persistent state update (marks
+    /// `is_running=false` and `current_name=None`), optional worktree
     /// unbinding, and pending questions.
     ///
     /// Does NOT handle session-manager operations (session_manager.shutdown vs
@@ -1011,23 +1000,14 @@ impl DaemonState {
             let mut map = self.session_profile_map.lock().unwrap();
             map.remove(&name.to_lowercase());
         }
-        // Release name back to NamePool and clean up session reverse maps.
-        // Each lock is acquired and released independently (no nesting)
-        // to avoid implicit lock-ordering dependencies.
-        {
-            let mut name_pool = self.name_pool.lock().unwrap();
-            name_pool.release(name);
-        }
-        let removed_session_id = self.name_to_session.lock().unwrap().remove(name);
+        // Look up the session_id for this coworker before cleanup.
+        let removed_session_id = {
+            let ps = self.persistent_state.lock().await;
+            ps.session_by_name(name).map(|r| r.session_id.clone())
+        };
+        // Clean up topic_sessions entries pointing to this session
+        // (prevents stale thread routing to dead fork sessions).
         if let Some(ref session_id) = removed_session_id {
-            self.session_to_name.lock().unwrap().remove(session_id);
-            // Clean up task_to_session entries pointing to this session.
-            self.task_to_session
-                .lock()
-                .unwrap()
-                .retain(|_, sid| sid != session_id);
-            // Clean up topic_sessions entries pointing to this session
-            // (prevents stale thread routing to dead fork sessions).
             self.topic_sessions
                 .lock()
                 .unwrap()
@@ -1061,7 +1041,6 @@ impl DaemonState {
                 // Mark the SessionRecord as stopped in persistent state.
                 if let Some(record) = ps.sessions.get_mut(&session_id) {
                     record.is_running = false;
-                    record.current_name = None;
                     changed = true;
                 }
                 // Close any open task-session spans for the exiting session.
@@ -1133,11 +1112,12 @@ impl DaemonState {
         config: &crate::launch::LaunchConfig,
     ) -> Option<String> {
         let execution = crate::config::get_project_execution_config(self.paths.dir_key());
-        let pool = match &config.role {
-            crate::launch::CoworkerRole::Coworker => execution.coworker_profiles,
-            crate::launch::CoworkerRole::Reviewer => execution.reviewer_profiles,
-            crate::launch::CoworkerRole::ChannelLead { .. } => execution.channel_lead_profiles,
-            crate::launch::CoworkerRole::Lead => None,
+        let pool = match config.agent_type.as_str() {
+            "midtown-code-author" => execution.coworker_profiles,
+            "midtown-code-reviewer" => execution.reviewer_profiles,
+            "midtown-channel-lead" => execution.channel_lead_profiles,
+            "midtown-project-lead" => None,
+            _ => None,
         }?;
 
         let ps = self.persistent_state.lock().await;
@@ -1297,11 +1277,14 @@ impl DaemonState {
         let project_name = paths.project_name().to_string();
 
         // Load unified persistent state (migrates from legacy files if needed)
-        let persistent_state =
-            state::DaemonPersistentState::load_for_repo(dir_key).unwrap_or_else(|e| {
+        let mut persistent_state = state::DaemonPersistentState::load_for_repo(dir_key)
+            .unwrap_or_else(|e| {
                 warn!("Failed to load daemon-state.json: {}, using defaults", e);
                 state::DaemonPersistentState::default()
             });
+
+        // Migrate tasks from old ~/.claude/tasks/ format to new ~/.midtown/ format
+        migration::maybe_migrate_tasks(dir_key, &persistent_state);
 
         let user_display_name = config::get_user_display_name_for_project(dir_key);
 
@@ -1327,30 +1310,13 @@ impl DaemonState {
         // Clone dir_key for session_manager before moving paths into Self
         let session_manager_repo_name = dir_key.to_string();
 
-        // Build NamePool from all known coworker names and restore state from persisted sessions.
-        let all_names: Vec<&str> = crate::coworker::AVENUE_NAMES
-            .iter()
-            .chain(crate::coworker::OVERFLOW_NAMES.iter())
-            .copied()
-            .collect();
-        let mut name_pool = crate::name_pool::NamePool::new(&all_names);
-        let mut name_to_session: HashMap<String, String> = HashMap::new();
-        let mut session_to_name: HashMap<String, String> = HashMap::new();
-        let mut task_to_session: HashMap<String, String> = HashMap::new();
         let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
         let mut fork_bound_channels: HashMap<String, String> = HashMap::new();
         let mut topic_sessions: HashMap<String, String> = HashMap::new();
         {
-            let allocated_names: Vec<String> = persistent_state
-                .sessions
-                .values()
-                .filter_map(|r| r.current_name.clone())
-                .collect();
-            name_pool.restore(&allocated_names);
             for (session_id, record) in &persistent_state.sessions {
-                if let Some(ref name) = record.current_name {
-                    name_to_session.insert(name.clone(), session_id.clone());
-                    session_to_name.insert(session_id.clone(), name.clone());
+                if !record.name.is_empty() {
+                    let name = &record.name;
                     // Rebuild thread-binding cache from persisted SessionRecord so
                     // coworker posts are auto-tagged after a daemon restart.
                     if let Some(ref tid) = record.bound_thread_id {
@@ -1358,7 +1324,7 @@ impl DaemonState {
                         // Rebuild inherited channel map only for forked channel leads.
                         // Regular task coworkers also carry `bound_thread_id` but should not
                         // stream their output as lead-like activity.
-                        if record.coworker_type == "channel-lead" {
+                        if record.agent_type == "midtown-channel-lead" {
                             if let Some(ref channel) = record.channel {
                                 fork_bound_channels.insert(name.clone(), channel.clone());
                             }
@@ -1368,10 +1334,15 @@ impl DaemonState {
                         }
                     }
                 }
-                if let Some(ref task_id) = record.task_id {
-                    task_to_session.insert(task_id.clone(), session_id.clone());
-                }
             }
+        }
+
+        // Set up the task store and build the initial task index from disk.
+        let task_store = crate::task_store::TaskStore::new(paths.tasks_dir());
+        let task_index = task_store.build_index();
+        // Reconcile the persistent state's task_index with the on-disk tasks.
+        if !task_index.is_empty() {
+            persistent_state.task_index = task_index.clone();
         }
 
         // Set up the plugin daemon manager with the workflows directory.
@@ -1440,10 +1411,6 @@ impl DaemonState {
             shutdown_tx,
             headed_sessions: Mutex::new(HashMap::new()),
             tool_activity_headers: std::sync::RwLock::new(HashMap::new()),
-            name_pool: std::sync::Mutex::new(name_pool),
-            name_to_session: std::sync::Mutex::new(name_to_session),
-            session_to_name: std::sync::Mutex::new(session_to_name),
-            task_to_session: std::sync::Mutex::new(task_to_session),
             pending_questions: std::sync::Mutex::new(Vec::new()),
             pending_question_id_counter: std::sync::atomic::AtomicU64::new(1),
             topic_sessions: std::sync::Mutex::new(topic_sessions),
@@ -1452,6 +1419,8 @@ impl DaemonState {
             session_profile_map: std::sync::Mutex::new(HashMap::new()),
             dm_tool_threads: std::sync::Mutex::new(HashMap::new()),
             plugin_daemon,
+            task_store,
+            task_index: std::sync::Mutex::new(task_index),
         })
     }
 
@@ -1475,12 +1444,10 @@ impl DaemonState {
                 name
             );
             // Return the existing session's ID so callers can update their state.
-            let existing_id = self
-                .name_to_session
-                .lock()
-                .unwrap()
-                .get(&name)
-                .cloned()
+            let ps = self.persistent_state.lock().await;
+            let existing_id = ps
+                .session_by_name(&name)
+                .map(|s| s.session_id.clone())
                 .unwrap_or_default();
             return Ok(existing_id);
         }
@@ -1522,7 +1489,7 @@ impl DaemonState {
         let normalized_model = helpers::normalize_model_for_provider_role(
             &config.model,
             config.auth_provider,
-            &config.role,
+            &config.agent_type,
         );
         if normalized_model != config.model {
             warn!(
@@ -1573,7 +1540,7 @@ impl DaemonState {
         if crate::platform::Platform::from_provider(config.auth_provider)
             == crate::platform::Platform::Claude
         {
-            let settings_file = if config.role == crate::launch::CoworkerRole::Lead {
+            let settings_file = if config.agent_type == "midtown-project-lead" {
                 crate::settings::write_lead_settings_file()?
             } else {
                 crate::settings::write_coworker_settings_file()?
@@ -1697,13 +1664,8 @@ impl DaemonState {
         let working_dir_for_record = working_dir_for_persist.clone();
         {
             let mut ps = self.persistent_state.lock().await;
-            let coworker_type_str = match &config.role {
-                crate::launch::CoworkerRole::Reviewer => "reviewer".to_string(),
-                crate::launch::CoworkerRole::Lead => "lead".to_string(),
-                crate::launch::CoworkerRole::ChannelLead { .. } => "channel-lead".to_string(),
-                _ => "dev".to_string(),
-            };
-            let is_reviewer = matches!(config.role, crate::launch::CoworkerRole::Reviewer);
+            let agent_type_str = config.agent_type.clone();
+            let is_reviewer = config.agent_type == "midtown-code-reviewer";
             // Look up bound thread from task_thread_id — mirrors SpawnForTask path
             // in effects.rs so reviewers get thread-bound like dispatched dev tasks.
             let bound_thread_id = ps.resolve_bound_thread_id(config.task_id.as_deref());
@@ -1712,16 +1674,14 @@ impl DaemonState {
                 crate::daemon::state::SessionRecord {
                     session_id: session_id_for_record.clone(),
                     task_id: config.task_id.clone(),
-                    current_name: Some(name.clone()),
-                    preferred_name: Some(name.clone()),
+                    name: name.clone(),
                     working_dir: working_dir_for_record.clone(),
                     pr_number: config.pr_number,
                     initial_prompt: config
                         .persisted_initial_prompt
                         .clone()
                         .or_else(|| config.initial_prompt.clone()),
-                    is_reviewer,
-                    coworker_type: coworker_type_str,
+                    agent_type: agent_type_str,
                     is_running: true,
                     created_at: chrono::Utc::now(),
                     resume_on_startup: !is_reviewer,
@@ -1756,18 +1716,6 @@ impl DaemonState {
             if let Err(e) = ps.save_for_repo(self.paths.dir_key()) {
                 warn!("Failed to save persistent state after spawn: {}", e);
             }
-        }
-
-        // Update session reverse maps.
-        {
-            self.name_to_session
-                .lock()
-                .unwrap()
-                .insert(name.clone(), session_id_for_record.clone());
-            self.session_to_name
-                .lock()
-                .unwrap()
-                .insert(session_id_for_record.clone(), name.clone());
         }
 
         // Insert fresh coworker record for health/workflow tracking
@@ -1822,14 +1770,10 @@ impl DaemonState {
     /// Looks up the coworker's running session and returns its `task_id`.
     /// This is the single source of truth for coworker→task mapping.
     pub(crate) async fn get_task_id_for_coworker(&self, coworker: &str) -> Option<String> {
-        let session_id = self
-            .name_to_session
-            .lock()
-            .unwrap()
-            .get(&coworker.to_lowercase())
-            .cloned()?;
         let ps = self.persistent_state.lock().await;
-        ps.sessions.get(&session_id).and_then(|r| r.task_id.clone())
+        ps.session_by_name(&coworker.to_lowercase())
+            .filter(|r| r.is_running)
+            .and_then(|r| r.task_id.clone())
     }
 
     /// Get all coworker→task_id mappings from session records.
@@ -1837,13 +1781,13 @@ impl DaemonState {
     /// Derives the mapping by iterating running sessions with task bindings.
     /// Used by snapshot collection and RPC handlers.
     pub(crate) async fn get_name_task_assignments(&self) -> HashMap<String, String> {
-        let n2s = self.name_to_session.lock().unwrap().clone();
         let ps = self.persistent_state.lock().await;
-        n2s.iter()
-            .filter_map(|(name, session_id)| {
-                let record = ps.sessions.get(session_id)?;
-                let task_id = record.task_id.as_ref()?;
-                Some((name.clone(), task_id.clone()))
+        ps.sessions
+            .values()
+            .filter(|r| !r.name.is_empty() && r.is_running)
+            .filter_map(|r| {
+                let task_id = r.task_id.as_ref()?;
+                Some((r.name.clone(), task_id.clone()))
             })
             .collect()
     }
@@ -1868,18 +1812,15 @@ impl DaemonState {
                     .as_deref()
                     .is_some_and(|tid| in_progress_ids.contains(tid))
             })
-            .filter_map(|s| s.current_name.clone())
-            .map(|n| n.to_lowercase())
+            .filter(|s| !s.name.is_empty())
+            .map(|s| s.name.to_lowercase())
             .collect()
     }
 
     /// Clear the task_id from all session records matching a given task ID.
     ///
     /// Called when a task is completed, reset to pending, or unassigned.
-    /// Also clears the task_to_session reverse map.
     pub(crate) async fn clear_task_assignment_by_task(&self, task_id: &str) {
-        // Clear task_to_session reverse map
-        self.task_to_session.lock().unwrap().remove(task_id);
         // Clear from session records
         let mut ps = self.persistent_state.lock().await;
         let mut cleared = false;
@@ -1910,7 +1851,6 @@ impl DaemonState {
             .collect();
 
         let mut ps = self.persistent_state.lock().await;
-        let n2s = self.name_to_session.lock().unwrap().clone();
         let mut restored_count = 0;
         let mut cleared_count = 0;
 
@@ -1931,8 +1871,7 @@ impl DaemonState {
                 continue;
             }
             let owner_lower = owner.to_lowercase();
-            if let Some(session_id) = n2s.get(&owner_lower)
-                && let Some(record) = ps.sessions.get_mut(session_id)
+            if let Some(record) = ps.session_by_name_mut(&owner_lower)
                 && record.task_id.is_none()
             {
                 record.task_id = Some(task_id.clone());
@@ -1962,11 +1901,6 @@ impl DaemonState {
     pub(crate) async fn set_test_task_assignment(&self, coworker: &str, task_id: &str) {
         let session_id = format!("test-session-{}", coworker.to_lowercase());
         let coworker_lower = coworker.to_lowercase();
-        // Register name→session mapping
-        self.name_to_session
-            .lock()
-            .unwrap()
-            .insert(coworker_lower.clone(), session_id.clone());
         // Create session record with task_id
         let mut ps = self.persistent_state.lock().await;
         let record =
@@ -1974,16 +1908,11 @@ impl DaemonState {
                 .entry(session_id.clone())
                 .or_insert_with(|| state::SessionRecord {
                     session_id: session_id.clone(),
-                    current_name: Some(coworker_lower),
+                    name: coworker_lower,
                     is_running: true,
                     ..Default::default()
                 });
         record.task_id = Some(task_id.to_string());
-        // Update task_to_session reverse map
-        self.task_to_session
-            .lock()
-            .unwrap()
-            .insert(task_id.to_string(), session_id);
     }
 
     /// Record a pending nudge sent to a coworker.
@@ -2307,16 +2236,15 @@ impl DaemonState {
 
     /// Look up the session ID currently holding a given coworker name.
     ///
-    /// Case-insensitive: the name is lowercased before lookup (the map uses
-    /// lowercase keys). Returns an empty string if no session is found, which
+    /// Case-insensitive: the name is lowercased before lookup.
+    /// Returns an empty string if no session is found, which
     /// matches the convention used by `NudgeSession` / `NudgeSessionWithCallbacks`
     /// effects (the execution layer warns on empty session IDs).
-    pub(crate) fn session_id_for_name(&self, name: &str) -> String {
-        self.name_to_session
-            .lock()
-            .unwrap()
-            .get(&name.to_lowercase())
-            .cloned()
+    pub(crate) async fn session_id_for_name(&self, name: &str) -> String {
+        let ps = self.persistent_state.lock().await;
+        ps.session_by_name(&name.to_lowercase())
+            .filter(|s| s.is_running)
+            .map(|s| s.session_id.clone())
             .unwrap_or_default()
     }
 
@@ -2324,10 +2252,6 @@ impl DaemonState {
     /// Used for DM channel validation — allows posting to dm-<name>
     /// for any recognized agent type.
     pub(crate) async fn is_known_agent_name(&self, name: &str) -> bool {
-        // Active session (any type)
-        if self.name_to_session.lock().unwrap().contains_key(name) {
-            return true;
-        }
         // Project lead
         if name == self.project_name {
             return true;
@@ -2336,19 +2260,21 @@ impl DaemonState {
         if self.coworker_records.read().await.contains_key(name) {
             return true;
         }
-        // Channel lead
+        // Check persistent state: active session, channel lead, or persisted record
         {
             let ps = self.persistent_state.lock().await;
+            // Active session (any type)
+            if ps.session_by_name(name).is_some() {
+                return true;
+            }
             if ps.channel_lead_sessions.contains_key(name) {
                 return true;
             }
             // Persisted session record (covers stopped coworkers whose
             // coworker_records entry was cleaned up but SessionRecord remains).
-            if ps.sessions.values().any(|r| {
-                r.current_name.as_deref() == Some(name) || r.preferred_name.as_deref() == Some(name)
-            }) {
-                return true;
-            }
+            // Note: session_by_name already checks sessions.values(), so this
+            // is redundant but kept for clarity since session_by_name only
+            // matches exact name, and the old code checked all values.
         }
         // Active fork
         if self.fork_bound_threads.lock().unwrap().contains_key(name) {
@@ -2362,12 +2288,9 @@ impl DaemonState {
     /// Infrastructure for the session-centric model — used by effect handlers
     /// and RPC adapters once the session-centric migration is further along.
     #[allow(dead_code)] // Scaffold-ahead-of-use for session-centric tasks (Task 9+)
-    pub(crate) fn name_for_session(&self, session_id: &str) -> Option<String> {
-        self.session_to_name
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .cloned()
+    pub(crate) async fn name_for_session(&self, session_id: &str) -> Option<String> {
+        let ps = self.persistent_state.lock().await;
+        ps.sessions.get(session_id).map(|s| s.name.clone())
     }
 
     /// Look up the session ID currently working on a given task ID.
@@ -2375,8 +2298,29 @@ impl DaemonState {
     /// Infrastructure for the session-centric model — used by effect handlers
     /// and RPC adapters once the session-centric migration is further along.
     #[allow(dead_code)] // Scaffold-ahead-of-use for session-centric tasks (Task 9+)
-    pub(crate) fn session_for_task(&self, task_id: &str) -> Option<String> {
-        self.task_to_session.lock().unwrap().get(task_id).cloned()
+    pub(crate) async fn session_for_task(&self, task_id: &str) -> Option<String> {
+        let ps = self.persistent_state.lock().await;
+        ps.session_by_task(task_id).map(|s| s.session_id.clone())
+    }
+
+    /// Update the write-through task index after a TaskStore save.
+    ///
+    /// Also updates the persistent state's task_index for serialization.
+    pub(crate) async fn update_task_index(&self, task: &crate::task_store::Task) {
+        let entry = crate::task_store::TaskIndexEntry {
+            status: task.status,
+            parent: task.parent.clone(),
+            agent_name: task.agent_name.clone(),
+            agent_type: task.agent_type.clone(),
+        };
+        // Update in-memory index
+        self.task_index
+            .lock()
+            .unwrap()
+            .insert(task.id.clone(), entry.clone());
+        // Update persistent state index
+        let mut ps = self.persistent_state.lock().await;
+        ps.task_index.insert(task.id.clone(), entry);
     }
 
     /// Returns the name of the default (main) channel for this repo.
@@ -2767,7 +2711,6 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
     // Update SessionRecords (the primary store) with fresh runtime data from running sessions.
     {
         let mut persistent = state.persistent_state.lock().await;
-        let name_to_session = state.name_to_session.lock().unwrap().clone();
         let mut running_count = 0usize;
 
         // Collect sessions that are currently marked running before we reset them.
@@ -2789,11 +2732,9 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
 
         for (name, info) in &session_info {
             running_count += 1;
-            if let Some(session_id) = name_to_session.get(name)
-                && let Some(record) = persistent.sessions.get_mut(session_id)
-            {
+            if let Some(record) = persistent.session_by_name_mut(name) {
                 record.is_running = true;
-                record.resume_on_startup = !record.is_reviewer;
+                record.resume_on_startup = record.agent_type != "midtown-code-reviewer";
                 record.pid = info.pid;
                 record.last_active = info.last_active;
                 if let Some(ref wd) = info.working_dir {
@@ -3855,16 +3796,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             && !sid.is_empty()
                         {
                             let mut ps = state.persistent_state.lock().await;
-                            // Look up the previous session_id from the SessionRecord
-                            // via the name_to_session reverse map.
-                            let previous_sid = state
-                                .name_to_session
-                                .lock()
-                                .unwrap()
-                                .get(name.as_str())
-                                .and_then(|prev_id| {
-                                    ps.sessions.get(prev_id).map(|r| r.session_id.clone())
-                                })
+                            // Look up the previous session_id from the SessionRecord.
+                            let previous_sid = ps
+                                .session_by_name(name.as_str())
+                                .map(|r| r.session_id.clone())
                                 .unwrap_or_default();
                             // Also backfill channel_lead_sessions for channel lead sessions.
                             // Channel leads use the channel name directly as their session name,
@@ -3883,19 +3818,15 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             // If this session had a provisional ID, migrate persistent/session maps
                             // to the real ID emitted by init.
                             let mut migrated_record = None;
-                            if previous_sid != *sid && !previous_sid.is_empty() {
-                                if let Some(old_record) = ps.sessions.remove(&previous_sid) {
-                                    let mut updated = old_record;
-                                    updated.session_id = sid.clone();
-                                    updated.is_running = true;
-                                    migrated_record = Some(updated);
-                                    needs_persist_save = true;
-                                }
-                                state
-                                    .session_to_name
-                                    .lock()
-                                    .unwrap()
-                                    .remove(&previous_sid);
+                            if previous_sid != *sid
+                                && !previous_sid.is_empty()
+                                && let Some(old_record) = ps.sessions.remove(&previous_sid)
+                            {
+                                let mut updated = old_record;
+                                updated.session_id = sid.clone();
+                                updated.is_running = true;
+                                migrated_record = Some(updated);
+                                needs_persist_save = true;
                             }
                             // Ensure a SessionRecord exists for this session.
                             // For spawned sessions, the record already exists from spawn_coworker().
@@ -3916,8 +3847,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 // sessions or very old daemon state).
                                 entry.insert(crate::daemon::state::SessionRecord {
                                     session_id: sid.clone(),
-                                    current_name: Some(name.to_string()),
-                                    preferred_name: Some(name.to_string()),
+                                    name: name.to_string(),
                                     is_running: true,
                                     created_at: chrono::Utc::now(),
                                     last_active: chrono::Utc::now(),
@@ -3925,28 +3855,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 });
                                 needs_persist_save = true;
                             }
-                            // Update in-memory reverse maps when session gets its ID.
-                            if let Some(record) = ps.sessions.get(sid) {
-                                if let Some(ref sname) = record.current_name {
-                                    state
-                                        .name_to_session
-                                        .lock()
-                                        .unwrap()
-                                        .insert(sname.clone(), sid.clone());
-                                    state
-                                        .session_to_name
-                                        .lock()
-                                        .unwrap()
-                                        .insert(sid.clone(), sname.clone());
-                                }
-                                if let Some(ref task_id) = record.task_id {
-                                    state
-                                        .task_to_session
-                                        .lock()
-                                        .unwrap()
-                                        .insert(task_id.clone(), sid.clone());
-                                }
-                            }
+                            // SessionRecord is the single source of truth — no
+                            // reverse maps to update.
                         }
                     }
                 }
@@ -3975,9 +3885,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // channel / bound thread, so a dm-* copy is duplicate noise.
                     // Use fork_bound_channels (fork-specific) instead of
                     // fork_bound_threads (which also includes regular coworkers).
-                    let name_to_session = state.name_to_session.lock().unwrap();
                     let dm_agent_names = dm_mirror_agent_names(
-                        &name_to_session,
+                        &ps.sessions,
                         &ps.channel_lead_sessions,
                         &fork_bound_channels,
                         &state.project_name,
@@ -4020,13 +3929,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // handling is single-threaded, so no concurrent remove() is possible.
                     let failed_resume = state.session_manager.was_failed_resume(&name).await;
 
-                    // Capture session_id BEFORE cleanup (cleanup clears name_to_session).
-                    let session_id_for_cleanup = state
-                        .name_to_session
-                        .lock()
-                        .unwrap()
-                        .get(&name)
-                        .cloned();
+                    // Capture session_id BEFORE cleanup (cleanup removes session record).
+                    let session_id_for_cleanup = {
+                        let ps = state.persistent_state.lock().await;
+                        ps.session_by_name(&name).map(|r| r.session_id.clone())
+                    };
 
                     // Capture fork bindings BEFORE cleanup (cleanup clears these).
                     // Fork crash recovery must detect dead forks here — not in the
@@ -4040,11 +3947,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // shutdown path uses session_manager.shutdown() instead)
                     state.session_manager.remove(&name).await;
                     // Clean up all transient coworker state (shared with shutdown path).
-                    // This includes releasing the name back to NamePool and cleaning
-                    // up session reverse maps (name_to_session, session_to_name,
-                    // task_to_session).
-                    // Clean up all transient state and release dead coworker worktree
-                    // binding so immediate respawn can continue.
+                    // Releases dead coworker worktree binding so immediate
+                    // respawn can continue.
                     state.cleanup_dead_coworker_state(&name).await;
 
                     // Only clear session_id when the resume itself failed
@@ -4078,7 +3982,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             }
                             // Channel leads are long-lived — keep resume_on_startup=true
                             // so they're always eligible for resume and never GC'd.
-                            if record.coworker_type != "channel-lead" {
+                            if record.agent_type != "midtown-channel-lead" {
                                 record.resume_on_startup = false;
                             }
                         }
@@ -4142,7 +4046,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                             record
                                                 .provider
                                                 .unwrap_or(crate::auth::AuthProvider::Claude),
-                                            record.coworker_type == "channel-lead",
+                                            record.agent_type == "midtown-channel-lead",
                                             record.initial_prompt.clone(),
                                         )
                                     } else {

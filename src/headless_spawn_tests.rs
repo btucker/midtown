@@ -353,10 +353,8 @@ fn test_daemon_generated_session_id_is_valid_uuid_and_flows_to_cli_args() {
         "CLI --session-id value should match the daemon-generated UUID"
     );
 
-    // Verify the UUID would populate reverse maps correctly
-    // (spawn_coworker inserts into name_to_session and session_to_name
-    // using this exact session_id — tested here as the value that
-    // would flow through the reverse-map population path)
+    // Verify the UUID would be used as the SessionRecord key
+    // (spawn_coworker creates a SessionRecord with this session_id)
     assert!(
         !session_id.is_empty(),
         "Session ID must be non-empty to populate reverse maps (spawn_coworker guards with if !session_id_for_record.is_empty())"

@@ -52,29 +52,25 @@ pub(super) async fn handle_coworker_spawn(
         );
     }
 
-    // Pick a name for the coworker, excluding both channel lead names and active session
-    // names to prevent collision. A session may still be running after its coworker was
-    // cleaned up from CoworkerManager, so we also exclude names with live sessions.
+    // Generate a name for the coworker. If a task_id is provided, derive from task;
+    // otherwise generate a random worker name. Exclude active session names to prevent collisions.
     let mut excluded_names = channel_lead_names;
-    for name in state.session_manager.list_names().await {
-        if state.session_manager.is_alive(&name).await {
-            excluded_names.insert(name.to_lowercase());
+    for active_name in state.session_manager.list_names().await {
+        if state.session_manager.is_alive(&active_name).await {
+            excluded_names.insert(active_name.to_lowercase());
         }
     }
-    let name = match state
-        .coworkers
-        .next_available_name_excluding(&excluded_names)
-    {
-        Some(n) => n,
-        None => {
-            return Response::error(
-                id,
-                RpcError::new(
-                    -32603,
-                    "No available coworker slots (all avenue names in use)".to_string(),
-                ),
-            );
+    let name = if let Some(ref tid) = task_id {
+        // Derive name from task ID
+        let candidate = format!("task-{}", tid).to_lowercase();
+        if excluded_names.contains(&candidate) {
+            format!("{}-{}", candidate, fastrand::u32(1000..9999))
+        } else {
+            candidate
         }
+    } else {
+        // No task — generate a generic worker name
+        format!("worker-{}", fastrand::u32(1000..9999))
     };
 
     // Load agent definition if --agent was provided
@@ -136,16 +132,18 @@ pub(super) async fn handle_coworker_spawn(
     // Priority: agent instructions wrap everything, user --prompt is preserved, task
     // prompt is appended when --task is provided.
     let task_prompt = if let Some(ref t) = task {
-        // Read plan/execution-skill data directly from persistent state (same source
-        // that collect_world_snapshot uses, but without the full snapshot overhead).
+        // Read plan/execution-skill data. Try TaskStore first, then persistent state.
         let plan_section = {
-            let ps = state.persistent_state.lock().await;
-            let plan_path = ps.task_plan.get(&t.id).cloned();
-            let execution_skill = ps.task_execution_skill.get(&t.id).cloned();
+            let plan_path = if let Ok(store_task) = state.task_store.load(&t.id) {
+                store_task.plan.clone()
+            } else {
+                let ps = state.persistent_state.lock().await;
+                ps.task_plan.get(&t.id).cloned()
+            };
             super::dispatch::build_plan_prompt_section_from_parts(
                 &t.id,
                 plan_path.as_deref(),
-                execution_skill.as_deref(),
+                None, // execution_skill dropped
             )
         };
         Some(crate::agents::coworker_task_prompt(
@@ -194,37 +192,26 @@ pub(super) async fn handle_coworker_spawn(
     });
 
     // Build headless launch config
-    let config = crate::launch::LaunchConfig {
-        name,
-        session_mode: if resume {
-            crate::launch::SessionMode::Resume
-        } else {
-            crate::launch::SessionMode::Fresh
-        },
-        role: crate::launch::CoworkerRole::Coworker,
-        initial_prompt: effective_prompt,
-        additional_dirs: vec![],
-        pr_number: None,
-        working_dir: task_worktree.as_ref().map(|(_, path)| path.clone()),
-        model: agent_def
-            .as_ref()
-            .and_then(|d| d.model.clone())
-            .unwrap_or_else(|| {
-                super::helpers::resolve_model_for_role(
-                    state.paths.dir_key(),
-                    effective_provider,
-                    &crate::launch::CoworkerRole::Coworker,
-                )
-            }),
-        channel: effective_channel.clone(),
-        auth_profile_dir: None,
-        auth_provider: effective_provider,
-        escalation_target: None,
-        task_id: task_id.clone(),
-        persisted_initial_prompt: None,
-        cwd_subdir: None,
-        agent_name_override: None,
+    let session_mode = if resume {
+        crate::launch::SessionMode::Resume
+    } else {
+        crate::launch::SessionMode::Fresh
     };
+    let mut config = crate::launch::LaunchConfig::new(
+        name,
+        "midtown-code-author",
+        state.paths.dir_key(),
+        effective_prompt,
+        None,
+    )
+    .with_session_mode(session_mode)
+    .with_working_dir(task_worktree.as_ref().map(|(_, path)| path.clone()))
+    .with_channel(effective_channel.clone())
+    .with_auth_provider(effective_provider)
+    .with_task_id(task_id.clone());
+    if let Some(m) = agent_def.as_ref().and_then(|d| d.model.clone()) {
+        config.model = m;
+    }
 
     // Pre-spawn: ensure task worktree exists and register assignment
     if let Some((ref worktree_id, ref path)) = task_worktree {
@@ -327,11 +314,7 @@ pub(super) async fn handle_coworker_spawn(
                 // call-in with --thread has no task — we set it directly here.
                 {
                     let mut ps = state.persistent_state.lock().await;
-                    if let Some(record) = ps
-                        .sessions
-                        .values_mut()
-                        .find(|r| r.current_name.as_deref() == Some(&config.name))
-                    {
+                    if let Some(record) = ps.sessions.values_mut().find(|r| r.name == config.name) {
                         record.bound_thread_id = Some(tid.clone());
                     }
                     if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
@@ -392,7 +375,7 @@ pub(super) async fn handle_lead_spawn(
     let mut config = crate::launch::LaunchConfig::lead(state.paths.dir_key(), None);
     config.auth_provider = provider;
     config.model =
-        super::helpers::resolve_model_for_role(state.paths.dir_key(), provider, &config.role);
+        super::helpers::resolve_model_for_role(state.paths.dir_key(), provider, &config.agent_type);
 
     // Use the canonical lead worktree path so spawn_coworker uses it
     // instead of falling through to the legacy coworker-named path.
@@ -455,7 +438,7 @@ pub(super) async fn handle_coworker_break(
     }
     // Clean up all transient coworker state through the centralized path.
     // This handles: deregistration, stop-time, coworker_records, cooldowns,
-    // pending nudges, task assignments, NamePool release,
+    // pending nudges, task assignments,
     // session reverse maps, SessionRecord update, and pending_questions.
     // Note: we intentionally do NOT unbind the worktree here — break preserves
     // the worktree for potential resumption.
@@ -651,7 +634,7 @@ pub(super) async fn handle_coworker_report_state(
                 name, pr_number
             );
             let nudge_effects = vec![effects::Effect::nudge_session(
-                state.session_id_for_name(name),
+                state.session_id_for_name(name).await,
                 format!(
                     "You are assigned as reviewer for PR #{pr_number} but have not posted \
                      your review yet. Please complete and post your review comment on the PR \
@@ -776,25 +759,15 @@ pub(super) async fn handle_coworker_report_state(
             state.clear_task_assignment_by_task(tid).await;
         } else {
             // No task_id known — clear this coworker's session record directly
-            let session_id = state
-                .name_to_session
-                .lock()
-                .unwrap()
-                .get(&name.to_lowercase())
-                .cloned();
-            if let Some(sid) = session_id {
-                let mut ps = state.persistent_state.lock().await;
-                if let Some(record) = ps.sessions.get_mut(&sid)
-                    && let Some(task_id) = record.task_id.take()
-                {
-                    state.task_to_session.lock().unwrap().remove(&task_id);
-                }
-                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                    warn!(
-                        "Failed to save state after clearing coworker assignment for {}: {}",
-                        name, e
-                    );
-                }
+            let mut ps = state.persistent_state.lock().await;
+            if let Some(record) = ps.session_by_name_mut(&name.to_lowercase()) {
+                record.task_id = None;
+            }
+            if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                warn!(
+                    "Failed to save state after clearing coworker assignment for {}: {}",
+                    name, e
+                );
             }
         }
     }

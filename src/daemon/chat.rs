@@ -229,8 +229,14 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         let nudge_text = format_mention_nudge(msg, super::wake_reason::NudgeTarget::TaskWorker);
 
         // Convert MentionAction → Effects, execute via the standard pipeline.
-        let name_session_map: std::collections::HashMap<String, String> =
-            state.name_to_session.lock().unwrap().clone();
+        let name_session_map: std::collections::HashMap<String, String> = {
+            let ps = state.persistent_state.lock().await;
+            ps.sessions
+                .values()
+                .filter(|r| !r.name.is_empty())
+                .map(|r| (r.name.clone(), r.session_id.clone()))
+                .collect()
+        };
 
         // Look up whether the @mentioned name has an existing reviewer session via spans.
         let reviewer_session = {

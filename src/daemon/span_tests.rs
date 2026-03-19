@@ -39,8 +39,14 @@ fn make_stopped_session(session_id: &str) -> SessionRecord {
 #[test]
 fn test_active_span_for_task() {
     let mut ps = DaemonPersistentState::default();
-    ps.task_session_spans
-        .push(make_span("task-1", "river", "dev", "sess-1", 0, None));
+    ps.task_session_spans.push(make_span(
+        "task-1",
+        "river",
+        "midtown-code-author",
+        "sess-1",
+        0,
+        None,
+    ));
 
     let span = ps.active_span_for_task("task-1");
     assert!(span.is_some(), "Should find active span");
@@ -50,8 +56,14 @@ fn test_active_span_for_task() {
 #[test]
 fn test_active_span_for_task_closed() {
     let mut ps = DaemonPersistentState::default();
-    ps.task_session_spans
-        .push(make_span("task-1", "river", "dev", "sess-1", 0, Some(100)));
+    ps.task_session_spans.push(make_span(
+        "task-1",
+        "river",
+        "midtown-code-author",
+        "sess-1",
+        0,
+        Some(100),
+    ));
 
     let span = ps.active_span_for_task("task-1");
     assert!(span.is_none(), "Should not find closed span");
@@ -64,15 +76,27 @@ fn test_spans_for_task_ordered() {
     ps.task_session_spans.push(make_span(
         "task-1",
         "river",
-        "dev",
+        "midtown-code-author",
         "sess-2",
         100,
         Some(200),
     ));
-    ps.task_session_spans
-        .push(make_span("task-1", "river", "dev", "sess-1", 0, Some(50)));
-    ps.task_session_spans
-        .push(make_span("task-2", "lake", "dev", "sess-3", 50, None));
+    ps.task_session_spans.push(make_span(
+        "task-1",
+        "river",
+        "midtown-code-author",
+        "sess-1",
+        0,
+        Some(50),
+    ));
+    ps.task_session_spans.push(make_span(
+        "task-2",
+        "lake",
+        "midtown-code-author",
+        "sess-3",
+        50,
+        None,
+    ));
 
     let spans = ps.spans_for_task("task-1");
     assert_eq!(spans.len(), 2);
@@ -86,7 +110,7 @@ fn test_active_reviewer_for_pr() {
     ps.task_session_spans.push(make_span(
         "review-42",
         "river",
-        "reviewer",
+        "midtown-code-reviewer",
         "sess-rev",
         0,
         None,
@@ -108,7 +132,7 @@ fn test_active_reviewer_for_pr_via_task_pr_number() {
     ps.task_session_spans.push(make_span(
         "review-99",
         "river",
-        "reviewer",
+        "midtown-code-reviewer",
         "sess-rev2",
         0,
         None,
@@ -128,7 +152,7 @@ fn test_pr_has_active_reviewer_running() {
     ps.task_session_spans.push(make_span(
         "review-42",
         "river",
-        "reviewer",
+        "midtown-code-reviewer",
         "sess-rev",
         0,
         None,
@@ -151,7 +175,7 @@ fn test_pr_has_active_reviewer_stopped() {
     ps.task_session_spans.push(make_span(
         "review-42",
         "river",
-        "reviewer",
+        "midtown-code-reviewer",
         "sess-rev",
         0,
         None,
@@ -172,18 +196,34 @@ fn test_pr_has_active_reviewer_stopped() {
 fn test_active_reviewers() {
     let mut ps = DaemonPersistentState::default();
     ps.task_session_spans.push(make_span(
-        "review-1", "river", "reviewer", "sess-r1", 0, None,
+        "review-1",
+        "river",
+        "midtown-code-reviewer",
+        "sess-r1",
+        0,
+        None,
     ));
-    ps.task_session_spans
-        .push(make_span("dev-task", "lake", "dev", "sess-d1", 0, None));
     ps.task_session_spans.push(make_span(
-        "review-2", "brook", "reviewer", "sess-r2", 0, None,
+        "dev-task",
+        "lake",
+        "midtown-code-author",
+        "sess-d1",
+        0,
+        None,
+    ));
+    ps.task_session_spans.push(make_span(
+        "review-2",
+        "brook",
+        "midtown-code-reviewer",
+        "sess-r2",
+        0,
+        None,
     ));
     // Closed reviewer — should not appear
     ps.task_session_spans.push(make_span(
         "review-3",
         "creek",
-        "reviewer",
+        "midtown-code-reviewer",
         "sess-r3",
         0,
         Some(100),
@@ -201,8 +241,14 @@ fn test_active_reviewers() {
 #[test]
 fn test_close_span() {
     let mut ps = DaemonPersistentState::default();
-    ps.task_session_spans
-        .push(make_span("task-1", "river", "dev", "sess-1", 0, None));
+    ps.task_session_spans.push(make_span(
+        "task-1",
+        "river",
+        "midtown-code-author",
+        "sess-1",
+        0,
+        None,
+    ));
 
     ps.close_span("sess-1", "task-1");
 
@@ -213,10 +259,22 @@ fn test_close_span() {
 #[test]
 fn test_close_span_does_not_affect_other_spans() {
     let mut ps = DaemonPersistentState::default();
-    ps.task_session_spans
-        .push(make_span("task-1", "river", "dev", "sess-1", 0, None));
-    ps.task_session_spans
-        .push(make_span("task-2", "lake", "dev", "sess-2", 0, None));
+    ps.task_session_spans.push(make_span(
+        "task-1",
+        "river",
+        "midtown-code-author",
+        "sess-1",
+        0,
+        None,
+    ));
+    ps.task_session_spans.push(make_span(
+        "task-2",
+        "lake",
+        "midtown-code-author",
+        "sess-2",
+        0,
+        None,
+    ));
 
     ps.close_span("sess-1", "task-1");
 
@@ -227,12 +285,30 @@ fn test_close_span_does_not_affect_other_spans() {
 #[test]
 fn test_close_spans_for_session() {
     let mut ps = DaemonPersistentState::default();
-    ps.task_session_spans
-        .push(make_span("task-1", "river", "dev", "sess-a", 0, None));
-    ps.task_session_spans
-        .push(make_span("task-2", "river", "dev", "sess-a", 50, None));
-    ps.task_session_spans
-        .push(make_span("task-3", "lake", "dev", "sess-b", 0, None));
+    ps.task_session_spans.push(make_span(
+        "task-1",
+        "river",
+        "midtown-code-author",
+        "sess-a",
+        0,
+        None,
+    ));
+    ps.task_session_spans.push(make_span(
+        "task-2",
+        "river",
+        "midtown-code-author",
+        "sess-a",
+        50,
+        None,
+    ));
+    ps.task_session_spans.push(make_span(
+        "task-3",
+        "lake",
+        "midtown-code-author",
+        "sess-b",
+        0,
+        None,
+    ));
 
     ps.close_spans_for_session("sess-a");
 
@@ -248,12 +324,30 @@ fn test_close_spans_for_session() {
 #[test]
 fn test_close_spans_for_task() {
     let mut ps = DaemonPersistentState::default();
-    ps.task_session_spans
-        .push(make_span("task-1", "river", "dev", "sess-1", 0, None));
-    ps.task_session_spans
-        .push(make_span("task-1", "lake", "dev", "sess-2", 50, None));
-    ps.task_session_spans
-        .push(make_span("task-2", "brook", "dev", "sess-3", 0, None));
+    ps.task_session_spans.push(make_span(
+        "task-1",
+        "river",
+        "midtown-code-author",
+        "sess-1",
+        0,
+        None,
+    ));
+    ps.task_session_spans.push(make_span(
+        "task-1",
+        "lake",
+        "midtown-code-author",
+        "sess-2",
+        50,
+        None,
+    ));
+    ps.task_session_spans.push(make_span(
+        "task-2",
+        "brook",
+        "midtown-code-author",
+        "sess-3",
+        0,
+        None,
+    ));
 
     ps.close_spans_for_task("task-1");
 
@@ -269,13 +363,13 @@ fn test_close_spans_for_task() {
 #[test]
 fn test_create_span() {
     let mut ps = DaemonPersistentState::default();
-    ps.create_span("task-99", "river", "dev", "sess-new");
+    ps.create_span("task-99", "river", "midtown-code-author", "sess-new");
 
     assert_eq!(ps.task_session_spans.len(), 1);
     let span = &ps.task_session_spans[0];
     assert_eq!(span.task_id, "task-99");
     assert_eq!(span.agent_name, "river");
-    assert_eq!(span.agent_type, "dev");
+    assert_eq!(span.agent_type, "midtown-code-author");
     assert_eq!(span.session_id, "sess-new");
     assert!(span.end_time.is_none());
 }
@@ -284,11 +378,23 @@ fn test_create_span() {
 fn test_gc_closes_orphaned_spans() {
     let mut ps = DaemonPersistentState::default();
     // Span for a session that does NOT exist in ps.sessions → should be force-closed
-    ps.task_session_spans
-        .push(make_span("task-1", "river", "dev", "orphan-sess", 0, None));
+    ps.task_session_spans.push(make_span(
+        "task-1",
+        "river",
+        "midtown-code-author",
+        "orphan-sess",
+        0,
+        None,
+    ));
     // Span for a session that exists → should stay open
-    ps.task_session_spans
-        .push(make_span("task-2", "lake", "dev", "live-sess", 0, None));
+    ps.task_session_spans.push(make_span(
+        "task-2",
+        "lake",
+        "midtown-code-author",
+        "live-sess",
+        0,
+        None,
+    ));
     ps.sessions
         .insert("live-sess".to_string(), make_running_session("live-sess"));
 
@@ -317,8 +423,14 @@ fn test_gc_preserves_empty_session_id_spans() {
     let mut ps = DaemonPersistentState::default();
     // Span with empty session_id (optimistic assignment before session spawns)
     // should NOT be force-closed by GC — empty means "pending", not "stale".
-    ps.task_session_spans
-        .push(make_span("task-1", "river", "reviewer", "", 0, None));
+    ps.task_session_spans.push(make_span(
+        "task-1",
+        "river",
+        "midtown-code-reviewer",
+        "",
+        0,
+        None,
+    ));
 
     ps.apply_gc(&[], &[]);
 
@@ -342,7 +454,7 @@ fn test_gc_removes_old_closed_spans() {
     ps.task_session_spans.push(TaskSessionSpan {
         task_id: "old-task".to_string(),
         agent_name: "river".to_string(),
-        agent_type: "dev".to_string(),
+        agent_type: "midtown-code-author".to_string(),
         session_id: "old-sess".to_string(),
         start_time: now - Duration::hours(72),
         end_time: Some(now - Duration::hours(50)),
@@ -352,7 +464,7 @@ fn test_gc_removes_old_closed_spans() {
     ps.task_session_spans.push(TaskSessionSpan {
         task_id: "recent-task".to_string(),
         agent_name: "lake".to_string(),
-        agent_type: "dev".to_string(),
+        agent_type: "midtown-code-author".to_string(),
         session_id: "recent-sess".to_string(),
         start_time: now - Duration::hours(30),
         end_time: Some(now - Duration::hours(10)),
@@ -362,7 +474,7 @@ fn test_gc_removes_old_closed_spans() {
     ps.task_session_spans.push(TaskSessionSpan {
         task_id: "open-task".to_string(),
         agent_name: "brook".to_string(),
-        agent_type: "dev".to_string(),
+        agent_type: "midtown-code-author".to_string(),
         session_id: "open-sess".to_string(),
         start_time: now - Duration::hours(100),
         end_time: None,
@@ -398,7 +510,7 @@ fn test_gc_caps_at_500() {
         ps.task_session_spans.push(TaskSessionSpan {
             task_id: format!("task-{i}"),
             agent_name: "river".to_string(),
-            agent_type: "dev".to_string(),
+            agent_type: "midtown-code-author".to_string(),
             session_id: format!("sess-{i}"),
             start_time: now - Duration::seconds(600 - i as i64),
             end_time: Some(now - Duration::seconds(600 - i as i64 - 1)),
@@ -425,7 +537,7 @@ fn test_gc_cap_keeps_newest_and_open_spans() {
         ps.task_session_spans.push(TaskSessionSpan {
             task_id: format!("open-task-{i}"),
             agent_name: "river".to_string(),
-            agent_type: "dev".to_string(),
+            agent_type: "midtown-code-author".to_string(),
             session_id: sess_id.clone(),
             start_time: now - Duration::seconds(1000 + i as i64),
             end_time: None,
@@ -439,7 +551,7 @@ fn test_gc_cap_keeps_newest_and_open_spans() {
         ps.task_session_spans.push(TaskSessionSpan {
             task_id: format!("closed-task-{i}"),
             agent_name: "river".to_string(),
-            agent_type: "dev".to_string(),
+            agent_type: "midtown-code-author".to_string(),
             session_id: format!("closed-sess-{i}"),
             start_time: now - Duration::seconds(600 - i as i64),
             end_time: Some(now - Duration::seconds(600 - i as i64 - 1)),

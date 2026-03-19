@@ -172,12 +172,11 @@ impl MultiTickHarness {
     /// `session_name_map`, `name_session_map` (if name provided), and `active_session_ids`.
     #[allow(dead_code)]
     pub fn create_session(&mut self, session_id: &str, task_id: &str, name: Option<&str>) {
-        let name_opt = name.map(|n| n.to_string());
+        let name_str = name.unwrap_or("").to_string();
         let record = SessionRecord {
             session_id: session_id.to_string(),
             task_id: Some(task_id.to_string()),
-            current_name: name_opt.clone(),
-            preferred_name: name_opt.clone(),
+            name: name_str.clone(),
             is_running: true,
             ..Default::default()
         };
@@ -187,7 +186,7 @@ impl MultiTickHarness {
         self.snapshot
             .session_task_map
             .insert(task_id.to_string(), session_id.to_string());
-        if let Some(ref name_str) = name_opt {
+        if !name_str.is_empty() {
             self.snapshot
                 .session_name_map
                 .insert(session_id.to_string(), name_str.clone());
@@ -213,7 +212,11 @@ impl MultiTickHarness {
             session_id
         );
         if let Some(record) = self.snapshot.sessions.get_mut(session_id) {
-            let name = record.current_name.take();
+            let name = if record.name.is_empty() {
+                None
+            } else {
+                Some(std::mem::take(&mut record.name))
+            };
             record.is_running = false;
             if let Some(n) = name {
                 self.snapshot.session_name_map.remove(session_id);
@@ -236,7 +239,7 @@ impl MultiTickHarness {
         );
         if let Some(record) = self.snapshot.sessions.get_mut(session_id) {
             record.is_running = true;
-            record.current_name = Some(name.to_string());
+            record.name = name.to_string();
             self.snapshot
                 .session_name_map
                 .insert(session_id.to_string(), name.to_string());
@@ -364,7 +367,7 @@ impl MultiTickHarness {
                     {
                         if let Some(record) = self.snapshot.sessions.get_mut(session_id) {
                             record.is_running = true;
-                            record.current_name = Some(name.clone());
+                            record.name = name.clone();
                         }
                         self.snapshot
                             .coworkers
@@ -396,7 +399,7 @@ impl MultiTickHarness {
                     {
                         if let Some(record) = self.snapshot.sessions.get_mut(session_id) {
                             record.is_running = true;
-                            record.current_name = Some(config.name.clone());
+                            record.name = config.name.clone();
                         }
                         self.snapshot
                             .coworkers
@@ -421,7 +424,7 @@ impl MultiTickHarness {
                     agent_name,
                     agent_type,
                     ..
-                } if agent_type == "reviewer" => {
+                } if agent_type == "midtown-code-reviewer" => {
                     self.snapshot
                         .reviewer
                         .active_reviewers
@@ -472,7 +475,11 @@ impl MultiTickHarness {
                 // Session-centric effects
                 Effect::ShutdownSession { session_id, .. } => {
                     if let Some(record) = self.snapshot.sessions.get_mut(session_id) {
-                        let name = record.current_name.take();
+                        let name = if record.name.is_empty() {
+                            None
+                        } else {
+                            Some(std::mem::take(&mut record.name))
+                        };
                         record.is_running = false;
                         if let Some(n) = name {
                             self.snapshot.session_name_map.remove(session_id);
@@ -488,14 +495,6 @@ impl MultiTickHarness {
                     self.snapshot
                         .sessions
                         .insert(record.session_id.clone(), *record.clone());
-                }
-                Effect::ReleaseName { name } => {
-                    if let Some(session_id) = self.snapshot.name_session_map.remove(name) {
-                        self.snapshot.session_name_map.remove(&session_id);
-                        if let Some(record) = self.snapshot.sessions.get_mut(&session_id) {
-                            record.current_name = None;
-                        }
-                    }
                 }
                 _ => {
                     // Other effects (PostToChannel, PostSystemMessage, NudgeCoworker,

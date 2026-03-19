@@ -222,7 +222,7 @@ pub(super) async fn handle_channel_post(
     let channel_name = channel.unwrap_or_else(|| state.channel_router.default_channel_name());
 
     // Validate DM channels: ensure the target coworker has been seen before.
-    // Uses name_to_session (active) or coworker_records (previously active) to
+    // Uses session records (active) or coworker_records (previously active) to
     // prevent posting to dm-<unknown>. Inactive coworkers will be respawned via
     // NudgeChannelLead when the user's message is routed.
     if state.is_user_sender(from)
@@ -380,7 +380,10 @@ pub(super) async fn handle_channel_post(
 
                 if let Some(ref fork_sid) = fork_session_id {
                     // Avoid self-nudge: don't nudge the fork if it's the sender.
-                    let fork_name = state.session_to_name.lock().unwrap().get(fork_sid).cloned();
+                    let fork_name = {
+                        let ps = state.persistent_state.lock().await;
+                        ps.sessions.get(fork_sid).map(|s| s.name.clone())
+                    };
                     let is_self = fork_name.as_deref() == Some(from);
                     if !is_self {
                         let wake_msg_id = msg.thread_anchor_id().to_string();
@@ -714,13 +717,8 @@ pub(super) async fn handle_channel_archive(
                 let mut removed_session = false;
                 let mut stopped_ids: Vec<String> = Vec::new();
                 for record in ps.sessions.values_mut() {
-                    if record
-                        .current_name
-                        .as_deref()
-                        .is_some_and(|n| n == lead_session_name)
-                    {
+                    if record.name == lead_session_name {
                         record.is_running = false;
-                        record.current_name = None;
                         record.resume_on_startup = false;
                         removed_session = true;
                         stopped_ids.push(record.session_id.clone());
@@ -874,13 +872,8 @@ pub(super) async fn handle_channel_rename(
         // references to the dead session.
         let mut stopped_ids: Vec<String> = Vec::new();
         for record in ps.sessions.values_mut() {
-            if record
-                .current_name
-                .as_deref()
-                .is_some_and(|n| n == old_lead_session_name)
-            {
+            if record.name == old_lead_session_name {
                 record.is_running = false;
-                record.current_name = None;
                 record.resume_on_startup = false;
                 stopped_ids.push(record.session_id.clone());
             }
@@ -1295,7 +1288,10 @@ async fn try_lazy_fork_respawn(
     thread_parent_id: &str,
 ) -> Option<String> {
     // Look up the fork's process name
-    let fork_name = state.session_to_name.lock().unwrap().get(fork_sid).cloned();
+    let fork_name = {
+        let ps = state.persistent_state.lock().await;
+        ps.sessions.get(fork_sid).map(|s| s.name.clone())
+    };
 
     let Some(ref name) = fork_name else {
         // No name mapping — stale topic_sessions entry, clean it up
@@ -1362,7 +1358,7 @@ async fn try_lazy_fork_respawn(
                     Some(record.working_dir.clone())
                 },
                 record.provider.unwrap_or(crate::auth::AuthProvider::Claude),
-                record.coworker_type == "channel-lead",
+                record.agent_type == "midtown-channel-lead",
                 record.initial_prompt.clone(),
                 record.channel.clone(),
             )

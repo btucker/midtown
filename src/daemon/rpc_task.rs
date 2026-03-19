@@ -287,13 +287,46 @@ pub(super) async fn handle_task_create(
     model: Option<&str>,
     pr: Option<u64>,
     plan: Option<&str>,
-    execution_skill: Option<&str>,
+    agent_name: Option<&str>,
     thread_id: Option<&str>,
     parent: Option<&str>,
     agent_type: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     let dir_key = state.paths.dir_key().to_string();
+
+    // Require agent_name
+    let agent_name = match agent_name {
+        Some(name) if !name.is_empty() => name,
+        _ => {
+            return Response::error(
+                id,
+                RpcError::new(-32602, "agent_name is required".to_string()),
+            );
+        }
+    };
+
+    // Check agent_name uniqueness via TaskStore
+    if state.task_store.is_name_in_use(agent_name) {
+        return Response::error(
+            id,
+            RpcError::new(
+                -32602,
+                format!(
+                    "agent_name '{}' is already in use by an active task",
+                    agent_name
+                ),
+            ),
+        );
+    }
+
+    // Validate model format if provided
+    if let Some(m) = model
+        && !m.is_empty()
+        && let Err(e) = validate_model_format(m)
+    {
+        return Response::error(id, RpcError::new(-32602, e));
+    }
 
     // Generate active_form (present continuous) from subject for task UI spinner
     let active_form = generate_active_form(subject);
@@ -322,6 +355,7 @@ pub(super) async fn handle_task_create(
         );
     }
 
+    // Create task in old Claude Code format (backward compatibility)
     let task_id = match crate::tasks::create_task_for_repo(
         subject,
         description,
@@ -340,6 +374,49 @@ pub(super) async fn handle_task_create(
             );
         }
     };
+
+    // Normalize parent
+    let normalized_parent = parent.map(|p| {
+        p.strip_prefix('!')
+            .or_else(|| p.strip_prefix('#'))
+            .unwrap_or(p)
+            .to_string()
+    });
+
+    // Save to new TaskStore alongside old format
+    let new_task = crate::task_store::Task {
+        id: task_id.clone(),
+        subject: subject.to_string(),
+        status: crate::task_store::TaskStatus::Pending,
+        description: if description.is_empty() {
+            None
+        } else {
+            Some(description.to_string())
+        },
+        blocked_by: blocked_by
+            .unwrap_or(&[])
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        channel: Some(effective_channel.to_string()),
+        pr,
+        agent_name: agent_name.to_string(),
+        agent_type: agent_type.unwrap_or("midtown-code-author").to_string(),
+        session_id: None,
+        parent: normalized_parent.clone(),
+        message_id: None,
+        thread_id: thread_id.map(|t| t.to_string()),
+        model: model.map(|m| m.to_string()),
+        plan: plan.map(|p| p.to_string()),
+        placeholder_comment_id: None,
+        restart_count: 0,
+        execution_skill: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    if let Err(e) = state.task_store.save(&new_task) {
+        warn!("Failed to save task to TaskStore: {}", e);
+    }
 
     // Persist channel mapping using the effective channel so downstream reads
     // (handle_task_metadata, WorldSnapshot.task_channel, MIDTOWN_CHANNEL) all
@@ -373,8 +450,8 @@ pub(super) async fn handle_task_create(
         }
     }
 
-    // Apply plan, execution_skill, and thread_id mappings if provided (stored in daemon state,
-    // NOT in task JSON, to keep task JSON compatible with Claude Code's native format)
+    // Apply plan, thread_id, parent, and agent_type mappings in daemon state
+    // (backward compatibility — Tasks 8/9 will remove these)
     {
         let mut ps = state.persistent_state.lock().await;
         let mut changed = false;
@@ -382,27 +459,17 @@ pub(super) async fn handle_task_create(
             ps.task_plan.insert(task_id.clone(), plan_path.to_string());
             changed = true;
         }
-        if let Some(skill) = execution_skill {
-            ps.task_execution_skill
-                .insert(task_id.clone(), skill.to_string());
-            changed = true;
-        }
         if let Some(tid) = thread_id {
             ps.task_thread_id.insert(task_id.clone(), tid.to_string());
             changed = true;
         }
-        if let Some(p) = parent {
-            let normalized = p
-                .strip_prefix('!')
-                .or_else(|| p.strip_prefix('#'))
-                .unwrap_or(p);
-            ps.task_parent
-                .insert(task_id.clone(), normalized.to_string());
+        if let Some(ref norm) = normalized_parent {
+            ps.task_parent.insert(task_id.clone(), norm.clone());
             // Child tasks inherit the parent's thread so all messages
             // appear in the same thread (unless an explicit thread_id
             // was already set above).
             if !ps.task_thread_id.contains_key(&task_id)
-                && let Some(parent_thread) = ps.task_thread_id.get(normalized).cloned()
+                && let Some(parent_thread) = ps.task_thread_id.get(norm.as_str()).cloned()
             {
                 ps.task_thread_id.insert(task_id.clone(), parent_thread);
             }
@@ -413,10 +480,7 @@ pub(super) async fn handle_task_create(
             changed = true;
         }
         if changed && let Err(e) = ps.save_for_repo(&dir_key) {
-            warn!(
-                "Failed to save task plan/execution_skill/thread_id/parent mapping: {}",
-                e
-            );
+            warn!("Failed to save task plan/thread_id/parent mapping: {}", e);
         }
     }
 
@@ -510,7 +574,6 @@ pub(super) async fn handle_task_create(
 pub(super) async fn handle_task_update(
     id: RequestId,
     task_id: &str,
-    owner: Option<&str>,
     status: Option<&str>,
     description: Option<&str>,
     blocked_by: Option<&[String]>,
@@ -518,6 +581,9 @@ pub(super) async fn handle_task_update(
     model: Option<&str>,
     pr: Option<u64>,
     plan: Option<&str>,
+    session_id: Option<&str>,
+    message_id: Option<&str>,
+    thread_id: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     // Validate status if provided
@@ -529,10 +595,11 @@ pub(super) async fn handle_task_update(
 
     let dir_key = state.paths.dir_key().to_string();
 
+    // Update old Claude Code format (backward compatibility)
     if let Err(e) = crate::tasks::update_task_fields_for_repo(
         task_id,
         &dir_key,
-        owner,
+        None, // owner removed — session binding is via session_id now
         status,
         description,
         blocked_by,
@@ -543,34 +610,6 @@ pub(super) async fn handle_task_update(
             id,
             RpcError::new(-32603, format!("Failed to update task: {}", e)),
         );
-    }
-
-    // Update session-based task assignment tracking
-    if let Some(new_owner) = owner {
-        // Clear old assignment before recording new one (prevents stale entries
-        // when a task is reassigned from coworker A to coworker B)
-        state.clear_task_assignment_by_task(task_id).await;
-        // Set task_id on the new owner's session record
-        let session_id = state
-            .name_to_session
-            .lock()
-            .unwrap()
-            .get(&new_owner.to_lowercase())
-            .cloned();
-        if let Some(sid) = session_id {
-            let mut ps = state.persistent_state.lock().await;
-            if let Some(record) = ps.sessions.get_mut(&sid) {
-                record.task_id = Some(task_id.to_string());
-            }
-            state
-                .task_to_session
-                .lock()
-                .unwrap()
-                .insert(task_id.to_string(), sid);
-            if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                warn!("Failed to save state after task.update assignment: {}", e);
-            }
-        }
     }
 
     // Clear assignment when task is completed or reset to pending
@@ -614,9 +653,93 @@ pub(super) async fn handle_task_update(
             needs_save = true;
         }
 
+        // Apply thread_id mapping (backward compat)
+        if let Some(tid) = thread_id {
+            if tid.is_empty() {
+                ps.task_thread_id.remove(task_id);
+            } else {
+                ps.task_thread_id
+                    .insert(task_id.to_string(), tid.to_string());
+            }
+            needs_save = true;
+        }
+
         // Save if any mapping changed
         if needs_save && let Err(e) = ps.save_for_repo(&dir_key) {
             warn!("Failed to save task mappings: {}", e);
+        }
+    }
+
+    // Also update TaskStore
+    if let Ok(mut store_task) = state.task_store.load(task_id) {
+        if let Some(s) = status {
+            store_task.status = match s {
+                "pending" => crate::task_store::TaskStatus::Pending,
+                "in_progress" => crate::task_store::TaskStatus::InProgress,
+                "completed" => crate::task_store::TaskStatus::Completed,
+                _ => store_task.status,
+            };
+        }
+        if let Some(desc) = description {
+            store_task.description = if desc.is_empty() {
+                None
+            } else {
+                Some(desc.to_string())
+            };
+        }
+        if let Some(bb) = blocked_by {
+            store_task.blocked_by = bb.to_vec();
+        }
+        if let Some(ch) = channel {
+            if ch.is_empty() {
+                store_task.channel = None;
+                store_task.thread_id = None;
+            } else {
+                store_task.channel = Some(ch.to_string());
+            }
+        }
+        if let Some(m) = model {
+            store_task.model = if m.is_empty() {
+                None
+            } else {
+                Some(m.to_string())
+            };
+        }
+        if let Some(p) = pr {
+            store_task.pr = Some(p);
+        }
+        if let Some(p) = plan {
+            store_task.plan = if p.is_empty() {
+                None
+            } else {
+                Some(p.to_string())
+            };
+        }
+        if let Some(sid) = session_id {
+            store_task.session_id = if sid.is_empty() {
+                None
+            } else {
+                Some(sid.to_string())
+            };
+        }
+        if let Some(mid) = message_id {
+            store_task.message_id = if mid.is_empty() {
+                None
+            } else {
+                Some(mid.to_string())
+            };
+        }
+        if let Some(tid) = thread_id {
+            store_task.thread_id = if tid.is_empty() {
+                None
+            } else {
+                Some(tid.to_string())
+            };
+        }
+        if let Err(e) = state.task_store.save(&store_task) {
+            warn!("Failed to update TaskStore task {}: {}", task_id, e);
+        } else {
+            state.update_task_index(&store_task).await;
         }
     }
 
@@ -667,6 +790,19 @@ pub(super) async fn handle_task_done(
         warn!("Failed to clear blockedBy for task !{}: {}", task_id, e);
     }
 
+    // Also update TaskStore
+    if let Ok(mut store_task) = state.task_store.load(task_id) {
+        store_task.status = crate::task_store::TaskStatus::Completed;
+        if let Err(e) = state.task_store.save(&store_task) {
+            warn!(
+                "Failed to update TaskStore task {} to completed: {}",
+                task_id, e
+            );
+        } else {
+            state.update_task_index(&store_task).await;
+        }
+    }
+
     info!("Completed task !{}", task_id);
     Response::success(
         id,
@@ -687,7 +823,23 @@ pub(super) async fn handle_task_metadata(
     task_id: &str,
     state: &DaemonState,
 ) -> Response {
-    // Verify the task exists in native task storage before returning metadata.
+    // Try TaskStore first, then fall back to native task storage + persistent state
+    if let Ok(store_task) = state.task_store.load(task_id) {
+        return Response::success(
+            id,
+            serde_json::json!({
+                "channel": store_task.channel,
+                "model": store_task.model,
+                "plan": store_task.plan,
+                "message_id": store_task.message_id,
+                "thread_id": store_task.thread_id,
+                "parent": store_task.parent,
+                "agent_type": store_task.agent_type,
+            }),
+        );
+    }
+
+    // Fallback: verify the task exists in native task storage before returning metadata.
     let tasks = crate::tasks::read_tasks();
     if !tasks.iter().any(|t| t.id == task_id) {
         return Response::error(
@@ -799,25 +951,12 @@ pub(super) async fn handle_task_claim(
 
     // Update session-based task assignment (only after disk write succeeds)
     {
-        let session_id = state
-            .name_to_session
-            .lock()
-            .unwrap()
-            .get(&from.to_lowercase())
-            .cloned();
-        if let Some(sid) = session_id {
-            let mut ps = state.persistent_state.lock().await;
-            if let Some(record) = ps.sessions.get_mut(&sid) {
-                record.task_id = Some(task_id.to_string());
-            }
-            state
-                .task_to_session
-                .lock()
-                .unwrap()
-                .insert(task_id.to_string(), sid);
-            if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                warn!("Failed to save state after task.claim assignment: {}", e);
-            }
+        let mut ps = state.persistent_state.lock().await;
+        if let Some(record) = ps.session_by_name_mut(&from.to_lowercase()) {
+            record.task_id = Some(task_id.to_string());
+        }
+        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+            warn!("Failed to save state after task.claim assignment: {}", e);
         }
     }
 
@@ -872,40 +1011,22 @@ pub(crate) async fn deliver_task_prompt(
         return Err(format!("Task !{} not found", task_id));
     };
 
-    // Find the session for this task.
-    // First check the in-memory map (fast path for running sessions).
-    // If missing (coworker stopped and map was cleaned up), fall back to
-    // persistent state which survives shutdown/break.
-    let session_id = state.task_to_session.lock().unwrap().get(task_id).cloned();
-    let session_id = match session_id {
-        Some(sid) => sid,
-        None => {
-            // Fallback: find a stopped session record with this task_id
-            let ps = state.persistent_state.lock().await;
-            let found = ps
-                .sessions
-                .iter()
-                .find(|(_, r)| r.task_id.as_deref() == Some(task_id))
-                .map(|(sid, _)| sid.clone());
-            match found {
-                Some(sid) => sid,
-                None => {
-                    return Err(format!(
-                        "No session found for task !{} — task may not have been dispatched yet",
-                        task_id
-                    ));
-                }
+    // Find the session for this task from persistent state.
+    let (session_id, coworker_name) = {
+        let ps = state.persistent_state.lock().await;
+        match ps.session_by_task(task_id) {
+            Some(r) => (
+                r.session_id.clone(),
+                Some(r.name.clone()).filter(|n| !n.is_empty()),
+            ),
+            None => {
+                return Err(format!(
+                    "No session found for task !{} — task may not have been dispatched yet",
+                    task_id
+                ));
             }
         }
     };
-
-    // Check if the session is running
-    let coworker_name = state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .get(&session_id)
-        .cloned();
     let is_alive = if let Some(ref name) = coworker_name {
         state.session_manager.is_alive(name).await
     } else {
@@ -940,8 +1061,9 @@ pub(crate) async fn deliver_task_prompt(
         let name = coworker_name.as_deref().unwrap_or("unknown");
         match state.session_manager.send_message(name, message).await {
             Ok(()) => {
-                // Post to DM channel for observability
-                if crate::coworker::is_coworker_name(name) {
+                // Post to DM channel for observability (skip fork sessions)
+                let is_fork = state.fork_bound_threads.lock().unwrap().contains_key(name);
+                if !is_fork {
                     let dm_effect = super::effects::Effect::PostToChannel {
                         sender: from.to_string(),
                         message: message.to_string(),
@@ -983,12 +1105,11 @@ pub(crate) async fn deliver_task_prompt(
         };
 
         // Determine coworker name for resume
-        let name = record
-            .preferred_name
-            .as_deref()
-            .or(record.current_name.as_deref())
-            .or(task.owner.as_deref())
-            .unwrap_or("unknown");
+        let name = if !record.name.is_empty() {
+            record.name.as_str()
+        } else {
+            task.owner.as_deref().unwrap_or("unknown")
+        };
 
         // Build LaunchConfig for resume
         let mut config = crate::launch::LaunchConfig::coworker(
@@ -1009,6 +1130,12 @@ pub(crate) async fn deliver_task_prompt(
             let mut task_model_map = std::collections::HashMap::new();
             task_model_map.insert(task_id.to_string(), m.to_string());
             config.apply_task_model(&task_model_map, task_id);
+        } else if let Ok(store_task) = state.task_store.load(task_id) {
+            if let Some(ref m) = store_task.model {
+                let mut task_model_map = std::collections::HashMap::new();
+                task_model_map.insert(task_id.to_string(), m.clone());
+                config.apply_task_model(&task_model_map, task_id);
+            }
         } else {
             let ps = state.persistent_state.lock().await;
             config.apply_task_model(&ps.task_model, task_id);
@@ -1025,8 +1152,9 @@ pub(crate) async fn deliver_task_prompt(
                     session_id, name, task_id
                 );
 
-                // Post to DM channel for observability
-                if crate::coworker::is_coworker_name(name) {
+                // Post to DM channel for observability (skip fork sessions)
+                let is_fork = state.fork_bound_threads.lock().unwrap().contains_key(name);
+                if !is_fork {
                     let dm_effect = super::effects::Effect::PostToChannel {
                         sender: from.to_string(),
                         message: format!("[resumed] {}", message),
@@ -1087,42 +1215,28 @@ pub(super) async fn handle_task_handoff(
         );
     }
 
-    // Find the session for this task
-    let session_id = state.task_to_session.lock().unwrap().get(task_id).cloned();
-    let session_id = match session_id {
-        Some(sid) => sid,
-        None => {
-            let ps = state.persistent_state.lock().await;
-            let found = ps
-                .sessions
-                .iter()
-                .find(|(_, r)| r.task_id.as_deref() == Some(task_id))
-                .map(|(sid, _)| sid.clone());
-            match found {
-                Some(sid) => sid,
-                None => {
-                    return Response::error(
-                        id,
-                        RpcError::new(
-                            -32603,
-                            format!(
-                                "No session found for task !{} — task may not have been dispatched yet",
-                                task_id
-                            ),
+    // Find the session for this task from persistent state
+    let (session_id, coworker_name) = {
+        let ps = state.persistent_state.lock().await;
+        match ps.session_by_task(task_id) {
+            Some(r) => (
+                r.session_id.clone(),
+                Some(r.name.clone()).filter(|n| !n.is_empty()),
+            ),
+            None => {
+                return Response::error(
+                    id,
+                    RpcError::new(
+                        -32603,
+                        format!(
+                            "No session found for task !{} — task may not have been dispatched yet",
+                            task_id
                         ),
-                    );
-                }
+                    ),
+                );
             }
         }
     };
-
-    // Stop the session if running
-    let coworker_name = state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .get(&session_id)
-        .cloned();
     if let Some(ref name) = coworker_name
         && state.session_manager.is_alive(name).await
     {
@@ -1145,6 +1259,18 @@ pub(super) async fn handle_task_handoff(
             .insert(task_id.to_string(), agent.to_string());
         if let Err(e) = ps.save_for_repo(&dir_key) {
             warn!("Failed to save task_agent_type after handoff: {}", e);
+        }
+    }
+    // Also update TaskStore
+    if let Ok(mut store_task) = state.task_store.load(task_id) {
+        store_task.agent_type = agent.to_string();
+        if let Err(e) = state.task_store.save(&store_task) {
+            warn!(
+                "Failed to update TaskStore task {} agent_type: {}",
+                task_id, e
+            );
+        } else {
+            state.update_task_index(&store_task).await;
         }
     }
 

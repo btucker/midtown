@@ -160,7 +160,11 @@ async fn resolve_attach_target_candidates(
                 .values()
                 .filter_map(|record| {
                     if record.task_id.as_deref() == Some(id_str.as_str()) {
-                        record.current_name.as_ref().map(|n| n.to_lowercase())
+                        if record.name.is_empty() {
+                            None
+                        } else {
+                            Some(record.name.to_lowercase())
+                        }
                     } else {
                         None
                     }
@@ -182,7 +186,11 @@ async fn resolve_attach_target_candidates(
             }
             matches.extend(persistent.sessions.values().filter_map(|record| {
                 if record.pr_number == Some(pr_num) {
-                    record.current_name.as_ref().map(|n| n.to_lowercase())
+                    if record.name.is_empty() {
+                        None
+                    } else {
+                        Some(record.name.to_lowercase())
+                    }
                 } else {
                     None
                 }
@@ -211,7 +219,11 @@ async fn resolve_attach_target_candidates(
                 .values()
                 .filter_map(|record| {
                     if platform_for_provider(record.provider) == platform {
-                        record.current_name.as_ref().map(|n| n.to_lowercase())
+                        if record.name.is_empty() {
+                            None
+                        } else {
+                            Some(record.name.to_lowercase())
+                        }
                     } else {
                         None
                     }
@@ -239,7 +251,11 @@ async fn resolve_attach_target_candidates(
                     }
 
                     if platform_for_provider(record.provider) == platform {
-                        record.current_name.as_ref().map(|n| n.to_lowercase())
+                        if record.name.is_empty() {
+                            None
+                        } else {
+                            Some(record.name.to_lowercase())
+                        }
                     } else {
                         None
                     }
@@ -309,7 +325,6 @@ pub(super) async fn handle_session_resolve(
     let persistent = state.persistent_state.lock().await;
     let now = chrono::Utc::now();
     let attached = state.attached_coworkers.lock().unwrap().clone();
-    let name_to_session = state.name_to_session.lock().unwrap().clone();
     let running_coworkers: std::collections::HashMap<String, crate::coworker::Coworker> = state
         .coworkers
         .list()
@@ -319,8 +334,7 @@ pub(super) async fn handle_session_resolve(
     let mut candidates: Vec<serde_json::Value> = names
         .into_iter()
         .filter_map(|name| {
-            let session_id = name_to_session.get(&name)?;
-            let record = persistent.sessions.get(session_id)?;
+            let record = persistent.session_by_name(&name)?;
             let coworker = running_coworkers.get(&name);
             let provider = record.provider.unwrap_or(crate::auth::AuthProvider::Claude);
             let platform = platform_for_provider(record.provider);
@@ -430,8 +444,7 @@ pub(super) async fn handle_session_attach(
     // session_manager which may have received the init event by now.
     let record = {
         let persistent = state.persistent_state.lock().await;
-        let session_id = state.name_to_session.lock().unwrap().get(&name).cloned();
-        match session_id.and_then(|sid| persistent.sessions.get(&sid).cloned()) {
+        match persistent.session_by_name(&name).cloned() {
             Some(mut record) => {
                 if record.session_id.is_empty()
                     && let Some(sid) = state.session_manager.get_session_id(&name).await
@@ -570,7 +583,7 @@ pub(super) async fn handle_session_attach(
             "name": name,
             "provider": provider.as_str(),
             "profile": record.profile,
-            "coworker_type": record.coworker_type,
+            "agent_type": record.agent_type,
             "channel": record.channel,
         }),
     )
@@ -578,32 +591,12 @@ pub(super) async fn handle_session_attach(
 
 /// Handle session.detach RPC method.
 ///
-/// Maps a `CoworkerRole` to the equivalent `ExecutionRole` for provider lookups.
-fn coworker_role_to_execution_role(
-    role: &crate::launch::CoworkerRole,
-) -> crate::config::ExecutionRole {
-    match role {
-        crate::launch::CoworkerRole::Lead => crate::config::ExecutionRole::Lead,
-        crate::launch::CoworkerRole::Reviewer => crate::config::ExecutionRole::Reviewer,
-        crate::launch::CoworkerRole::ChannelLead { .. } => {
-            crate::config::ExecutionRole::ChannelLead
-        }
-        crate::launch::CoworkerRole::Coworker => crate::config::ExecutionRole::Coworker,
-    }
-}
-
 fn fork_channel_lead_model(
     repo_name: &str,
     auth_provider: crate::auth::AuthProvider,
-    fork_channel: Option<&str>,
+    _fork_channel: Option<&str>,
 ) -> String {
-    let fork_role = crate::launch::CoworkerRole::ChannelLead {
-        channel_name: fork_channel.unwrap_or_default().to_string(),
-        domain_context: String::new(),
-        agents_md: None,
-    };
-
-    super::helpers::resolve_model_for_role(repo_name, auth_provider, &fork_role)
+    super::helpers::resolve_model_for_role(repo_name, auth_provider, "midtown-channel-lead")
 }
 
 /// Resumes headless execution for a coworker that was previously attached.
@@ -641,8 +634,7 @@ pub(super) async fn handle_session_detach(
     // Get session details from persistent state
     let session_info = {
         let persistent = state.persistent_state.lock().await;
-        let session_id = state.name_to_session.lock().unwrap().get(&name).cloned();
-        session_id.and_then(|sid| persistent.sessions.get(&sid).cloned())
+        persistent.session_by_name(&name).cloned()
     };
 
     let session_info = match session_info {
@@ -695,13 +687,16 @@ pub(super) async fn handle_session_detach(
         config.working_dir = Some(std::path::PathBuf::from(&session_info.working_dir));
     }
     {
-        let execution_role = coworker_role_to_execution_role(&config.role);
+        let execution_role = crate::config::execution_role_for_agent_type(&config.agent_type);
         let provider = session_info.provider.unwrap_or_else(|| {
             crate::config::get_execution_provider_for_role(state.paths.dir_key(), execution_role)
         });
         config.auth_provider = provider;
-        config.model =
-            super::helpers::resolve_model_for_role(state.paths.dir_key(), provider, &config.role);
+        config.model = super::helpers::resolve_model_for_role(
+            state.paths.dir_key(),
+            provider,
+            &config.agent_type,
+        );
     }
     // Don't restore auth_profile_dir from persisted profile name — let
     // spawn_coworker() re-resolve from project config (authoritative source).
@@ -760,7 +755,10 @@ pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> R
         .sessions
         .values()
         .filter_map(|record| {
-            let name = record.current_name.as_ref()?;
+            if record.name.is_empty() {
+                return None;
+            }
+            let name = &record.name;
             let status = if attached.contains_key(&name.to_lowercase()) {
                 "attached"
             } else if running_coworkers.contains(&name.to_lowercase()) {
@@ -899,8 +897,7 @@ pub(super) async fn handle_session_clear(
     // Get session info from persistent state
     let session_info = {
         let persistent = state.persistent_state.lock().await;
-        let session_id = state.name_to_session.lock().unwrap().get(&name).cloned();
-        session_id.and_then(|sid| persistent.sessions.get(&sid).cloned())
+        persistent.session_by_name(&name).cloned()
     };
 
     let session_info = match session_info {
@@ -984,20 +981,8 @@ pub(super) async fn handle_session_clear(
         );
         // Persist the original prompt, not the decorated "fresh restart" wrapper.
         c.persisted_initial_prompt = session_info.initial_prompt.clone();
-        // Restore role-specific metadata so reviewer/channel-lead context survives the clear.
-        {
-            match session_info.coworker_type.as_str() {
-                "reviewer" => c.role = crate::launch::CoworkerRole::Reviewer,
-                "channel-lead" => {
-                    c.role = crate::launch::CoworkerRole::ChannelLead {
-                        channel_name: session_info.channel.clone().unwrap_or_default(),
-                        domain_context: String::new(),
-                        agents_md: None,
-                    }
-                }
-                _ => {}
-            }
-        }
+        // Restore agent_type so reviewer/channel-lead context survives the clear.
+        c.agent_type = session_info.agent_type.clone();
         c.pr_number = session_info.pr_number;
         c.channel = session_info.channel.clone();
         c
@@ -1013,13 +998,16 @@ pub(super) async fn handle_session_clear(
         config.working_dir = Some(std::path::PathBuf::from(&session_info.working_dir));
     }
     {
-        let execution_role = coworker_role_to_execution_role(&config.role);
+        let execution_role = crate::config::execution_role_for_agent_type(&config.agent_type);
         let provider = session_info.provider.unwrap_or_else(|| {
             crate::config::get_execution_provider_for_role(state.paths.dir_key(), execution_role)
         });
         config.auth_provider = provider;
-        config.model =
-            super::helpers::resolve_model_for_role(state.paths.dir_key(), provider, &config.role);
+        config.model = super::helpers::resolve_model_for_role(
+            state.paths.dir_key(),
+            provider,
+            &config.agent_type,
+        );
     }
 
     match state.spawn_coworker(&config).await {
@@ -1126,19 +1114,12 @@ fn slugify_fork_hint(message: &str, thread_parent_id: &str) -> String {
 
 /// Build the `HeadlessConfig` and fork name for a fork session.
 ///
-/// Extracted from `create_fork_session` so tests can verify the config
-/// (especially auth profile resolution) without spawning a real process.
+/// Uses `LaunchConfig` internally then converts to `HeadlessConfig` with
+/// fork-specific adjustments (bound thread ID env, disallowed tools, settings).
 ///
 /// **Architecture note:** Fork sessions launch as *fresh* sessions (not
 /// `--resume --fork-session`) because headless sessions don't persist JSONL
-/// files to disk, so `--fork-session` has nothing to fork from. The fork
-/// receives context via its initial nudge message instead.  This also means
-/// `--setting-sources project,local` is always included, enabling autoCompact
-/// to trim large inherited context before the first API call.
-///
-/// Uses the **project-aware** auth profile resolution
-/// (`active_profile_dir_for_project_with_provider`) so that per-project
-/// `auth switch` overrides are picked up by forked sessions.
+/// files to disk, so `--fork-session` has nothing to fork from.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_fork_config(
     thread_parent_id: &str,
@@ -1152,11 +1133,7 @@ pub(super) fn build_fork_config(
     repo_name: &str,
     name_override: Option<&str>,
 ) -> (String, crate::headless::HeadlessConfig) {
-    let config_dir =
-        crate::auth::active_profile_dir_for_project_with_provider(repo_name, auth_provider);
-
-    // Use the exact name if overridden (e.g., crash recovery reuses the original
-    // fork name to keep cooldown keys stable). Otherwise derive from hint/caller.
+    // Derive the fork name
     let fork_name = if let Some(name) = name_override {
         name.to_string()
     } else {
@@ -1175,66 +1152,64 @@ pub(super) fn build_fork_config(
         }
     };
 
-    let mut env = crate::launch::build_agent_env_vars(
-        &fork_name,
-        &fork_channel.map(String::from),
-        auth_provider,
-        &config_dir,
-        repo_name,
-    );
-    env.insert(
+    // Build LaunchConfig and convert to HeadlessConfig
+    let agent_type = if is_channel_lead {
+        "midtown-channel-lead"
+    } else {
+        "midtown-project-lead"
+    };
+    let launch_config =
+        crate::launch::LaunchConfig::new(&fork_name, agent_type, repo_name, None, None)
+            .with_channel(fork_channel.map(String::from))
+            .with_auth_provider(auth_provider)
+            .with_auth_profile_dir(Some(
+                crate::auth::active_profile_dir_for_project_with_provider(repo_name, auth_provider),
+            ));
+
+    let paths = crate::paths::ProjectPaths::new(repo_name);
+    let mut headless_config = launch_config.to_headless_config(&paths);
+
+    // Fork-specific adjustments
+    headless_config.cwd = working_dir.map(String::from);
+    headless_config.model = fork_channel_lead_model(repo_name, auth_provider, fork_channel);
+    headless_config.env.insert(
         "MIDTOWN_BOUND_THREAD_ID".to_string(),
         thread_parent_id.to_string(),
     );
 
-    // Ensure `.claude/settings.json` with `autoCompact: true` exists in the
-    // fork's working directory so `--setting-sources project,local` picks it up.
+    // Fork sessions use the full system prompt (no --agent) for Codex compatibility.
+    // For Claude/z.ai, we override agent_name to None and use the full prompt.
+    headless_config.agent_name = None;
+    headless_config.system_prompt = crate::agents::main_lead_system_prompt(repo_name);
+
+    // Fork channel leads get stricter tool restrictions (Edit re-added)
+    if is_channel_lead && !matches!(auth_provider, crate::auth::AuthProvider::Codex) {
+        headless_config.disallowed_tools = crate::launch::channel_lead_fork_disallowed_tools();
+    }
+
+    // Lead settings for fork sessions
+    headless_config.settings_path = if matches!(auth_provider, crate::auth::AuthProvider::Codex) {
+        None
+    } else {
+        match crate::settings::write_lead_settings_file() {
+            Ok(path) => Some(path.to_string_lossy().to_string()),
+            Err(e) => {
+                warn!("Failed to write lead settings file for fork session: {e}");
+                None
+            }
+        }
+    };
+
+    // Pre-assign session ID for non-Codex providers
+    headless_config.session_id = match auth_provider {
+        crate::auth::AuthProvider::Codex => None,
+        _ => Some(uuid::Uuid::new_v4().to_string()),
+    };
+
+    // Ensure autoCompact settings exist in fork working directory
     if let Some(wd) = working_dir {
         crate::settings::ensure_auto_compact_settings(std::path::Path::new(wd));
     }
-
-    let headless_config = crate::headless::HeadlessConfig {
-        model: fork_channel_lead_model(repo_name, auth_provider, fork_channel),
-        system_prompt: crate::agents::main_lead_system_prompt(repo_name),
-        json_schema: None,
-        cwd: working_dir.map(String::from),
-        project_name: Some(repo_name.to_string()),
-        max_budget_usd: None,
-        allow_tools: true,
-        persist_session: true,
-        // Fresh session — headless sessions don't persist JSONL files, so
-        // --fork-session has nothing to fork from.  Context is injected via
-        // the initial nudge message instead.
-        resume_session_id: None,
-        inactivity_timeout: None,
-        settings_path: if matches!(auth_provider, crate::auth::AuthProvider::Codex) {
-            None
-        } else {
-            match crate::settings::write_lead_settings_file() {
-                Ok(path) => Some(path.to_string_lossy().to_string()),
-                Err(e) => {
-                    warn!("Failed to write lead settings file for fork session: {e}");
-                    None
-                }
-            }
-        },
-        setting_sources: None,
-        auth_provider,
-        env,
-        session_id: match auth_provider {
-            crate::auth::AuthProvider::Codex => None,
-            _ => Some(uuid::Uuid::new_v4().to_string()),
-        },
-        fork_session: false,
-        disallowed_tools: if is_channel_lead
-            && !matches!(auth_provider, crate::auth::AuthProvider::Codex)
-        {
-            crate::launch::channel_lead_fork_disallowed_tools()
-        } else {
-            vec![]
-        },
-        agent_name: None, // Fork sessions use full system_prompt (no --agent)
-    };
 
     (fork_name, headless_config)
 }
@@ -1296,12 +1271,10 @@ pub(super) async fn create_fork_session(
         // relaunched, but topic_sessions is rebuilt from persisted records.
         // Without this check, new fork requests silently return a dead
         // session_id (!2259).
-        let session_name = state
-            .session_to_name
-            .lock()
-            .unwrap()
-            .get(existing_sid)
-            .cloned();
+        let session_name = {
+            let ps = state.persistent_state.lock().await;
+            ps.sessions.get(existing_sid).map(|s| s.name.clone())
+        };
         let is_alive = if let Some(ref name) = session_name {
             state.session_manager.is_alive(name).await
         } else {
@@ -1345,12 +1318,10 @@ pub(super) async fn create_fork_session(
 
     // If a concurrent fork completed, verify it's alive before returning it.
     if let Some(concurrent_sid) = concurrent_entry {
-        let concurrent_name = state
-            .session_to_name
-            .lock()
-            .unwrap()
-            .get(&concurrent_sid)
-            .cloned();
+        let concurrent_name = {
+            let ps = state.persistent_state.lock().await;
+            ps.sessions.get(&concurrent_sid).map(|s| s.name.clone())
+        };
         let concurrent_alive = if let Some(ref name) = concurrent_name {
             state.session_manager.is_alive(name).await
         } else {
@@ -1371,22 +1342,20 @@ pub(super) async fn create_fork_session(
             .insert(thread_parent_id.to_string(), "pending".to_string());
     }
 
-    // Resolve the calling session's name from the reverse map.
+    // Resolve the calling session's name from persistent state.
     let caller_name = {
-        let s2n = state.session_to_name.lock().unwrap();
-        s2n.get(calling_session_id).cloned()
+        let ps = state.persistent_state.lock().await;
+        ps.sessions.get(calling_session_id).map(|s| s.name.clone())
     };
 
     // Look up the calling session info to get working_dir, channel, and role.
     let (working_dir, channel, auth_provider, is_channel_lead) = {
         let ps = state.persistent_state.lock().await;
         // Try direct session_id lookup first, then fall back to name-based lookup.
-        let record = ps.sessions.get(calling_session_id).or_else(|| {
-            caller_name
-                .as_ref()
-                .and_then(|n| state.name_to_session.lock().unwrap().get(n).cloned())
-                .and_then(|sid| ps.sessions.get(&sid))
-        });
+        let record = ps
+            .sessions
+            .get(calling_session_id)
+            .or_else(|| caller_name.as_ref().and_then(|n| ps.session_by_name(n)));
         match record {
             Some(r) => {
                 let wd = if r.working_dir.is_empty() {
@@ -1398,7 +1367,7 @@ pub(super) async fn create_fork_session(
                     wd,
                     r.channel.clone(),
                     r.provider.unwrap_or(crate::auth::AuthProvider::Claude),
-                    r.coworker_type == "channel-lead",
+                    r.agent_type == "midtown-channel-lead",
                 )
             }
             None => {
@@ -1465,28 +1434,21 @@ pub(super) async fn create_fork_session(
         let parent_record = ps
             .sessions
             .get(calling_session_id)
-            .or_else(|| {
-                caller_name
-                    .as_ref()
-                    .and_then(|n| state.name_to_session.lock().unwrap().get(n).cloned())
-                    .and_then(|sid| ps.sessions.get(&sid))
-            })
+            .or_else(|| caller_name.as_ref().and_then(|n| ps.session_by_name(n)))
             .cloned();
         ps.sessions.insert(
             fork_session_id.clone(),
             crate::daemon::state::SessionRecord {
                 session_id: fork_session_id.clone(),
                 task_id: parent_record.as_ref().and_then(|r| r.task_id.clone()),
-                current_name: Some(fork_name.clone()),
-                preferred_name: Some(fork_name.clone()),
+                name: fork_name.clone(),
                 working_dir: working_dir.clone().unwrap_or_default(),
                 branch: None,
                 pr_number: None,
                 initial_prompt: parent_record
                     .as_ref()
                     .and_then(|r| r.initial_prompt.clone()),
-                is_reviewer: false,
-                coworker_type: "channel-lead".to_string(),
+                agent_type: "midtown-channel-lead".to_string(),
                 is_running: true,
                 created_at: chrono::Utc::now(),
                 resume_on_startup: false,
@@ -1505,6 +1467,7 @@ pub(super) async fn create_fork_session(
                     .and_then(|r| r.provider)
                     .map(crate::platform::Platform::from_provider),
                 profile: parent_record.as_ref().and_then(|r| r.profile.clone()),
+                restart_count: 0,
             },
         );
         if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
@@ -1512,20 +1475,7 @@ pub(super) async fn create_fork_session(
         }
     }
 
-    // Populate in-memory reverse maps BEFORE updating topic_sessions from
-    // "pending" to the real session_id. This ordering prevents a race where
-    // a concurrent fork request sees the real session_id in topic_sessions
-    // but finds no session_to_name entry, misclassifying a live fork as dead.
-    state
-        .name_to_session
-        .lock()
-        .unwrap()
-        .insert(fork_name.clone(), fork_session_id.clone());
-    state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .insert(fork_session_id.clone(), fork_name.clone());
+    // SessionRecord is persisted above — no reverse maps to populate.
 
     // Cache the bound thread mapping for the output binding hot path
     // (avoids async persistent_state lock in handle_channel_post).
@@ -1713,7 +1663,7 @@ pub(super) async fn handle_session_fork(
                 ps_guard
                     .sessions
                     .get(calling_session_id)
-                    .map(|r| r.coworker_type == "channel-lead")
+                    .map(|r| r.agent_type == "midtown-channel-lead")
                     .unwrap_or(false)
             };
             // (persistent_prompt, nudge_message): persistent is crash-recovery-safe
@@ -1835,16 +1785,16 @@ pub(super) async fn handle_session_fork(
             // fork path so the "Dedicated session" indicator appears regardless
             // of how the fork was created.
             if let Some(ref ch) = fork_channel {
-                let owner = state.session_to_name.lock().unwrap().get(&sid).cloned();
-                // Resolve parent lead via channel_lead_sessions (not the caller)
-                // so non-lead callers don't get misattributed as the parent.
-                let parent_lead = {
+                let (owner, parent_lead) = {
                     let ps = state.persistent_state.lock().await;
-                    ps.channel_lead_sessions
+                    let owner = ps.sessions.get(&sid).map(|s| s.name.clone());
+                    // Resolve parent lead via channel_lead_sessions (not the caller)
+                    // so non-lead callers don't get misattributed as the parent.
+                    let parent_lead = ps
+                        .channel_lead_sessions
                         .get(ch.as_str())
-                        .and_then(|lead_sid| {
-                            state.session_to_name.lock().unwrap().get(lead_sid).cloned()
-                        })
+                        .and_then(|lead_sid| ps.sessions.get(lead_sid).map(|s| s.name.clone()));
+                    (owner, parent_lead)
                 };
                 state.broadcast_web_update(web::WebUpdate::ThreadOwnership(
                     web::ThreadOwnershipData {
@@ -1997,10 +1947,12 @@ pub(super) async fn handle_session_fork_thread(
             }
 
             // Broadcast ownership change to web clients
-            let s2n = state.session_to_name.lock().unwrap();
-            let owner = s2n.get(&sid).cloned();
-            let parent_lead = s2n.get(&lead_session_id).cloned();
-            drop(s2n);
+            let (owner, parent_lead) = {
+                let ps = state.persistent_state.lock().await;
+                let owner = ps.sessions.get(&sid).map(|s| s.name.clone());
+                let parent_lead = ps.sessions.get(&lead_session_id).map(|s| s.name.clone());
+                (owner, parent_lead)
+            };
             state.broadcast_web_update(web::WebUpdate::ThreadOwnership(web::ThreadOwnershipData {
                 thread_parent_id: thread_parent_id.to_string(),
                 channel: channel.to_string(),
@@ -2059,14 +2011,16 @@ pub(super) async fn handle_session_unfork_thread(
     };
 
     // Verify the fork session has a name mapping before attempting shutdown.
-    // If session_to_name is missing (concurrent cleanup race), ShutdownSession
+    // If the session record is missing (concurrent cleanup race), ShutdownSession
     // cannot call shutdown_coworker_impl, leaving the fork process running.
     // Clean up the stale topic_sessions entry and report the condition.
-    let has_name = state
-        .session_to_name
-        .lock()
-        .unwrap()
-        .contains_key(&fork_session_id);
+    let has_name = {
+        let ps = state.persistent_state.lock().await;
+        ps.sessions
+            .get(&fork_session_id)
+            .map(|s| !s.name.is_empty())
+            .unwrap_or(false)
+    };
     if !has_name {
         warn!(
             "session.unfork_thread: fork session {} has no name mapping (stale), cleaning up topic_sessions",
@@ -2132,16 +2086,17 @@ pub(super) async fn handle_session_thread_ownership(
         .filter(|s| s.as_str() != "pending")
         .cloned();
     let has_dedicated = fork_session_id.is_some();
-    let owner =
-        fork_session_id.and_then(|sid| state.session_to_name.lock().unwrap().get(&sid).cloned());
-    // Resolve the parent channel lead's name for display in the thread panel.
-    let parent_lead = if has_dedicated {
+    let (owner, parent_lead) = {
         let ps = state.persistent_state.lock().await;
-        ps.channel_lead_sessions
-            .get(channel)
-            .and_then(|sid| state.session_to_name.lock().unwrap().get(sid).cloned())
-    } else {
-        None
+        let owner = fork_session_id.and_then(|sid| ps.sessions.get(&sid).map(|s| s.name.clone()));
+        let parent_lead = if has_dedicated {
+            ps.channel_lead_sessions
+                .get(channel)
+                .and_then(|sid| ps.sessions.get(sid).map(|s| s.name.clone()))
+        } else {
+            None
+        };
+        (owner, parent_lead)
     };
 
     state.broadcast_web_update(web::WebUpdate::ThreadOwnership(web::ThreadOwnershipData {

@@ -19,66 +19,22 @@ pub enum SessionMode {
     ResumeSession(String),
 }
 
-/// The role of a coworker, which determines their system prompt.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub enum CoworkerRole {
-    /// Standard coworker — uses midtown-code-author agent definition + common.md
-    #[default]
-    Coworker,
-    /// PR reviewer — uses midtown-code-reviewer agent definition + common.md
-    Reviewer,
-    /// Lead — uses midtown-project-lead agent definition + lead-common.md + common.md
-    Lead,
-    /// Channel lead — uses midtown-channel-lead agent definition + lead-common.md + common.md
-    /// Read-only: brainstorming and domain expertise for a topic channel.
-    ChannelLead {
-        /// The channel this lead is responsible for.
-        channel_name: String,
-        /// Domain context injected at startup from channel notes files.
-        domain_context: String,
-        /// Optional AGENTS.md content for workflow facilitation instructions.
-        agents_md: Option<String>,
-    },
-}
-
-impl CoworkerRole {
-    /// The agent definition name for `--agent <name>`.
-    ///
-    /// Maps each role to the corresponding agent definition file installed
-    /// in `.claude/agents/` (e.g., `midtown-code-author.md`).
-    pub fn agent_name(&self) -> &'static str {
-        match self {
-            CoworkerRole::Coworker => "midtown-code-author",
-            CoworkerRole::Reviewer => "midtown-code-reviewer",
-            CoworkerRole::Lead => "midtown-project-lead",
-            CoworkerRole::ChannelLead { .. } => "midtown-channel-lead",
-        }
-    }
-
-    /// Map to the corresponding config `ExecutionRole` for model/provider lookups.
-    pub fn execution_role(&self) -> crate::config::ExecutionRole {
-        match self {
-            CoworkerRole::Lead => crate::config::ExecutionRole::Lead,
-            CoworkerRole::Reviewer => crate::config::ExecutionRole::Reviewer,
-            CoworkerRole::ChannelLead { .. } => crate::config::ExecutionRole::ChannelLead,
-            CoworkerRole::Coworker => crate::config::ExecutionRole::Coworker,
-        }
-    }
-}
-
 /// All configuration needed to launch a Claude CLI process.
 ///
 /// This is the single source of truth for how Claude gets launched. All spawn
 /// paths (fresh coworker, resumed coworker, reviewer, lead) construct one of
 /// these and pass it to `to_headless_config()` for headless spawn.
+///
+/// Use `LaunchConfig::new()` to create, then chain builder methods to customize.
 #[derive(Debug, Clone)]
 pub struct LaunchConfig {
     /// Coworker name (or the repo name for the lead instance).
     pub name: String,
+    /// The agent type string (e.g., "midtown-code-author", "midtown-code-reviewer").
+    /// Used for `--agent <name>` and to resolve execution role, model, and provider.
+    pub agent_type: String,
     /// How to start or resume the session.
     pub session_mode: SessionMode,
-    /// The coworker's role (determines which system prompt to use).
-    pub role: CoworkerRole,
     /// Optional prompt to pre-fill at startup (task instructions, review prompt, etc.).
     pub initial_prompt: Option<String>,
     /// Additional repo directories for multi-repo projects.
@@ -129,12 +85,9 @@ pub struct LaunchConfig {
     /// the `HeadlessConfig::cwd`. Used by channel leads with `channel_directory`
     /// configured, so they pick up subdirectory-specific CLAUDE.md instructions.
     pub cwd_subdir: Option<String>,
-    /// Override the agent definition name for `--agent <name>`.
-    ///
-    /// When set, `to_headless_config` uses this instead of `role.agent_name()`.
-    /// Used by `task handoff` to swap the agent type on a resumed session
-    /// while preserving conversation history.
-    pub agent_name_override: Option<String>,
+    /// Extra content appended to the system prompt (e.g., domain context for channel leads).
+    /// Injected after the standard system prompt layers during rendering.
+    pub system_prompt_extra: Option<String>,
 }
 
 /// The shell command string and any pre-assigned provider session ID.
@@ -322,16 +275,133 @@ fn shell_quote(input: &str) -> String {
 }
 
 impl LaunchConfig {
+    /// Create a new `LaunchConfig` with the given parameters.
+    ///
+    /// Resolves the execution role, auth provider, and model from the `agent_type`
+    /// and `dir_key` using the project configuration.
+    ///
+    /// - `name`: Session name (coworker name, channel name, or project name).
+    /// - `agent_type`: Agent definition name (e.g., `"midtown-code-author"`).
+    /// - `dir_key`: Project directory key for config resolution.
+    /// - `initial_prompt`: Optional prompt to pre-fill at startup.
+    /// - `system_prompt_extra`: Optional extra content appended to the system prompt
+    ///   (e.g., domain context for channel leads).
+    pub fn new(
+        name: impl Into<String>,
+        agent_type: impl Into<String>,
+        dir_key: &str,
+        initial_prompt: Option<String>,
+        system_prompt_extra: Option<String>,
+    ) -> Self {
+        let agent_type_str = agent_type.into();
+        let execution_role = crate::config::execution_role_for_agent_type(&agent_type_str);
+        let auth_provider = crate::config::get_execution_provider_for_role(dir_key, execution_role);
+        let default_model = match execution_role {
+            crate::config::ExecutionRole::Coworker => "sonnet",
+            _ => "opus",
+        };
+        let model = crate::config::get_model_for_role(dir_key, execution_role)
+            .map(|s| s.as_model_str().to_string())
+            .unwrap_or_else(|| default_model.to_string());
+
+        LaunchConfig {
+            name: name.into(),
+            agent_type: agent_type_str,
+            session_mode: SessionMode::Fresh,
+            initial_prompt,
+            additional_dirs: vec![],
+            pr_number: None,
+            working_dir: None,
+            model,
+            channel: None,
+            auth_profile_dir: None,
+            auth_provider,
+            escalation_target: None,
+            task_id: None,
+            persisted_initial_prompt: None,
+            cwd_subdir: None,
+            system_prompt_extra,
+        }
+    }
+
+    // -- Builder methods --
+
+    /// Set the task ID for this session.
+    pub fn with_task_id(mut self, task_id: Option<String>) -> Self {
+        self.task_id = task_id;
+        self
+    }
+
+    /// Set the PR number for reviewer sessions.
+    pub fn with_pr_number(mut self, pr_number: u64) -> Self {
+        self.pr_number = Some(pr_number);
+        self
+    }
+
+    /// Set the channel for message routing.
+    pub fn with_channel(mut self, channel: Option<String>) -> Self {
+        self.channel = channel;
+        self
+    }
+
+    /// Set the session mode.
+    pub fn with_session_mode(mut self, mode: SessionMode) -> Self {
+        self.session_mode = mode;
+        self
+    }
+
+    /// Override the model.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+
+    /// Set the escalation target for reviewer agents.
+    pub fn with_escalation_target(mut self, target: Option<String>) -> Self {
+        self.escalation_target = target;
+        self
+    }
+
+    /// Set the auth provider.
+    pub fn with_auth_provider(mut self, provider: crate::auth::AuthProvider) -> Self {
+        self.auth_provider = provider;
+        self
+    }
+
+    /// Set the working directory override.
+    pub fn with_working_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.working_dir = dir;
+        self
+    }
+
+    /// Set the CWD subdirectory.
+    pub fn with_cwd_subdir(mut self, subdir: Option<String>) -> Self {
+        self.cwd_subdir = subdir;
+        self
+    }
+
+    /// Set the persisted initial prompt override.
+    pub fn with_persisted_initial_prompt(mut self, prompt: Option<String>) -> Self {
+        self.persisted_initial_prompt = prompt;
+        self
+    }
+
+    /// Set the auth profile directory.
+    pub fn with_auth_profile_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.auth_profile_dir = dir;
+        self
+    }
+
     /// Build the `RuntimeContext` for Layer 3 template substitution.
     fn runtime_context<'a>(&'a self, project_name: &'a str) -> crate::agents::RuntimeContext<'a> {
-        match &self.role {
-            CoworkerRole::Coworker => crate::agents::RuntimeContext {
+        match self.agent_type.as_str() {
+            "midtown-code-author" => crate::agents::RuntimeContext {
                 name: &self.name,
                 project_name,
                 channel_lead: self.channel.as_deref(),
                 ..crate::agents::RuntimeContext::default()
             },
-            CoworkerRole::Reviewer => crate::agents::RuntimeContext {
+            "midtown-code-reviewer" => crate::agents::RuntimeContext {
                 name: &self.name,
                 project_name,
                 channel_lead: Some(self.escalation_target.as_deref().unwrap_or(project_name)),
@@ -340,35 +410,41 @@ impl LaunchConfig {
                 pr_number: self.pr_number,
                 ..crate::agents::RuntimeContext::default()
             },
-            CoworkerRole::Lead => crate::agents::RuntimeContext {
+            "midtown-project-lead" => crate::agents::RuntimeContext {
                 name: project_name,
                 project_name,
                 channel_lead: Some(project_name),
                 ..crate::agents::RuntimeContext::default()
             },
-            CoworkerRole::ChannelLead {
-                channel_name,
-                domain_context,
-                agents_md,
-            } => crate::agents::RuntimeContext {
-                name: channel_name,
+            "midtown-channel-lead" => {
+                let channel_name = self.channel.as_deref().unwrap_or(&self.name);
+                crate::agents::RuntimeContext {
+                    name: channel_name,
+                    project_name,
+                    channel_lead: Some(channel_name),
+                    channel_name: Some(channel_name),
+                    domain_context: self.system_prompt_extra.as_deref(),
+                    agents_md: None,
+                    ..crate::agents::RuntimeContext::default()
+                }
+            }
+            // Fallback for unknown agent types
+            _ => crate::agents::RuntimeContext {
+                name: &self.name,
                 project_name,
-                channel_lead: Some(channel_name.as_str()),
-                channel_name: Some(channel_name.as_str()),
-                domain_context: Some(domain_context.as_str()),
-                agents_md: agents_md.as_deref(),
                 ..crate::agents::RuntimeContext::default()
             },
         }
     }
 
-    /// Map `CoworkerRole` to `AgentRole`.
+    /// Map agent type to `AgentRole`.
     fn agent_role(&self) -> crate::agents::AgentRole {
-        match &self.role {
-            CoworkerRole::Coworker => crate::agents::AgentRole::Coworker,
-            CoworkerRole::Reviewer => crate::agents::AgentRole::Reviewer,
-            CoworkerRole::Lead => crate::agents::AgentRole::ProjectLead,
-            CoworkerRole::ChannelLead { .. } => crate::agents::AgentRole::ChannelLead,
+        match self.agent_type.as_str() {
+            "midtown-code-author" => crate::agents::AgentRole::Coworker,
+            "midtown-code-reviewer" => crate::agents::AgentRole::Reviewer,
+            "midtown-project-lead" => crate::agents::AgentRole::ProjectLead,
+            "midtown-channel-lead" => crate::agents::AgentRole::ChannelLead,
+            _ => crate::agents::AgentRole::Coworker,
         }
     }
 
@@ -388,29 +464,35 @@ impl LaunchConfig {
     }
 
     fn render_system_prompt(&self, project_name: &str) -> String {
-        match &self.role {
-            CoworkerRole::Reviewer => crate::agents::reviewer_system_prompt(
+        match self.agent_type.as_str() {
+            "midtown-code-reviewer" => crate::agents::reviewer_system_prompt(
                 &self.name,
                 project_name,
                 self.escalation_target.as_deref().unwrap_or(project_name),
                 self.auth_provider,
                 self.pr_number,
             ),
-            CoworkerRole::Lead => crate::agents::main_lead_system_prompt(project_name),
-            CoworkerRole::Coworker => crate::agents::coworker_system_prompt(
+            "midtown-project-lead" => crate::agents::main_lead_system_prompt(project_name),
+            "midtown-code-author" => crate::agents::coworker_system_prompt(
                 &self.name,
                 project_name,
                 self.channel.as_deref(),
             ),
-            CoworkerRole::ChannelLead {
-                channel_name,
-                domain_context,
-                agents_md,
-            } => crate::agents::channel_lead_system_prompt(
-                channel_name,
-                domain_context,
+            "midtown-channel-lead" => {
+                let channel_name = self.channel.as_deref().unwrap_or(&self.name);
+                let domain_context = self.system_prompt_extra.as_deref().unwrap_or("");
+                crate::agents::channel_lead_system_prompt(
+                    channel_name,
+                    domain_context,
+                    project_name,
+                    None,
+                )
+            }
+            // Fallback: use coworker system prompt for unknown agent types
+            _ => crate::agents::coworker_system_prompt(
+                &self.name,
                 project_name,
-                agents_md.as_deref(),
+                self.channel.as_deref(),
             ),
         }
     }
@@ -435,10 +517,7 @@ impl LaunchConfig {
         self.initial_prompt.clone()
     }
 
-    /// Create a config for a standard coworker.
-    ///
-    /// Coworkers each have isolated task lists. The daemon bakes the task
-    /// description into the initial prompt and tracks assignment internally.
+    /// Create a config for a standard coworker (convenience wrapper).
     pub fn coworker(
         name: impl Into<String>,
         dir_key: impl Into<String>,
@@ -447,43 +526,12 @@ impl LaunchConfig {
         task_id: Option<String>,
     ) -> Self {
         let repo = dir_key.into();
-        let auth_provider = crate::config::get_execution_provider_for_role(
-            &repo,
-            crate::config::ExecutionRole::Coworker,
-        );
-        let model =
-            crate::config::get_model_for_role(&repo, crate::config::ExecutionRole::Coworker)
-                .map(|s| s.as_model_str().to_string())
-                .unwrap_or_else(|| "sonnet".to_string());
-        LaunchConfig {
-            name: name.into(),
-            session_mode,
-            role: CoworkerRole::Coworker,
-            initial_prompt,
-            additional_dirs: vec![],
-            pr_number: None,
-            working_dir: None,
-            model,
-            channel: None,
-            auth_profile_dir: None,
-            auth_provider,
-            escalation_target: None,
-            task_id,
-            persisted_initial_prompt: None,
-            cwd_subdir: None,
-            agent_name_override: None,
-        }
+        LaunchConfig::new(name, "midtown-code-author", &repo, initial_prompt, None)
+            .with_session_mode(session_mode)
+            .with_task_id(task_id)
     }
 
-    /// Create a config for a reviewer coworker.
-    ///
-    /// Reviewers get a specialized system prompt using the midtown-code-reviewer
-    /// agent definition + common.md, ensuring they follow reviewer instructions
-    /// as behavioral rules rather than just task descriptions.
-    ///
-    /// `restart_count` is 0 for first launch, >0 for respawns. When >0, the
-    /// initial prompt includes context about the previous failed attempt and
-    /// instructs the reviewer to update the existing placeholder comment.
+    /// Create a config for a reviewer coworker (convenience wrapper).
     pub fn reviewer(
         name: impl Into<String>,
         dir_key: impl Into<String>,
@@ -492,40 +540,18 @@ impl LaunchConfig {
         auth_provider: crate::auth::AuthProvider,
     ) -> Self {
         let repo = dir_key.into();
-        let model =
-            crate::config::get_model_for_role(&repo, crate::config::ExecutionRole::Reviewer)
-                .map(|s| s.as_model_str().to_string())
-                .unwrap_or_else(|| "opus".to_string());
-        LaunchConfig {
-            name: name.into(),
-            session_mode: SessionMode::Fresh,
-            role: CoworkerRole::Reviewer,
-            initial_prompt: Some(crate::agents::reviewer_launch_prompt(
-                pr_number,
-                restart_count,
-                auth_provider,
-                None,
-            )),
-            additional_dirs: vec![],
-            pr_number: Some(pr_number),
-            working_dir: None,
-            model,
-            channel: None,
-            auth_profile_dir: None,
+        let initial_prompt = Some(crate::agents::reviewer_launch_prompt(
+            pr_number,
+            restart_count,
             auth_provider,
-            escalation_target: None,
-            task_id: None,
-            persisted_initial_prompt: None,
-            cwd_subdir: None,
-            agent_name_override: None,
-        }
+            None,
+        ));
+        LaunchConfig::new(name, "midtown-code-reviewer", &repo, initial_prompt, None)
+            .with_pr_number(pr_number)
+            .with_auth_provider(auth_provider)
     }
 
     /// Create a config for resuming an existing reviewer session via @mention.
-    ///
-    /// Uses reviewer-appropriate model and auth provider (not coworker defaults),
-    /// but takes a nudge message as initial_prompt instead of the full reviewer
-    /// launch prompt (the session already has its system prompt from the original launch).
     pub fn resume_reviewer(
         name: impl Into<String>,
         dir_key: impl Into<String>,
@@ -534,101 +560,37 @@ impl LaunchConfig {
         task_id: Option<String>,
     ) -> Self {
         let repo = dir_key.into();
-        let auth_provider = crate::config::get_execution_provider_for_role(
-            &repo,
-            crate::config::ExecutionRole::Reviewer,
-        );
-        let model =
-            crate::config::get_model_for_role(&repo, crate::config::ExecutionRole::Reviewer)
-                .map(|s| s.as_model_str().to_string())
-                .unwrap_or_else(|| "opus".to_string());
-        LaunchConfig {
-            name: name.into(),
-            session_mode: SessionMode::ResumeSession(session_id),
-            role: CoworkerRole::Reviewer,
-            initial_prompt,
-            additional_dirs: vec![],
-            pr_number: None,
-            working_dir: None,
-            model,
-            channel: None,
-            auth_profile_dir: None,
-            auth_provider,
-            escalation_target: None,
-            task_id,
-            persisted_initial_prompt: None,
-            cwd_subdir: None,
-            agent_name_override: None,
-        }
+        LaunchConfig::new(name, "midtown-code-reviewer", &repo, initial_prompt, None)
+            .with_session_mode(SessionMode::ResumeSession(session_id))
+            .with_task_id(task_id)
     }
 
     /// Create a config for the Project Lead session.
     ///
-    /// When `channel` is None, creates the Project Lead (uses `main_lead_system_prompt()`).
-    /// When `channel` is Some, creates a channel lead for that channel
-    /// (uses `channel_lead_system_prompt()`).
-    ///
-    /// The Project Lead uses unrestricted setting sources and runs as a headless session
-    /// that can be attached/detached like coworkers.
+    /// When `channel` is None, creates the Project Lead.
+    /// When `channel` is Some, creates a channel lead for that channel.
     pub fn lead(dir_key: impl Into<String>, channel: Option<&str>) -> Self {
         let repo = dir_key.into();
-        let project_name = crate::paths::project_name_for_dir_key(&repo);
 
         if let Some(channel_name) = channel {
-            // Channel lead — delegate to channel_lead factory
-            // Note: domain_context is empty here; callers that need notes
-            // should load them via load_channel_notes() and pass directly
-            // to channel_lead() to keep this function I/O-free.
             LaunchConfig::channel_lead(channel_name, &repo, SessionMode::Fresh, "", None)
         } else {
-            // Project Lead
-            let auth_provider = crate::config::get_execution_provider_for_role(
+            let project_name = crate::paths::project_name_for_dir_key(&repo);
+            let initial_prompt = Some(crate::agents::main_lead_initial_prompt(
+                &project_name,
+                &project_name,
+            ));
+            LaunchConfig::new(
+                &project_name,
+                "midtown-project-lead",
                 &repo,
-                crate::config::ExecutionRole::Lead,
-            );
-            let model =
-                crate::config::get_model_for_role(&repo, crate::config::ExecutionRole::Lead)
-                    .map(|s| s.as_model_str().to_string())
-                    .unwrap_or_else(|| "opus".to_string());
-            LaunchConfig {
-                name: project_name.clone(),
-                session_mode: SessionMode::Fresh,
-                role: CoworkerRole::Lead,
-                initial_prompt: Some(crate::agents::main_lead_initial_prompt(
-                    &project_name,
-                    &project_name,
-                )),
-                additional_dirs: vec![],
-                pr_number: None,
-                working_dir: None,
-                model,
-                channel: None,
-                auth_profile_dir: None,
-                auth_provider,
-                escalation_target: None,
-                task_id: None,
-                persisted_initial_prompt: None,
-                cwd_subdir: None,
-                agent_name_override: None,
-            }
+                initial_prompt,
+                None,
+            )
         }
     }
 
     /// Create a config for a channel lead session.
-    ///
-    /// Channel leads are long-lived conversational sessions that accumulate
-    /// domain expertise for a topic channel. They use the midtown-channel-lead
-    /// agent definition, run with read-only tool access, and post responses to
-    /// their channel via `midtown channel post --channel {name}`.
-    ///
-    /// The `domain_context` is injected into the system prompt at spawn time.
-    /// Callers load it from channel notes files via `load_channel_notes()`.
-    ///
-    /// `agents_md` is optional workflow facilitation content from the project's `AGENTS.md`.
-    ///
-    /// The session name equals the channel name directly (e.g., "auth" for channel "auth").
-    /// Channel leads are identified via `channel_lead_sessions` in persistent state,
-    /// not by a name prefix.
     pub fn channel_lead(
         channel_name: impl Into<String>,
         dir_key: impl Into<String>,
@@ -639,37 +601,30 @@ impl LaunchConfig {
         let channel_name_str = channel_name.into();
         let session_name = channel_lead_session_name(&channel_name_str);
         let repo = dir_key.into();
-        let auth_provider = crate::config::get_execution_provider_for_role(
-            &repo,
-            crate::config::ExecutionRole::ChannelLead,
-        );
         let domain_ctx = domain_context.into();
+        // Merge domain_context and agents_md into system_prompt_extra
+        let domain_ctx_opt = match (domain_ctx.is_empty(), agents_md) {
+            (true, None) => None,
+            (true, Some(md)) => Some(md),
+            (false, None) => Some(domain_ctx),
+            (false, Some(md)) => Some(format!("{}\n\n{}", domain_ctx, md)),
+        };
         let execution_fallback = crate::config::get_channel_lead_model_fallback(&repo);
-        LaunchConfig {
-            name: session_name,
-            session_mode,
-            role: CoworkerRole::ChannelLead {
-                channel_name: channel_name_str.clone(),
-                domain_context: domain_ctx,
-                agents_md,
-            },
-            initial_prompt: Some(crate::agents::channel_lead_initial_prompt(
-                &channel_name_str,
-            )),
-            additional_dirs: vec![],
-            pr_number: None,
-            working_dir: None,
-            model: crate::config::get_channel_leads_config(&repo)
-                .model_for_channel_with_fallback(&channel_name_str, execution_fallback),
-            channel: Some(channel_name_str),
-            auth_profile_dir: None,
-            auth_provider,
-            escalation_target: None,
-            task_id: None,
-            persisted_initial_prompt: None,
-            cwd_subdir: None,
-            agent_name_override: None,
-        }
+        let channel_model = crate::config::get_channel_leads_config(&repo)
+            .model_for_channel_with_fallback(&channel_name_str, execution_fallback);
+        let initial_prompt = Some(crate::agents::channel_lead_initial_prompt(
+            &channel_name_str,
+        ));
+        LaunchConfig::new(
+            session_name,
+            "midtown-channel-lead",
+            &repo,
+            initial_prompt,
+            domain_ctx_opt,
+        )
+        .with_session_mode(session_mode)
+        .with_channel(Some(channel_name_str))
+        .with_model(channel_model)
     }
 
     /// Convert to a `HeadlessConfig` for headless session spawn.
@@ -695,16 +650,15 @@ impl LaunchConfig {
         let (agent_name, system_prompt) = if is_codex {
             (None, self.render_system_prompt(project_name))
         } else {
-            let name = self
-                .agent_name_override
-                .clone()
-                .unwrap_or_else(|| self.role.agent_name().to_string());
-            (Some(name), self.render_append_prompt(project_name))
+            (
+                Some(self.agent_type.clone()),
+                self.render_append_prompt(project_name),
+            )
         };
 
         // Save the full system prompt (all layers) to disk for attach resumption.
         // The lead attach path uses this file as --system-prompt, so it needs all layers.
-        if matches!(self.role, CoworkerRole::Lead) {
+        if self.agent_type == "midtown-project-lead" {
             let full_prompt = self.render_system_prompt(project_name);
             let prompt_file = crate::paths::lead_system_prompt_file(paths.dir_key());
             if let Some(parent) = prompt_file.parent() {
@@ -745,7 +699,7 @@ impl LaunchConfig {
         // Exception: Codex doesn't support disallowed_tools in its protocol.
         // For Codex channel leads, we rely on the prompt-based restriction in
         // the channel lead agent definition ("do not use Edit/Write") instead.
-        let disallowed_tools = if matches!(self.role, CoworkerRole::ChannelLead { .. })
+        let disallowed_tools = if self.agent_type == "midtown-channel-lead"
             && !matches!(self.auth_provider, crate::auth::AuthProvider::Codex)
         {
             channel_lead_disallowed_tools()
@@ -1059,7 +1013,7 @@ mod tests {
         );
         assert_eq!(config.name, "park");
         assert_eq!(config.session_mode, SessionMode::Fresh);
-        assert_eq!(config.role, CoworkerRole::Coworker);
+        assert_eq!(config.agent_type, "midtown-code-author");
         assert_eq!(config.initial_prompt, Some("Do the thing".to_string()));
         assert!(config.pr_number.is_none());
         let expected =
@@ -1075,7 +1029,7 @@ mod tests {
             LaunchConfig::reviewer("york".to_string(), "myrepo", 42, 0, AuthProvider::Claude);
         assert_eq!(config.name, "york");
         assert_eq!(config.pr_number, Some(42));
-        assert_eq!(config.role, CoworkerRole::Reviewer);
+        assert_eq!(config.agent_type, "midtown-code-reviewer");
         let expected =
             crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Reviewer)
                 .map(|s| s.as_model_str().to_string())
@@ -1380,7 +1334,7 @@ mod tests {
         );
         // Verify it's the lead prompt by checking it doesn't contain coworker-specific text
         // (lead prompt and coworker prompt are structurally different)
-        assert_eq!(config.role, CoworkerRole::Lead);
+        assert_eq!(config.agent_type, "midtown-project-lead");
     }
 
     #[test]
@@ -1402,7 +1356,7 @@ mod tests {
             config.name, "myrepo",
             "Lead session name should be the repo name"
         );
-        assert_eq!(config.role, CoworkerRole::Lead);
+        assert_eq!(config.agent_type, "midtown-project-lead");
         assert!(
             config.initial_prompt.is_some(),
             "Lead should have an initial prompt for session_id init"
@@ -1426,14 +1380,7 @@ mod tests {
         );
         // Session name is the channel name directly
         assert_eq!(config.name, "daemon-architecture");
-        assert_eq!(
-            config.role,
-            CoworkerRole::ChannelLead {
-                channel_name: "daemon-architecture".to_string(),
-                domain_context: "".to_string(),
-                agents_md: None,
-            }
-        );
+        assert_eq!(config.agent_type, "midtown-channel-lead");
         let expected =
             crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::ChannelLead)
                 .map(|s| s.as_model_str().to_string())

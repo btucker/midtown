@@ -317,14 +317,6 @@ impl Channel {
             )));
         }
 
-        // Reject names reserved for coworker sessions to prevent naming collisions.
-        if crate::coworker::AVENUE_NAMES.contains(&channel_name.as_str()) {
-            return Err(crate::Error::InvalidMessage(format!(
-                "Channel name '{}' is reserved for coworker sessions and cannot be used as a channel name",
-                channel_name
-            )));
-        }
-
         // Run one-time migration from flat JSONL layout to per-channel directories.
         // This is idempotent and only runs once per base_dir per process.
         auto_migrate_channels(&base_dir);
@@ -817,14 +809,6 @@ impl Channel {
             )));
         }
 
-        // Reject names reserved for coworker sessions to prevent naming collisions.
-        if crate::coworker::AVENUE_NAMES.contains(&new) {
-            return Err(crate::Error::InvalidMessage(format!(
-                "Channel name '{}' is reserved for coworker sessions and cannot be used as a channel name",
-                new
-            )));
-        }
-
         let base_dir = base_dir.into();
         let old_dir = base_dir.join("channels").join(old);
         let new_dir = base_dir.join("channels").join(new);
@@ -854,13 +838,6 @@ impl Channel {
         if !Self::is_valid_channel_name(name) {
             return Err(crate::Error::InvalidMessage(format!(
                 "Invalid channel name '{}': must be non-empty and contain only alphanumeric characters, hyphens, and underscores",
-                name
-            )));
-        }
-
-        if crate::coworker::AVENUE_NAMES.contains(&name) {
-            return Err(crate::Error::InvalidMessage(format!(
-                "Channel name '{}' is reserved for coworker sessions and cannot be used as a channel name",
                 name
             )));
         }

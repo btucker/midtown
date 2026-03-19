@@ -510,7 +510,7 @@ impl DaemonClient {
         model: Option<&str>,
         pr: Option<u64>,
         plan: Option<&str>,
-        execution_skill: Option<&str>,
+        agent_name: Option<&str>,
         thread_id: Option<&str>,
         parent: Option<&str>,
         agent_type: Option<&str>,
@@ -534,8 +534,8 @@ impl DaemonClient {
         if let Some(p) = plan {
             params["plan"] = serde_json::json!(p);
         }
-        if let Some(skill) = execution_skill {
-            params["execution_skill"] = serde_json::json!(skill);
+        if let Some(name) = agent_name {
+            params["agent_name"] = serde_json::json!(name);
         }
         if let Some(tid) = thread_id {
             params["thread_id"] = serde_json::json!(tid);
@@ -553,7 +553,6 @@ impl DaemonClient {
     pub fn task_update(
         &self,
         id: &str,
-        owner: Option<&str>,
         status: Option<&str>,
         description: Option<&str>,
         blocked_by: Option<&[String]>,
@@ -561,11 +560,11 @@ impl DaemonClient {
         model: Option<&str>,
         pr: Option<u64>,
         plan: Option<&str>,
+        session_id: Option<&str>,
+        message_id: Option<&str>,
+        thread_id: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({ "id": id });
-        if let Some(o) = owner {
-            params["owner"] = serde_json::json!(o);
-        }
         if let Some(s) = status {
             params["status"] = serde_json::json!(s);
         }
@@ -586,6 +585,15 @@ impl DaemonClient {
         }
         if let Some(p) = plan {
             params["plan"] = serde_json::json!(p);
+        }
+        if let Some(sid) = session_id {
+            params["session_id"] = serde_json::json!(sid);
+        }
+        if let Some(mid) = message_id {
+            params["message_id"] = serde_json::json!(mid);
+        }
+        if let Some(tid) = thread_id {
+            params["thread_id"] = serde_json::json!(tid);
         }
         self.send("task.update", Some(params))
     }

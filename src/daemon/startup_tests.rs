@@ -9,10 +9,9 @@ fn make_recoverable_session(
 ) -> crate::daemon::state::SessionRecord {
     crate::daemon::state::SessionRecord {
         session_id: format!("session-{}", name),
-        current_name: Some(name.to_string()),
-        preferred_name: Some(name.to_string()),
+        name: name.to_string(),
         working_dir: "/tmp/test".to_string(),
-        coworker_type: "dev".to_string(),
+        agent_type: "midtown-code-author".to_string(),
         task_id: task_id.map(|id| id.to_string()),
         purpose: format!("test session for {}", name),
         pid: Some(99999), // Non-existent PID
@@ -28,9 +27,9 @@ async fn test_recovering_coworker_names_returns_session_names() {
 
     {
         let mut state = persistent_state.lock().await;
-        let record1 = test_session_record("sess-1", "amsterdam", "dev");
+        let record1 = test_session_record("sess-1", "amsterdam", "midtown-code-author");
         state.sessions.insert("sess-1".to_string(), record1);
-        let record2 = test_session_record("sess-2", "columbus", "dev");
+        let record2 = test_session_record("sess-2", "columbus", "midtown-code-author");
         state.sessions.insert("sess-2".to_string(), record2);
     }
 
@@ -46,9 +45,9 @@ async fn test_recovering_coworker_names_skips_non_resumable() {
 
     {
         let mut state = persistent_state.lock().await;
-        let record1 = test_session_record("sess-1", "amsterdam", "dev");
+        let record1 = test_session_record("sess-1", "amsterdam", "midtown-code-author");
         state.sessions.insert("sess-1".to_string(), record1);
-        let mut record2 = test_session_record("sess-2", "columbus", "dev");
+        let mut record2 = test_session_record("sess-2", "columbus", "midtown-code-author");
         record2.resume_on_startup = false;
         state.sessions.insert("sess-2".to_string(), record2);
     }
@@ -63,9 +62,9 @@ async fn test_recovering_coworker_names_skips_stopped() {
 
     {
         let mut state = persistent_state.lock().await;
-        let record1 = test_session_record("sess-1", "amsterdam", "dev");
+        let record1 = test_session_record("sess-1", "amsterdam", "midtown-code-author");
         state.sessions.insert("sess-1".to_string(), record1);
-        let mut record2 = test_session_record("sess-2", "columbus", "dev");
+        let mut record2 = test_session_record("sess-2", "columbus", "midtown-code-author");
         record2.is_running = false;
         state.sessions.insert("sess-2".to_string(), record2);
     }
@@ -307,9 +306,8 @@ fn test_session_record(
 ) -> crate::daemon::state::SessionRecord {
     crate::daemon::state::SessionRecord {
         session_id: session_id.to_string(),
-        current_name: Some(name.to_string()),
-        preferred_name: Some(name.to_string()),
-        coworker_type: coworker_type.to_string(),
+        name: name.to_string(),
+        agent_type: coworker_type.to_string(),
         is_running: true,
         ..Default::default()
     }
@@ -320,7 +318,7 @@ async fn test_recover_from_session_records_generates_resume_effects() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
     {
         let mut state = persistent_state.lock().await;
-        let mut record = test_session_record("sess-abc", "park", "dev");
+        let mut record = test_session_record("sess-abc", "park", "midtown-code-author");
         record.task_id = Some("42".to_string());
         state.sessions.insert("sess-abc".to_string(), record);
     }
@@ -346,7 +344,7 @@ async fn test_recover_from_session_records_skips_non_resumable() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
     {
         let mut state = persistent_state.lock().await;
-        let mut record = test_session_record("sess-abc", "park", "dev");
+        let mut record = test_session_record("sess-abc", "park", "midtown-code-author");
         record.resume_on_startup = false;
         state.sessions.insert("sess-abc".to_string(), record);
     }
@@ -369,7 +367,7 @@ async fn test_recover_from_session_records_skips_channel_leads() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
     {
         let mut state = persistent_state.lock().await;
-        let record = test_session_record("sess-cl", "auth", "channel-lead");
+        let record = test_session_record("sess-cl", "auth", "midtown-channel-lead");
         state.sessions.insert("sess-cl".to_string(), record);
     }
 
@@ -391,8 +389,8 @@ async fn test_recover_from_session_records_reviewer_with_pr() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
     {
         let mut state = persistent_state.lock().await;
-        let mut record = test_session_record("sess-rev", "amsterdam", "reviewer");
-        record.is_reviewer = true;
+        let mut record = test_session_record("sess-rev", "amsterdam", "midtown-code-reviewer");
+        record.agent_type = "midtown-code-reviewer".to_string();
         record.pr_number = Some(123);
         state.sessions.insert("sess-rev".to_string(), record);
     }
@@ -421,8 +419,8 @@ async fn test_recover_from_session_records_reviewer_without_pr_skipped() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
     {
         let mut state = persistent_state.lock().await;
-        let mut record = test_session_record("sess-rev", "amsterdam", "reviewer");
-        record.is_reviewer = true;
+        let mut record = test_session_record("sess-rev", "amsterdam", "midtown-code-reviewer");
+        record.agent_type = "midtown-code-reviewer".to_string();
         // No pr_number set
         state.sessions.insert("sess-rev".to_string(), record);
     }
@@ -445,7 +443,7 @@ async fn test_recover_from_session_records_restores_working_dir() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
     {
         let mut state = persistent_state.lock().await;
-        let mut record = test_session_record("sess-abc", "park", "dev");
+        let mut record = test_session_record("sess-abc", "park", "midtown-code-author");
         record.working_dir = "/home/user/.midtown/projects/repo/worktrees/park".to_string();
         state.sessions.insert("sess-abc".to_string(), record);
     }
@@ -482,9 +480,9 @@ async fn test_recover_from_session_records_uses_preferred_name() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
     {
         let mut state = persistent_state.lock().await;
-        let mut record = test_session_record("sess-abc", "old-name", "dev");
-        record.current_name = Some("old-name".to_string());
-        record.preferred_name = Some("preferred-name".to_string());
+        let mut record = test_session_record("sess-abc", "old-name", "midtown-code-author");
+        record.name = "old-name".to_string();
+        record.name = "preferred-name".to_string();
         state.sessions.insert("sess-abc".to_string(), record);
     }
 
@@ -504,9 +502,9 @@ async fn test_recover_from_session_records_falls_back_to_current_name() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
     {
         let mut state = persistent_state.lock().await;
-        let mut record = test_session_record("sess-abc", "current", "dev");
-        record.preferred_name = None;
-        record.current_name = Some("current".to_string());
+        let mut record = test_session_record("sess-abc", "current", "midtown-code-author");
+        record.name = String::new();
+        record.name = "current".to_string();
         state.sessions.insert("sess-abc".to_string(), record);
     }
 
@@ -527,9 +525,9 @@ async fn test_recovering_coworker_names_multiple_session_records() {
 
     {
         let mut state = persistent_state.lock().await;
-        let record1 = test_session_record("sess-abc", "park", "dev");
+        let record1 = test_session_record("sess-abc", "park", "midtown-code-author");
         state.sessions.insert("sess-abc".to_string(), record1);
-        let record2 = test_session_record("sess-def", "amsterdam", "dev");
+        let record2 = test_session_record("sess-def", "amsterdam", "midtown-code-author");
         state.sessions.insert("sess-def".to_string(), record2);
     }
 
@@ -550,7 +548,7 @@ async fn test_recover_from_session_records_uses_lead_config_for_lead() {
         let mut state = persistent_state.lock().await;
         // The lead's SessionRecord is identified either by coworker_type=="lead"
         // (new records) or by name==repo_name (legacy/newly-started records).
-        let record = test_session_record("sess-lead", "test-repo", "dev");
+        let record = test_session_record("sess-lead", "test-repo", "midtown-code-author");
         state.sessions.insert("sess-lead".to_string(), record);
     }
 
@@ -566,7 +564,7 @@ async fn test_recover_from_session_records_uses_lead_config_for_lead() {
     let expected_model = crate::daemon::helpers::resolve_model_for_role(
         "test-repo",
         expected_provider,
-        &crate::launch::CoworkerRole::Lead,
+        "midtown-project-lead",
     );
 
     match &effects[0] {
@@ -578,8 +576,7 @@ async fn test_recover_from_session_records_uses_lead_config_for_lead() {
             assert_eq!(name, "test-repo");
             assert_eq!(session_id, "sess-lead");
             assert_eq!(
-                config.role,
-                crate::launch::CoworkerRole::Lead,
+                config.agent_type, "midtown-project-lead",
                 "Lead should use CoworkerRole::Lead, not Coworker"
             );
             assert_eq!(
@@ -598,7 +595,8 @@ async fn test_recover_from_session_records_uses_lead_config_for_codex_lead_recor
         let mut state = persistent_state.lock().await;
         // Newer sessions can persist coworker_type == "lead" even when the
         // runtime name is a provider/session artifact.
-        let record = test_session_record("sess-lead-codex", "codex-session-1", "lead");
+        let record =
+            test_session_record("sess-lead-codex", "codex-session-1", "midtown-project-lead");
         state.sessions.insert("sess-lead-codex".to_string(), record);
     }
 
@@ -614,7 +612,7 @@ async fn test_recover_from_session_records_uses_lead_config_for_codex_lead_recor
     let expected_model = crate::daemon::helpers::resolve_model_for_role(
         "test-repo",
         expected_provider,
-        &crate::launch::CoworkerRole::Lead,
+        "midtown-project-lead",
     );
 
     match &effects[0] {
@@ -625,7 +623,7 @@ async fn test_recover_from_session_records_uses_lead_config_for_codex_lead_recor
         } => {
             assert_eq!(name, "codex-session-1");
             assert_eq!(session_id, "sess-lead-codex");
-            assert_eq!(config.role, crate::launch::CoworkerRole::Lead);
+            assert_eq!(config.agent_type, "midtown-project-lead");
             assert_eq!(config.model, expected_model);
         }
         other => panic!("Expected ResumeCoworker, got {:?}", other),
@@ -639,9 +637,9 @@ async fn test_recovering_coworker_names_deduplicates() {
     {
         let mut state = persistent_state.lock().await;
         // Two session records with the same preferred name
-        let record1 = test_session_record("sess-old", "park", "dev");
+        let record1 = test_session_record("sess-old", "park", "midtown-code-author");
         state.sessions.insert("sess-old".to_string(), record1);
-        let record2 = test_session_record("sess-new", "park", "dev");
+        let record2 = test_session_record("sess-new", "park", "midtown-code-author");
         state.sessions.insert("sess-new".to_string(), record2);
     }
 
@@ -662,13 +660,13 @@ async fn test_recover_from_session_records_skips_stopped_sessions() {
     {
         let mut state = persistent_state.lock().await;
         // Running session — should be recovered
-        let mut running = test_session_record("sess-running", "park", "dev");
+        let mut running = test_session_record("sess-running", "park", "midtown-code-author");
         running.is_running = true;
         running.resume_on_startup = true;
         state.sessions.insert("sess-running".to_string(), running);
 
         // Stopped session — should NOT be recovered
-        let mut stopped = test_session_record("sess-stopped", "lexington", "dev");
+        let mut stopped = test_session_record("sess-stopped", "lexington", "midtown-code-author");
         stopped.is_running = false;
         stopped.resume_on_startup = true;
         state.sessions.insert("sess-stopped".to_string(), stopped);
@@ -693,14 +691,14 @@ async fn test_recover_from_session_records_deduplicates_by_name() {
     {
         let mut state = persistent_state.lock().await;
         // Older session for "park"
-        let mut older = test_session_record("sess-old", "park", "dev");
+        let mut older = test_session_record("sess-old", "park", "midtown-code-author");
         older.is_running = true;
         older.resume_on_startup = true;
         older.created_at = chrono::Utc::now() - chrono::Duration::hours(2);
         state.sessions.insert("sess-old".to_string(), older);
 
         // Newer session for "park" — should win
-        let mut newer = test_session_record("sess-new", "park", "dev");
+        let mut newer = test_session_record("sess-new", "park", "midtown-code-author");
         newer.is_running = true;
         newer.resume_on_startup = true;
         newer.created_at = chrono::Utc::now();
@@ -733,26 +731,26 @@ async fn test_recover_channel_lead_session_mappings_rebuilds_active_root_leads()
             .channel_lead_sessions
             .insert("stale-channel".to_string(), "stale-session".to_string());
 
-        let mut lead = test_session_record("sess-lead", "payments", "channel-lead");
+        let mut lead = test_session_record("sess-lead", "payments", "midtown-channel-lead");
         lead.channel = Some("payments".to_string());
         lead.bound_thread_id = None;
         lead.resume_on_startup = true;
         lead.is_running = true;
         state.sessions.insert("sess-lead".to_string(), lead);
 
-        let mut skipped = test_session_record("sess-skipped", "park", "channel-lead");
+        let mut skipped = test_session_record("sess-skipped", "park", "midtown-channel-lead");
         skipped.resume_on_startup = false;
         skipped.is_running = false;
         state.sessions.insert("sess-skipped".to_string(), skipped);
 
-        let mut forked = test_session_record("sess-fork", "follows", "channel-lead");
+        let mut forked = test_session_record("sess-fork", "follows", "midtown-channel-lead");
         forked.channel = Some("follows".to_string());
         forked.bound_thread_id = Some("thread-1".to_string());
         forked.resume_on_startup = true;
         forked.is_running = true;
         state.sessions.insert("sess-fork".to_string(), forked);
 
-        let mut wrong_type = test_session_record("sess-dev", "dev", "dev");
+        let mut wrong_type = test_session_record("sess-dev", "dev", "midtown-code-author");
         wrong_type.channel = Some("dev".to_string());
         wrong_type.is_running = true;
         wrong_type.resume_on_startup = true;
@@ -778,7 +776,7 @@ async fn test_recover_channel_lead_session_mappings_persists_after_stale_is_runn
 
     {
         let mut state = persistent_state.lock().await;
-        let mut lead = test_session_record("sess-lead", "payments", "channel-lead");
+        let mut lead = test_session_record("sess-lead", "payments", "midtown-channel-lead");
         lead.channel = Some("payments".to_string());
         lead.bound_thread_id = None;
         lead.resume_on_startup = true;
@@ -824,14 +822,14 @@ async fn test_recover_channel_lead_session_mappings_prefers_newest_session_per_c
     {
         let mut state = persistent_state.lock().await;
 
-        let mut older = test_session_record("sess-old", "payments", "channel-lead");
+        let mut older = test_session_record("sess-old", "payments", "midtown-channel-lead");
         older.channel = Some("payments".to_string());
         older.created_at = chrono::Utc::now() - chrono::Duration::hours(1);
         older.resume_on_startup = true;
         older.is_running = true;
         state.sessions.insert("sess-old".to_string(), older);
 
-        let mut newer = test_session_record("sess-new", "payments", "channel-lead");
+        let mut newer = test_session_record("sess-new", "payments", "midtown-channel-lead");
         newer.channel = Some("payments".to_string());
         newer.created_at = chrono::Utc::now();
         newer.resume_on_startup = true;
@@ -863,12 +861,12 @@ async fn test_clear_stale_running_sessions_clears_non_resumed() {
     {
         let mut state = persistent_state.lock().await;
         // This session will be recovered (resume_on_startup=true, is_running=true)
-        let active = test_session_record("sess-active", "park", "dev");
+        let active = test_session_record("sess-active", "park", "midtown-code-author");
         state.sessions.insert("sess-active".to_string(), active);
 
         // This session was running before restart but won't be resumed
         // (resume_on_startup=false). Its is_running flag is stale.
-        let mut stale = test_session_record("sess-stale", "lexington", "dev");
+        let mut stale = test_session_record("sess-stale", "lexington", "midtown-code-author");
         stale.resume_on_startup = false;
         state.sessions.insert("sess-stale".to_string(), stale);
     }
@@ -898,7 +896,7 @@ async fn test_clear_stale_running_sessions_clears_channel_leads() {
 
     {
         let mut state = persistent_state.lock().await;
-        let lead = test_session_record("sess-lead", "payments", "channel-lead");
+        let lead = test_session_record("sess-lead", "payments", "midtown-channel-lead");
         state.sessions.insert("sess-lead".to_string(), lead);
     }
 
@@ -920,8 +918,9 @@ async fn test_clear_stale_running_sessions_clears_stale_reviewers() {
 
     {
         let mut state = persistent_state.lock().await;
-        let mut reviewer = test_session_record("sess-reviewer", "amsterdam", "reviewer");
-        reviewer.is_reviewer = true;
+        let mut reviewer =
+            test_session_record("sess-reviewer", "amsterdam", "midtown-code-reviewer");
+        reviewer.agent_type = "midtown-code-reviewer".to_string();
         reviewer.pr_number = Some(42);
         reviewer.resume_on_startup = false;
         state.sessions.insert("sess-reviewer".to_string(), reviewer);
@@ -955,7 +954,7 @@ async fn test_clear_stale_running_sessions_skips_already_stopped() {
 
     {
         let mut state = persistent_state.lock().await;
-        let mut stopped = test_session_record("sess-stopped", "york", "dev");
+        let mut stopped = test_session_record("sess-stopped", "york", "midtown-code-author");
         stopped.is_running = false;
         stopped.resume_on_startup = false;
         state.sessions.insert("sess-stopped".to_string(), stopped);

@@ -86,30 +86,8 @@ fn test_channel_name_allows_valid_names() {
     assert!(Channel::new(temp_dir.path(), "midtown").is_ok());
 }
 
-#[test]
-fn test_channel_name_rejects_coworker_avenue_names() {
-    // These names are reserved for coworker sessions; creating a channel with
-    // the same name would collide with the channel lead session for that coworker.
-    let temp_dir = TempDir::new().unwrap();
-    for name in [
-        "lexington",
-        "park",
-        "madison",
-        "broadway",
-        "amsterdam",
-        "columbus",
-        "riverside",
-        "york",
-        "pleasant",
-        "vernon",
-    ] {
-        assert!(
-            Channel::new(temp_dir.path(), name).is_err(),
-            "Channel name '{}' should be rejected as a reserved coworker avenue name",
-            name
-        );
-    }
-}
+// Avenue name rejection test removed — with task-based naming, avenue names
+// are no longer reserved and can be used as channel names.
 
 #[test]
 fn test_channel_file_exists_for_tailf() {
@@ -1746,26 +1724,8 @@ fn test_rename_channel_rejects_existing_target() {
     );
 }
 
-#[test]
-fn test_rename_channel_rejects_avenue_name() {
-    let tmp = TempDir::new().unwrap();
-    let base_dir = tmp.path();
-
-    Channel::new(base_dir, "my-channel").expect("create channel");
-
-    // "park" is a reserved AVENUE_NAME
-    let result = Channel::rename_channel(base_dir, "my-channel", "park", "main");
-    assert!(
-        result.is_err(),
-        "renaming to a reserved avenue name should fail"
-    );
-    let err = result.unwrap_err().to_string();
-    assert!(
-        err.contains("reserved"),
-        "error should mention reserved name, got: {}",
-        err
-    );
-}
+// Avenue name rename rejection test removed — with task-based naming,
+// avenue names are no longer reserved.
 
 #[test]
 fn test_channel_info_is_dm_true_for_dm_prefix() {

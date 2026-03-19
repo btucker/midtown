@@ -5,10 +5,7 @@
 //! We replicate the decision logic from `handle()` in isolation since the actual
 //! function requires a live daemon connection.
 
-use std::sync::Mutex;
-
-/// Guard for tests that mutate env vars.
-static ENV_MUTEX: Mutex<()> = Mutex::new(());
+use crate::ENV_MUTEX;
 
 /// Simulates the auto-threading decision logic from `handle()` in channel.rs.
 ///

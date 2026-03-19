@@ -1087,7 +1087,7 @@ transitions:
 # Body content here
 ";
     let meta = parse_agents_md_frontmatter(content).unwrap();
-    assert_eq!(meta.name.as_deref(), Some("tdw"));
+    assert_eq!(meta.name, Some("tdw".to_string()));
     assert_eq!(meta.description.as_deref(), Some("Test-Driven Writing"));
     assert_eq!(meta.states, vec!["study", "do", "observe", "hone"]);
     assert_eq!(meta.transitions.get("study").unwrap(), &vec!["do"]);
@@ -1109,7 +1109,7 @@ states: [a, b, c]
 ---
 ";
     let meta = parse_agents_md_frontmatter(content).unwrap();
-    assert_eq!(meta.name.as_deref(), Some("simple"));
+    assert_eq!(meta.name, Some("simple".to_string()));
     assert_eq!(meta.states, vec!["a", "b", "c"]);
     assert!(meta.transitions.is_empty());
 }
@@ -1152,7 +1152,7 @@ description: Spec-driven review
 ---
 ";
     let meta = parse_agents_md_frontmatter(content).unwrap();
-    assert_eq!(meta.name.as_deref(), Some("spec-review"));
+    assert_eq!(meta.name, Some("spec-review".to_string()));
     assert_eq!(meta.description.as_deref(), Some("Spec-driven review"));
     assert!(meta.states.is_empty());
 }
@@ -1190,7 +1190,7 @@ transitions:
 
     let tdw = result.iter().find(|w| w.name == "tdw").unwrap();
     let meta = tdw.metadata.as_ref().unwrap();
-    assert_eq!(meta.name.as_deref(), Some("tdw"));
+    assert_eq!(meta.name, Some("tdw".to_string()));
     assert_eq!(meta.states, vec!["study", "do"]);
     assert_eq!(meta.transitions.len(), 2);
 

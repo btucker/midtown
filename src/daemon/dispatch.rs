@@ -13,6 +13,21 @@ use crate::daemon_messages;
 
 use super::constants::*;
 use super::effects::{self, Effect};
+
+/// Generate a session name for a task.
+///
+/// Creates a slug from the task ID and subject (e.g., "task-42-fix-login-bug").
+/// If the generated name collides with an excluded name, appends a short random suffix.
+fn generate_task_session_name(task_id: &str, subject: &str, excluded: &HashSet<String>) -> String {
+    let slug = crate::worktree_registry::branch_slug_for_task(task_id, subject);
+    let name = slug.to_lowercase();
+    if !excluded.contains(&name) {
+        return name;
+    }
+    // Append random suffix for uniqueness
+    let suffix = fastrand::u32(1000..9999);
+    format!("{}-{}", name, suffix)
+}
 use super::helpers::is_project_lead;
 use super::{DaemonState, snapshot};
 
@@ -549,9 +564,13 @@ fn check_and_recover_orphans_impl(snap: &snapshot::WorldSnapshot) -> Vec<effects
     );
 
     let (session_mode, preferred_name) = match snap.find_session_for_task(&recovery.task_id) {
-        Some(record) if !record.is_running && !record.is_reviewer => (
+        Some(record) if !record.is_running && record.agent_type != "midtown-code-reviewer" => (
             crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
-            record.preferred_name.clone(),
+            if record.name.is_empty() {
+                None
+            } else {
+                Some(record.name.clone())
+            },
         ),
         _ => (
             crate::launch::SessionMode::Fresh,
@@ -1117,11 +1136,9 @@ fn resolve_grouped_name(
                         || t.status == crate::tasks::TaskStatus::Pending)
             })
             && let Some(session) = snap.find_session_for_task(&pr_task.id)
-            && let Some(name) = session
-                .current_name
-                .as_ref()
-                .or(session.preferred_name.as_ref())
+            && !session.name.is_empty()
         {
+            let name = &session.name;
             info!(
                 "Task !{} references PR #{} - assigning to session owner {}",
                 task.id, pr_num, name
@@ -1141,11 +1158,9 @@ fn resolve_grouped_name(
         }) {
             // Session-based lookup (source of truth).
             if let Some(session) = snap.find_session_for_task(&t.id)
-                && let Some(name) = session
-                    .current_name
-                    .as_ref()
-                    .or(session.preferred_name.as_ref())
+                && !session.name.is_empty()
             {
+                let name = &session.name;
                 info!(
                     "Task !{} references PR #{} - assigning to session owner {} (text match)",
                     task.id, pr_num, name
@@ -1323,7 +1338,11 @@ fn dispatch_unowned_pending_tasks(
                     task.id, record.session_id
                 );
 
-                let preferred_name = record.preferred_name.clone();
+                let preferred_name = if record.name.is_empty() {
+                    None
+                } else {
+                    Some(record.name.clone())
+                };
                 let session_id = record.session_id.clone();
                 let decision = SpawnDecision {
                     task_id: task.id.clone(),
@@ -1397,14 +1416,14 @@ fn dispatch_unowned_pending_tasks(
             {
                 excluded_names.insert(author.to_lowercase());
             }
-            let Some(name) = state
-                .coworkers
-                .next_available_name_excluding(&excluded_names)
-            else {
-                debug!("No available coworker slots for unowned task !{}", task.id);
-                continue;
+            // Use the lead-assigned agent_name from TaskStore if available,
+            // otherwise fall back to generating a name from the task subject.
+            let name = if let Some(agent_name) = snap.task_agent_name_map.get(&task.id) {
+                agent_name.clone()
+            } else {
+                generate_task_session_name(&task.id, &task.subject, &excluded_names)
             };
-            debug!("Task !{}: allocated fresh coworker name {}", task.id, name,);
+            debug!("Task !{}: allocated coworker name {}", task.id, name);
             name
         };
 
@@ -1584,7 +1603,7 @@ fn dispatch_unowned_pending_tasks(
             config.model = super::helpers::normalize_model_for_provider_role(
                 &config.model,
                 config.auth_provider,
-                &config.role,
+                &config.agent_type,
             );
             config.working_dir = Some(wt_path.clone());
             config.channel = task.channel.clone();
@@ -1634,7 +1653,7 @@ fn dispatch_unowned_pending_tasks(
                         crate::daemon::helpers::format_placeholder_frontmatter(&task.id)
                     ),
                     restart_count: 0,
-                    agent_type: "reviewer".to_string(),
+                    agent_type: "midtown-code-reviewer".to_string(),
                 }),
             });
             spawns_queued_this_tick += 1;

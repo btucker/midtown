@@ -492,13 +492,10 @@ pub async fn recovering_coworker_names(
     for record in state.sessions.values() {
         if record.resume_on_startup
             && record.is_running
-            && let Some(name) = record
-                .preferred_name
-                .as_ref()
-                .or(record.current_name.as_ref())
-            && !names.contains(name)
+            && !record.name.is_empty()
+            && !names.contains(&record.name)
         {
-            names.push(name.clone());
+            names.push(record.name.clone());
         }
     }
 
@@ -557,12 +554,11 @@ pub async fn recover_from_session_records(
         let mut by_name: std::collections::HashMap<String, (String, SessionRecord)> =
             std::collections::HashMap::new();
         for (session_id, record) in candidates {
-            let name = record
-                .preferred_name
-                .as_deref()
-                .or(record.current_name.as_deref())
-                .unwrap_or("unknown")
-                .to_string();
+            let name = if record.name.is_empty() {
+                "unknown".to_string()
+            } else {
+                record.name.clone()
+            };
             match by_name.entry(name) {
                 std::collections::hash_map::Entry::Vacant(e) => {
                     e.insert((session_id, record));
@@ -588,7 +584,7 @@ pub async fn recover_from_session_records(
 
     for (session_id, record) in sessions {
         // Skip channel leads — recovered separately
-        if record.coworker_type == "channel-lead" {
+        if record.agent_type == "midtown-channel-lead" {
             info!(
                 "Skipping channel lead session '{}' — recovered by channel lead recovery",
                 session_id
@@ -596,27 +592,27 @@ pub async fn recover_from_session_records(
             continue;
         }
 
-        let name = record
-            .preferred_name
-            .as_deref()
-            .or(record.current_name.as_deref())
-            .unwrap_or("unknown");
+        let name = if record.name.is_empty() {
+            "unknown"
+        } else {
+            &record.name
+        };
 
         info!(
             "Recovering session {} for {} (type={}, task={:?})",
-            session_id, name, record.coworker_type, record.task_id
+            session_id, name, record.agent_type, record.task_id
         );
 
         // Build launch config from SessionRecord
         let is_main_lead_session =
-            record.coworker_type == "lead" || name == "lead" || name == repo_name;
+            record.agent_type == "midtown-project-lead" || name == "lead" || name == repo_name;
 
         let mut config = if is_main_lead_session {
             // Lead session — uses lead system prompt, provider-compatible model,
             // unrestricted settings.
             // Must match recover_from_session_records() which also special-cases the lead.
             LaunchConfig::lead(repo_name, None)
-        } else if record.is_reviewer {
+        } else if record.agent_type == "midtown-code-reviewer" {
             if let Some(pr_number) = record.pr_number {
                 let reviewer_provider = crate::config::get_execution_provider_for_role(
                     repo_name,
@@ -663,7 +659,7 @@ pub async fn recover_from_session_records(
                 .clone()
                 .or_else(|| config.initial_prompt.clone());
         }
-        if matches!(config.role, crate::launch::CoworkerRole::Reviewer) {
+        if config.agent_type == "midtown-code-reviewer" {
             config.auth_provider = crate::config::get_execution_provider_for_role(
                 repo_name,
                 crate::config::ExecutionRole::Reviewer,
@@ -695,8 +691,11 @@ pub async fn recover_from_session_records(
                 );
             }
         }
-        config.model =
-            super::helpers::resolve_model_for_role(repo_name, config.auth_provider, &config.role);
+        config.model = super::helpers::resolve_model_for_role(
+            repo_name,
+            config.auth_provider,
+            &config.agent_type,
+        );
 
         recovered_session_ids.insert(session_id.clone());
         effects.push(Effect::ResumeCoworker {
@@ -729,7 +728,7 @@ pub async fn recover_channel_lead_session_mappings(
     state.channel_lead_sessions.clear();
 
     for record in state.sessions.values() {
-        if record.coworker_type != "channel-lead" {
+        if record.agent_type != "midtown-channel-lead" {
             continue;
         }
         if !record.resume_on_startup {
@@ -746,11 +745,7 @@ pub async fn recover_channel_lead_session_mappings(
             continue;
         }
 
-        let session_name = record
-            .preferred_name
-            .as_deref()
-            .or(record.current_name.as_deref())
-            .unwrap_or("");
+        let session_name = &record.name;
         if session_name.is_empty() {
             continue;
         }
@@ -825,13 +820,7 @@ pub async fn clear_stale_running_sessions(
         }
         info!(
             "Clearing stale is_running flag for session {} (name={:?}, type={}, resume_on_startup={})",
-            record.session_id,
-            record
-                .preferred_name
-                .as_deref()
-                .or(record.current_name.as_deref()),
-            record.coworker_type,
-            record.resume_on_startup
+            record.session_id, record.name, record.agent_type, record.resume_on_startup
         );
         record.is_running = false;
         cleared += 1;

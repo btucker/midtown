@@ -144,13 +144,6 @@ fn discover_projects() -> Vec<ProjectInfo> {
             continue;
         }
 
-        // Skip entries that are coworker names, not real projects.
-        // These get created when a coworker process in a worktree incorrectly
-        // registers itself as a project using the worktree directory name.
-        if crate::coworker::is_coworker_name(&dir_key) {
-            continue;
-        }
-
         let pid_file = entry.path().join("daemon.pid");
         let socket_path = crate::paths::daemon_socket_for_repo(&dir_key);
 
@@ -862,20 +855,18 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let projects_dir = temp_dir.path();
 
-        // Create directories: some real projects, some coworker names
+        // Create directories: some real projects, some hidden dirs
         std::fs::create_dir(projects_dir.join("midtown")).unwrap();
-        std::fs::create_dir(projects_dir.join("broadway")).unwrap();
-        std::fs::create_dir(projects_dir.join("amsterdam")).unwrap();
         std::fs::create_dir(projects_dir.join("my-app")).unwrap();
-        std::fs::create_dir(projects_dir.join("bleecker")).unwrap();
+        std::fs::create_dir(projects_dir.join(".tmp-test")).unwrap();
 
-        // Read entries and filter like discover_projects does
+        // Read entries and filter like discover_projects does (hidden dirs are filtered)
         let entries = std::fs::read_dir(projects_dir).unwrap();
         let mut names: Vec<String> = entries
             .flatten()
             .filter(|e| e.path().is_dir())
             .map(|e| e.file_name().to_string_lossy().to_string())
-            .filter(|name| !crate::coworker::is_coworker_name(name))
+            .filter(|name| !name.starts_with('.'))
             .collect();
         names.sort();
 

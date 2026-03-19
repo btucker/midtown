@@ -1,6 +1,6 @@
 //! Tests for lead system prompt persistence on attach and channel lead model selection
 
-use crate::launch::{CoworkerRole, LaunchConfig, SessionMode, inject_session_id_env};
+use crate::launch::{LaunchConfig, SessionMode, inject_session_id_env};
 use crate::paths;
 use std::fs;
 
@@ -30,7 +30,7 @@ fn test_lead_system_prompt_saved_on_spawn() {
     let config = LaunchConfig {
         name: "lead".to_string(),
         session_mode: SessionMode::Fresh,
-        role: CoworkerRole::Lead,
+        agent_type: "midtown-project-lead".to_string(),
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
@@ -43,7 +43,7 @@ fn test_lead_system_prompt_saved_on_spawn() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
-        agent_name_override: None,
+        system_prompt_extra: None,
     };
 
     // Convert to headless config (this should save the system prompt)
@@ -299,11 +299,7 @@ fn test_codex_channel_lead_skips_disallowed_tools() {
     let config = LaunchConfig {
         name: "ops".to_string(),
         session_mode: SessionMode::Fresh,
-        role: CoworkerRole::ChannelLead {
-            channel_name: "ops".to_string(),
-            domain_context: String::new(),
-            agents_md: None,
-        },
+        agent_type: "midtown-channel-lead".to_string(),
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
@@ -316,7 +312,7 @@ fn test_codex_channel_lead_skips_disallowed_tools() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
-        agent_name_override: None,
+        system_prompt_extra: None,
     };
 
     let headless = config.to_headless_config(&test_paths("myrepo", "myrepo"));
@@ -334,11 +330,7 @@ fn test_claude_channel_lead_still_has_disallowed_tools() {
     let config = LaunchConfig {
         name: "ops".to_string(),
         session_mode: SessionMode::Fresh,
-        role: CoworkerRole::ChannelLead {
-            channel_name: "ops".to_string(),
-            domain_context: String::new(),
-            agents_md: None,
-        },
+        agent_type: "midtown-channel-lead".to_string(),
         initial_prompt: None,
         additional_dirs: vec![],
         pr_number: None,
@@ -351,7 +343,7 @@ fn test_claude_channel_lead_still_has_disallowed_tools() {
         task_id: None,
         persisted_initial_prompt: None,
         cwd_subdir: None,
-        agent_name_override: None,
+        system_prompt_extra: None,
     };
 
     let headless = config.to_headless_config(&test_paths("myrepo", "myrepo"));
@@ -404,31 +396,38 @@ fn test_channel_lead_cwd_subdir_can_be_set() {
     );
 }
 
-// --- agent_name tests ---
+// --- execution_role_for_agent_type tests ---
 
 #[test]
-fn test_coworker_role_agent_name_coworker() {
-    assert_eq!(CoworkerRole::Coworker.agent_name(), "midtown-code-author",);
+fn test_execution_role_for_code_author() {
+    assert_eq!(
+        crate::config::execution_role_for_agent_type("midtown-code-author"),
+        crate::config::ExecutionRole::Coworker
+    );
 }
 
 #[test]
-fn test_coworker_role_agent_name_reviewer() {
-    assert_eq!(CoworkerRole::Reviewer.agent_name(), "midtown-code-reviewer",);
+fn test_execution_role_for_code_reviewer() {
+    assert_eq!(
+        crate::config::execution_role_for_agent_type("midtown-code-reviewer"),
+        crate::config::ExecutionRole::Reviewer
+    );
 }
 
 #[test]
-fn test_coworker_role_agent_name_lead() {
-    assert_eq!(CoworkerRole::Lead.agent_name(), "midtown-project-lead",);
+fn test_execution_role_for_project_lead() {
+    assert_eq!(
+        crate::config::execution_role_for_agent_type("midtown-project-lead"),
+        crate::config::ExecutionRole::Lead
+    );
 }
 
 #[test]
-fn test_coworker_role_agent_name_channel_lead() {
-    let role = CoworkerRole::ChannelLead {
-        channel_name: "ops".to_string(),
-        domain_context: String::new(),
-        agents_md: None,
-    };
-    assert_eq!(role.agent_name(), "midtown-channel-lead",);
+fn test_execution_role_for_channel_lead() {
+    assert_eq!(
+        crate::config::execution_role_for_agent_type("midtown-channel-lead"),
+        crate::config::ExecutionRole::ChannelLead
+    );
 }
 
 #[test]
@@ -558,9 +557,9 @@ fn test_channel_lead_append_prompt_includes_domain_context() {
     );
 }
 
-/// agent_name_override should take precedence over role.agent_name() in to_headless_config.
+/// Changing agent_type directly controls the agent name in to_headless_config.
 #[test]
-fn test_agent_name_override_in_headless_config() {
+fn test_agent_type_controls_headless_agent_name() {
     let mut config = LaunchConfig::coworker(
         "park".to_string(),
         "test-repo".to_string(),
@@ -568,14 +567,14 @@ fn test_agent_name_override_in_headless_config() {
         None,
         Some("42".to_string()),
     );
-    config.agent_name_override = Some("midtown-code-reviewer".to_string());
+    config.agent_type = "midtown-code-reviewer".to_string();
 
     let headless = config.to_headless_config(&test_paths("test-repo", "test-repo"));
 
     assert_eq!(
         headless.agent_name.as_deref(),
         Some("midtown-code-reviewer"),
-        "agent_name_override should override the role's default agent name"
+        "agent_type should control the agent name in headless config"
     );
 }
 

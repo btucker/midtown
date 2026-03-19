@@ -21,19 +21,15 @@ use super::snapshot::WorldSnapshot;
 use super::trackers::{PrIssueType, StuckConditionType};
 
 /// Resolve a PR's owner via the session-centric path:
-/// PR number → task_id → session_id → session.current_name (or preferred_name).
+/// PR number → task_id → session_id → session.name.
 ///
-/// Returns `Some(name)` if a session record exists with a name allocation,
+/// Returns `Some(name)` if a session record exists with a non-empty name,
 /// or `None` if any link in the chain is missing (no task association, no session,
-/// or session has neither current_name nor preferred_name).
+/// or session has an empty name).
 ///
 /// This gives session-based routing priority over branch-based lookup. When a
 /// coworker is reassigned to a different name on restart, the session record
 /// tracks the current name, so PRs route to the correct coworker.
-///
-/// Falls back to `preferred_name` when the session is suspended and has released
-/// `current_name`. This handles the case where a coworker finishes and releases its
-/// name but `preferred_name` still identifies who authored the PR.
 fn resolve_pr_owner_from_session(
     pr_number: u64,
     pr_task_associations: &HashMap<u64, String>,
@@ -43,10 +39,11 @@ fn resolve_pr_owner_from_session(
     let task_id = pr_task_associations.get(&pr_number)?;
     let session_id = session_task_map.get(task_id)?;
     let session = sessions.get(session_id)?;
-    session
-        .current_name
-        .clone()
-        .or_else(|| session.preferred_name.clone())
+    if session.name.is_empty() {
+        None
+    } else {
+        Some(session.name.clone())
+    }
 }
 
 /// Data extracted from persistent state for PR decision-making.
@@ -1450,17 +1447,22 @@ async fn collect_stuck_condition_effects(
             })
             .collect();
         let channel_lead_names = ps.channel_lead_names();
-        let has_available_slots = !at_task_limit
-            && state
-                .coworkers
-                .next_available_name_excluding(&channel_lead_names)
-                .is_some();
+        // With task-based naming, there is always a name available.
+        // The only constraint is the in-progress task limit.
+        let has_available_slots = !at_task_limit;
         let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
         let pr_session_names: HashMap<u64, String> = {
             let task_to_name: HashMap<&str, &str> = ps
                 .sessions
                 .values()
-                .filter_map(|s| Some((s.task_id.as_deref()?, s.current_name.as_deref()?)))
+                .filter_map(|s| {
+                    let name = if s.name.is_empty() {
+                        return None;
+                    } else {
+                        s.name.as_str()
+                    };
+                    Some((s.task_id.as_deref()?, name))
+                })
                 .collect();
             pr_task_associations
                 .iter()
@@ -1864,7 +1866,7 @@ async fn silent_coworker_scenario(
                 STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
             );
             effects.push(Effect::nudge_session(
-                state.session_id_for_name(name),
+                state.session_id_for_name(name).await,
                 nudge_msg,
             ));
             effects.push(Effect::PostSystemMessage {
@@ -2140,7 +2142,8 @@ async fn collect_comment_notification_effects(
             .pr_task_index
             .task_for_pr(pr_number)
             .and_then(|task_id| snap.find_session_for_task(task_id))
-            .and_then(|s| s.current_name.clone())
+            .map(|s| s.name.clone())
+            .filter(|n| !n.is_empty())
         {
             Some(o) => o,
             None => continue, // Not a coworker PR
@@ -2731,7 +2734,8 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                     .get(&pr_number)
                     .and_then(|task_id| session_task_map.get(task_id.as_str()))
                     .and_then(|session_id| sessions.get(session_id))
-                    .and_then(|record| record.current_name.clone())
+                    .map(|record| record.name.clone())
+                    .filter(|n| !n.is_empty())
                 {
                     // A session owns this PR's task. Only treat as orphaned if the
                     // coworker is NOT currently active — an active coworker can always
@@ -3331,7 +3335,7 @@ pub(super) async fn handle_pr_comment_nudge(
 
         let effects = if is_active {
             vec![Effect::nudge_session(
-                state.session_id_for_name(&reviewer_name),
+                state.session_id_for_name(&reviewer_name).await,
                 nudge_msg,
             )]
         } else if let Some(session_id) = reviewer_session_id {
@@ -3339,22 +3343,17 @@ pub(super) async fn handle_pr_comment_nudge(
             // Override role, provider, and model: coworker() defaults to
             // Coworker/sonnet, but this is a reviewer session that should
             // use Reviewer provider + model (matching startup.rs recovery).
-            let mut config = crate::launch::LaunchConfig::coworker(
+            let mut config = crate::launch::LaunchConfig::resume_reviewer(
                 reviewer_name.clone(),
                 state.paths.dir_key().to_string(),
-                crate::launch::SessionMode::ResumeSession(session_id.clone()),
+                session_id.clone(),
                 Some(nudge_msg),
                 task_id,
-            );
-            config.role = crate::launch::CoworkerRole::Reviewer;
-            config.auth_provider = crate::config::get_execution_provider_for_role(
-                state.paths.dir_key(),
-                crate::config::ExecutionRole::Reviewer,
             );
             config.model = super::helpers::resolve_model_for_role(
                 state.paths.dir_key(),
                 config.auth_provider,
-                &config.role,
+                &config.agent_type,
             );
             vec![Effect::ResumeCoworker {
                 name: reviewer_name.clone(),
@@ -4311,7 +4310,6 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::NudgeSessionWithCallbacks { .. } => "NudgeSessionWithCallbacks",
         Effect::ShutdownSession { .. } => "ShutdownSession",
         Effect::RecordSession { .. } => "RecordSession",
-        Effect::ReleaseName { .. } => "ReleaseName",
         Effect::MergePr { .. } => "MergePr",
         Effect::AutoMergePr { .. } => "AutoMergePr",
         Effect::PostPrComment { .. } => "PostPrComment",

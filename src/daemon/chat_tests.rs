@@ -239,11 +239,10 @@ fn mention_spawn_for_reviewer_produces_resume_coworker_effect() {
                 config.session_mode,
                 crate::launch::SessionMode::ResumeSession("sess-amsterdam-reviewer".to_string())
             );
-            // Verify reviewer role is preserved (not coworker)
+            // Verify reviewer agent_type is preserved (not coworker)
             assert_eq!(
-                config.role,
-                crate::launch::CoworkerRole::Reviewer,
-                "Resumed reviewer should have Reviewer role, not Coworker"
+                config.agent_type, "midtown-code-reviewer",
+                "Resumed reviewer should have reviewer agent type, not coworker"
             );
         }
         _ => panic!(

@@ -1,98 +1,86 @@
-//! Test that breaking a reviewer clears their task session span.
+//! Test that breaking a reviewer clears their assignment.
 //!
 //! Regression test for: When a reviewer coworker is manually broken
-//! (`midtown agent stop`), the daemon didn't clear the review span.
+//! (`midtown agent stop`), the daemon didn't clear the review assignment.
 //! It then detected the PR still needs review, sees no active reviewer,
 //! and respawned one — creating a loop.
 
-use midtown::daemon::DaemonPersistentState;
+use midtown::daemon::{DaemonPersistentState, SessionRecord};
+
+fn insert_reviewer_session(
+    ps: &mut DaemonPersistentState,
+    name: &str,
+    session_id: &str,
+    task_id: &str,
+    pr: u64,
+) {
+    ps.sessions.insert(
+        session_id.to_string(),
+        SessionRecord {
+            session_id: session_id.to_string(),
+            name: name.to_string(),
+            agent_type: "midtown-code-reviewer".to_string(),
+            task_id: Some(task_id.to_string()),
+            pr_number: Some(pr),
+            is_running: true,
+            ..Default::default()
+        },
+    );
+    ps.task_pr_number.insert(task_id.to_string(), pr);
+}
 
 #[test]
 fn test_breaking_reviewer_should_clear_span() {
     let mut ps = DaemonPersistentState::default();
+    insert_reviewer_session(&mut ps, "amsterdam", "sess-rev-42", "review-42", 42);
+    assert!(ps.pr_has_active_reviewer(42));
 
-    // Setup: Create a reviewer span for PR #42
-    ps.create_span("review-42", "amsterdam", "reviewer", "sess-rev-42");
-    ps.task_pr_number.insert("review-42".to_string(), 42);
-
-    // Verify the span exists
-    assert!(ps.active_reviewer_for_pr(42).is_some());
-
-    // Simulate breaking the reviewer via clear_reviewer_assignment
     let cleared = ps.clear_reviewer_assignment("amsterdam", "test-repo");
     assert!(cleared, "should have cleared an assignment");
-
-    // Verify no active reviewer remains
-    assert!(ps.active_reviewer_for_pr(42).is_none());
+    assert!(!ps.pr_has_active_reviewer(42));
 }
 
 #[test]
 fn test_breaking_untracked_reviewer_still_clears_span() {
     let mut ps = DaemonPersistentState::default();
+    insert_reviewer_session(&mut ps, "amsterdam", "sess-rev-42", "review-42", 42);
+    assert!(ps.pr_has_active_reviewer(42));
 
-    // A reviewer span exists but the coworker session is not tracked
-    ps.create_span("review-42", "amsterdam", "reviewer", "sess-rev-42");
-    ps.task_pr_number.insert("review-42".to_string(), 42);
-    assert!(ps.active_reviewer_for_pr(42).is_some());
-
-    // Clear even if coworker is not tracked
     let cleared = ps.clear_reviewer_assignment("amsterdam", "test-repo");
     assert!(cleared);
-
-    assert!(ps.active_reviewer_for_pr(42).is_none());
+    assert!(!ps.pr_has_active_reviewer(42));
 }
 
 #[test]
 fn test_breaking_non_reviewer_is_safe() {
     let mut ps = DaemonPersistentState::default();
+    insert_reviewer_session(&mut ps, "lexington", "sess-rev-42", "review-42", 42);
 
-    // Setup: Create a reviewer span for lexington
-    ps.create_span("review-42", "lexington", "reviewer", "sess-rev-42");
-    ps.task_pr_number.insert("review-42".to_string(), 42);
-
-    // Try to break a coworker that's not reviewing anything
     let cleared = ps.clear_reviewer_assignment("park", "test-repo");
     assert!(!cleared, "should not have cleared anything");
-
-    // Original span should still be there
-    assert!(ps.active_reviewer_for_pr(42).is_some());
+    assert!(ps.pr_has_active_reviewer(42));
 }
 
 #[test]
 fn test_breaking_reviewer_with_multiple_spans() {
     let mut ps = DaemonPersistentState::default();
+    insert_reviewer_session(&mut ps, "amsterdam", "sess-rev-42", "review-42", 42);
+    insert_reviewer_session(&mut ps, "lexington", "sess-rev-43", "review-43", 43);
 
-    // Multiple reviewers assigned
-    ps.create_span("review-42", "amsterdam", "reviewer", "sess-rev-42");
-    ps.task_pr_number.insert("review-42".to_string(), 42);
-    ps.create_span("review-43", "lexington", "reviewer", "sess-rev-43");
-    ps.task_pr_number.insert("review-43".to_string(), 43);
-
-    // Break amsterdam
     let cleared = ps.clear_reviewer_assignment("amsterdam", "test-repo");
     assert!(cleared);
-
-    // Amsterdam's span should be closed
-    assert!(ps.active_reviewer_for_pr(42).is_none());
-
-    // Lexington's span should be unaffected
-    assert!(ps.active_reviewer_for_pr(43).is_some());
+    assert!(!ps.pr_has_active_reviewer(42));
+    assert!(ps.pr_has_active_reviewer(43));
 }
 
 #[test]
 fn test_coworker_break_prevents_respawn_loop() {
     let mut ps = DaemonPersistentState::default();
+    insert_reviewer_session(&mut ps, "amsterdam", "sess-rev-42", "review-42", 42);
+    assert!(ps.pr_has_active_reviewer(42));
 
-    // A reviewer is assigned to PR #42
-    ps.create_span("review-42", "amsterdam", "reviewer", "sess-rev-42");
-    ps.task_pr_number.insert("review-42".to_string(), 42);
-    assert!(ps.active_reviewer_for_pr(42).is_some());
-
-    // Simulate the break command
     let cleared = ps.clear_reviewer_assignment("amsterdam", "test-repo");
     assert!(cleared);
-
-    // No active reviewer remains - daemon won't try to respawn
-    assert!(ps.active_reviewer_for_pr(42).is_none());
-    assert!(ps.active_reviewer_spans().is_empty());
+    assert!(!ps.pr_has_active_reviewer(42));
+    assert!(ps.running_reviewer_sessions().is_empty());
 }

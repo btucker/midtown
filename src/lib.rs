@@ -86,8 +86,11 @@ pub mod agents;
 // Agent definition file loading (Claude Code agent format)
 pub mod agent_definition;
 
-// Claude Code task storage integration
+// Claude Code task storage integration (legacy, being replaced by task_store)
 pub mod tasks;
+
+// Midtown task storage — one JSON file per task in ~/.midtown/<project>/tasks/
+pub mod task_store;
 
 // Path utilities (socket paths, repo detection)
 pub mod paths;
@@ -131,9 +134,6 @@ pub mod sandbox;
 // Session key type for multi-session coworker identity
 pub mod session_key;
 
-// LRU name pool for session-centric coworker naming
-pub mod name_pool;
-
 // Platform abstraction for CLI argument construction (shared by headed + headless)
 pub mod platform;
 
@@ -160,7 +160,7 @@ pub mod test_utils;
 mod lib_tests;
 
 pub use channel::{Channel, ChannelInfo, ChannelRouter, SendResult, load_channel_notes};
-pub use coworker::{Coworker, CoworkerManager, CoworkerStatus, is_coworker_name};
+pub use coworker::{Coworker, CoworkerManager, CoworkerStatus};
 pub use cursor::Cursor;
 pub use message::{Message, MessageType, ToolBlock};
 pub use session_key::SessionKey;

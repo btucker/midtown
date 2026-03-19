@@ -77,7 +77,7 @@ async fn test_merge_blocked_while_reviewer_actively_assigned() {
     // Create a reviewer span for the PR (simulates daemon spawning a reviewer coworker)
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.create_span("task-1624", "park", "reviewer", "");
+        ps.create_span("task-1624", "park", "midtown-code-reviewer", "");
         ps.task_pr_number.insert("task-1624".to_string(), pr_number);
     }
 
@@ -132,7 +132,7 @@ async fn test_merge_not_blocked_when_reviewed_but_assignment_not_yet_cleared() {
     // but the span hasn't been closed yet (poll tick pending).
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.create_span("task-88", "park", "reviewer", "");
+        ps.create_span("task-88", "park", "midtown-code-reviewer", "");
         ps.task_pr_number.insert("task-88".to_string(), pr_number);
         ps.github.mark_reviewed_pr(pr_number);
     }
@@ -159,7 +159,7 @@ async fn test_merge_not_blocked_after_reviewer_assignment_removed() {
     // Create then close reviewer span (simulates completed review flow)
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.create_span("task-42", "park", "reviewer", "sess-park-1");
+        ps.create_span("task-42", "park", "midtown-code-reviewer", "sess-park-1");
         ps.task_pr_number.insert("task-42".to_string(), pr_number);
         ps.close_spans_for_task("task-42");
     }
@@ -324,7 +324,7 @@ async fn test_review_post_with_stored_comment_id_succeeds() {
     // Create reviewer span with a stored placeholder comment ID
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.create_span("task-42", "park", "reviewer", "");
+        ps.create_span("task-42", "park", "midtown-code-reviewer", "");
         ps.task_pr_number.insert("task-42".to_string(), pr_number);
         ps.task_placeholder_comment_id
             .insert("task-42".to_string(), comment_id);
@@ -430,7 +430,7 @@ async fn test_review_post_body_format() {
     // Instead, test the body formatting logic directly.
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.create_span("task-50", "lexington", "reviewer", "");
+        ps.create_span("task-50", "lexington", "midtown-code-reviewer", "");
         ps.task_pr_number.insert("task-50".to_string(), pr_number);
     }
 
@@ -500,7 +500,7 @@ async fn test_review_post_gh_api_failure_returns_error() {
 
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.create_span("task-77", "york", "reviewer", "");
+        ps.create_span("task-77", "york", "midtown-code-reviewer", "");
         ps.task_pr_number.insert("task-77".to_string(), pr_number);
         ps.task_placeholder_comment_id
             .insert("task-77".to_string(), 55555);

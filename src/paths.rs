@@ -305,6 +305,11 @@ impl ProjectPaths {
         self.worktrees_dir().join("lead")
     }
 
+    /// Tasks directory: `~/.midtown/projects/<dir_key>/tasks/`.
+    pub fn tasks_dir(&self) -> PathBuf {
+        self.base.join("tasks")
+    }
+
     /// Workflows directory: `~/.midtown/projects/<dir_key>/workflows/`.
     pub fn workflows_dir(&self) -> PathBuf {
         self.base.join("workflows")
