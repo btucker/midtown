@@ -58,12 +58,9 @@ pub use dispatch::should_recover_task_test_helper;
 #[doc(hidden)]
 pub use effects::Effect;
 
-// Test helpers for E2E tests with captured snapshots
-// Note: Only exporting pure functions that take &WorldSnapshot and return Vec<Effect>.
-// Functions that take &DaemonState are not exported because:
-// 1. DaemonState is pub(crate) which causes privacy warnings
-// 2. Those functions often mutate state, making them harder to test in isolation
-// 3. Pure functions are the gold standard for testing
+// Test helpers for E2E tests with captured snapshots.
+// Pure functions that take &DaemonPersistentState + &[Task] and return Vec<Effect>.
+// The _snapshot_only variants bridge from legacy WorldSnapshot fixtures.
 #[doc(hidden)]
 pub use dispatch::{
     build_subject_based_completion_effects, check_for_duplicate_task_workers,
@@ -585,15 +582,16 @@ pub(crate) struct DaemonState {
     /// Process health state for headless coworkers, keyed by coworker name.
     ///
     /// Populated by the session management layer from `HeadlessSession` stream events
-    /// and process status. Read by `collect_world_snapshot()` for the health decision
-    /// functions in `rules.rs`.
+    /// and process status. Read by `prepare_tick()` for the health decision
+    /// functions.
     pub(crate) headless_health: std::sync::RwLock<HashMap<String, snapshot::ProcessHealth>>,
     /// Monotonically increasing counter, bumped each time `headless_health` is written.
-    /// `collect_world_snapshot()` compares this against the generation stored in
+    /// `prepare_tick()` compares this against the generation stored in
     /// `health_derived_cache` to decide whether to reuse cached sets or recompute.
     headless_health_generation: std::sync::atomic::AtomicU64,
     /// Cached health-derived sets (4 HashSets), valid for the generation in `.0`.
     /// Invalidated when `headless_health_generation` advances past the cached generation.
+    #[allow(dead_code)] // Used by collect_world_snapshot (retained for test fixtures)
     health_derived_cache: std::sync::Mutex<Option<(u64, snapshot::CachedHealthSets)>>,
     /// Coworkers currently in "attached" state (interactive session).
     ///
@@ -618,13 +616,14 @@ pub(crate) struct DaemonState {
     /// Cached result of channel lead worktree freshness checks.
     ///
     /// The freshness check runs `git fetch` + `git rev-parse` which is expensive.
-    /// Since `collect_world_snapshot()` is called for both `SessionMonitorTick` (~30s)
+    /// Since `prepare_tick()` is called for both `SessionMonitorTick` (~30s)
     /// and `TaskDispatchTick` (~5s), we cache the result for 25s to avoid running
     /// git fetch on every tick.
     worktree_freshness_cache: std::sync::Mutex<Option<(std::time::Instant, HashSet<String>)>>,
     /// Cached set of coworkers whose completed tasks have unblocked pending follow-ups.
     /// Task dependency relationships change rarely; 30s staleness is acceptable
     /// because this set is only used for idle shutdown protection.
+    #[allow(dead_code)] // Used by collect_world_snapshot (retained for test fixtures)
     coworkers_with_unblocked_deps_cache:
         std::sync::Mutex<Option<(std::time::Instant, HashSet<String>)>>,
     /// PR data cache with 60s TTL for the `prs.status` RPC.
@@ -1128,7 +1127,7 @@ impl DaemonState {
     /// Reads task status from disk. Used by RPC handlers (`rpc_coworker.rs`,
     /// `chat.rs`) that operate outside the snapshot pipeline and don't have
     /// access to a pre-computed snapshot. The snapshot pipeline uses
-    /// `snap.is_at_task_limit` (pre-computed in `collect_world_snapshot`)
+    /// `tick_is_at_task_limit` (pre-computed in `prepare_tick()`)
     /// for pure decision functions.
     ///
     /// Only counts tasks with active owners (registered in CoworkerManager).
@@ -2782,25 +2781,27 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
     Ok(())
 }
 
-/// Run the full snapshot→evaluate→execute pipeline for a daemon event.
+/// Run the full prepare→evaluate→execute pipeline for a daemon event.
 async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
-    let mut snap = snapshot::collect_world_snapshot(state).await;
+    let tasks = tick::prepare_tick(state).await;
 
     // For RateLimitCheckTick, fetch fresh rate limit data before evaluation
     if matches!(event, events::DaemonEvent::RateLimitCheckTick) {
-        snap.pr.freshly_fetched_rate_limit =
-            crate::github_rate_limit::GitHubRateLimit::fetch().await;
+        let fresh = crate::github_rate_limit::GitHubRateLimit::fetch().await;
+        let mut ps = state.persistent_state.lock().await;
+        ps.tick_fresh_rate_limit = fresh;
     }
 
     // For NoteReviewTick, populate stale channel notes (hourly, not on hot path)
     if matches!(event, events::DaemonEvent::NoteReviewTick) {
-        let base_dir = crate::paths::projects_dir_for_repo(&snap.dir_key);
+        let mut ps = state.persistent_state.lock().await;
+        let base_dir = crate::paths::projects_dir_for_repo(&ps.tick_dir_key);
         let threshold = chrono::Duration::hours(crate::channel::NOTE_STALENESS_THRESHOLD_HOURS);
-        snap.stale_channel_notes =
-            crate::channel::find_stale_notes(&base_dir, snap.now_utc, threshold);
+        ps.tick_stale_channel_notes =
+            crate::channel::find_stale_notes(&base_dir, ps.tick_now, threshold);
     }
 
-    let tick_effects = events::evaluate_tick(event, &snap, state).await;
+    let tick_effects = events::evaluate_tick(event, &tasks, state).await;
     effects::execute_effects(tick_effects, state).await;
 }
 
@@ -4227,8 +4228,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
             // Periodic task dispatch: orphan recovery, duplicate detection, spawning, cleanup
             _ = orphan_check_interval.tick() => {
-                let snap = snapshot::collect_world_snapshot(&state).await;
-                let tick_effects = events::evaluate_tick(&events::DaemonEvent::TaskDispatchTick, &snap, &state).await;
+                let tasks = tick::prepare_tick(&state).await;
+                let tick_effects = events::evaluate_tick(&events::DaemonEvent::TaskDispatchTick, &tasks, &state).await;
                 // Mark in-flight tasks BEFORE executing effects to prevent race conditions.
                 // If the next tick fires while effects are executing, it will skip these tasks.
                 state.mark_in_flight_spawns_from_effects(&tick_effects);
@@ -4238,11 +4239,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 // the actual git operations in a background task. Recording the cooldown
                 // here prevents double-dispatch if the next tick fires before the
                 // background task starts.
-                let task_owners: Vec<String> = snap
-                    .in_progress_tasks
-                    .iter()
-                    .map(|(_, _, owner)| owner.clone())
-                    .collect();
+                let task_owners: Vec<String> = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.tick_in_progress_tasks
+                        .iter()
+                        .map(|(_, _, owner)| owner.clone())
+                        .collect()
+                };
                 if let Some(cleanup_data) =
                     dispatch::gather_stale_branch_cleanup_data(&state, &task_owners).await
                 {

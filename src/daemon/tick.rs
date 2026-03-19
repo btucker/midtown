@@ -17,7 +17,6 @@ use crate::task_store::Task;
 /// This is the replacement for `collect_world_snapshot()`. Decision functions
 /// read tick data from `DaemonPersistentState`'s `tick_*` fields instead of
 /// `WorldSnapshot` fields.
-#[allow(dead_code)] // Will be wired into the tick loop in a future step
 pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
     // Load tasks once from TaskStore
     let tasks = state.task_store.load_all();

@@ -6,8 +6,8 @@
 //!
 //! ```text
 //! Timer/Webhook/RPC → DaemonEvent
-//!                   → collect WorldSnapshot (immutable)
-//!                   → evaluate_tick(event, snapshot, state) → Vec<Effect>
+//!                   → prepare_tick(state) → Vec<Task>
+//!                   → evaluate_tick(event, tasks, state) → Vec<Effect>
 //!                   → execute_effects(effects)
 //! ```
 
@@ -16,7 +16,6 @@ use std::collections::HashSet;
 use super::DaemonState;
 use super::constants::OPS_CHANNEL;
 use super::effects::Effect;
-use super::snapshot::WorldSnapshot;
 
 /// Events that drive the daemon's state machine.
 ///
@@ -60,7 +59,7 @@ pub enum DaemonEvent {
 /// expressed as pure effects (spawn success/failure determines follow-up effects).
 pub async fn evaluate_tick(
     event: &DaemonEvent,
-    _snap: &WorldSnapshot,
+    _tasks: &[crate::task_store::Task],
     state: &DaemonState,
 ) -> Vec<Effect> {
     match event {

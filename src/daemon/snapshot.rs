@@ -211,6 +211,7 @@ pub struct ProcessHealth {
 /// `pending_api_turn_fresh` check depends on `now_utc`, so it must be recomputed
 /// every tick.
 #[derive(Clone)]
+#[allow(dead_code)] // Used by collect_world_snapshot (retained for test fixtures)
 pub(super) struct CachedHealthSets {
     pub usage_limited_coworkers: HashSet<String>,
     pub auth_error_coworkers: HashSet<String>,
@@ -222,6 +223,7 @@ pub(super) struct CachedHealthSets {
 ///
 /// Priority ordering: auth errors take precedence over usage limits and API errors.
 /// A coworker in `auth_error_coworkers` is excluded from `api_error_coworkers`.
+#[allow(dead_code)] // Used by collect_world_snapshot (retained for test fixtures)
 pub(super) fn compute_health_sets(health: &HashMap<String, ProcessHealth>) -> CachedHealthSets {
     let usage_limited_coworkers: HashSet<String> = health
         .iter()
@@ -957,6 +959,7 @@ impl WorldSnapshot {
 /// This is the single place where we read from `DaemonState` and external
 /// sources (task storage, GitHub CLI). Called once per tick, before
 /// any evaluation functions.
+#[allow(dead_code)] // Retained for integration test fixture compatibility
 pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot {
     // ── Coworker state ──────────────────────────────────────────────────
     let active_coworkers = state.coworkers.list();
@@ -1958,6 +1961,7 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
 /// `GitHubState` assignment tracking + process health. The span-based approach uses
 /// `SessionRecord.is_running` directly, eliminating the assignment timeout race
 /// that required the grace window.
+#[allow(dead_code)] // Used by collect_world_snapshot (retained for test fixtures)
 pub(crate) fn compute_active_reviewers_from_spans(
     ps: &crate::daemon::state::DaemonPersistentState,
     process_health: &HashMap<String, ProcessHealth>,
@@ -2001,6 +2005,7 @@ pub(crate) fn build_reviewer_pr_assignments_from_spans(
 /// How long to cache the coworkers-with-unblocked-deps result.
 /// Task dependency relationships change rarely; 30s staleness is acceptable
 /// because this set is only used for idle shutdown protection.
+#[allow(dead_code)] // Used by collect_world_snapshot (retained for test fixtures)
 const UNBLOCKED_DEPS_CACHE_SECS: u64 = 30;
 
 /// How long to cache worktree freshness results before re-running git fetch.

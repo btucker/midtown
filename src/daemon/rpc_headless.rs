@@ -1,9 +1,9 @@
 //! One-shot execution and snapshot RPC handlers.
 //!
 //! Handles `oneshot.execute` (run a one-shot Claude session) and
-//! `snapshot` (return the full WorldSnapshot for debugging).
+//! `snapshot` (return daemon persistent state for debugging).
 
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::rpc::{RequestId, Response, RpcError};
 
@@ -57,20 +57,12 @@ pub(super) async fn handle_headless_execute(
     }
 }
 
-/// Handle snapshot RPC method — collect and return the full WorldSnapshot.
+/// Handle snapshot RPC method — return DaemonPersistentState with tick fields populated.
 pub(super) async fn handle_snapshot(id: RequestId, state: &DaemonState) -> Response {
-    let default_channel = match state.channel_router.default_channel() {
-        Ok(ch) => ch,
-        Err(e) => {
-            error!("Failed to get default channel for snapshot: {}", e);
-            return Response::error(id, RpcError::new(-32603, e.to_string()));
-        }
-    };
-    let snapshot = super::snapshot::collect_world_snapshot(state)
-        .await
-        .with_debug_context(&default_channel)
-        .await;
-    match serde_json::to_value(&snapshot) {
+    // Populate tick fields so the snapshot reflects current ephemeral state
+    let _tasks = super::tick::prepare_tick(state).await;
+    let ps = state.persistent_state.lock().await;
+    match serde_json::to_value(&*ps) {
         Ok(value) => Response::success(id, value),
         Err(e) => Response::error(
             id,

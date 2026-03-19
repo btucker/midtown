@@ -622,8 +622,13 @@ pub(super) async fn handle_coworker_report_state(
         // cache only populates during poll ticks, and the common nudge-loop scenario
         // (reviewer posts then immediately idles) happens before any poll tick runs,
         // so the negative cache is empty. (Bug fix for !1990)
-        let pre_snap = snapshot::collect_world_snapshot(state).await;
-        if let Some(&pr_number) = pre_snap.reviewer.reviewer_pr_assignments.get(name)
+        let reviewer_pr = {
+            let ps = state.persistent_state.lock().await;
+            snapshot::build_reviewer_pr_assignments_from_spans(&ps)
+                .get(name)
+                .copied()
+        };
+        if let Some(pr_number) = reviewer_pr
             && !state.is_pr_reviewed(pr_number).await
         {
             warn!(
