@@ -936,20 +936,20 @@ pub(crate) fn decide_pending_task_action(
 /// lead-driven channel, in-flight spawn, and already-assigned checks.
 ///
 /// Pure function: all inputs come from WorldSnapshot fields.
+#[allow(dead_code)] // Superseded by dispatch.rs local version; will be removed in rules.rs migration
 pub(crate) fn decide_owned_pending_dispatch(
     task_id: &str,
     task_subject: &str,
     owner: &str,
-    snap: &crate::daemon::snapshot::WorldSnapshot,
+    ps: &crate::daemon::state::DaemonPersistentState,
+    tasks: &[crate::task_store::Task],
 ) -> PendingTaskAction {
     // Auto-complete tasks whose explicit PR field references a merged PR.
     // IMPORTANT: This must run before the lead-driven check so merged-PR
     // auto-complete works regardless of channel mode.
-    if let Some(pr_num) = crate::daemon::helpers::get_merged_task_pr(
-        task_id,
-        &snap.all_tasks,
-        &snap.pr.merged_pr_numbers,
-    ) {
+    if let Some(pr_num) =
+        crate::daemon::helpers::get_merged_task_pr(task_id, tasks, &ps.tick_merged_pr_numbers)
+    {
         return PendingTaskAction::AutoComplete {
             task_id: task_id.to_string(),
             pr_num,
@@ -957,46 +957,41 @@ pub(crate) fn decide_owned_pending_dispatch(
     }
 
     // Skip tasks in lead-driven channels — the lead manages dispatch manually.
-    if snap
-        .task_channel
-        .get(task_id)
-        .is_some_and(|ch| snap.lead_driven_channels.contains(ch))
-    {
+    let task_channel = tasks
+        .iter()
+        .find(|t| t.id == task_id)
+        .and_then(|t| t.channel.as_deref());
+    if task_channel.is_some_and(|ch| ps.lead_driven_channels.contains(ch)) {
         return PendingTaskAction::Skip(OwnedPendingSkipReason::LeadDrivenChannel);
     }
 
     // Skip tasks that already have an in-flight spawn from a previous tick.
-    if snap.in_flight_task_spawns.contains(task_id) {
+    if ps.tick_in_flight_task_spawns.contains(task_id) {
         return PendingTaskAction::Skip(OwnedPendingSkipReason::InFlightSpawn);
     }
 
     // Skip if this owner is already assigned to THIS SPECIFIC TASK.
     // Prevents nudge loops where the same pending-with-owner task gets
     // re-nudged every time the 300s cooldown expires.
-    if snap
-        .name_task_assignments
+    if ps
+        .name_task_assignments()
         .get(&owner.to_lowercase())
         .is_some_and(|assigned_task_id| assigned_task_id == task_id)
     {
         return PendingTaskAction::Skip(OwnedPendingSkipReason::AlreadyAssigned);
     }
 
-    let on_nudge_cooldown = snap.task_nudge_cooldown_ids.contains(task_id);
-    let is_owner_reviewer = snap
-        .reviewer
-        .active_reviewers
-        .contains(&owner.to_lowercase());
-    let has_in_progress_task = snap.busy_coworkers.contains(&owner.to_lowercase());
-    let is_channel_lead = snap
-        .channel_lead_sessions
-        .contains_key(&owner.to_lowercase());
+    let on_nudge_cooldown = ps.tick_task_nudge_cooldown_ids.contains(task_id);
+    let is_owner_reviewer = ps.tick_active_reviewers.contains(&owner.to_lowercase());
+    let has_in_progress_task = ps.tick_busy_coworkers.contains(&owner.to_lowercase());
+    let is_channel_lead = ps.channel_lead_sessions.contains_key(&owner.to_lowercase());
 
     decide_pending_task_action(
         task_id,
         task_subject,
         owner,
-        &snap.coworkers.active_names,
-        snap.is_at_task_limit,
+        &ps.tick_active_session_names,
+        ps.tick_is_at_task_limit,
         on_nudge_cooldown,
         is_owner_reviewer,
         has_in_progress_task,
@@ -1159,40 +1154,36 @@ pub(crate) enum SessionRecoveryAction {
 /// Pure function: checks all guard conditions using only snapshot data.
 /// Returns `Recover` when the task's session is stopped and ready for recovery,
 /// `FallbackToOrphan` when there's no session record, or `Skip` with a reason.
+#[allow(dead_code)] // Superseded by dispatch.rs local version; will be removed in rules.rs migration
 pub(crate) fn decide_session_recovery(
     task_id: &str,
     task_subject: &str,
     owner: &str,
-    snap: &crate::daemon::snapshot::WorldSnapshot,
+    ps: &crate::daemon::state::DaemonPersistentState,
+    tasks: &[crate::task_store::Task],
 ) -> SessionRecoveryAction {
     // Skip empty owners, lead (repo-named or legacy "lead"), or channel leads —
     // these are not managed by the coworker dispatch loop.
     if owner.is_empty()
-        || crate::daemon::helpers::is_project_lead(owner, &snap.project_name)
-        || snap
-            .channel_lead_sessions
-            .contains_key(&owner.to_lowercase())
+        || crate::daemon::helpers::is_project_lead(owner, &ps.tick_project_name)
+        || ps.channel_lead_sessions.contains_key(&owner.to_lowercase())
     {
         return SessionRecoveryAction::Skip(SessionRecoverySkipReason::LeadOrChannelLead);
     }
 
     // Skip tasks in lead-driven channels — the lead manages dispatch manually.
-    if snap
-        .task_channel
-        .get(task_id)
-        .is_some_and(|ch| snap.lead_driven_channels.contains(ch))
-    {
+    let task_channel = tasks
+        .iter()
+        .find(|t| t.id == task_id)
+        .and_then(|t| t.channel.as_deref());
+    if task_channel.is_some_and(|ch| ps.lead_driven_channels.contains(ch)) {
         return SessionRecoveryAction::Skip(SessionRecoverySkipReason::LeadDrivenChannel);
     }
 
     // Check if this task has a session record.
-    let record = match snap.find_session_for_task(task_id) {
+    let record = match ps.session_by_task(task_id) {
         Some(r) => r,
         None => {
-            if snap.session_task_map.contains_key(task_id) {
-                // session_task_map has the entry but sessions map is stale
-                return SessionRecoveryAction::Skip(SessionRecoverySkipReason::StaleSessionRef);
-            }
             // No session record — collect for legacy fallback path.
             return SessionRecoveryAction::FallbackToOrphan {
                 task_id: task_id.to_string(),
@@ -1204,18 +1195,13 @@ pub(crate) fn decide_session_recovery(
 
     // If the session is running (either by persisted flag or live in active_session_ids),
     // the task is handled — skip.
-    if record.is_running
-        || snap
-            .coworkers
-            .active_session_ids
-            .contains(&record.session_id)
-    {
+    if record.is_running || ps.tick_active_session_ids.contains(&record.session_id) {
         return SessionRecoveryAction::Skip(SessionRecoverySkipReason::SessionRunning);
     }
 
     // Skip if a recovery was recently attempted for this session (per-session cooldown).
-    if snap
-        .recently_recovered_session_ids
+    if ps
+        .tick_recently_recovered_session_ids
         .contains(&record.session_id)
     {
         return SessionRecoveryAction::Skip(SessionRecoverySkipReason::RecentlyRecovered);
@@ -1229,17 +1215,16 @@ pub(crate) fn decide_session_recovery(
     };
 
     // Skip if this coworker is currently serving as a reviewer.
-    if snap
-        .reviewer
-        .active_reviewers
+    if ps
+        .tick_active_reviewers
         .contains(&coworker_name.to_lowercase())
     {
         return SessionRecoveryAction::Skip(SessionRecoverySkipReason::ActiveReviewer);
     }
 
     // Check per-coworker spawn failure cooldown.
-    if snap
-        .spawn_failure_cooldown_names
+    if ps
+        .tick_spawn_failure_cooldown_names
         .contains(&coworker_name.to_lowercase())
     {
         return SessionRecoveryAction::Skip(SessionRecoverySkipReason::SpawnFailureCooldown);

@@ -353,9 +353,12 @@ impl MultiTickHarness {
             DaemonEvent::TaskDispatchTick => {
                 let ps = self.build_ps();
                 let mut effects = Vec::new();
-                effects.extend(midtown::daemon::reset_orphaned_tasks(&self.snapshot));
-                effects.extend(midtown::daemon::check_for_duplicate_task_workers(
+                effects.extend(midtown::daemon::reset_orphaned_tasks_snapshot_only(
                     &self.snapshot,
+                ));
+                effects.extend(midtown::daemon::check_for_duplicate_task_workers(
+                    &ps,
+                    &self.snapshot.all_tasks,
                 ));
                 effects.extend(midtown::daemon::detect_stale_attached_sessions(&ps));
                 effects.extend(midtown::daemon::ensure_lead_alive(&ps));
@@ -374,7 +377,8 @@ impl MultiTickHarness {
                 ));
                 effects.extend(midtown::daemon::reconcile_orphaned_prs(&self.snapshot));
                 effects.extend(midtown::daemon::build_subject_based_completion_effects(
-                    &self.snapshot,
+                    &self.build_ps(),
+                    &self.snapshot.all_tasks,
                 ));
                 // Skipped (needs DaemonState): poll_prs_for_issues
                 // Skipped (takes individual fields): check_for_stale_worktrees

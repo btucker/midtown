@@ -75,8 +75,14 @@ mod tests {
         let snapshot: WorldSnapshot =
             serde_json::from_str(fixture).expect("Failed to deserialize snapshot fixture");
 
-        // Call the actual production decision function
-        let effects = reset_orphaned_tasks(&snapshot);
+        // Build ps from snapshot and call the production decision function
+        let mut ps = ps_from_snapshot(&snapshot);
+        ps.tick_in_progress_tasks = snapshot.in_progress_tasks.clone();
+        ps.tick_pr_task_index = snapshot.pr.pr_task_index.clone();
+        ps.tick_open_prs = snapshot.pr.open_prs_data.clone();
+        ps.tick_active_session_names = snapshot.coworkers.active_names.clone();
+        ps.tick_coworker_stop_times = snapshot.coworkers.coworker_stop_times.clone();
+        let effects = reset_orphaned_tasks(&ps, &snapshot.all_tasks);
 
         // This snapshot has orphaned tasks that should be reset.
         // Validate that the function returns task reset effects.

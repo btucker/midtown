@@ -95,25 +95,32 @@ pub async fn evaluate_tick(
             // — we don't need to strip task ownership too.
             //
             // effects.extend(super::dispatch::reconcile_tasks_in_review(snap));
-            effects.extend(super::dispatch::reset_orphaned_tasks(snap));
-            effects.extend(super::dispatch::check_for_duplicate_task_workers(snap));
-            // Session-aware dispatch handles in_progress tasks with session records:
-            // resume stopped sessions, skip running ones.
-            let session_effects = super::dispatch::dispatch_via_sessions(snap, state);
-            let mut claimed_ids =
-                super::effects::extract_claimed_task_ids_from_effects(&session_effects);
-            effects.extend(session_effects);
-            // Orphan recovery handles all orphaned in-progress tasks (with or without sessions).
-            let orphan_effects = super::dispatch::check_and_recover_orphans(snap, state);
-            let orphan_claimed =
-                super::effects::extract_claimed_task_ids_from_effects(&orphan_effects);
-            claimed_ids.extend(orphan_claimed);
-            effects.extend(orphan_effects);
-            effects.extend(super::dispatch::spawn_for_pending_tasks_excluding(
-                snap,
-                state,
-                &claimed_ids,
-            ));
+            {
+                let ps = state.persistent_state.lock().await;
+                let tasks = state.task_store.load_all();
+                effects.extend(super::dispatch::reset_orphaned_tasks(&ps, &tasks));
+                effects.extend(super::dispatch::check_for_duplicate_task_workers(
+                    &ps, &tasks,
+                ));
+                // Session-aware dispatch handles in_progress tasks with session records:
+                // resume stopped sessions, skip running ones.
+                let session_effects = super::dispatch::dispatch_via_sessions(&ps, &tasks, state);
+                let mut claimed_ids =
+                    super::effects::extract_claimed_task_ids_from_effects(&session_effects);
+                effects.extend(session_effects);
+                // Orphan recovery handles all orphaned in-progress tasks (with or without sessions).
+                let orphan_effects = super::dispatch::check_and_recover_orphans(&ps, &tasks, state);
+                let orphan_claimed =
+                    super::effects::extract_claimed_task_ids_from_effects(&orphan_effects);
+                claimed_ids.extend(orphan_claimed);
+                effects.extend(orphan_effects);
+                effects.extend(super::dispatch::spawn_for_pending_tasks_excluding(
+                    &ps,
+                    &tasks,
+                    state,
+                    &claimed_ids,
+                ));
+            }
             {
                 let ps = state.persistent_state.lock().await;
                 let tasks = state.task_store.load_all();
@@ -216,9 +223,13 @@ pub async fn evaluate_tick(
 
             // Auto-complete tasks whose subjects reference only merged PRs
             // (handles meta-tasks, sub-tasks, and fix-PR tasks)
-            effects.extend(super::dispatch::build_subject_based_completion_effects(
-                snap,
-            ));
+            {
+                let ps = state.persistent_state.lock().await;
+                let tasks = state.task_store.load_all();
+                effects.extend(super::dispatch::build_subject_based_completion_effects(
+                    &ps, &tasks,
+                ));
+            }
 
             dedup_spawn_effects(effects)
         }

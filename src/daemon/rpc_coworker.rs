@@ -667,8 +667,10 @@ pub(super) async fn handle_coworker_report_state(
         effects::execute_effects(shutdown_effects, state).await;
 
         // Immediately trigger task dispatch so pending tasks get picked up
-        let snap = snapshot::collect_world_snapshot(state).await;
-        let pending_effects = super::dispatch::spawn_for_pending_tasks(&snap, state);
+        let ps = state.persistent_state.lock().await;
+        let tasks = state.task_store.load_all();
+        let pending_effects = super::dispatch::spawn_for_pending_tasks(&ps, &tasks, state);
+        drop(ps);
         if !pending_effects.is_empty() {
             info!(
                 "Immediate dispatch after {} idle: {} effect(s)",

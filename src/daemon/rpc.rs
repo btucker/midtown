@@ -21,7 +21,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::rpc::{Request, RequestId, Response, RpcError};
 
-use super::{DaemonState, effects, snapshot};
+use super::{DaemonState, effects};
 
 // ============================================================================
 // Param extraction helpers
@@ -327,8 +327,10 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
 
         "daemon.check-pending" => {
             info!("Check-pending triggered via RPC");
-            let snap = snapshot::collect_world_snapshot(state).await;
-            let pending_effects = super::dispatch::spawn_for_pending_tasks(&snap, state);
+            let ps = state.persistent_state.lock().await;
+            let tasks = state.task_store.load_all();
+            let pending_effects = super::dispatch::spawn_for_pending_tasks(&ps, &tasks, state);
+            drop(ps);
             state.mark_in_flight_spawns_from_effects(&pending_effects);
             effects::execute_effects(pending_effects, state).await;
             Response::success(request.id, serde_json::json!({"message": "ok"}))

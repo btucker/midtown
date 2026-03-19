@@ -50,6 +50,18 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         }
     }
 
+    // ── Active session IDs ──────────────────────────────────────────────
+    let mut active_session_ids: HashSet<String> = active_coworkers
+        .iter()
+        .filter(|cw| active_names.contains(&cw.name.to_lowercase()))
+        .filter_map(|cw| cw.session_id.clone())
+        .collect();
+    for name in &active_names {
+        if let Some(sid) = state.session_manager.get_session_id(name).await {
+            active_session_ids.insert(sid);
+        }
+    }
+
     // ── Process health (headless coworkers) ────────────────────────────
     let headless_process_health: HashMap<String, super::snapshot::ProcessHealth> = {
         let health = state.headless_health.read().unwrap();
@@ -415,11 +427,25 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         ps.tick_channel_messages = Vec::new();
         ps.tick_daemon_logs = Vec::new();
 
-        // Active session names and coworker data
+        // Active session names, IDs, and coworker data
         ps.tick_active_session_names = active_names;
+        ps.tick_active_session_ids = active_session_ids;
         ps.tick_active_coworkers = active_coworkers;
         ps.tick_running_coworkers = running_coworkers;
         ps.tick_session_name = session_name;
+
+        // Task limit check
+        let active_in_progress_count = tasks
+            .iter()
+            .filter(|t| {
+                t.status == crate::task_store::TaskStatus::InProgress
+                    && (t.agent_name.is_empty()
+                        || ps
+                            .tick_active_session_names
+                            .contains(t.agent_name.to_lowercase().as_str()))
+            })
+            .count();
+        ps.tick_is_at_task_limit = active_in_progress_count >= max_in_progress_tasks;
 
         // Usage limit nudge state
         ps.tick_usage_limit_nudge_scheduled = usage_limit_nudge_scheduled;
@@ -454,6 +480,97 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
             .filter(|(_, r)| !r.name.is_empty())
             .map(|(sid, r)| (r.name.to_lowercase(), sid.clone()))
             .collect();
+
+        // ── Dispatch tick fields ────────────────────────────────────────────
+
+        // Session task map: task_id → session_id
+        ps.tick_session_task_map = ps
+            .sessions
+            .iter()
+            .filter_map(|(sid, r)| r.task_id.as_ref().map(|tid| (tid.clone(), sid.clone())))
+            .collect();
+
+        // Stale working-dir sessions
+        ps.tick_stale_working_dir_sessions = ps
+            .sessions
+            .values()
+            .filter(|r| !r.working_dir.is_empty() && !std::path::Path::new(&r.working_dir).exists())
+            .map(|r| r.session_id.clone())
+            .collect();
+
+        // In-progress tasks
+        ps.tick_in_progress_tasks = tasks
+            .iter()
+            .filter(|t| t.status == crate::task_store::TaskStatus::InProgress)
+            .map(|t| (t.id.clone(), t.subject.clone(), t.agent_name.clone()))
+            .collect();
+
+        // Pending tasks with owners
+        ps.tick_pending_tasks_with_owners = tasks
+            .iter()
+            .filter(|t| {
+                t.status == crate::task_store::TaskStatus::Pending && !t.agent_name.is_empty()
+            })
+            .map(|t| (t.id.clone(), t.subject.clone(), t.agent_name.clone()))
+            .collect();
+
+        // Busy coworkers — inline computation to avoid borrow conflict with MutexGuard
+        {
+            let in_progress_ids: HashSet<&str> = ps
+                .tick_in_progress_tasks
+                .iter()
+                .map(|(id, _, _)| id.as_str())
+                .collect();
+            ps.tick_busy_coworkers = ps
+                .sessions
+                .values()
+                .filter(|s| {
+                    s.task_id
+                        .as_deref()
+                        .is_some_and(|tid| in_progress_ids.contains(tid))
+                })
+                .filter(|s| !s.name.is_empty())
+                .map(|s| s.name.to_lowercase())
+                .collect();
+        }
+
+        // Active reviewers
+        ps.tick_active_reviewers = ps
+            .sessions
+            .values()
+            .filter(|s| s.agent_type == "midtown-code-reviewer" && s.is_running)
+            .filter(|s| !s.name.is_empty())
+            .map(|s| s.name.to_lowercase())
+            .collect();
+
+        // PR-protected tasks
+        ps.tick_pr_protected_tasks = tasks
+            .iter()
+            .filter(|t| {
+                super::dispatch::is_task_pr_protected(
+                    t,
+                    &ps.tick_merged_pr_numbers,
+                    &ps.tick_pr_task_index,
+                    &ps.tick_active_session_names,
+                )
+            })
+            .map(|t| t.id.clone())
+            .collect();
+
+        // Blocks map
+        let mut blocks_map: HashMap<String, Vec<String>> = HashMap::new();
+        for task in &tasks {
+            for blocker_id in &task.blocked_by {
+                blocks_map
+                    .entry(blocker_id.clone())
+                    .or_default()
+                    .push(task.id.clone());
+            }
+        }
+        ps.tick_blocks_map = blocks_map;
+
+        // Task nudge cooldown IDs — already populated above as task_nudge_cooldown_ids
+        // (tick_task_nudge_cooldown_ids was set earlier in the cooldowns block)
     }
 
     tasks

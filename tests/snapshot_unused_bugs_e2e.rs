@@ -10,7 +10,7 @@ use midtown::daemon::DaemonPersistentState;
 use midtown::daemon::snapshot::WorldSnapshot;
 use midtown::daemon::{
     Effect, check_for_usage_limits, collect_merged_pr_cleanup_effects, reconcile_orphaned_prs,
-    reset_orphaned_tasks,
+    reset_orphaned_tasks_snapshot_only as reset_orphaned_tasks,
 };
 
 /// Build a `DaemonPersistentState` with tick fields populated from a snapshot.

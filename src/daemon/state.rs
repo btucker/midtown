@@ -463,6 +463,14 @@ pub struct DaemonPersistentState {
     #[serde(skip)]
     pub tick_stale_channel_notes: HashMap<String, Vec<String>>,
 
+    /// Active session IDs — running coworkers + alive headless sessions.
+    #[serde(skip)]
+    pub tick_active_session_ids: HashSet<String>,
+
+    /// Whether the in-progress task count has reached the configured limit.
+    #[serde(skip)]
+    pub tick_is_at_task_limit: bool,
+
     /// Active session names (lowercase) — running coworkers + alive headless sessions.
     #[serde(skip)]
     pub tick_active_session_names: HashSet<String>,
@@ -504,6 +512,40 @@ pub struct DaemonPersistentState {
     /// Name → session ID mapping (lowercase name → session_id).
     #[serde(skip)]
     pub tick_name_session_map: HashMap<String, String>,
+
+    // ── Dispatch tick fields ────────────────────────────────────────────
+    // Populated by `prepare_tick()` for dispatch.rs decision functions.
+    /// Stale working-dir sessions (worktree path no longer exists on disk).
+    #[serde(skip)]
+    pub tick_stale_working_dir_sessions: HashSet<String>,
+
+    /// PR-protected task IDs (tasks that should not be orphan-recovered).
+    #[serde(skip)]
+    pub tick_pr_protected_tasks: HashSet<String>,
+
+    /// Busy coworker names (lowercase) — coworkers with in-progress tasks.
+    #[serde(skip)]
+    pub tick_busy_coworkers: HashSet<String>,
+
+    /// Active reviewer names (lowercase).
+    #[serde(skip)]
+    pub tick_active_reviewers: HashSet<String>,
+
+    /// Pending tasks with owners — (task_id, subject, owner).
+    #[serde(skip)]
+    pub tick_pending_tasks_with_owners: Vec<(String, String, String)>,
+
+    /// In-progress tasks — (task_id, subject, owner).
+    #[serde(skip)]
+    pub tick_in_progress_tasks: Vec<(String, String, String)>,
+
+    /// Blocks map: task_id → list of task IDs that it blocks.
+    #[serde(skip)]
+    pub tick_blocks_map: HashMap<String, Vec<String>>,
+
+    /// Session task map: task_id → session_id.
+    #[serde(skip)]
+    pub tick_session_task_map: HashMap<String, String>,
 }
 
 impl DaemonPersistentState {
@@ -968,6 +1010,29 @@ impl DaemonPersistentState {
                     .map(|tid| (s.name.to_lowercase(), tid.clone()))
             })
             .collect()
+    }
+
+    /// Find a session record by task ID using the pre-built tick_session_task_map.
+    pub fn find_session_for_task(&self, task_id: &str) -> Option<&SessionRecord> {
+        let session_id = self.tick_session_task_map.get(task_id)?;
+        self.sessions.get(session_id)
+    }
+
+    /// Check whether a worktree is bound to a different ACTIVE coworker.
+    pub fn worktree_collision(&self, worktree_id: &str, intended_coworker: &str) -> Option<String> {
+        let assignment = self.worktree_registry.get(worktree_id)?;
+        let bound_coworker = assignment.current_coworker.as_deref()?;
+
+        if bound_coworker.eq_ignore_ascii_case(intended_coworker) {
+            return None;
+        }
+
+        let bound_lower = bound_coworker.to_lowercase();
+        if self.tick_active_session_names.contains(&bound_lower) {
+            return Some(bound_coworker.to_string());
+        }
+
+        None
     }
 
     /// Migrate per-channel `workflow-state.json` files into in-memory state.
