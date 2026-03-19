@@ -70,7 +70,6 @@ async fn test_pr_review_already_assigned_returns_message() {
     // Create a reviewer span so the handler can detect it without a GH API call.
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.create_span("task-42", "lexington", "midtown-code-reviewer", "");
         ps.task_pr_number.insert("task-42".to_string(), 42);
     }
 

@@ -59,12 +59,12 @@ pub(crate) async fn handle_prs_status(id: RequestId, state: &DaemonState) -> Res
         .persistent_state
         .try_lock()
         .map(|ps| {
-            ps.active_reviewer_spans()
+            ps.active_reviewer_sessions()
                 .into_iter()
                 .filter_map(|s| {
                     ps.task_pr_number
-                        .get(&s.task_id)
-                        .map(|&pr| (pr, s.agent_name.clone()))
+                        .get(s.task_id.as_deref().unwrap_or(""))
+                        .map(|&pr| (pr, s.name.clone()))
                 })
                 .collect()
         })
@@ -616,7 +616,7 @@ pub(super) async fn handle_pr_review(
     {
         let ps = state.persistent_state.lock().await;
         if let Some(span) = ps.active_reviewer_for_pr(pr_number) {
-            let reviewer = span.agent_name.clone();
+            let reviewer = span.name.clone();
             return Response::success(
                 id,
                 serde_json::json!({
@@ -811,7 +811,7 @@ pub(super) async fn handle_pr_merge(
         let ps = state.persistent_state.lock().await;
         if let Some(span) = ps.active_reviewer_for_pr(pr_number) {
             if !ps.github.has_cached_review(pr_number) {
-                let reviewer = span.agent_name.clone();
+                let reviewer = span.name.clone();
                 let message = format!(
                     "Cannot merge PR #{}: review in progress by {} — wait for the reviewer to finish",
                     pr_number, reviewer
@@ -1068,9 +1068,12 @@ pub(super) async fn handle_pr_review_post(
                 } else {
                     Some(span.session_id.clone())
                 };
-                let task_id = Some(span.task_id.clone());
-                let name = span.agent_name.clone();
-                let comment_id = ps.task_placeholder_comment_id.get(&span.task_id).copied();
+                let task_id = span.task_id.clone();
+                let name = span.name.clone();
+                let comment_id = ps
+                    .task_placeholder_comment_id
+                    .get(span.task_id.as_deref().unwrap_or(""))
+                    .copied();
                 (session_id, task_id, name, comment_id)
             }
             None => {

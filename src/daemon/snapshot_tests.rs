@@ -412,18 +412,22 @@ fn test_snapshot_session_health_map_populated() {
 /// to detect and respawn reviewers that died before posting their review.
 #[test]
 fn reviewer_pr_assignments_includes_dead_reviewers() {
-    use crate::daemon::state::{DaemonPersistentState, TaskSessionSpan};
+    use crate::daemon::state::DaemonPersistentState;
 
     let mut ps = DaemonPersistentState::default();
-    // Reviewer "riverside" has an open span for task "review-42" → PR 1352.
-    ps.task_session_spans.push(TaskSessionSpan {
-        task_id: "review-42".to_string(),
-        agent_name: "riverside".to_string(),
-        agent_type: "midtown-code-reviewer".to_string(),
-        session_id: "sess-riverside".to_string(),
-        start_time: chrono::Utc::now(),
-        end_time: None, // open span — reviewer is/was active
-    });
+    // Reviewer "riverside" has a session for task "review-42" → PR 1352.
+    ps.sessions.insert(
+        "sess-riverside".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-riverside".to_string(),
+            name: "riverside".to_string(),
+            agent_type: "midtown-code-reviewer".to_string(),
+            task_id: Some("review-42".to_string()),
+            pr_number: Some(1352),
+            is_running: true,
+            ..Default::default()
+        },
+    );
     ps.task_pr_number.insert("review-42".to_string(), 1352_u64);
 
     // No active process (riverside has died — is_running=false, health absent).
@@ -449,159 +453,6 @@ fn reviewer_pr_assignments_includes_dead_reviewers() {
     );
 }
 
-/// compute_active_reviewers_from_spans: reviewer with is_running=true appears in active set.
-#[test]
-fn active_reviewer_with_running_session_in_active_set() {
-    use crate::daemon::state::{DaemonPersistentState, SessionRecord, TaskSessionSpan};
-
-    let mut ps = DaemonPersistentState::default();
-    ps.task_session_spans.push(TaskSessionSpan {
-        task_id: "review-100".to_string(),
-        agent_name: "amsterdam".to_string(),
-        agent_type: "midtown-code-reviewer".to_string(),
-        session_id: "sess-amsterdam".to_string(),
-        start_time: chrono::Utc::now(),
-        end_time: None,
-    });
-    ps.task_pr_number.insert("review-100".to_string(), 1553_u64);
-
-    // Session record shows is_running = true
-    ps.sessions.insert(
-        "sess-amsterdam".to_string(),
-        SessionRecord {
-            session_id: "sess-amsterdam".to_string(),
-            is_running: true,
-            ..Default::default()
-        },
-    );
-
-    let process_health: HashMap<String, ProcessHealth> = HashMap::new();
-    let active = super::compute_active_reviewers_from_spans(&ps, &process_health);
-
-    assert!(
-        active.contains("amsterdam"),
-        "reviewer with is_running=true must appear in active_reviewers"
-    );
-}
-
-/// compute_active_reviewers_from_spans: reviewer alive in process_health appears even
-/// if SessionRecord.is_running is false (process alive but session not yet updated).
-#[test]
-fn active_reviewer_alive_in_process_health_in_active_set() {
-    use crate::daemon::state::{DaemonPersistentState, SessionRecord, TaskSessionSpan};
-
-    let mut ps = DaemonPersistentState::default();
-    ps.task_session_spans.push(TaskSessionSpan {
-        task_id: "review-200".to_string(),
-        agent_name: "broadway".to_string(),
-        agent_type: "midtown-code-reviewer".to_string(),
-        session_id: "sess-broadway".to_string(),
-        start_time: chrono::Utc::now(),
-        end_time: None,
-    });
-    ps.task_pr_number.insert("review-200".to_string(), 2000_u64);
-
-    // Session record shows is_running = false (stale), but process is alive
-    ps.sessions.insert(
-        "sess-broadway".to_string(),
-        SessionRecord {
-            session_id: "sess-broadway".to_string(),
-            is_running: false,
-            ..Default::default()
-        },
-    );
-
-    let mut process_health = HashMap::new();
-    process_health.insert(
-        "broadway".to_string(),
-        ProcessHealth {
-            is_alive: true,
-            ..Default::default()
-        },
-    );
-
-    let active = super::compute_active_reviewers_from_spans(&ps, &process_health);
-
-    assert!(
-        active.contains("broadway"),
-        "reviewer alive in process_health must appear in active_reviewers even if is_running=false"
-    );
-}
-
-/// Dead reviewers (is_alive=false AND is_running=false) must NOT appear in active_reviewers.
-#[test]
-fn dead_reviewer_not_in_active_reviewers() {
-    use crate::daemon::state::{DaemonPersistentState, SessionRecord, TaskSessionSpan};
-
-    let mut ps = DaemonPersistentState::default();
-    ps.task_session_spans.push(TaskSessionSpan {
-        task_id: "review-300".to_string(),
-        agent_name: "amsterdam".to_string(),
-        agent_type: "midtown-code-reviewer".to_string(),
-        session_id: "sess-amsterdam".to_string(),
-        start_time: chrono::Utc::now(),
-        end_time: None, // span still open (not yet closed)
-    });
-    ps.task_pr_number.insert("review-300".to_string(), 3000_u64);
-
-    // Session shows not running
-    ps.sessions.insert(
-        "sess-amsterdam".to_string(),
-        SessionRecord {
-            session_id: "sess-amsterdam".to_string(),
-            is_running: false,
-            ..Default::default()
-        },
-    );
-
-    // Process is dead
-    let mut process_health = HashMap::new();
-    process_health.insert(
-        "amsterdam".to_string(),
-        ProcessHealth {
-            is_alive: false,
-            ..Default::default()
-        },
-    );
-
-    let active = super::compute_active_reviewers_from_spans(&ps, &process_health);
-    assert!(
-        !active.contains("amsterdam"),
-        "dead reviewers must NOT appear in active_reviewers"
-    );
-}
-
-/// build_reviewer_pr_assignments_from_spans excludes closed spans.
-#[test]
-fn build_reviewer_pr_assignments_excludes_closed_spans() {
-    use crate::daemon::state::{DaemonPersistentState, TaskSessionSpan};
-
-    let mut ps = DaemonPersistentState::default();
-    // Closed span — review is done
-    ps.task_session_spans.push(TaskSessionSpan {
-        task_id: "review-400".to_string(),
-        agent_name: "park".to_string(),
-        agent_type: "midtown-code-reviewer".to_string(),
-        session_id: "sess-park".to_string(),
-        start_time: chrono::Utc::now() - chrono::Duration::hours(1),
-        end_time: Some(chrono::Utc::now()), // closed span
-    });
-    ps.task_pr_number.insert("review-400".to_string(), 4000_u64);
-
-    let assignments = super::build_reviewer_pr_assignments_from_spans(&ps);
-
-    assert!(
-        !assignments.contains_key("park"),
-        "closed spans must NOT appear in reviewer_pr_assignments"
-    );
-}
-
-/// Test that recently_recovered_session_ids is correctly populated from CooldownTracker.
-///
-/// The collect_world_snapshot() function builds this set by checking the
-/// "session_recovered" cooldown for each known session ID. This test verifies
-/// the extraction logic: a session with an active cooldown appears in the set,
-/// while a session without a cooldown does not.
 #[test]
 fn test_recently_recovered_session_ids_populated_from_cooldowns() {
     use crate::rules::CooldownTracker;

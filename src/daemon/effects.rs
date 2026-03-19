@@ -1171,9 +1171,7 @@ async fn clear_stale_task_session_binding(
     let mut ps = state.persistent_state.lock().await;
     let cleared = clear_task_binding_in_records(&mut ps.sessions, task_id, expected_session_id);
     // Close open spans for the expected session (it is being marked stopped).
-    if let Some(sid) = expected_session_id {
-        ps.close_spans_for_session(sid);
-    }
+    if let Some(_sid) = expected_session_id {}
     if cleared > 0
         && let Err(e) = ps.save_for_repo(state.paths.dir_key())
     {
@@ -1613,9 +1611,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
 
                 // Close open spans for all sessions being marked stopped.
-                for sid in &stale_ids_for_spans {
-                    ps.close_spans_for_session(sid);
-                }
+                for _sid in &stale_ids_for_spans {}
 
                 if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!(
@@ -1919,14 +1915,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::CreateTaskSessionSpan {
                 task_id,
-                agent_name,
-                agent_type,
                 session_id,
                 pr_number,
                 restart_count,
+                ..
             } => {
+                // Legacy effect — span creation removed, but we still need to
+                // persist task_pr_number and task_restart_count, and update TaskStore.
                 let mut ps = state.persistent_state.lock().await;
-                ps.create_span(&task_id, &agent_name, &agent_type, &session_id);
                 if let Some(pr) = pr_number {
                     ps.task_pr_number.insert(task_id.clone(), pr);
                 }
@@ -1935,7 +1931,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
                 if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!(
-                        "Failed to save daemon-state.json after CreateTaskSessionSpan: {}",
+                        "Failed to save daemon-state.json after recording task metadata: {}",
                         e
                     );
                 }
@@ -1950,18 +1946,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::CloseTaskSessionSpan {
-                session_id,
-                task_id,
-            } => {
-                let mut ps = state.persistent_state.lock().await;
-                ps.close_span(&session_id, &task_id);
-                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                    warn!(
-                        "Failed to save daemon-state.json after CloseTaskSessionSpan: {}",
-                        e
-                    );
-                }
+            Effect::CloseTaskSessionSpan { .. } => {
+                // No-op: spans removed, session lifecycle handled by is_running flag
             }
             Effect::PostSystemMessage { message, channel } => {
                 // If the message contains @lead, nudge the lead directly so they
@@ -2740,9 +2726,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                         stopped_ids.push(record.session_id.clone());
                                     }
                                 }
-                                for sid in &stopped_ids {
-                                    ps.close_spans_for_session(sid);
-                                }
+                                for _sid in &stopped_ids {}
                                 if removed_lead || removed_session {
                                     debug!(
                                         "Removed channel lead session for archived channel '{}'",
@@ -3121,7 +3105,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         record.is_running = false;
                     }
                     // Close any open task-session spans for the shutting-down session.
-                    ps.close_spans_for_session(&session_id);
                     if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                         warn!(
                             "Failed to save persistent state after ShutdownSession for {}: {}",
@@ -3784,10 +3767,14 @@ async fn lookup_existing_placeholder(state: &DaemonState, pr_number: u64) -> Opt
         let ps = state.persistent_state.lock().await;
         // Find the task ID for this PR from active reviewer spans
         let id = ps
-            .active_reviewer_spans()
+            .active_reviewer_sessions()
             .iter()
-            .find(|s| ps.task_pr_number.get(&s.task_id) == Some(&pr_number))
-            .and_then(|s| ps.task_placeholder_comment_id.get(&s.task_id).copied());
+            .find(|s| ps.task_pr_number.get(s.task_id.as_deref().unwrap_or("")) == Some(&pr_number))
+            .and_then(|s| {
+                ps.task_placeholder_comment_id
+                    .get(s.task_id.as_deref().unwrap_or(""))
+                    .copied()
+            });
         if let Some(id) = id {
             return Some(id);
         }
@@ -3960,10 +3947,12 @@ async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &st
             let mut ps = state.persistent_state.lock().await;
             // Find the reviewer task for this PR and store the placeholder comment ID.
             let task_ids: Vec<String> = ps
-                .active_reviewer_spans()
+                .active_reviewer_sessions()
                 .iter()
-                .filter(|s| ps.task_pr_number.get(&s.task_id) == Some(&pr_number))
-                .map(|s| s.task_id.clone())
+                .filter(|s| {
+                    ps.task_pr_number.get(s.task_id.as_deref().unwrap_or("")) == Some(&pr_number)
+                })
+                .filter_map(|s| s.task_id.clone())
                 .collect();
             for tid in &task_ids {
                 ps.task_placeholder_comment_id
@@ -4506,9 +4495,7 @@ async fn respawn_fork(
                 displaced_fork_ids.push(record.session_id.clone());
             }
         }
-        for sid in &displaced_fork_ids {
-            ps.close_spans_for_session(sid);
-        }
+        for _sid in &displaced_fork_ids {}
         ps.sessions.insert(
             fork_session_id.clone(),
             crate::daemon::state::SessionRecord {

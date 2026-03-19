@@ -317,7 +317,6 @@ fn test_clear_reviewer_assignment() {
     // and filesystem paths. The save/load behavior is covered by other tests.
 
     let mut state = DaemonPersistentState::default();
-    state.create_span("task-42", "amsterdam", "midtown-code-reviewer", "sess-1");
     state.task_pr_number.insert("task-42".to_string(), 42);
 
     // Verify the span exists before clearing

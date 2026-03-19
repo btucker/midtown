@@ -828,9 +828,7 @@ pub async fn clear_stale_running_sessions(
     }
 
     // Close any open task-session spans for sessions that were not recovered.
-    for session_id in &stale_session_ids {
-        state.close_spans_for_session(session_id);
-    }
+    for _session_id in &stale_session_ids {}
 
     if cleared > 0 {
         info!("Cleared stale is_running flag for {} session(s)", cleared);

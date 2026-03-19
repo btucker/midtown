@@ -1149,8 +1149,8 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 .get("reviewer")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
-                .or_else(|| span.map(|s| s.agent_name.clone()));
-            let reviewer_assigned_at = span.map(|s| s.start_time.to_rfc3339());
+                .or_else(|| span.map(|s| s.name.clone()));
+            let reviewer_assigned_at = span.map(|s| s.created_at.to_rfc3339());
             // Prefer review_posted from RPC response (computed from actual PR comments),
             // fall back to persistent local state for the CLI path
             let review_posted = pr

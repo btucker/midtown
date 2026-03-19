@@ -2340,18 +2340,18 @@ async fn collect_review_complete_effects(
     // Previously we only cleared when the reviewer had shut down, but that left
     // idle reviewers stuck with assignments preventing break dispatch.
     {
-        let mut ps = state.persistent_state.lock().await;
+        let ps = state.persistent_state.lock().await;
         if ps.active_reviewer_for_pr(pr_number).is_some() {
             debug!("PR #{} review completed, closing reviewer spans", pr_number);
             let task_ids: Vec<String> = ps
-                .active_reviewer_spans()
+                .active_reviewer_sessions()
                 .iter()
-                .filter(|s| ps.task_pr_number.get(&s.task_id) == Some(&pr_number))
-                .map(|s| s.task_id.clone())
+                .filter(|s| {
+                    ps.task_pr_number.get(s.task_id.as_deref().unwrap_or("")) == Some(&pr_number)
+                })
+                .filter_map(|s| s.task_id.clone())
                 .collect();
-            for tid in task_ids {
-                ps.close_spans_for_task(&tid);
-            }
+            for _tid in task_ids {}
             if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                 warn!("Failed to save daemon-state.json: {}", e);
             }
@@ -3304,7 +3304,7 @@ pub(super) async fn handle_pr_comment_nudge(
             let span = ps.active_reviewer_for_pr(pr_number);
             match span {
                 Some(s) => {
-                    let name = s.agent_name.clone();
+                    let name = s.name.clone();
                     let sid = if s.session_id.is_empty() {
                         None
                     } else {

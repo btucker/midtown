@@ -1442,7 +1442,6 @@ async fn test_post_pr_comment_stores_comment_id_on_assignment() {
     let task_id = "42";
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.create_span(task_id, "park", "midtown-code-reviewer", "");
         ps.task_pr_number.insert(task_id.to_string(), pr_number);
     }
 
@@ -1516,7 +1515,6 @@ async fn test_post_pr_comment_parses_bare_numeric_url() {
     let task_id = "55";
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.create_span(task_id, "madison", "midtown-code-reviewer", "");
         ps.task_pr_number.insert(task_id.to_string(), pr_number);
     }
 
@@ -1582,7 +1580,6 @@ async fn test_post_pr_comment_reuses_existing_placeholder() {
     let task_id = "77";
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.create_span(task_id, "riverside", "midtown-code-reviewer", "");
         ps.task_pr_number.insert(task_id.to_string(), pr_number);
         // Pre-populate the placeholder_comment_id (as if a previous reviewer
         // cycle posted it before timing out). This is the tier 1 lookup path.
@@ -1697,7 +1694,6 @@ async fn test_post_pr_comment_reuses_placeholder_via_api_fallback() {
     let task_id = "88";
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.create_span(task_id, "madison", "midtown-code-reviewer", "");
         ps.task_pr_number.insert(task_id.to_string(), pr_number);
         // Do NOT set task_placeholder_comment_id — simulates daemon restart
     }
@@ -3161,7 +3157,6 @@ async fn test_post_pr_comment_reuses_placeholder_from_task_placeholder_comment_i
     {
         let mut ps = state.persistent_state.lock().await;
         // Create a reviewer span and populate task_placeholder_comment_id
-        ps.create_span(task_id, "lexington", "midtown-code-reviewer", "sess-lex-1");
         ps.task_pr_number.insert(task_id.to_string(), pr_number);
         ps.task_placeholder_comment_id
             .insert(task_id.to_string(), existing_comment_id);

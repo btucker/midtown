@@ -241,16 +241,16 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         // Look up whether the @mentioned name has an existing reviewer session via spans.
         let reviewer_session = {
             let ps = state.persistent_state.lock().await;
-            ps.active_reviewer_spans()
+            ps.active_reviewer_sessions()
                 .into_iter()
-                .find(|s| s.agent_name.eq_ignore_ascii_case(&target_name))
+                .find(|s| s.name.eq_ignore_ascii_case(&target_name))
                 .and_then(|s| {
                     if s.session_id.is_empty() {
                         None
                     } else {
                         Some(ReviewerSessionInfo {
                             session_id: s.session_id.clone(),
-                            task_id: Some(s.task_id.clone()),
+                            task_id: s.task_id.clone(),
                         })
                     }
                 })

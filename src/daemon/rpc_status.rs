@@ -55,12 +55,12 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
     ) = {
         let ps = state.persistent_state.lock().await;
         let rev_map: std::collections::HashMap<String, u64> = ps
-            .active_reviewer_spans()
+            .active_reviewer_sessions()
             .into_iter()
             .filter_map(|s| {
                 ps.task_pr_number
-                    .get(&s.task_id)
-                    .map(|&pr| (s.agent_name.clone(), pr))
+                    .get(s.task_id.as_deref().unwrap_or(""))
+                    .map(|&pr| (s.name.clone(), pr))
             })
             .collect();
         let wt_map: std::collections::HashMap<String, u64> = ps

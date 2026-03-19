@@ -182,7 +182,7 @@ async fn resolve_attach_target_candidates(
             // Check reviewer assignments
             let persistent = state.persistent_state.lock().await;
             if let Some(span) = persistent.active_reviewer_for_pr(pr_num) {
-                matches.push(span.agent_name.to_lowercase());
+                matches.push(span.name.to_lowercase());
             }
             matches.extend(persistent.sessions.values().filter_map(|record| {
                 if record.pr_number == Some(pr_num) {
