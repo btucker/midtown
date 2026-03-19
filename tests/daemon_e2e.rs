@@ -682,31 +682,25 @@ fn test_daemon_rpc_snapshot_returns_pane_contents() {
 
     let result = &response["result"];
 
-    // WorldSnapshot structure verification
-    // Note: field names depend on serde serialization of WorldSnapshot struct
+    // DaemonPersistentState structure verification
+    // The snapshot endpoint now serializes DaemonPersistentState directly.
 
-    // Should have coworker-related data
+    // Should have session data (the primary record for coworkers)
     assert!(
-        result["coworker_snapshots"].is_array() || result["active_names"].is_array(),
-        "Snapshot should contain coworker data"
+        result["sessions"].is_object(),
+        "Snapshot should contain sessions map"
     );
 
-    // Should have pane contents map (may be empty if no coworkers)
-    // The exact field name depends on the struct serialization
-    let has_pane_data = result["pane_contents"].is_object()
-        || result["pane_contents"].is_array()
-        || result["coworker_snapshots"].is_array();
+    // Should have worktree registry
     assert!(
-        has_pane_data,
-        "Snapshot should contain pane content data structure"
+        result["worktree_registry"].is_object(),
+        "Snapshot should contain worktree registry"
     );
 
-    // Should have task-related data
+    // Should have github state
     assert!(
-        result["all_tasks"].is_array()
-            || result["pending_unblocked_tasks"].is_array()
-            || result["busy_coworkers"].is_array(),
-        "Snapshot should contain task-related data"
+        result["github"].is_object(),
+        "Snapshot should contain github state"
     );
 }
 
