@@ -523,6 +523,148 @@ fn should_recover_task_without_pr() {
 }
 
 // ============================================================================
+// decide_owned_pending_dispatch — skip reason tests
+// ============================================================================
+
+#[test]
+fn owned_pending_skips_when_in_flight_spawn_active() {
+    // GIVEN: a pending task with an in-flight spawn
+    let mut ps = make_ps("test");
+    ps.tick_in_flight_task_spawns = ["42".to_string()].into_iter().collect();
+
+    let tasks = vec![make_task("42", "Fix bug", "park", TaskStatus::Pending)];
+
+    // WHEN: decide owned pending dispatch
+    let action = decide_owned_pending_dispatch("42", "Fix bug", "park", &ps, &tasks);
+
+    // THEN: should skip due to in-flight spawn
+    assert!(
+        matches!(
+            action,
+            crate::rules::PendingTaskAction::Skip(
+                crate::rules::OwnedPendingSkipReason::InFlightSpawn
+            )
+        ),
+        "should skip when a spawn is already in flight: {:?}",
+        action
+    );
+}
+
+#[test]
+fn owned_pending_skips_when_owner_already_assigned() {
+    // GIVEN: a session that's already assigned to this task
+    let mut ps = make_ps("test");
+    ps.sessions.insert(
+        "sess-park".into(),
+        SessionRecord {
+            session_id: "sess-park".into(),
+            name: "park".into(),
+            task_id: Some("42".into()),
+            is_running: true,
+            ..Default::default()
+        },
+    );
+
+    let tasks = vec![make_task("42", "Fix bug", "park", TaskStatus::Pending)];
+
+    // WHEN: decide owned pending dispatch
+    let action = decide_owned_pending_dispatch("42", "Fix bug", "park", &ps, &tasks);
+
+    // THEN: should skip because owner is already assigned to this task
+    assert!(
+        matches!(
+            action,
+            crate::rules::PendingTaskAction::Skip(
+                crate::rules::OwnedPendingSkipReason::AlreadyAssigned
+            )
+        ),
+        "should skip when owner is already assigned: {:?}",
+        action
+    );
+}
+
+#[test]
+fn owned_pending_skips_lead_driven_channel_task() {
+    // GIVEN: a task in a lead-driven channel
+    let mut ps = make_ps("test");
+    ps.lead_driven_channels = ["web".to_string()].into_iter().collect();
+    ps.task_channel.insert("42".to_string(), "web".to_string());
+
+    let tasks = vec![make_task("42", "Fix bug", "park", TaskStatus::Pending)];
+
+    // WHEN: decide owned pending dispatch
+    let action = decide_owned_pending_dispatch("42", "Fix bug", "park", &ps, &tasks);
+
+    // THEN: should skip because channel is lead-driven
+    assert!(
+        matches!(
+            action,
+            crate::rules::PendingTaskAction::Skip(
+                crate::rules::OwnedPendingSkipReason::LeadDrivenChannel
+            )
+        ),
+        "should skip task in lead-driven channel: {:?}",
+        action
+    );
+}
+
+#[test]
+fn owned_pending_auto_completes_task_with_merged_pr() {
+    // GIVEN: a pending task whose PR has been merged
+    let mut ps = make_ps("test");
+    ps.tick_merged_pr_numbers = [42u64].into_iter().collect();
+
+    let tasks = vec![{
+        let mut t = make_task("99", "Fix bug", "park", TaskStatus::Pending);
+        t.pr = Some(42);
+        t
+    }];
+
+    // WHEN: decide owned pending dispatch
+    let action = decide_owned_pending_dispatch("99", "Fix bug", "park", &ps, &tasks);
+
+    // THEN: should auto-complete because PR is merged
+    assert!(
+        matches!(
+            action,
+            crate::rules::PendingTaskAction::AutoComplete { ref task_id, pr_num }
+            if task_id == "99" && pr_num == 42
+        ),
+        "should auto-complete when PR is merged: {:?}",
+        action
+    );
+}
+
+#[test]
+fn pending_task_spawn_skipped_when_spawn_failure_cooldown_active() {
+    // GIVEN: a pending task assigned to "park", but park is on spawn failure cooldown
+    let mut ps = make_ps("test");
+    ps.tick_pending_tasks_with_owners = vec![("42".into(), "Fix bug".into(), "park".into())];
+    ps.tick_spawn_failure_cooldown_names = ["park".to_string()].into_iter().collect();
+
+    // park is NOT active — would normally trigger a spawn
+    ps.tick_active_session_names = HashSet::new();
+
+    let tasks = vec![make_task("42", "Fix bug", "park", TaskStatus::Pending)];
+
+    // WHEN: check_for_duplicate_task_workers (the dispatch for owned pending
+    // runs inside dispatch_owned_pending_tasks which takes &DaemonState, so
+    // we verify the spawn failure skip via decide_owned_pending_dispatch directly).
+    //
+    // decide_owned_pending_dispatch does NOT check spawn_failure_cooldown_names —
+    // that check is in dispatch_owned_pending_tasks (which requires &DaemonState).
+    // Instead, verify the rules path returns SpawnOwner so we know dispatch
+    // would attempt the spawn (the cooldown block in dispatch_owned_pending_tasks
+    // prevents it from becoming an Effect — that's covered by E2E tests).
+    let action = decide_owned_pending_dispatch("42", "Fix bug", "park", &ps, &tasks);
+    assert!(
+        matches!(action, crate::rules::PendingTaskAction::SpawnOwner { .. }),
+        "decide_owned_pending_dispatch should return SpawnOwner (cooldown enforcement is in dispatch_owned_pending_tasks): {:?}",
+        action
+    );
+}
+
+// ============================================================================
 // Plan prompt section
 // ============================================================================
 

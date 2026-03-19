@@ -154,6 +154,30 @@ fn session_dispatch_skips_channel_lead_owned_task() {
 }
 
 #[test]
+fn session_dispatch_skips_spawn_failure_cooldown() {
+    // GIVEN: a stopped session for a task, but the coworker is on spawn failure cooldown
+    let mut ps = make_ps("test");
+    ps.tick_in_progress_tasks = vec![("1".into(), "Fix".into(), "park".into())];
+    ps.sessions.insert(
+        "sess-1".into(),
+        make_session("sess-1", Some("1"), "park", false),
+    );
+    ps.tick_session_task_map.insert("1".into(), "sess-1".into());
+    ps.tick_spawn_failure_cooldown_names = ["park".to_string()].into_iter().collect();
+
+    let tasks = vec![make_task("1", "Fix", "park", TaskStatus::InProgress)];
+
+    // WHEN: session dispatch runs
+    let effects = dispatch_via_sessions_inner(&ps, &tasks);
+
+    // THEN: should skip because spawn failure cooldown is active for "park"
+    assert!(
+        effects.is_empty(),
+        "Should skip session recovery when spawn failure cooldown active"
+    );
+}
+
+#[test]
 fn session_dispatch_skips_lead_driven_channel_task() {
     let mut ps = make_ps("test");
     ps.lead_driven_channels = ["web".to_string()].into_iter().collect();
