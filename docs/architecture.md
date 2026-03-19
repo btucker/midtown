@@ -449,9 +449,9 @@ Nudge decisions are made in `src/rules.rs` (`decide_interrupt_nudges`, `decide_p
 
 When a coworker calls `midtown pr merge --pr <N>`, the daemon runs a pre-gate and three gates before enabling auto-merge:
 
-**Pre-gate — Reviewer active**: Checks `pr_has_active_reviewer(pr_number)` which queries `task_session_spans` for an open span whose task maps to this PR. If a reviewer coworker is assigned to the PR, the merge is rejected immediately — before any API calls. Long-running reviews are never bypassed because the span remains open until the review actually completes or the PR is closed. This is the only gate that cannot be bypassed by prompt-based instructions.
+**Pre-gate — Reviewer active**: Checks `pr_has_active_reviewer(pr_number)` which queries `SessionRecord` for a running reviewer session assigned to this PR. If a reviewer coworker is assigned to the PR, the merge is rejected immediately — before any API calls. Long-running reviews are never bypassed because the session remains running until the review actually completes or the PR is closed. This is the only gate that cannot be bypassed by prompt-based instructions.
 
-1. **Gate 1 — Review completed**: Checks `is_pr_reviewed()` which looks in the persistent `reviewed_prs` set. A PR is only marked as reviewed when the **assigned reviewer** posts the review — bot comments, unrelated coworkers, and other noise are filtered out via `review_author_matches()` (body-based identity extraction from `<!-- midtown: name -->` frontmatter or review signatures). Formal reviews with strong states (APPROVED / CHANGES_REQUESTED) are accepted even with empty bodies since these are deliberate human actions. The `WebhookEvent.review_author` field carries the extracted identity for the webhook path; the polling path calls `active_reviewer_for_pr(pr_number)` on `DaemonPersistentState` to find the current reviewer from open `task_session_spans`. When no reviewer is assigned, any valid review is accepted (backward-compatible).
+1. **Gate 1 — Review completed**: Checks `is_pr_reviewed()` which looks in the persistent `reviewed_prs` set. A PR is only marked as reviewed when the **assigned reviewer** posts the review — bot comments, unrelated coworkers, and other noise are filtered out via `review_author_matches()` (body-based identity extraction from `<!-- midtown: name -->` frontmatter or review signatures). Formal reviews with strong states (APPROVED / CHANGES_REQUESTED) are accepted even with empty bodies since these are deliberate human actions. The `WebhookEvent.review_author` field carries the extracted identity for the webhook path; the polling path calls `active_reviewer_for_pr(pr_number)` on `DaemonPersistentState` to find the current reviewer from running `SessionRecord` entries. When no reviewer is assigned, any valid review is accepted (backward-compatible).
 
 2. **Gate 2 — CI passing**: Checks `statusCheckRollup` from `gh pr view` and also verifies `reviewDecision != "CHANGES_REQUESTED"`. The PR must be in `OPEN` state (merged/closed PRs are rejected before gate checks).
 
@@ -467,7 +467,7 @@ When a coworker calls `midtown pr merge --pr <N>`, the daemon runs a pre-gate an
 
 **Proactive auto-merge** (`Effect::AutoMergePr`): The stuck-PR polling path in `pr.rs` emits `AutoMergePr` when `is_auto_mergeable()` returns true (approved + CI green + no conflicts + all checks complete) AND no active daemon-assigned reviewer. This proactively enables GitHub's auto-merge queue for merge-ready PRs without requiring a coworker to call `midtown pr merge`. Uses `StuckConditionType::AutoMerge` for deduplication (independent of the `MergeReady` nudge, which fires after a delay as a fallback). Both `MergePr` and `AutoMergePr` call the same `auto_merge_pr()` function.
 
-**Pre-gate — Reviewer active**: Before the three gates, the RPC handler calls `pr_has_active_reviewer(pr_number)` on `DaemonPersistentState`. If an open `TaskSessionSpan` for a reviewer session maps to this PR, the merge is hard-blocked. This prevents the PR #1624 incident where a merge happened while the reviewer was still working. The same check gates `Effect::AutoMergePr` in the polling path.
+**Pre-gate — Reviewer active**: Before the three gates, the RPC handler calls `pr_has_active_reviewer(pr_number)` on `DaemonPersistentState`. If a running `SessionRecord` for a reviewer maps to this PR, the merge is hard-blocked. This prevents the PR #1624 incident where a merge happened while the reviewer was still working. The same check gates `Effect::AutoMergePr` in the polling path.
 
 **Workflow event gate** (`pr.approved`): The `PrApproved` workflow event is gated on the reviewer check in `action_to_effects`. When `PrContext.has_active_reviewer` is true (reviewer assigned AND review not yet cached), both the workflow event AND inline effects are suppressed — no nudge is sent and no cooldown is recorded. The `Approved` nudge cooldown (if any prior one existed) is cleared when the reviewer finishes (in `collect_reviewer_effects`) so PrApproved fires promptly on the next tick.
 
@@ -988,39 +988,21 @@ Spawned sessions receive a `MIDTOWN_TASK_ID` env var containing the numeric task
 - **Reviewer follow-up resume** (`pr.rs`, `handle_pr_comment_activity`): From `pr_to_task_map()`
 - **Daemon recovery** (`dispatch.rs`): From the recovery task ID
 
-## TaskSessionSpan — Temporal Session Tracking
+## Session-Based Reviewer Tracking
 
-`TaskSessionSpan` is the single source of truth for which session is actively working on a task. It replaces the former `pr_reviewers` / `task_reviewer_metadata` dual model.
-
-**Structure** (defined in `src/daemon/state.rs`):
-
-```
-TaskSessionSpan {
-    task_id:    String,              // task this span belongs to
-    agent_name: String,              // coworker name at spawn time
-    agent_type: String,              // "dev", "reviewer", or "channel-lead"
-    session_id: String,              // Claude Code session ID
-    start_time: DateTime<Utc>,
-    end_time:   Option<DateTime<Utc>>,  // None = still active
-}
-```
-
-**Storage**: `task_session_spans: Vec<TaskSessionSpan>` on `DaemonPersistentState`. Open spans (`end_time = None`) represent active assignments; closed spans are retained for history and pruned when the list exceeds 500 entries or spans are older than `worktree_cleanup_retention_hours`.
+`SessionRecord` is the single source of truth for which session is actively working on a task. Each task has a 1:1 mapping to a session. Reviewer detection queries `SessionRecord` directly — there is no separate span tracking layer.
 
 **Query helpers** on `DaemonPersistentState`:
-- `active_span_for_task(task_id)` — returns the open span for a task, if any
-- `active_reviewer_for_pr(pr_number)` — finds an open reviewer span whose task maps to this PR via `task_pr_number`
+- `active_reviewer_for_pr(pr_number)` — finds a running reviewer session whose `pr_number` or `task_pr_number` maps to this PR
 - `pr_has_active_reviewer(pr_number)` — boolean wrapper around `active_reviewer_for_pr`
-- `active_reviewer_spans()` — all open reviewer spans (used for health monitoring)
+- `active_reviewer_sessions()` — all running reviewer sessions (`agent_type == "midtown-code-reviewer"` and `is_running == true`)
+- `all_reviewer_sessions()` — all reviewer sessions including stopped ones (used by snapshot for respawn detection)
+- `clear_reviewer_assignment(name, repo)` — marks matching reviewer sessions as `is_running = false`
 
 **Reviewer-specific per-task metadata** lives in separate maps on `DaemonPersistentState` (keyed by task ID, not PR number):
 - `task_placeholder_comment_id: HashMap<String, u64>` — GitHub comment ID of the "Review in progress" placeholder
 - `task_restart_count: HashMap<String, u32>` — how many times the reviewer was restarted for this task
 - `task_pr_number: HashMap<String, u64>` — maps task ID to PR number (set at task creation, used by `active_reviewer_for_pr`)
-
-**Effects**:
-- `Effect::CreateTaskSessionSpan { task_id, agent_name, agent_type, session_id }` — opens a new span
-- `Effect::CloseTaskSessionSpan { task_id, session_id }` — sets `end_time` on the matching open span
 
 ## Reviewer Health and Stuck Detection
 
