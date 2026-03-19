@@ -301,17 +301,21 @@ fn test_resolve_pr_none_when_task_id_has_no_pr() {
 
 // ─── Tests for map_tasks_to_json (task → JSON with message_id and thread_id) ───
 
-fn make_task(id: &str, subject: &str, status: crate::tasks::TaskStatus) -> crate::tasks::Task {
-    crate::tasks::Task {
+fn make_task(
+    id: &str,
+    subject: &str,
+    status: crate::task_store::TaskStatus,
+) -> crate::task_store::Task {
+    crate::task_store::Task {
         id: id.to_string(),
         subject: subject.to_string(),
         status,
-        owner: None,
+        agent_name: String::new(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     }
 }
 
@@ -320,7 +324,7 @@ fn test_map_tasks_includes_thread_id_and_message_id() {
     let tasks = vec![make_task(
         "42",
         "Fix auth bug",
-        crate::tasks::TaskStatus::InProgress,
+        crate::task_store::TaskStatus::InProgress,
     )];
     let msg_ids = [("42".to_string(), "msg-abc".to_string())]
         .into_iter()
@@ -346,7 +350,7 @@ fn test_map_tasks_thread_id_null_when_absent() {
     let tasks = vec![make_task(
         "99",
         "Add feature",
-        crate::tasks::TaskStatus::Pending,
+        crate::task_store::TaskStatus::Pending,
     )];
     let msg_ids = [("99".to_string(), "msg-only".to_string())]
         .into_iter()
@@ -370,7 +374,7 @@ fn test_map_tasks_both_ids_null_when_absent() {
     let tasks = vec![make_task(
         "7",
         "New task",
-        crate::tasks::TaskStatus::Completed,
+        crate::task_store::TaskStatus::Completed,
     )];
     let msg_ids = std::collections::HashMap::new();
     let thread_ids = std::collections::HashMap::new();
@@ -391,9 +395,13 @@ fn test_map_tasks_includes_parent_when_set() {
         make_task(
             "10",
             "Implement feature",
-            crate::tasks::TaskStatus::InProgress,
+            crate::task_store::TaskStatus::InProgress,
         ),
-        make_task("11", "Review PR #42", crate::tasks::TaskStatus::InProgress),
+        make_task(
+            "11",
+            "Review PR #42",
+            crate::task_store::TaskStatus::InProgress,
+        ),
     ];
     let msg_ids = std::collections::HashMap::new();
     let thread_ids = std::collections::HashMap::new();

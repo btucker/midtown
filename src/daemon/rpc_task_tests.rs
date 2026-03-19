@@ -1276,17 +1276,14 @@ async fn test_handle_task_handoff_no_session_found() {
     let (state, _dir, _guard) = make_test_state("handoff-nosess-test");
 
     // Create a real task in the test repo's task storage
-    let task_id = crate::tasks::create_task_for_repo(
-        "Test handoff task",
-        "description",
-        "Testing handoff task",
-        "park",
-        "handoff-nosess-test",
-        None,
-        None,
-        None,
-    )
-    .expect("create task");
+    let task = crate::task_store::Task {
+        id: state.task_store.next_task_id().to_string(),
+        subject: "Test handoff task".to_string(),
+        agent_name: "park".to_string(),
+        ..Default::default()
+    };
+    state.task_store.save(&task).expect("save task");
+    let task_id = task.id;
 
     let response = handle_task_handoff(
         crate::rpc::RequestId::Number(2),
@@ -1321,17 +1318,14 @@ async fn test_handle_task_handoff_session_exists_but_no_record() {
     let (state, _dir, _guard) = make_test_state("handoff-norec-test");
 
     // Create a real task
-    let task_id = crate::tasks::create_task_for_repo(
-        "Test handoff no record",
-        "description",
-        "Testing handoff",
-        "park",
-        "handoff-norec-test",
-        None,
-        None,
-        None,
-    )
-    .expect("create task");
+    let task = crate::task_store::Task {
+        id: state.task_store.next_task_id().to_string(),
+        subject: "Test handoff no record".to_string(),
+        agent_name: "park".to_string(),
+        ..Default::default()
+    };
+    state.task_store.save(&task).expect("save task");
+    let task_id = task.id;
 
     // Insert a session record with the task binding but no running process
     let fake_session_id = "fake-session-abc-123";

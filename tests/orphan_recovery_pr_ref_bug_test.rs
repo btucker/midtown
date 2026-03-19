@@ -11,7 +11,7 @@
 // Fix: Only skip recovery when the task has an explicit `pr` field pointing to a merged PR.
 // Contextual PR mentions in text are ignored.
 
-use midtown::tasks::{Task, TaskStatus};
+use midtown::task_store::{Task, TaskStatus};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -22,11 +22,8 @@ fn create_test_task(id: &str, subject: &str, description: Option<String>) -> Tas
         subject: subject.to_string(),
         description,
         status: TaskStatus::InProgress,
-        owner: Some("amsterdam".to_string()),
-        blocked_by: vec![],
-        channel: None,
-        pr: None,
-        created_at: None,
+        agent_name: "amsterdam".to_string(),
+        ..Default::default()
     }
 }
 

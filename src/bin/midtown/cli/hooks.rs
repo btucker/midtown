@@ -3,6 +3,7 @@
 use std::io::Read;
 use std::os::unix::net::UnixStream;
 
+use chrono::Utc;
 use clap::Subcommand;
 
 use super::Response;
@@ -388,7 +389,9 @@ fn ensure_lead_task_persistence(
     tool_input: &serde_json::Value,
     context: &serde_json::Value,
 ) -> Option<String> {
-    let tasks_dir = midtown::tasks::shared_tasks_dir_for_repo(repo);
+    let task_store = midtown::task_store::TaskStore::new(
+        midtown::paths::projects_dir_for_repo(repo).join("tasks"),
+    );
 
     match tool_name {
         "TaskCreate" => {
@@ -399,30 +402,60 @@ fn ensure_lead_task_persistence(
                 return None;
             }
 
-            match midtown::tasks::ensure_task_in_shared_dir(&tasks_dir, subject, description) {
-                Ok((shared_id, was_created)) => {
-                    if was_created {
-                        // Task wasn't persisted by Claude Code — we created it.
-                        // Try to extract the internal ID from tool_result for mapping.
-                        let internal_id = extract_internal_task_id(context);
-                        if let Some(ref iid) = internal_id {
-                            midtown::tasks::store_lead_task_id_mapping(repo, iid, &shared_id);
-                        }
-                        hook_log(
-                            repo,
-                            &format!(
-                                "task: mirrored '{}' to shared dir as #{} (internal: {:?})",
-                                subject, shared_id, internal_id
-                            ),
-                        );
+            // Check for existing non-completed task with same subject
+            let existing = task_store.load_all();
+            if existing.iter().any(|t| {
+                t.subject == subject && t.status != midtown::task_store::TaskStatus::Completed
+            }) {
+                return None;
+            }
+
+            let task_id = task_store.next_task_id().to_string();
+            let task = midtown::task_store::Task {
+                id: task_id.clone(),
+                subject: subject.to_string(),
+                status: midtown::task_store::TaskStatus::Pending,
+                description: if description.is_empty() {
+                    None
+                } else {
+                    Some(description.to_string())
+                },
+                blocked_by: vec![],
+                channel: None,
+                pr: None,
+                agent_name: String::new(),
+                agent_type: "midtown-code-author".to_string(),
+                session_id: None,
+                parent: None,
+                message_id: None,
+                thread_id: None,
+                model: None,
+                plan: None,
+                placeholder_comment_id: None,
+                restart_count: 0,
+                execution_skill: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            };
+            match task_store.save(&task) {
+                Ok(()) => {
+                    let internal_id = extract_internal_task_id(context);
+                    if let Some(ref iid) = internal_id {
+                        store_lead_task_id_mapping(repo, iid, &task_id);
                     }
-                    None // TaskCreate doesn't need to return a remapped ID
+                    hook_log(
+                        repo,
+                        &format!(
+                            "task: mirrored '{}' as !{} (internal: {:?})",
+                            subject, task_id, internal_id
+                        ),
+                    );
                 }
                 Err(e) => {
                     hook_log(repo, &format!("task: mirror failed: {}", e));
-                    None
                 }
             }
+            None
         }
         "TaskUpdate" => {
             let task_id = tool_input["taskId"]
@@ -434,21 +467,14 @@ fn ensure_lead_task_persistence(
                 return None;
             }
 
-            // Check if the task exists directly in the shared directory
-            let task_file = tasks_dir.join(format!("{}.json", task_id));
-            if task_file.exists() {
-                // Task exists with this ID — no remapping needed.
-                // Still apply updates ourselves as a safety net.
-                if let Err(e) =
-                    midtown::tasks::update_task_fields_in_dir(&tasks_dir, task_id, tool_input)
-                {
-                    hook_log(repo, &format!("task: update {} failed: {}", task_id, e));
-                }
+            // Check if the task exists directly
+            if task_store.load(task_id).is_ok() {
+                apply_task_update_from_hook(&task_store, task_id, tool_input, repo);
                 return None;
             }
 
             // Task doesn't exist at this ID — check the mapping for a remap
-            if let Some(shared_id) = midtown::tasks::lookup_lead_task_id(repo, task_id) {
+            if let Some(shared_id) = lookup_lead_task_id(repo, task_id) {
                 hook_log(
                     repo,
                     &format!(
@@ -456,14 +482,7 @@ fn ensure_lead_task_persistence(
                         task_id, shared_id
                     ),
                 );
-                if let Err(e) =
-                    midtown::tasks::update_task_fields_in_dir(&tasks_dir, &shared_id, tool_input)
-                {
-                    hook_log(
-                        repo,
-                        &format!("task: remapped update {} failed: {}", shared_id, e),
-                    );
-                }
+                apply_task_update_from_hook(&task_store, &shared_id, tool_input, repo);
                 Some(shared_id)
             } else {
                 hook_log(
@@ -478,6 +497,63 @@ fn ensure_lead_task_persistence(
         }
         _ => None,
     }
+}
+
+/// Apply a task update from the PostToolUse hook.
+fn apply_task_update_from_hook(
+    task_store: &midtown::task_store::TaskStore,
+    task_id: &str,
+    updates: &serde_json::Value,
+    repo: &str,
+) {
+    if let Ok(mut task) = task_store.load(task_id) {
+        if let Some(status) = updates.get("status").and_then(|v| v.as_str()) {
+            task.status = match status {
+                "in_progress" => midtown::task_store::TaskStatus::InProgress,
+                "completed" => midtown::task_store::TaskStatus::Completed,
+                _ => midtown::task_store::TaskStatus::Pending,
+            };
+        }
+        if let Some(subject) = updates.get("subject").and_then(|v| v.as_str()) {
+            task.subject = subject.to_string();
+        }
+        if let Some(description) = updates.get("description").and_then(|v| v.as_str()) {
+            task.description = Some(description.to_string());
+        }
+        if let Some(channel) = updates.get("channel").and_then(|v| v.as_str()) {
+            task.channel = Some(channel.to_string());
+        }
+        if let Err(e) = task_store.save(&task) {
+            hook_log(repo, &format!("task: update {} failed: {}", task_id, e));
+        }
+    }
+}
+
+/// Read the Lead task ID mapping file for a given repo.
+fn read_lead_task_id_map(dir_key: &str) -> std::collections::HashMap<String, String> {
+    let path = midtown::paths::projects_dir_for_repo(dir_key).join("lead-task-id-map.json");
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Store a mapping from an internal task ID to a shared task ID.
+fn store_lead_task_id_mapping(dir_key: &str, internal_id: &str, shared_id: &str) {
+    let dir = midtown::paths::projects_dir_for_repo(dir_key);
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("lead-task-id-map.json");
+    let mut map = read_lead_task_id_map(dir_key);
+    map.insert(internal_id.to_string(), shared_id.to_string());
+    let _ = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&map).unwrap_or_default(),
+    );
+}
+
+/// Look up the shared task ID for an internal task ID.
+fn lookup_lead_task_id(dir_key: &str, internal_id: &str) -> Option<String> {
+    read_lead_task_id_map(dir_key).get(internal_id).cloned()
 }
 
 /// Extract the internal task ID from the PostToolUse tool_result.

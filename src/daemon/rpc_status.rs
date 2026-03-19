@@ -20,18 +20,18 @@ use crate::rpc::{RequestId, Response, RpcError};
 pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Response {
     // Build a map of coworker name -> task display string from in_progress tasks.
     // Format: "!1234 Task subject" (task ID + subject)
-    let coworker_tasks: std::collections::HashMap<String, String> =
-        crate::tasks::get_in_progress_tasks_with_subjects()
-            .into_iter()
-            .filter_map(|(task_id, subject, owner)| {
-                if owner.is_empty() {
-                    None
-                } else {
-                    let task_display = format!("!{} {}", task_id, subject);
-                    Some((owner.to_lowercase(), task_display))
-                }
-            })
-            .collect();
+    let coworker_tasks: std::collections::HashMap<String, String> = state
+        .task_store
+        .load_all()
+        .into_iter()
+        .filter(|t| {
+            t.status == crate::task_store::TaskStatus::InProgress && !t.agent_name.is_empty()
+        })
+        .map(|t| {
+            let task_display = format!("!{} {}", t.id, t.subject);
+            (t.agent_name.to_lowercase(), task_display)
+        })
+        .collect();
 
     // Snapshot live workflow state (phase, task_id) from coworker_records.
     // This reflects what coworkers are *actually* doing, not just task ownership.
@@ -113,23 +113,26 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
     // Run blocking file I/O operations in spawn_blocking.
     // Note: get_all_tasks and read_tasks read from Claude Code task storage (local
     // filesystem), not GitHub API, so they're fast and don't cause rate limit timeouts.
+    let all_loaded_tasks = state.task_store.load_all();
+    // Build task -> PR map from the same load (avoid duplicate I/O)
+    let task_pr_map_preloaded: std::collections::HashMap<u32, u64> = all_loaded_tasks
+        .iter()
+        .filter_map(|task| {
+            let task_id: u32 = task.id.parse().ok()?;
+            let pr = task.pr?;
+            Some((task_id, pr))
+        })
+        .collect();
     let (tasks, recent_activity, task_pr_map) = match tokio::task::spawn_blocking(move || {
         let tasks = get_all_tasks(
+            all_loaded_tasks,
             &task_message_ids,
             &task_thread_ids,
             &task_plan_map,
             &task_parent_map,
         );
         let recent_activity = get_recent_channel_activity();
-        // Build task -> PR number map from task files with explicit PR associations.
-        let task_pr_map: std::collections::HashMap<u32, u64> = crate::tasks::read_tasks()
-            .into_iter()
-            .filter_map(|task| {
-                let task_id: u32 = task.id.parse().ok()?;
-                let pr = task.pr?;
-                Some((task_id, pr))
-            })
-            .collect();
+        let task_pr_map = task_pr_map_preloaded;
         (tasks, recent_activity, task_pr_map)
     })
     .await
@@ -190,13 +193,12 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
     let (coworkers, active_coworker_count) =
         tag_channel_leads_and_count(coworkers, &channel_lead_names);
 
-    let in_progress_task_count = {
-        let tasks = crate::tasks::read_tasks_for_repo(Some(state.paths.dir_key()));
-        tasks
-            .iter()
-            .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
-            .count()
-    };
+    let in_progress_task_count = state
+        .task_store
+        .load_all()
+        .iter()
+        .filter(|t| t.status == crate::task_store::TaskStatus::InProgress)
+        .count();
 
     Response::success(
         id,
@@ -255,15 +257,16 @@ fn resolve_pr_number(
         .or_else(|| worktree_pr_map.get(coworker_name).copied())
 }
 
-/// Get all tasks from Claude Code task storage with their status.
+/// Get all tasks with their status, enriched with metadata.
 fn get_all_tasks(
+    all_tasks: Vec<crate::task_store::Task>,
     task_message_ids: &std::collections::HashMap<String, String>,
     task_thread_ids: &std::collections::HashMap<String, String>,
     task_plan_map: &std::collections::HashMap<String, String>,
     task_parent_map: &std::collections::HashMap<String, String>,
 ) -> Vec<serde_json::Value> {
     map_tasks_to_json(
-        crate::tasks::read_tasks(),
+        all_tasks,
         task_message_ids,
         task_thread_ids,
         task_plan_map,
@@ -274,7 +277,7 @@ fn get_all_tasks(
 /// Map a list of tasks to JSON values, enriching each with message_id, thread_id,
 /// plan path, and parent task ID from the daemon's persistent state maps.
 fn map_tasks_to_json(
-    tasks: Vec<crate::tasks::Task>,
+    tasks: Vec<crate::task_store::Task>,
     task_message_ids: &std::collections::HashMap<String, String>,
     task_thread_ids: &std::collections::HashMap<String, String>,
     task_plan_map: &std::collections::HashMap<String, String>,
@@ -284,9 +287,9 @@ fn map_tasks_to_json(
         .into_iter()
         .map(|task| {
             let status = match task.status {
-                crate::tasks::TaskStatus::Pending => "pending",
-                crate::tasks::TaskStatus::InProgress => "in_progress",
-                crate::tasks::TaskStatus::Completed => "completed",
+                crate::task_store::TaskStatus::Pending => "pending",
+                crate::task_store::TaskStatus::InProgress => "in_progress",
+                crate::task_store::TaskStatus::Completed => "completed",
             };
             let message_id = task_message_ids.get(&task.id).cloned();
             let thread_id = task_thread_ids.get(&task.id).cloned();
@@ -296,7 +299,7 @@ fn map_tasks_to_json(
                 "id": task.id,
                 "subject": task.subject,
                 "status": status,
-                "assignee": task.owner,
+                "assignee": if task.agent_name.is_empty() { serde_json::Value::Null } else { serde_json::json!(task.agent_name) },
                 "channel": task.channel,
                 "message_id": message_id,
                 "thread_id": thread_id,

@@ -2,11 +2,12 @@ use super::*;
 
 /// Build active_names from a task's owner — used to preserve pre-existing test
 /// behavior after adding the `active_names` parameter to `is_task_pr_protected`.
-fn active_names_for(task: &crate::tasks::Task) -> HashSet<String> {
-    task.owner
-        .as_ref()
-        .map(|o| [o.to_lowercase()].into_iter().collect())
-        .unwrap_or_default()
+fn active_names_for(task: &crate::task_store::Task) -> HashSet<String> {
+    if task.agent_name.is_empty() {
+        HashSet::new()
+    } else {
+        [task.agent_name.to_lowercase()].into_iter().collect()
+    }
 }
 
 #[test]
@@ -27,17 +28,21 @@ fn test_build_push_deep_link_with_msg_and_thread() {
     assert_eq!(url, "/myproject?channel=web&msg=msg-456&thread=thread-789");
 }
 
-fn in_progress_task_for_lookup(task_id: &str, subject: &str, owner: &str) -> crate::tasks::Task {
-    crate::tasks::Task {
+fn in_progress_task_for_lookup(
+    task_id: &str,
+    subject: &str,
+    owner: &str,
+) -> crate::task_store::Task {
+    crate::task_store::Task {
         id: task_id.to_string(),
         subject: subject.to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: Some(owner.to_string()),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: owner.to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     }
 }
 
@@ -197,17 +202,17 @@ fn test_is_task_pr_protected_with_explicit_pr_association() {
 
     // Task with PR #940 mentioned in subject as context, but explicit pr field is None
     // (because the task's actual work will create a different PR)
-    let task = crate::tasks::Task {
+    let task = crate::task_store::Task {
         id: "1142".to_string(),
         subject: "Fix remaining orphan worktree false positives — PR #940 fix insufficient"
             .to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: Some("amsterdam".to_string()),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: "amsterdam".to_string(),
         description: Some("The fix in PR #940 suppresses warnings...".to_string()),
         blocked_by: vec![],
         channel: Some("midtown".to_string()),
         pr: None, // No explicit PR association yet — task will create a new PR
-        created_at: None,
+        ..Default::default()
     };
 
     let pr_task_index = snapshot::PrTaskIndex::default();
@@ -219,7 +224,7 @@ fn test_is_task_pr_protected_with_explicit_pr_association() {
     );
 
     // Now test with explicit PR association
-    let task_with_pr = crate::tasks::Task {
+    let task_with_pr = crate::task_store::Task {
         pr: Some(940),
         ..task
     };
@@ -412,7 +417,7 @@ fn test_build_task_completion_effects_message_says_merged() {
 
 #[test]
 fn test_task_completion_does_not_send_push_notifications() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
     use std::collections::HashSet;
 
     // Two tasks, both with merged PRs — should NOT produce push notifications
@@ -422,23 +427,23 @@ fn test_task_completion_does_not_send_push_notifications() {
             id: "42".to_string(),
             subject: "Fix auth bug".to_string(),
             status: TaskStatus::InProgress,
-            owner: None,
+            agent_name: String::new(),
             description: None,
             blocked_by: vec![],
             channel: None,
             pr: Some(100),
-            created_at: None,
+            ..Default::default()
         },
         Task {
             id: "43".to_string(),
             subject: "Add logging".to_string(),
             status: TaskStatus::InProgress,
-            owner: None,
+            agent_name: String::new(),
             description: None,
             blocked_by: vec![],
             channel: None,
             pr: Some(101),
-            created_at: None,
+            ..Default::default()
         },
     ];
 
@@ -475,7 +480,7 @@ fn test_task_completion_does_not_send_push_notifications() {
 
 #[test]
 fn test_subject_based_completion_all_prs_merged() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
     use std::collections::HashSet;
 
     // Meta-task with PR numbers in the subject (the supported pattern)
@@ -483,12 +488,12 @@ fn test_subject_based_completion_all_prs_merged() {
         id: "1100".to_string(),
         subject: "Merge reviewed PRs: #901, #902, #903".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("york".to_string()),
+        agent_name: "york".to_string(),
         description: Some("These PRs are reviewed and CI is green.".to_string()),
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     // All referenced PRs are merged
@@ -537,19 +542,19 @@ fn test_subject_based_completion_all_prs_merged() {
 
 #[test]
 fn test_subject_based_completion_some_prs_not_merged() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
     use std::collections::HashSet;
 
     let task = Task {
         id: "1101".to_string(),
         subject: "Merge PRs: #901, #902, #903".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("york".to_string()),
+        agent_name: "york".to_string(),
         description: Some("These PRs are all ready to merge.".to_string()),
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     // Only some PRs are merged
@@ -581,18 +586,18 @@ fn test_subject_based_completion_some_prs_not_merged() {
 
 #[test]
 fn test_subject_based_completion_no_pr_references() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "1102".to_string(),
         subject: "Some task".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("york".to_string()),
+        agent_name: "york".to_string(),
         description: Some("No PR references in this description".to_string()),
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     let snap = snapshot::WorldSnapshot {
@@ -614,19 +619,19 @@ fn test_subject_based_completion_no_pr_references() {
 
 #[test]
 fn test_subject_based_completion_skips_pending_tasks() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
     use std::collections::HashSet;
 
     let task = Task {
         id: "1103".to_string(),
         subject: "Pending task".to_string(),
         status: TaskStatus::Pending, // Not InProgress
-        owner: None,
+        agent_name: String::new(),
         description: Some("Fix PR #904".to_string()),
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     let mut merged_pr_numbers = HashSet::new();
@@ -655,18 +660,18 @@ fn test_subject_based_completion_skips_pending_tasks() {
 
 #[test]
 fn test_subject_based_completion_no_description() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "1104".to_string(),
         subject: "Task without description".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("york".to_string()),
+        agent_name: "york".to_string(),
         description: None, // No description
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     let snap = snapshot::WorldSnapshot {
@@ -688,7 +693,7 @@ fn test_subject_based_completion_no_description() {
 
 #[test]
 fn test_subject_based_completion_skips_already_completed_tasks() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
     use std::collections::HashSet;
 
     // Simulate a task that was already completed by the webhook/title-based path.
@@ -697,12 +702,12 @@ fn test_subject_based_completion_skips_already_completed_tasks() {
         id: "42".to_string(),
         subject: "Add auth endpoint".to_string(),
         status: TaskStatus::Completed, // Already completed by title-based path
-        owner: Some("york".to_string()),
+        agent_name: "york".to_string(),
         description: Some("Fix PR #904 review feedback".to_string()),
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     // Also add an in_progress task with PR references in the subject
@@ -710,12 +715,12 @@ fn test_subject_based_completion_skips_already_completed_tasks() {
         id: "43".to_string(),
         subject: "Merge PRs: #904, #905".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("york".to_string()),
+        agent_name: "york".to_string(),
         description: Some("These PRs are reviewed and ready.".to_string()),
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     let mut merged_pr_numbers = HashSet::new();
@@ -772,14 +777,14 @@ fn test_subject_based_completion_does_not_scan_description_for_prs() {
     // are the task's OWN PR.
     //
     // Fix: Only scan task.subject for PR numbers, not task.description.
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
     use std::collections::HashSet;
 
     let task = Task {
         id: "1543".to_string(),
         subject: "Fix daemon not recovering coworkers with stalled in_progress tasks".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("amsterdam".to_string()),
+        agent_name: "amsterdam".to_string(),
         description: Some(
             "Captured snapshot: snapshot-stalled-tasks-owners-on-break.json\n\n\
              When coworkers go on break while their tasks are still in_progress \
@@ -794,7 +799,7 @@ fn test_subject_based_completion_does_not_scan_description_for_prs() {
         blocked_by: vec![],
         channel: None,
         pr: None, // No explicit PR field — task hasn't opened its own PR yet
-        created_at: None,
+        ..Default::default()
     };
 
     // Simulate the PRs mentioned in the description having been merged
@@ -840,14 +845,14 @@ fn test_subject_based_completion_does_not_scan_description_for_prs() {
 fn test_subject_based_completion_still_works_for_meta_tasks() {
     // Meta-tasks like "Merge reviewed PRs: #901, #902, #903" reference PR numbers
     // in the SUBJECT. These should still be auto-completed when all PRs merge.
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
     use std::collections::HashSet;
 
     let task = Task {
         id: "meta-42".to_string(),
         subject: "Merge reviewed PRs: #901, #902".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("york".to_string()),
+        agent_name: "york".to_string(),
         description: Some(
             "All these PRs have been reviewed and CI is green. \
              Merge them to unblock downstream work."
@@ -856,7 +861,7 @@ fn test_subject_based_completion_still_works_for_meta_tasks() {
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     let mut merged_pr_numbers = HashSet::new();
@@ -900,7 +905,7 @@ fn test_subject_based_completion_snapshot_stalled_tasks_false_positive() {
     // would scan the description and auto-complete it; the fix ignores descriptions.
     //
     // Also verifies the real snapshot tasks (!1515, !1523) are not auto-completed.
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let fixture = include_str!(
         "../../tests/fixtures/snapshot/snapshot-stalled-tasks-owners-on-break-20260218-154248.json"
@@ -917,7 +922,7 @@ fn test_subject_based_completion_snapshot_stalled_tasks_false_positive() {
         id: "synthetic-false-positive".to_string(),
         subject: "Fix daemon not recovering stalled coworkers".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("amsterdam".to_string()),
+        agent_name: "amsterdam".to_string(),
         description: Some(
             "PRs #1272 and #1275 are already merged but their owners' tasks \
              are still in_progress. The daemon should detect this."
@@ -926,7 +931,7 @@ fn test_subject_based_completion_snapshot_stalled_tasks_false_positive() {
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     });
 
     let effects = build_subject_based_completion_effects(&snap);
@@ -987,8 +992,7 @@ fn test_decide_stale_branch_cleanup_stale_branch_cleanup() {
 
 #[test]
 fn test_spawn_for_pending_tasks_generates_registry_effects_new_task() {
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     // Setup: create a snapshot with a pending task (no owner, not in registry)
     let snap = snapshot::WorldSnapshot {
@@ -996,12 +1000,12 @@ fn test_spawn_for_pending_tasks_generates_registry_effects_new_task() {
             id: "42".to_string(),
             subject: "Add auth endpoint".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             blocked_by: vec![],
             description: None,
             channel: None,
             pr: None,
-            created_at: Some(SystemTime::now()),
+            ..Default::default()
         }],
         ..snapshot::minimal_snapshot_for_test()
     };
@@ -1259,7 +1263,7 @@ fn test_cross_case_dedup_prevents_same_coworker_from_case1_and_case2() {
     // and task !43 is pending WITHOUT owner but references PR #100
     // which broadway is working on (Case 2 would group it to broadway).
     // Case 2 should skip broadway because Case 1 already dispatched it.
-    use crate::tasks::Task;
+    use crate::task_store::Task;
 
     let snap = snapshot::WorldSnapshot {
         // Case 1: broadway has a pending owned task
@@ -1272,13 +1276,13 @@ fn test_cross_case_dedup_prevents_same_coworker_from_case1_and_case2() {
         pending_tasks_without_owners: vec![Task {
             id: "43".to_string(),
             subject: "Review feedback on PR #100 [Midtown !43]".to_string(),
-            status: crate::tasks::TaskStatus::Pending,
-            owner: None,
+            status: crate::task_store::TaskStatus::Pending,
+            agent_name: String::new(),
             description: None,
             blocked_by: vec![],
             channel: None,
             pr: None,
-            created_at: None,
+            ..Default::default()
         }],
         // broadway is NOT running (will be spawned by Case 1)
         in_progress_tasks: vec![
@@ -1292,13 +1296,13 @@ fn test_cross_case_dedup_prevents_same_coworker_from_case1_and_case2() {
         all_tasks: vec![Task {
             id: "40".to_string(),
             subject: "Implement feature [Midtown !40] PR #100".to_string(),
-            status: crate::tasks::TaskStatus::InProgress,
-            owner: Some("broadway".to_string()),
+            status: crate::task_store::TaskStatus::InProgress,
+            agent_name: "broadway".to_string(),
             description: None,
             blocked_by: vec![],
             channel: None,
             pr: None,
-            created_at: None,
+            ..Default::default()
         }],
         ..snapshot::minimal_snapshot_for_test()
     };
@@ -1335,7 +1339,7 @@ fn test_intra_case2_dedup_prevents_duplicate_grouped_fresh_spawns() {
     // a fresh spawn for the same coworker. The second task should be nudged
     // or skipped, not spawn a duplicate. This tests intra-Case-2 dedup when
     // grouping resolves two tasks to the same not-yet-running coworker.
-    use crate::tasks::Task;
+    use crate::task_store::Task;
 
     let snap = snapshot::WorldSnapshot {
         // Two unowned tasks both referencing PR #200
@@ -1343,24 +1347,24 @@ fn test_intra_case2_dedup_prevents_duplicate_grouped_fresh_spawns() {
             Task {
                 id: "50".to_string(),
                 subject: "Fix PR #200 test failures".to_string(),
-                status: crate::tasks::TaskStatus::Pending,
-                owner: None,
+                status: crate::task_store::TaskStatus::Pending,
+                agent_name: String::new(),
                 description: None,
                 blocked_by: vec![],
                 channel: None,
                 pr: None,
-                created_at: None,
+                ..Default::default()
             },
             Task {
                 id: "51".to_string(),
                 subject: "Address PR #200 review feedback".to_string(),
-                status: crate::tasks::TaskStatus::Pending,
-                owner: None,
+                status: crate::task_store::TaskStatus::Pending,
+                agent_name: String::new(),
                 description: None,
                 blocked_by: vec![],
                 channel: None,
                 pr: None,
-                created_at: None,
+                ..Default::default()
             },
         ],
         // broadway owns the in-progress task for PR #200 so both tasks group to it
@@ -1372,13 +1376,13 @@ fn test_intra_case2_dedup_prevents_duplicate_grouped_fresh_spawns() {
         all_tasks: vec![Task {
             id: "49".to_string(),
             subject: "Implement feature [Midtown !49] PR #200".to_string(),
-            status: crate::tasks::TaskStatus::InProgress,
-            owner: Some("broadway".to_string()),
+            status: crate::task_store::TaskStatus::InProgress,
+            agent_name: "broadway".to_string(),
             description: None,
             blocked_by: vec![],
             channel: None,
             pr: None,
-            created_at: None,
+            ..Default::default()
         }],
         // Session for task 49 so resolve_grouped_name can find broadway via session
         sessions: [(
@@ -1667,20 +1671,19 @@ fn test_spawn_for_pending_unowned_reuses_existing_worktree() {
     // Scenario: Task !42 was previously owned by another coworker who died.
     // The task was reset to pending (no owner). It already has a worktree
     // "task-42-add-auth-endpoint" registered. A new coworker should reuse it.
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     let snap = snapshot::WorldSnapshot {
         pending_tasks_without_owners: vec![Task {
             id: "42".to_string(),
             subject: "Add auth endpoint".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             blocked_by: vec![],
             description: None,
             channel: None,
             pr: None,
-            created_at: Some(SystemTime::now()),
+            ..Default::default()
         }],
         tasks_with_worktrees: ["42".to_string()].into_iter().collect(),
         task_worktree_map: [("42".to_string(), "task-42-add-auth-endpoint".to_string())]
@@ -2170,8 +2173,8 @@ fn test_grouped_task_skips_if_already_assigned() {
         .all_tasks
         .iter()
         .find(|t| {
-            t.owner.as_deref() == Some("york")
-                && t.status == crate::tasks::TaskStatus::InProgress
+            t.agent_name == "york"
+                && t.status == crate::task_store::TaskStatus::InProgress
                 && (t.subject.contains("PR #912")
                     || t.description
                         .as_ref()
@@ -2371,8 +2374,7 @@ fn test_case1_nudge_records_assignment_and_prevents_loop() {
 
 #[test]
 fn test_spawn_for_pending_tasks_when_all_coworkers_are_gone() {
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     // Bug scenario: 0 active coworkers, 8 pending unblocked tasks
     // Expected: should spawn coworkers for tasks
@@ -2384,23 +2386,23 @@ fn test_spawn_for_pending_tasks_when_all_coworkers_are_gone() {
                 id: "1263".to_string(),
                 subject: "Phase 2: Daemon RPC endpoints for TUI plugin".to_string(),
                 status: TaskStatus::Pending,
-                owner: None,
+                agent_name: String::new(),
                 blocked_by: vec![],
                 description: None,
                 channel: None,
                 pr: None,
-                created_at: Some(SystemTime::now()),
+                ..Default::default()
             },
             Task {
                 id: "1274".to_string(),
                 subject: "Add sandbox_allowed_paths to config".to_string(),
                 status: TaskStatus::Pending,
-                owner: None,
+                agent_name: String::new(),
                 blocked_by: vec![],
                 description: None,
                 channel: None,
                 pr: None,
-                created_at: Some(SystemTime::now()),
+                ..Default::default()
             },
         ],
         // 0 running coworkers!
@@ -2505,18 +2507,18 @@ fn make_test_state() -> (
 
 #[test]
 fn test_is_task_pr_protected_skips_completed_tasks() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let completed_task = Task {
         id: "1120".to_string(),
         subject: "Fix orphan recovery loop".to_string(),
         description: None,
         status: TaskStatus::Completed,
-        owner: Some("vernon".to_string()),
+        agent_name: "vernon".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     let merged_prs = HashSet::new();
@@ -2530,7 +2532,7 @@ fn test_is_task_pr_protected_skips_completed_tasks() {
 
 #[test]
 fn test_is_task_pr_protected_with_contextual_pr_mention_in_subject() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     // Task !1120 mentions PR #923 in subject, but PR #923 is NOT the task's PR.
     // This is a contextual mention (e.g., "Merge PR #923 [Midtown !1120]" means
@@ -2540,11 +2542,11 @@ fn test_is_task_pr_protected_with_contextual_pr_mention_in_subject() {
         subject: "Merge PR #923 [Midtown !1120]".to_string(),
         description: None,
         status: TaskStatus::InProgress,
-        owner: Some("vernon".to_string()),
+        agent_name: "vernon".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: Some(923), // Explicit PR association (auto-set from PR title or --pr flag)
-        created_at: None,
+        ..Default::default()
     };
 
     // PR #923 is merged, but it's not associated with task !1120
@@ -2561,7 +2563,7 @@ fn test_is_task_pr_protected_with_contextual_pr_mention_in_subject() {
 
 #[test]
 fn test_is_task_pr_protected_with_contextual_pr_mention_in_description() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     // Task mentions PR #925 in description as context
     let task = Task {
@@ -2569,11 +2571,11 @@ fn test_is_task_pr_protected_with_contextual_pr_mention_in_description() {
         subject: "Address review feedback".to_string(),
         description: Some("Fixes from PR #925 review".to_string()),
         status: TaskStatus::InProgress,
-        owner: Some("park".to_string()),
+        agent_name: "park".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: Some(925), // Explicit PR association
-        created_at: None,
+        ..Default::default()
     };
 
     // PR #925 is merged, but it's not associated with task !1121
@@ -2597,18 +2599,18 @@ fn test_is_task_pr_protected_with_open_pr_via_github_title() {
     // Scenario: Task !1233 has no pr field, no entry in tasks_with_open_prs,
     // but there's an open PR #1089 with "[Midtown !1233]" in the title.
     // The github_open_pr_task_ids snapshot data prevents duplicate recovery.
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "1233".to_string(),
         subject: "Prevent duplicate work after daemon restarts".to_string(),
         description: None,
         status: TaskStatus::InProgress,
-        owner: Some("york".to_string()),
+        agent_name: "york".to_string(),
         blocked_by: vec![],
         pr: None,
         channel: None,
-        created_at: None,
+        ..Default::default()
     };
 
     let merged_prs = HashSet::new();
@@ -2630,18 +2632,18 @@ fn test_is_task_pr_protected_with_open_pr_via_github_title() {
 fn test_is_task_pr_protected_when_github_title_has_no_match() {
     // Scenario: Task !42 has no PR association anywhere — not in pr field,
     // not in tasks_with_open_prs, not in github_open_pr_task_ids.
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "42".to_string(),
         subject: "Add auth endpoint".to_string(),
         description: None,
         status: TaskStatus::InProgress,
-        owner: Some("lexington".to_string()),
+        agent_name: "lexington".to_string(),
         blocked_by: vec![],
         pr: None,
         channel: None,
-        created_at: None,
+        ..Default::default()
     };
 
     let merged_prs = HashSet::new();
@@ -2661,18 +2663,18 @@ fn test_is_task_pr_protected_github_title_takes_precedence_over_no_pr_field() {
     // Scenario: Task !55 has no pr field (not set yet), tasks_with_open_prs is empty
     // (stale after restart), but github_open_pr_task_ids has a match.
     // This is the exact scenario that caused duplicate work after daemon restart.
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "55".to_string(),
         subject: "Fix flaky tests".to_string(),
         description: None,
         status: TaskStatus::InProgress,
-        owner: Some("park".to_string()),
+        agent_name: "park".to_string(),
         blocked_by: vec![],
         pr: None, // Not set yet — PR was created but task field wasn't updated
         channel: None,
-        created_at: None,
+        ..Default::default()
     };
 
     let merged_prs = HashSet::new();
@@ -2692,18 +2694,18 @@ fn test_is_task_pr_protected_github_title_takes_precedence_over_no_pr_field() {
 
 #[test]
 fn test_is_task_pr_protected_allows_active_in_progress_task() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "42".to_string(),
         subject: "Add auth endpoint".to_string(),
         description: None,
         status: TaskStatus::InProgress,
-        owner: Some("lexington".to_string()),
+        agent_name: "lexington".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     let merged_prs = HashSet::new();
@@ -2717,18 +2719,18 @@ fn test_is_task_pr_protected_allows_active_in_progress_task() {
 
 #[test]
 fn test_is_task_pr_protected_allows_task_with_unmerged_pr() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "1120".to_string(),
         subject: "Merge PR #999999 [Midtown !1120]".to_string(), // Use non-existent PR number
         description: None,
         status: TaskStatus::InProgress,
-        owner: Some("vernon".to_string()),
+        agent_name: "vernon".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     // PR #999999 is NOT in the merged set (and doesn't exist in repo)
@@ -2745,7 +2747,7 @@ fn test_is_task_pr_protected_allows_task_with_unmerged_pr() {
 
 #[test]
 fn test_is_task_pr_protected_with_bare_hash_pr_reference() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     // Task with bare "#904" format (no "PR #" prefix)
     // With explicit PR associations, the pr field should be set to 904
@@ -2754,11 +2756,11 @@ fn test_is_task_pr_protected_with_bare_hash_pr_reference() {
         subject: "Fix #904 review feedback".to_string(),
         description: None,
         status: TaskStatus::InProgress,
-        owner: Some("columbus".to_string()),
+        agent_name: "columbus".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: Some(904), // Explicit PR association
-        created_at: None,
+        ..Default::default()
     };
 
     let merged_prs: HashSet<u64> = [904].into_iter().collect();
@@ -2774,7 +2776,7 @@ fn test_is_task_pr_protected_with_bare_hash_pr_reference() {
 
 #[test]
 fn test_is_task_pr_protected_recovers_multi_pr_with_only_some_merged() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     // Task referencing PRs #901, #902, #903, but only #901 is merged
     // Task should not be pr-protected (needs recovery)
@@ -2784,11 +2786,11 @@ fn test_is_task_pr_protected_recovers_multi_pr_with_only_some_merged() {
         subject: "Merge PRs #901, #902, #903".to_string(),
         description: Some("Consolidate multiple related PRs".to_string()),
         status: TaskStatus::InProgress,
-        owner: Some("madison".to_string()),
+        agent_name: "madison".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     // Only #901 is merged; #902 and #903 are still open
@@ -2803,7 +2805,7 @@ fn test_is_task_pr_protected_recovers_multi_pr_with_only_some_merged() {
 
 #[test]
 fn test_is_task_pr_protected_with_multi_pr_when_all_merged() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     // Meta-task referencing PRs #901, #902, #903, and ALL are merged
     // With explicit PR associations: is_task_pr_protected() returns false because
@@ -2814,11 +2816,11 @@ fn test_is_task_pr_protected_with_multi_pr_when_all_merged() {
         subject: "Merge PRs #901, #902, #903".to_string(),
         description: Some("Consolidate multiple related PRs".to_string()),
         status: TaskStatus::InProgress,
-        owner: Some("madison".to_string()),
+        agent_name: "madison".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: None, // Meta-tasks don't have explicit PR associations
-        created_at: None,
+        ..Default::default()
     };
 
     // All PRs are merged, but they're not the task's canonical PR
@@ -2835,7 +2837,7 @@ fn test_is_task_pr_protected_with_multi_pr_when_all_merged() {
 
 #[test]
 fn test_is_task_pr_protected_with_pr_in_subject_only() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     // Task with PR reference only in subject (not description)
     // With explicit PR associations: is_task_pr_protected() returns false because
@@ -2846,11 +2848,11 @@ fn test_is_task_pr_protected_with_pr_in_subject_only() {
         subject: "Close PR #905".to_string(),
         description: Some("Final cleanup tasks".to_string()),
         status: TaskStatus::InProgress,
-        owner: Some("broadway".to_string()),
+        agent_name: "broadway".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: None, // Should be Some(905) if this task is for PR #905
-        created_at: None,
+        ..Default::default()
     };
 
     let merged_prs: HashSet<u64> = [905].into_iter().collect();
@@ -2866,8 +2868,7 @@ fn test_is_task_pr_protected_with_pr_in_subject_only() {
 
 #[test]
 fn test_spawn_extracts_model_alias_from_provider_model_format() {
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     // Setup: task with model "claude/opus" in task_model_map
     let mut task_model_map = HashMap::new();
@@ -2878,12 +2879,12 @@ fn test_spawn_extracts_model_alias_from_provider_model_format() {
             id: "42".to_string(),
             subject: "Complex algorithm task".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             blocked_by: vec![],
             description: None,
             channel: None,
             pr: None,
-            created_at: Some(SystemTime::now()),
+            ..Default::default()
         }],
         task_model_map,
         ..snapshot::minimal_snapshot_for_test()
@@ -2919,8 +2920,7 @@ fn test_spawn_extracts_model_alias_from_provider_model_format() {
 
 #[test]
 fn test_unowned_pending_task_with_open_pr_is_dispatched() {
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     let mut tasks_with_open_prs = HashMap::new();
     tasks_with_open_prs.insert("2050".to_string(), 2100u64);
@@ -2930,12 +2930,12 @@ fn test_unowned_pending_task_with_open_pr_is_dispatched() {
             id: "2050".to_string(),
             subject: "Handle Svelte state handling".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             blocked_by: vec![],
             description: None,
             channel: None,
             pr: None,
-            created_at: Some(SystemTime::now()),
+            ..Default::default()
         }],
         pr: snapshot::SnapshotPrState {
             pr_task_index: snapshot::PrTaskIndex::from_task_maps(
@@ -2969,8 +2969,7 @@ fn test_unowned_pending_task_with_open_pr_is_dispatched() {
 
 #[test]
 fn test_unowned_pending_task_with_github_open_pr_title_match_is_dispatched() {
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     let mut github_open_pr_task_ids = HashMap::new();
     github_open_pr_task_ids.insert("2051".to_string(), 2101u64);
@@ -2980,12 +2979,12 @@ fn test_unowned_pending_task_with_github_open_pr_title_match_is_dispatched() {
             id: "2051".to_string(),
             subject: "Handle Svelte cache invalidation".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             blocked_by: vec![],
             description: None,
             channel: None,
             pr: None,
-            created_at: Some(SystemTime::now()),
+            ..Default::default()
         }],
         pr: snapshot::SnapshotPrState {
             pr_task_index: snapshot::PrTaskIndex::from_task_maps(
@@ -3083,9 +3082,8 @@ fn test_dual_dispatch_orphan_recovery_and_pending_same_tick() {
     //
     // The fix: spawn_for_pending_tasks should accept an excluded_task_ids set from orphan
     // recovery so it skips tasks already being recovered.
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
     use chrono::Duration;
-    use std::time::SystemTime;
 
     let now = chrono::Utc::now();
     // Lexington stopped far enough back to be outside the grace period (not recently stopped)
@@ -3104,12 +3102,12 @@ fn test_dual_dispatch_orphan_recovery_and_pending_same_tick() {
             id: "1420".to_string(),
             subject: "Add click-and-drag resizing for the sidebar/chat divider".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             blocked_by: vec![],
             description: None,
             channel: None,
             pr: None,
-            created_at: Some(SystemTime::now()),
+            ..Default::default()
         }],
         // Lexington is NOT active - its session ended
         // Not at dev limit - allows spawning
@@ -3196,8 +3194,7 @@ fn test_stale_task_cleanup_false_positive_task_about_merged_pr() {
     // Expected: Task should NOT be auto-completed (it has no explicit pr field set)
     // Actual (before fix): Task gets auto-completed because description mentions "PR #1153"
 
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "1310".to_string(),
@@ -3210,18 +3207,18 @@ fn test_stale_task_cleanup_false_positive_task_about_merged_pr() {
                 .to_string(),
         ),
         status: TaskStatus::Pending,
-        owner: Some("pleasant".to_string()),
+        agent_name: "pleasant".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: None, // No explicit pr field - this task is ABOUT PR #1153, not FOR it
-        created_at: Some(SystemTime::now()),
+        ..Default::default()
     };
 
     let snap = snapshot::WorldSnapshot {
         pending_tasks_with_owners: vec![(
             task.id.clone(),
             task.subject.clone(),
-            task.owner.clone().unwrap(),
+            task.agent_name.clone(),
         )],
         all_tasks: vec![task],
         // PR #1153 is merged
@@ -3251,26 +3248,25 @@ fn test_stale_task_cleanup_false_positive_task_about_merged_pr() {
 fn test_stale_task_cleanup_correct_behavior_with_explicit_pr_field() {
     // Task with explicit pr field set should be auto-completed when that PR merges.
 
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "42".to_string(),
         subject: "Add auth endpoint".to_string(),
         description: None,
         status: TaskStatus::Pending,
-        owner: Some("park".to_string()),
+        agent_name: "park".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: Some(123), // Explicit pr field - this task's work is IN PR #123
-        created_at: Some(SystemTime::now()),
+        ..Default::default()
     };
 
     let snap = snapshot::WorldSnapshot {
         pending_tasks_with_owners: vec![(
             task.id.clone(),
             task.subject.clone(),
-            task.owner.clone().unwrap(),
+            task.agent_name.clone(),
         )],
         all_tasks: vec![task],
         // PR #123 is merged
@@ -3313,18 +3309,18 @@ fn test_stale_task_cleanup_correct_behavior_with_explicit_pr_field() {
 #[test]
 fn test_is_task_pr_protected_skips_tasks_with_open_pr_in_tasks_with_open_prs() {
     // Orphan recovery also needs to skip tasks with open PRs (separate path from pending dispatch).
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "1313".to_string(),
         subject: "Implement feature X".to_string(),
         description: None,
         status: TaskStatus::InProgress,
-        owner: Some("lexington".to_string()),
+        agent_name: "lexington".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: None, // PR association tracked in tasks_with_open_prs instead
-        created_at: None,
+        ..Default::default()
     };
 
     let merged_prs = HashSet::new(); // PR #1156 is NOT merged
@@ -3345,18 +3341,18 @@ fn test_is_task_pr_protected_skips_tasks_with_open_pr_in_tasks_with_open_prs() {
 fn test_is_task_pr_protected_skips_tasks_with_open_pr_in_github_open_pr_task_ids() {
     // Defense-in-depth: Even if tasks_with_open_prs is empty (stale),
     // github_open_pr_task_ids should prevent recovery.
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "1313".to_string(),
         subject: "Implement feature X".to_string(),
         description: None,
         status: TaskStatus::InProgress,
-        owner: Some("lexington".to_string()),
+        agent_name: "lexington".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     let merged_prs = HashSet::new();
@@ -3382,7 +3378,7 @@ fn test_is_task_pr_protected_skips_tasks_with_open_pr_in_github_open_pr_task_ids
 
 #[test]
 fn test_is_task_pr_protected_allows_pending_task_with_open_pr_no_active_session() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     // A pending task created for an existing PR (e.g., "rebase and land PR #42")
     let task = Task {
@@ -3390,11 +3386,11 @@ fn test_is_task_pr_protected_allows_pending_task_with_open_pr_no_active_session(
         subject: "Rebase and land PR #42 [Midtown !2281]".to_string(),
         description: None,
         status: TaskStatus::Pending,
-        owner: None,
+        agent_name: String::new(),
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     let merged_prs = HashSet::new();
@@ -3413,7 +3409,7 @@ fn test_is_task_pr_protected_allows_pending_task_with_open_pr_no_active_session(
 
 #[test]
 fn test_is_task_pr_protected_allows_in_progress_task_with_open_pr_no_active_session() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     // An in_progress task whose owner went away — no active session
     let task = Task {
@@ -3421,11 +3417,11 @@ fn test_is_task_pr_protected_allows_in_progress_task_with_open_pr_no_active_sess
         subject: "Implement feature X".to_string(),
         description: None,
         status: TaskStatus::InProgress,
-        owner: Some("lexington".to_string()),
+        agent_name: "lexington".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     let merged_prs = HashSet::new();
@@ -3443,7 +3439,7 @@ fn test_is_task_pr_protected_allows_in_progress_task_with_open_pr_no_active_sess
 
 #[test]
 fn test_is_task_pr_protected_blocks_task_with_open_pr_and_active_session() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     // An in_progress task with an active session — SHOULD be protected
     let task = Task {
@@ -3451,11 +3447,11 @@ fn test_is_task_pr_protected_blocks_task_with_open_pr_and_active_session() {
         subject: "Implement feature X".to_string(),
         description: None,
         status: TaskStatus::InProgress,
-        owner: Some("lexington".to_string()),
+        agent_name: "lexington".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     let merged_prs = HashSet::new();
@@ -3474,7 +3470,7 @@ fn test_is_task_pr_protected_blocks_task_with_open_pr_and_active_session() {
 
 #[test]
 fn test_is_task_pr_protected_merged_pr_inactive_owner_still_protected() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     // An in-progress task whose owner session died, but whose PR has merged.
     // The merged-PR guard must still apply — without it the daemon could
@@ -3484,11 +3480,11 @@ fn test_is_task_pr_protected_merged_pr_inactive_owner_still_protected() {
         subject: "Implement feature X".to_string(),
         description: None,
         status: TaskStatus::InProgress,
-        owner: Some("lexington".to_string()),
+        agent_name: "lexington".to_string(),
         blocked_by: vec![],
         channel: None,
         pr: Some(42),
-        created_at: None,
+        ..Default::default()
     };
 
     let mut merged_prs = HashSet::new();
@@ -3905,8 +3901,7 @@ fn test_session_dispatch_excludes_task_from_pending_dispatch() {
     // Scenario: Task !42 is in_progress (stopped session) AND also appears as
     // pending (race condition in the same snapshot). Session dispatch should claim
     // it, and pending dispatch should skip it.
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     let session = make_test_session_record(
         "sess-abc",
@@ -3932,12 +3927,12 @@ fn test_session_dispatch_excludes_task_from_pending_dispatch() {
             id: "42".to_string(),
             subject: "Add auth endpoint".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             blocked_by: vec![],
             description: None,
             channel: None,
             pr: None,
-            created_at: Some(SystemTime::now()),
+            ..Default::default()
         }],
         sessions,
         session_task_map,
@@ -3985,8 +3980,7 @@ fn test_pending_task_with_stopped_session_emits_spawn_session_resume() {
     // When a pending task has a stopped session from a previous attempt,
     // spawn_for_pending_tasks should emit SpawnForTask with ResumeSession mode
     // instead of a fresh spawn.
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     let session = make_test_session_record(
         "sess-resume-1",
@@ -4007,12 +4001,12 @@ fn test_pending_task_with_stopped_session_emits_spawn_session_resume() {
             id: "99".to_string(),
             subject: "Implement caching layer".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             blocked_by: vec![],
             description: None,
             channel: None,
             pr: None,
-            created_at: Some(SystemTime::now()),
+            ..Default::default()
         }],
         sessions,
         session_task_map,
@@ -4057,8 +4051,7 @@ fn test_pending_task_with_stopped_session_emits_spawn_session_resume() {
 fn test_pending_task_with_running_session_skips_dispatch() {
     // When a pending task has a RUNNING session, dispatch should skip it entirely
     // (no SpawnForTask).
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     let session = make_test_session_record(
         "sess-running-1",
@@ -4079,12 +4072,12 @@ fn test_pending_task_with_running_session_skips_dispatch() {
             id: "88".to_string(),
             subject: "Fix login bug".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             blocked_by: vec![],
             description: None,
             channel: None,
             pr: None,
-            created_at: Some(SystemTime::now()),
+            ..Default::default()
         }],
         sessions,
         session_task_map,
@@ -4127,8 +4120,7 @@ fn test_pending_task_with_running_session_skips_dispatch() {
 fn test_pending_task_with_recently_recovered_session_skips_dispatch() {
     // Given: pending task !99 has stopped session "sess-cool-1" that was recently recovered
     // (recently_recovered_session_ids contains the session_id).
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     let session = make_test_session_record(
         "sess-cool-1",
@@ -4147,12 +4139,12 @@ fn test_pending_task_with_recently_recovered_session_skips_dispatch() {
             id: "99".to_string(),
             subject: "Implement caching layer".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             blocked_by: vec![],
             description: None,
             channel: None,
             pr: None,
-            created_at: Some(SystemTime::now()),
+            ..Default::default()
         }],
         sessions,
         session_task_map,
@@ -4192,8 +4184,7 @@ fn test_pending_task_with_stale_working_dir_uses_fresh_worktree() {
     // When a session's recorded working_dir no longer exists on disk (e.g.,
     // the worktree was cleaned up), Path 2 should fall back to the fresh
     // worktree path instead of passing the stale path to SpawnForTask.
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     let stale_dir = "/tmp/midtown-test-NONEXISTENT-working-dir-12345";
     // Confirm the stale path definitely doesn't exist
@@ -4221,12 +4212,12 @@ fn test_pending_task_with_stale_working_dir_uses_fresh_worktree() {
             id: "77".to_string(),
             subject: "Implement caching layer".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             blocked_by: vec![],
             description: None,
             channel: None,
             pr: None,
-            created_at: Some(SystemTime::now()),
+            ..Default::default()
         }],
         sessions,
         session_task_map,
@@ -4453,19 +4444,19 @@ fn test_build_task_completion_effects_no_workflow_event_without_channel() {
 
 #[test]
 fn test_build_subject_based_completion_effects_emits_task_completed() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
     use std::collections::{HashMap, HashSet};
 
     let task = Task {
         id: "55".to_string(),
         subject: "Fix PR #901 review feedback".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("amsterdam".to_string()),
+        agent_name: "amsterdam".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     };
 
     let mut merged = HashSet::new();
@@ -4608,20 +4599,19 @@ fn test_unowned_pending_task_assign_and_spawn_failure_records_cooldown() {
     // The executor always inlines spawn_failure bookkeeping (RecordCooldown +
     // ResetTaskToPending + ops message) using the real allocated name after spawn fails.
     // Verify SpawnForTask is emitted with the correct fields.
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     let snap = snapshot::WorldSnapshot {
         pending_tasks_without_owners: vec![Task {
             id: "2059".to_string(),
             subject: "Add new feature".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             blocked_by: vec![],
             description: None,
             channel: None,
             pr: None,
-            created_at: Some(SystemTime::now()),
+            ..Default::default()
         }],
         ..snapshot::minimal_snapshot_for_test()
     };
@@ -4661,20 +4651,19 @@ fn test_unowned_pending_task_skipped_when_cooldown_active() {
     // spawn_failure_cooldown_names and skips coworkers in cooldown.
     // Without this check, recording cooldown on failure is useless —
     // the next tick would just allocate the same name and retry.
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     let mut snap = snapshot::WorldSnapshot {
         pending_tasks_without_owners: vec![Task {
             id: "2059".to_string(),
             subject: "Add new feature".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             blocked_by: vec![],
             description: None,
             channel: None,
             pr: None,
-            created_at: Some(SystemTime::now()),
+            ..Default::default()
         }],
         ..snapshot::minimal_snapshot_for_test()
     };
@@ -4761,20 +4750,19 @@ fn test_owned_pending_task_spawn_failure_resets_task_to_pending() {
 fn test_unowned_pending_task_spawn_failure_resets_task_to_pending() {
     // The executor always inlines ResetTaskToPending on failure, using the task_id
     // and dir_key from SpawnForTask. Verify those fields are set correctly.
-    use crate::tasks::{Task, TaskStatus};
-    use std::time::SystemTime;
+    use crate::task_store::{Task, TaskStatus};
 
     let snap = snapshot::WorldSnapshot {
         pending_tasks_without_owners: vec![Task {
             id: "2059".to_string(),
             subject: "Add new feature".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             blocked_by: vec![],
             description: None,
             channel: None,
             pr: None,
-            created_at: Some(SystemTime::now()),
+            ..Default::default()
         }],
         ..snapshot::minimal_snapshot_for_test()
     };
@@ -4949,16 +4937,16 @@ fn test_lead_driven_channel_still_auto_completes_merged_pr_tasks() {
         .insert("42".into(), "proj-workflows".into());
     snap.lead_driven_channels.insert("proj-workflows".into());
     // The task has an associated merged PR.
-    snap.all_tasks = vec![crate::tasks::Task {
+    snap.all_tasks = vec![crate::task_store::Task {
         id: "42".into(),
         subject: "Fix bug".into(),
-        status: crate::tasks::TaskStatus::Pending,
-        owner: Some("park".into()),
+        status: crate::task_store::TaskStatus::Pending,
+        agent_name: "park".into(),
         description: None,
         blocked_by: vec![],
         channel: Some("proj-workflows".into()),
         pr: Some(100),
-        created_at: None,
+        ..Default::default()
     }];
     snap.pr.merged_pr_numbers.insert(100);
 
@@ -5077,18 +5065,18 @@ fn test_plan_section_with_missing_plan_file_preserves_skill() {
 /// instead of the regular coworker config.
 #[test]
 fn test_reviewer_task_dispatched_with_reviewer_config() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "500".to_string(),
         subject: "Review PR #42".to_string(),
         status: TaskStatus::Pending,
-        owner: None,
+        agent_name: String::new(),
         description: Some("Code review for PR #42.".to_string()),
         blocked_by: vec![],
         channel: Some("auth".to_string()),
         pr: Some(42),
-        created_at: None,
+        ..Default::default()
     };
 
     let mut snap = snapshot::minimal_snapshot_for_test();
@@ -5151,18 +5139,18 @@ fn test_reviewer_task_dispatched_with_reviewer_config() {
 /// not as a reviewer — even if it has a PR number.
 #[test]
 fn test_regular_task_with_pr_not_dispatched_as_reviewer() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "501".to_string(),
         subject: "Fix bug in PR #43".to_string(),
         status: TaskStatus::Pending,
-        owner: None,
+        agent_name: String::new(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(43),
-        created_at: None,
+        ..Default::default()
     };
 
     let mut snap = snapshot::minimal_snapshot_for_test();
@@ -5197,19 +5185,19 @@ fn test_regular_task_with_pr_not_dispatched_as_reviewer() {
 /// generic TaskClaimed nudge instead of a fresh reviewer spawn.
 #[test]
 fn test_reviewer_task_not_grouped_with_implementation_coworker() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     // Implementation task: already in progress, owned by "park"
     let impl_task = Task {
         id: "600".to_string(),
         subject: "Implement feature for PR #55".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("park".to_string()),
+        agent_name: "park".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(55),
-        created_at: None,
+        ..Default::default()
     };
 
     // Reviewer task: pending, same PR number, should NOT group with park
@@ -5217,12 +5205,12 @@ fn test_reviewer_task_not_grouped_with_implementation_coworker() {
         id: "601".to_string(),
         subject: "Review PR #55".to_string(),
         status: TaskStatus::Pending,
-        owner: None,
+        agent_name: String::new(),
         description: Some("Code review for PR #55.".to_string()),
         blocked_by: vec![],
         channel: None,
         pr: Some(55),
-        created_at: None,
+        ..Default::default()
     };
 
     let mut snap = snapshot::minimal_snapshot_for_test();
@@ -5268,19 +5256,19 @@ fn test_reviewer_task_not_grouped_with_implementation_coworker() {
 /// This prevents self-review when all other coworker names happen to be in use.
 #[test]
 fn test_reviewer_task_excludes_pr_author_from_name_allocation() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     // Parent implementation task owned by "riverside"
     let impl_task = Task {
         id: "700".to_string(),
         subject: "Implement feature".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("riverside".to_string()),
+        agent_name: "riverside".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(88),
-        created_at: None,
+        ..Default::default()
     };
 
     // Reviewer child task
@@ -5288,12 +5276,12 @@ fn test_reviewer_task_excludes_pr_author_from_name_allocation() {
         id: "701".to_string(),
         subject: "Review PR #88".to_string(),
         status: TaskStatus::Pending,
-        owner: None,
+        agent_name: String::new(),
         description: Some("Code review for PR #88.".to_string()),
         blocked_by: vec![],
         channel: None,
         pr: Some(88),
-        created_at: None,
+        ..Default::default()
     };
 
     let mut snap = snapshot::minimal_snapshot_for_test();
@@ -5345,18 +5333,18 @@ fn test_reviewer_task_excludes_pr_author_from_name_allocation() {
 /// list so that the span exists when post_pr_comment() stores the placeholder_comment_id.
 #[test]
 fn test_reviewer_create_span_before_post_pr_comment() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let review_task = Task {
         id: "800".to_string(),
         subject: "Review PR #99".to_string(),
         status: TaskStatus::Pending,
-        owner: None,
+        agent_name: String::new(),
         description: Some("Code review for PR #99.".to_string()),
         blocked_by: vec![],
         channel: None,
         pr: Some(99),
-        created_at: None,
+        ..Default::default()
     };
 
     let mut snap = snapshot::minimal_snapshot_for_test();

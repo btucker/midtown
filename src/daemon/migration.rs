@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::daemon::state::DaemonPersistentState;
-use crate::tasks::{Task, TaskStatus};
+use crate::task_store::TaskStatus;
 
 /// A migrated task in the new format with enriched metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,8 +91,32 @@ fn status_to_string(status: TaskStatus) -> String {
 /// exist in the new location.
 ///
 /// Returns a list of migrated task IDs.
+/// Read old-format tasks from `~/.claude/tasks/midtown-<repo>/` for migration.
+///
+/// This is a minimal inline reader for the legacy task format. Used only by
+/// the migration path; all other code uses `TaskStore`.
+fn read_old_format_tasks(dir_key: &str) -> Vec<serde_json::Value> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let task_list_id = crate::paths::task_list_id_for_repo(dir_key);
+    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
+    let Ok(entries) = std::fs::read_dir(&tasks_dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|e| {
+            std::fs::read_to_string(e.path())
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        })
+        .collect()
+}
+
 pub fn migrate_tasks_if_needed(
-    old_tasks: &[Task],
+    old_tasks: &[serde_json::Value],
     old_state: &DaemonPersistentState,
     new_tasks_dir: &Path,
 ) -> Vec<String> {
@@ -113,60 +137,95 @@ pub fn migrate_tasks_if_needed(
     let now = Utc::now();
     let mut migrated_ids = Vec::new();
 
-    for task in old_tasks {
-        let new_task_path = new_tasks_dir.join(format!("{}.json", task.id));
+    for task_val in old_tasks {
+        let id = task_val
+            .get("id")
+            .and_then(|v| {
+                v.as_str()
+                    .map(String::from)
+                    .or_else(|| v.as_u64().map(|n| n.to_string()))
+            })
+            .unwrap_or_default();
+        let subject = task_val
+            .get("subject")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let status_str = task_val
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("pending");
+        let status = match status_str {
+            "in_progress" => TaskStatus::InProgress,
+            "completed" => TaskStatus::Completed,
+            _ => TaskStatus::Pending,
+        };
+        let owner = task_val
+            .get("owner")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let description = task_val
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let blocked_by: Vec<String> = task_val
+            .get("blockedBy")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| {
+                        v.as_str()
+                            .map(String::from)
+                            .or_else(|| v.as_u64().map(|n| n.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let channel = task_val
+            .get("channel")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let pr_val = task_val.get("pr").and_then(|v| v.as_u64());
+
+        let new_task_path = new_tasks_dir.join(format!("{}.json", id));
 
         // Skip if already migrated
         if new_task_path.exists() {
-            debug!("Task {} already exists in new location, skipping", task.id);
+            debug!("Task {} already exists in new location, skipping", id);
             continue;
         }
 
-        let agent_name = if task.owner.as_ref().is_some_and(|o| !o.is_empty()) {
-            task.owner.clone()
+        let agent_name = if owner.as_ref().is_some_and(|o| !o.is_empty()) {
+            owner.clone()
         } else {
-            Some(slugify_subject(&task.subject))
+            Some(slugify_subject(&subject))
         };
 
         let agent_type = old_state
             .task_agent_type
-            .get(&task.id)
+            .get(&id)
             .cloned()
             .or_else(|| Some("midtown-code-author".to_string()));
 
-        let channel = old_state
-            .task_channel
-            .get(&task.id)
-            .cloned()
-            .or_else(|| task.channel.clone());
+        let migrated_channel = old_state.task_channel.get(&id).cloned().or(channel);
 
-        let model = old_state.task_model.get(&task.id).cloned();
-        let plan = old_state.task_plan.get(&task.id).cloned();
-        let thread_id = old_state.task_thread_id.get(&task.id).cloned();
-        let message_id = old_state.task_message_id.get(&task.id).cloned();
-        let parent = old_state.task_parent.get(&task.id).cloned();
-
-        let pr = old_state.task_pr_number.get(&task.id).copied().or(task.pr);
-
-        let created_at = task
-            .created_at
-            .and_then(|st| {
-                st.duration_since(std::time::UNIX_EPOCH)
-                    .ok()
-                    .and_then(|d| DateTime::from_timestamp(d.as_secs() as i64, d.subsec_nanos()))
-            })
-            .unwrap_or(now);
+        let model = old_state.task_model.get(&id).cloned();
+        let plan = old_state.task_plan.get(&id).cloned();
+        let thread_id = old_state.task_thread_id.get(&id).cloned();
+        let message_id = old_state.task_message_id.get(&id).cloned();
+        let parent = old_state.task_parent.get(&id).cloned();
+        let pr = old_state.task_pr_number.get(&id).copied().or(pr_val);
 
         let migrated = MigratedTask {
-            id: task.id.clone(),
-            subject: task.subject.clone(),
-            status: status_to_string(task.status),
-            owner: task.owner.clone(),
-            description: task.description.clone(),
-            blocked_by: task.blocked_by.clone(),
+            id: id.clone(),
+            subject,
+            status: status_to_string(status),
+            owner,
+            description,
+            blocked_by,
             agent_name,
             agent_type,
-            channel,
+            channel: migrated_channel,
             model,
             plan,
             thread_id,
@@ -174,27 +233,27 @@ pub fn migrate_tasks_if_needed(
             parent,
             pr,
             session_id: None,
-            created_at,
+            created_at: now,
             updated_at: now,
         };
 
         match serde_json::to_string_pretty(&migrated) {
             Ok(content) => match std::fs::write(&new_task_path, content) {
                 Ok(()) => {
-                    debug!("Migrated task {} to {}", task.id, new_task_path.display());
-                    migrated_ids.push(task.id.clone());
+                    debug!("Migrated task {} to {}", id, new_task_path.display());
+                    migrated_ids.push(id);
                 }
                 Err(e) => {
                     warn!(
                         "Failed to write migrated task {} to {}: {}",
-                        task.id,
+                        migrated.id,
                         new_task_path.display(),
                         e
                     );
                 }
             },
             Err(e) => {
-                warn!("Failed to serialize migrated task {}: {}", task.id, e);
+                warn!("Failed to serialize migrated task {}: {}", id, e);
             }
         }
     }
@@ -235,7 +294,7 @@ pub fn migrate_tasks_if_needed(
 /// Called during daemon startup. Only migrates if there are old tasks
 /// and the new tasks directory is empty.
 pub fn maybe_migrate_tasks(dir_key: &str, persistent_state: &DaemonPersistentState) {
-    let old_tasks = crate::tasks::read_tasks_for_repo(Some(dir_key));
+    let old_tasks = read_old_format_tasks(dir_key);
     if old_tasks.is_empty() {
         return;
     }

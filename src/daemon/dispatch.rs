@@ -387,13 +387,13 @@ fn task_completed_effects(
 /// 4. Task has an open PR via `tasks_with_open_prs` → protected
 /// 5. Task has an open PR detected from GitHub PR titles (`github_open_pr_task_ids`) → protected
 pub(crate) fn is_task_pr_protected(
-    task: &crate::tasks::Task,
+    task: &crate::task_store::Task,
     merged_pr_numbers: &HashSet<u64>,
     pr_task_index: &snapshot::PrTaskIndex,
     active_names: &HashSet<String>,
 ) -> bool {
     // Completed tasks are always protected
-    if task.status == crate::tasks::TaskStatus::Completed {
+    if task.status == crate::task_store::TaskStatus::Completed {
         debug!("Skipping recovery for task !{}: already completed", task.id);
         return true;
     }
@@ -426,10 +426,8 @@ pub(crate) fn is_task_pr_protected(
     // If the task's owner has no active session, open-PR protection doesn't apply.
     // This handles the catch-22 where a pending task is created for an existing PR
     // (e.g., "rebase and land PR #X") — without this, nobody could pick it up.
-    let owner_is_active = task
-        .owner
-        .as_ref()
-        .is_some_and(|owner| active_names.contains(&owner.to_lowercase()));
+    let owner_is_active =
+        !task.agent_name.is_empty() && active_names.contains(&task.agent_name.to_lowercase());
     if !owner_is_active {
         debug!(
             "Task !{} has no active owner session — open-PR protection does not apply",
@@ -486,7 +484,7 @@ fn check_and_recover_orphans_with_task_lookup<F>(
     _task_lookup: F,
 ) -> Vec<effects::Effect>
 where
-    F: Fn(&str) -> Option<crate::tasks::Task>,
+    F: Fn(&str) -> Option<crate::task_store::Task>,
 {
     check_and_recover_orphans_impl(snap)
 }
@@ -1114,13 +1112,13 @@ fn dispatch_owned_pending_tasks(
 /// Priority: in-memory PR map > in-memory blockedBy map > session-based PR owner >
 ///           disk blockedBy relationship > None (allocate fresh name).
 fn resolve_grouped_name(
-    task: &crate::tasks::Task,
+    task: &crate::task_store::Task,
     snap: &snapshot::WorldSnapshot,
     pr_coworker_map: &HashMap<String, String>,
     task_coworker_map: &HashMap<String, String>,
 ) -> Option<String> {
     // Strategy A: Extract PR number from subject or description
-    if let Some(pr_num) = crate::tasks::extract_pr_number_from_task(task) {
+    if let Some(pr_num) = crate::task_store::extract_pr_number_from_task(task) {
         if let Some(name) = pr_coworker_map.get(&pr_num) {
             info!(
                 "Task !{} references PR #{} - assigning to in-memory owner {}",
@@ -1132,8 +1130,8 @@ fn resolve_grouped_name(
         if let Ok(pr_number_u64) = pr_num.parse::<u64>()
             && let Some(pr_task) = snap.all_tasks.iter().find(|t| {
                 t.pr == Some(pr_number_u64)
-                    && (t.status == crate::tasks::TaskStatus::InProgress
-                        || t.status == crate::tasks::TaskStatus::Pending)
+                    && (t.status == crate::task_store::TaskStatus::InProgress
+                        || t.status == crate::task_store::TaskStatus::Pending)
             })
             && let Some(session) = snap.find_session_for_task(&pr_task.id)
             && !session.name.is_empty()
@@ -1149,8 +1147,8 @@ fn resolve_grouped_name(
         // without the explicit `pr` field set) and resolve via session.
         let pr_pattern = format!("PR #{}", pr_num);
         for t in snap.all_tasks.iter().filter(|t| {
-            (t.status == crate::tasks::TaskStatus::InProgress
-                || t.status == crate::tasks::TaskStatus::Pending)
+            (t.status == crate::task_store::TaskStatus::InProgress
+                || t.status == crate::task_store::TaskStatus::Pending)
                 && (t.subject.contains(&pr_pattern)
                     || t.description
                         .as_ref()
@@ -1180,7 +1178,7 @@ fn resolve_grouped_name(
             return Some(name.clone());
         }
     }
-    if let Some(owner) = crate::tasks::find_owner_via_blocked_by(task, &snap.all_tasks) {
+    if let Some(owner) = crate::task_store::find_owner_via_blocked_by(task, &snap.all_tasks) {
         info!(
             "Task !{} blocked by owned task - assigning to {}",
             task.id, owner
@@ -1412,9 +1410,9 @@ fn dispatch_unowned_pending_tasks(
             if is_reviewer_task
                 && let Some(parent_id) = snap.task_parent_map.get(&task.id)
                 && let Some(parent_task) = snap.all_tasks.iter().find(|t| t.id == *parent_id)
-                && let Some(ref author) = parent_task.owner
+                && !parent_task.agent_name.is_empty()
             {
-                excluded_names.insert(author.to_lowercase());
+                excluded_names.insert(parent_task.agent_name.to_lowercase());
             }
             // Use the lead-assigned agent_name from TaskStore if available,
             // otherwise fall back to generating a name from the task subject.
@@ -1515,7 +1513,7 @@ fn dispatch_unowned_pending_tasks(
 
         // Record this assignment in in-memory maps for same-tick grouping.
         task_coworker_map.insert(task.id.clone(), coworker_name.clone());
-        if let Some(pr_num) = crate::tasks::extract_pr_number_from_task(task) {
+        if let Some(pr_num) = crate::task_store::extract_pr_number_from_task(task) {
             pr_coworker_map.insert(pr_num, coworker_name.clone());
         }
         names_assigned_this_tick.insert(coworker_name.to_lowercase());
@@ -1703,7 +1701,7 @@ pub(super) fn build_task_completion_effects(
     channel: Option<String>,
     ctx: Option<TaskEventContext>,
 ) -> Vec<Effect> {
-    let Some(task_id) = crate::tasks::extract_task_id_from_pr_title(pr_title) else {
+    let Some(task_id) = crate::task_store::extract_task_id_from_pr_title(pr_title) else {
         return vec![];
     };
 
@@ -1766,7 +1764,7 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
 
     for task in &snap.all_tasks {
         // Only consider in_progress tasks (completed tasks are already filtered out by this check)
-        if task.status != crate::tasks::TaskStatus::InProgress {
+        if task.status != crate::task_store::TaskStatus::InProgress {
             continue;
         }
 
@@ -1799,7 +1797,11 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
                         task.id, pr_number
                     ),
                     task_channel,
-                    task.owner.clone(),
+                    if task.agent_name.is_empty() {
+                        None
+                    } else {
+                        Some(task.agent_name.clone())
+                    },
                     TaskEventContext {
                         subject: None,
                         description: task.description.clone(),
@@ -1820,7 +1822,7 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
             // numbers as contextual background (e.g., "the bug first appeared in
             // PR #1273..."), and scanning them causes false positives where a
             // task is auto-completed because PRs it merely mentions have merged.
-            let pr_numbers = crate::tasks::extract_pr_numbers_from_text(&task.subject);
+            let pr_numbers = crate::task_store::extract_pr_numbers_from_text(&task.subject);
 
             // Skip if no PR references found
             if pr_numbers.is_empty() {
@@ -1850,7 +1852,11 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
                         task.id, pr_list
                     ),
                     task_channel,
-                    task.owner.clone(),
+                    if task.agent_name.is_empty() {
+                        None
+                    } else {
+                        Some(task.agent_name.clone())
+                    },
                     TaskEventContext {
                         subject: None,
                         description: task.description.clone(),
@@ -1875,7 +1881,7 @@ pub fn build_subject_based_completion_effects(snap: &snapshot::WorldSnapshot) ->
 // the direct GitHub API safety net (`is_pr_merged`) has been removed.
 #[doc(hidden)]
 pub fn should_recover_task_test_helper(
-    task: &crate::tasks::Task,
+    task: &crate::task_store::Task,
     merged_pr_numbers: &HashSet<u64>,
     _repo_path: &std::path::Path,
     tasks_with_open_prs: &HashMap<String, u64>,
@@ -1883,8 +1889,8 @@ pub fn should_recover_task_test_helper(
 ) -> bool {
     // Test helper: assume owner is active (preserves existing test behavior)
     let mut active_names = HashSet::new();
-    if let Some(owner) = &task.owner {
-        active_names.insert(owner.to_lowercase());
+    if !task.agent_name.is_empty() {
+        active_names.insert(task.agent_name.to_lowercase());
     }
     let pr_task_index = snapshot::PrTaskIndex::from_task_maps(
         tasks_with_open_prs.clone(),
@@ -1947,7 +1953,7 @@ pub fn reset_orphaned_tasks(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
         // the PR but shouldn't be reset while the PR is still open.
         // This check runs before the ownerless check so that ownerless review
         // tasks (e.g., owner cleared on break) are also protected.
-        if let Some(pr_num_str) = crate::tasks::extract_pr_number(subject)
+        if let Some(pr_num_str) = crate::task_store::extract_pr_number(subject)
             && let Ok(pr_num) = pr_num_str.parse::<u64>()
         {
             let pr_is_open = snap

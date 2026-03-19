@@ -75,7 +75,7 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         .filter_map(|pr| {
             let number = pr.get("number")?.as_u64()?;
             let title = pr.get("title")?.as_str()?;
-            let task_id = crate::tasks::extract_task_id_from_pr_title(title)?;
+            let task_id = crate::task_store::extract_task_id_from_pr_title(title)?;
             Some((task_id.to_string(), number))
         })
         .collect();

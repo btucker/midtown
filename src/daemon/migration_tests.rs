@@ -1,23 +1,28 @@
-use std::time::{Duration, UNIX_EPOCH};
-
 use tempfile::TempDir;
 
 use super::*;
 use crate::daemon::state::DaemonPersistentState;
-use crate::tasks::{Task, TaskStatus};
+use crate::task_store::TaskStatus;
 
-fn make_task(id: &str, subject: &str, status: TaskStatus, owner: Option<&str>) -> Task {
-    Task {
-        id: id.to_string(),
-        subject: subject.to_string(),
-        status,
-        owner: owner.map(|s| s.to_string()),
-        description: Some(format!("Description for {}", subject)),
-        blocked_by: vec![],
-        channel: None,
-        pr: None,
-        created_at: Some(UNIX_EPOCH + Duration::from_secs(1_700_000_000)),
-    }
+fn make_task(
+    id: &str,
+    subject: &str,
+    status: TaskStatus,
+    owner: Option<&str>,
+) -> serde_json::Value {
+    let status_str = match status {
+        TaskStatus::Pending => "pending",
+        TaskStatus::InProgress => "in_progress",
+        TaskStatus::Completed => "completed",
+    };
+    serde_json::json!({
+        "id": id,
+        "subject": subject,
+        "status": status_str,
+        "owner": owner,
+        "description": format!("Description for {}", subject),
+        "blockedBy": [],
+    })
 }
 
 fn make_state_with_maps(task_id: &str) -> DaemonPersistentState {
@@ -113,7 +118,7 @@ fn test_migrate_empty_owner_slugifies_subject() {
 
     let mut task = make_task("3", "Update README docs", TaskStatus::Pending, Some(""));
     // Empty string owner should be treated like None
-    task.owner = Some(String::new());
+    task["owner"] = serde_json::json!("");
     let state = DaemonPersistentState::default();
 
     let migrated = migrate_tasks_if_needed(&[task], &state, &new_tasks_dir);
@@ -201,7 +206,7 @@ fn test_migrate_uses_task_channel_over_task_field() {
     let new_tasks_dir = temp_dir.path().join("tasks");
 
     let mut task = make_task("5", "Channel test", TaskStatus::Pending, Some("park"));
-    task.channel = Some("old-channel".to_string());
+    task["channel"] = serde_json::json!("old-channel");
 
     let mut state = DaemonPersistentState::default();
     state
@@ -224,7 +229,7 @@ fn test_migrate_falls_back_to_task_channel_field() {
     let new_tasks_dir = temp_dir.path().join("tasks");
 
     let mut task = make_task("6", "Fallback test", TaskStatus::Pending, Some("park"));
-    task.channel = Some("task-channel".to_string());
+    task["channel"] = serde_json::json!("task-channel");
 
     let state = DaemonPersistentState::default(); // no task_channel entry
 
@@ -243,7 +248,7 @@ fn test_migrate_pr_from_state_overrides_task() {
     let new_tasks_dir = temp_dir.path().join("tasks");
 
     let mut task = make_task("7", "PR test", TaskStatus::Pending, Some("park"));
-    task.pr = Some(100);
+    task["pr"] = serde_json::json!(100);
 
     let mut state = DaemonPersistentState::default();
     state.task_pr_number.insert("7".to_string(), 200);

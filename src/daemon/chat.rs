@@ -165,12 +165,14 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
     // the task system is the authoritative source for task-to-owner mapping.
     let task_owner: Option<String> = extract_task_id(&msg.content).and_then(|tid| {
         debug!("Found task ID !{} in message", tid);
-        let owner =
-            crate::tasks::get_in_progress_tasks_with_subjects_for_repo(state.paths.dir_key())
-                .into_iter()
-                .find(|(task_id, _, _)| task_id == &tid)
-                .map(|(_, _, owner)| owner)
-                .filter(|o| !o.is_empty());
+        let owner = state
+            .task_store
+            .load_all()
+            .into_iter()
+            .filter(|t| t.status == crate::task_store::TaskStatus::InProgress)
+            .find(|t| t.id == tid)
+            .map(|t| t.agent_name)
+            .filter(|o| !o.is_empty());
         if owner.is_none() {
             debug!(
                 "No in-progress task !{} found, falling back to name-based routing",

@@ -77,17 +77,14 @@ pub mod webserver;
 // Project configuration
 pub mod config;
 
-// Structured coworker state reporting (replaces pane-content parsing for decisions)
-pub mod coworker_state;
+// Workflow phase tracking for coworker status reporting
+pub mod workflow_phase;
 
 // Agent system prompts
 pub mod agents;
 
 // Agent definition file loading (Claude Code agent format)
 pub mod agent_definition;
-
-// Claude Code task storage integration (legacy, being replaced by task_store)
-pub mod tasks;
 
 // Midtown task storage — one JSON file per task in ~/.midtown/<project>/tasks/
 pub mod task_store;
@@ -131,9 +128,6 @@ pub mod launch;
 // Lightweight filesystem sandbox (sandbox-exec on macOS, bwrap on Linux)
 pub mod sandbox;
 
-// Session key type for multi-session coworker identity
-pub mod session_key;
-
 // Platform abstraction for CLI argument construction (shared by headed + headless)
 pub mod platform;
 
@@ -163,7 +157,6 @@ pub use channel::{Channel, ChannelInfo, ChannelRouter, SendResult, load_channel_
 pub use coworker::{Coworker, CoworkerManager, CoworkerStatus};
 pub use cursor::Cursor;
 pub use message::{Message, MessageType, ToolBlock};
-pub use session_key::SessionKey;
 pub use usage::{UsageData, fetch_usage_for_profile};
 pub use worktree::{WorktreeError, WorktreeManager};
 

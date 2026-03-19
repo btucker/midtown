@@ -1093,7 +1093,7 @@ pub fn all_review_feedback_addressed(
 /// `merged_pr_numbers`.
 pub fn get_merged_task_pr(
     task_id: &str,
-    all_tasks: &[crate::tasks::Task],
+    all_tasks: &[crate::task_store::Task],
     merged_pr_numbers: &std::collections::HashSet<u64>,
 ) -> Option<u64> {
     all_tasks

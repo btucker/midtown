@@ -140,7 +140,7 @@ pub(crate) struct CoworkerRecord {
     pub last_activity: Option<Instant>,
     /// Coworker-reported workflow phase (developing, testing, PR, etc.).
     /// Set via RPC when coworker calls `midtown state <phase>`.
-    pub workflow_phase: Option<crate::coworker_state::WorkflowPhase>,
+    pub workflow_phase: Option<crate::workflow_phase::WorkflowPhase>,
     /// Task number the coworker is working on (from RPC state report).
     pub task_id: Option<u32>,
     /// When the workflow phase was last updated via RPC.
@@ -237,8 +237,8 @@ impl CoworkerRecord {
 ///
 /// Returns `Some(pct)` for phases that represent meaningful milestones, or
 /// `None` for phases like Idle and Debugging that don't map to progress.
-fn phase_default_progress(phase: crate::coworker_state::WorkflowPhase) -> Option<u8> {
-    use crate::coworker_state::WorkflowPhase;
+fn phase_default_progress(phase: crate::workflow_phase::WorkflowPhase) -> Option<u8> {
+    use crate::workflow_phase::WorkflowPhase;
     match phase {
         WorkflowPhase::Claiming => Some(5),
         WorkflowPhase::Developing => Some(25),
@@ -260,7 +260,7 @@ fn phase_default_progress(phase: crate::coworker_state::WorkflowPhase) -> Option
 pub(crate) fn set_workflow(
     records: &mut HashMap<String, CoworkerRecord>,
     name: &str,
-    phase: crate::coworker_state::WorkflowPhase,
+    phase: crate::workflow_phase::WorkflowPhase,
     task_id: Option<u32>,
     progress: Option<u8>,
 ) {
@@ -794,8 +794,8 @@ pub fn decide_pr_action(
 /// may be cleaned up. Trying to spawn or resume the original coworker with stale
 /// session context is unreliable. Creating a new follow-up task lets the normal
 /// dispatch system assign it to an available coworker with full context.
-pub fn review_comment_creates_followup(task_status: &crate::tasks::TaskStatus) -> bool {
-    matches!(task_status, crate::tasks::TaskStatus::Completed)
+pub fn review_comment_creates_followup(task_status: &crate::task_store::TaskStatus) -> bool {
+    matches!(task_status, crate::task_store::TaskStatus::Completed)
 }
 
 // ---------------------------------------------------------------------------
@@ -2076,7 +2076,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             Some(50),
         );
@@ -2086,7 +2086,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             None,
         );
@@ -2105,7 +2105,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             Some(75),
         );
@@ -2114,7 +2114,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Testing,
+            crate::workflow_phase::WorkflowPhase::Testing,
             Some(42),
             Some(0),
         );
@@ -2135,7 +2135,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             Some(80),
         );
@@ -2144,7 +2144,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::PullRequest,
+            crate::workflow_phase::WorkflowPhase::PullRequest,
             Some(42),
             None,
         );
@@ -2161,7 +2161,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Claiming,
+            crate::workflow_phase::WorkflowPhase::Claiming,
             Some(42),
             None,
         );
@@ -2174,7 +2174,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             None,
         );
@@ -2187,7 +2187,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Testing,
+            crate::workflow_phase::WorkflowPhase::Testing,
             Some(42),
             None,
         );
@@ -2200,7 +2200,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Reviewing,
+            crate::workflow_phase::WorkflowPhase::Reviewing,
             Some(42),
             None,
         );
@@ -2213,7 +2213,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Completed,
+            crate::workflow_phase::WorkflowPhase::Completed,
             Some(42),
             None,
         );
@@ -2227,7 +2227,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             Some(45),
         );
@@ -2247,14 +2247,14 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Claiming,
+            crate::workflow_phase::WorkflowPhase::Claiming,
             Some(42),
             None,
         );
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             None,
         );
@@ -2278,7 +2278,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             Some(40),
         );
@@ -2286,7 +2286,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Idle,
+            crate::workflow_phase::WorkflowPhase::Idle,
             None,
             None,
         );
@@ -2306,7 +2306,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::PullRequest,
+            crate::workflow_phase::WorkflowPhase::PullRequest,
             Some(42),
             Some(85),
         );
@@ -2316,7 +2316,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Reviewing,
+            crate::workflow_phase::WorkflowPhase::Reviewing,
             Some(42),
             None,
         );
@@ -2338,7 +2338,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             Some(30),
         );
@@ -2347,7 +2347,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Testing,
+            crate::workflow_phase::WorkflowPhase::Testing,
             Some(42),
             None,
         );

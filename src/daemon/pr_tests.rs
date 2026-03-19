@@ -542,16 +542,16 @@ async fn test_ci_wait_deduplication_uses_time_aware_hash() {
     // Mark york as active so the PR is not treated as orphaned in process_pr_issue_nudges
     snap.coworkers.active_names.insert("york".to_string());
     // Add a task linked to PR #100 and a session for york
-    snap.all_tasks.push(crate::tasks::Task {
+    snap.all_tasks.push(crate::task_store::Task {
         id: "t100".to_string(),
         subject: "Test task for PR #100".to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: Some("york".to_string()),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: "york".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(100),
-        created_at: None,
+        ..Default::default()
     });
     snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         [("t100".to_string(), 100u64)].into_iter().collect(),
@@ -627,7 +627,7 @@ fn test_detect_abandoned_pr_tasks_no_reset_for_open_pr() {
 #[test]
 fn test_detect_abandoned_pr_tasks_checks_for_merged_siblings() {
     use super::super::snapshot::minimal_snapshot_for_test;
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     // Task !1158 is "in progress" (completed, but still in_progress_tasks for this test)
     let in_progress_tasks = vec![(
@@ -641,12 +641,12 @@ fn test_detect_abandoned_pr_tasks_checks_for_merged_siblings() {
         id: "1158".to_string(),
         subject: "Fix bug".to_string(),
         status: TaskStatus::Completed,
-        owner: Some("york".to_string()),
+        agent_name: "york".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(968), // Task.pr points to merged PR #968
-        created_at: None,
+        ..Default::default()
     };
 
     let mut snap = minimal_snapshot_for_test();
@@ -831,16 +831,16 @@ async fn test_collect_green_with_feedback_clears_cooldown_for_inactive_owner() {
 
     let mut snap = minimal_snapshot_for_test();
     // Provide a task + session so the owner resolves via session
-    snap.all_tasks.push(crate::tasks::Task {
+    snap.all_tasks.push(crate::task_store::Task {
         id: "5151".to_string(),
         subject: "Fix CI flake".to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: Some("york".to_string()),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: "york".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(pr_number),
-        created_at: None,
+        ..Default::default()
     });
     snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         [("5151".to_string(), pr_number)].into_iter().collect(),
@@ -1614,16 +1614,16 @@ fn test_reconcile_orphaned_prs_checks_github_title_task_ids() {
     snap.pr.pr_task_index =
         super::super::snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_task_to_pr);
     // The task must be non-completed for the title link to suppress orphan detection
-    snap.all_tasks.push(crate::tasks::Task {
+    snap.all_tasks.push(crate::task_store::Task {
         id: "500".to_string(),
         subject: "Add auth endpoint".to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: None,
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: String::new(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     });
 
     let effects = reconcile_orphaned_prs(&snap);
@@ -1664,16 +1664,16 @@ fn test_reconcile_orphaned_prs_checks_task_pr_field() {
 
     // No session association, no title-based association
     // But a task on disk has pr = Some(77)
-    snap.all_tasks.push(crate::tasks::Task {
+    snap.all_tasks.push(crate::task_store::Task {
         id: "600".to_string(),
         subject: "Fix a bug".to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: None,
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: String::new(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(77),
-        created_at: None,
+        ..Default::default()
     });
 
     let effects = reconcile_orphaned_prs(&snap);
@@ -1709,16 +1709,16 @@ fn test_reconcile_orphaned_prs_completed_task_does_not_suppress() {
     snap.reviewer.reviewed_prs.insert(88);
 
     // Task is completed but PR is still open — PR is orphaned
-    snap.all_tasks.push(crate::tasks::Task {
+    snap.all_tasks.push(crate::task_store::Task {
         id: "700".to_string(),
         subject: "Something".to_string(),
-        status: crate::tasks::TaskStatus::Completed,
-        owner: None,
+        status: crate::task_store::TaskStatus::Completed,
+        agent_name: String::new(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(88),
-        created_at: None,
+        ..Default::default()
     });
     // Title-based link also exists
     use std::collections::HashMap;
@@ -1767,16 +1767,16 @@ fn test_reconcile_orphaned_prs_clears_nudge_via_title_link() {
     snap.pr.pr_task_index =
         super::super::snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_task_to_pr);
     // Non-completed task required for title link to be active
-    snap.all_tasks.push(crate::tasks::Task {
+    snap.all_tasks.push(crate::task_store::Task {
         id: "300".to_string(),
         subject: "New feature".to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: None,
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: String::new(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     });
 
     let effects = reconcile_orphaned_prs(&snap);
@@ -2980,18 +2980,18 @@ async fn test_reviewer_spawn_warns_pr_author_via_nudge() {
 #[test]
 fn test_collect_pr_task_link_effects_links_unlinked_task() {
     use super::super::snapshot::minimal_snapshot_for_test;
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "100".to_string(),
         subject: "Fix auth".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("york".to_string()),
+        agent_name: "york".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: None, // not yet linked
-        created_at: None,
+        ..Default::default()
     };
 
     let mut snap = minimal_snapshot_for_test();
@@ -3027,18 +3027,18 @@ fn test_collect_pr_task_link_effects_links_unlinked_task() {
 #[test]
 fn test_collect_pr_task_link_effects_skips_already_linked_task() {
     use super::super::snapshot::minimal_snapshot_for_test;
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "200".to_string(),
         subject: "Add feature".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("amsterdam".to_string()),
+        agent_name: "amsterdam".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(99), // already linked correctly
-        created_at: None,
+        ..Default::default()
     };
 
     let mut snap = minimal_snapshot_for_test();
@@ -3082,18 +3082,18 @@ fn test_collect_pr_task_link_effects_ignores_pr_without_task_marker() {
 #[test]
 fn test_collect_pr_task_link_effects_skips_completed_task() {
     use super::super::snapshot::minimal_snapshot_for_test;
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "400".to_string(),
         subject: "Old work".to_string(),
         status: TaskStatus::Completed,
-        owner: Some("york".to_string()),
+        agent_name: "york".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: None, // never linked
-        created_at: None,
+        ..Default::default()
     };
 
     let mut snap = minimal_snapshot_for_test();
@@ -3117,18 +3117,18 @@ fn test_collect_pr_task_link_effects_skips_completed_task() {
 #[test]
 fn test_collect_pr_task_link_effects_corrects_mismatched_pr() {
     use super::super::snapshot::minimal_snapshot_for_test;
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "300".to_string(),
         subject: "Refactor".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("lexington".to_string()),
+        agent_name: "lexington".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(55), // stale/wrong PR number
-        created_at: None,
+        ..Default::default()
     };
 
     let mut snap = minimal_snapshot_for_test();

@@ -26,17 +26,21 @@ fn make_session_record(
     }
 }
 
-fn in_progress_task_for_lookup(task_id: &str, subject: &str, owner: &str) -> crate::tasks::Task {
-    crate::tasks::Task {
+fn in_progress_task_for_lookup(
+    task_id: &str,
+    subject: &str,
+    owner: &str,
+) -> crate::task_store::Task {
+    crate::task_store::Task {
         id: task_id.to_string(),
         subject: subject.to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: Some(owner.to_string()),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: owner.to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     }
 }
 
@@ -793,7 +797,7 @@ fn test_session_dispatch_skips_recovery_for_recently_recovered_session() {
 /// sees the stopped session and re-attempts resume with no delay.
 #[test]
 fn test_pending_task_with_cooldown_active_skips_resume() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let session = make_session_record("sess-loop-123", Some("77"), Some("park"), false);
 
@@ -803,12 +807,12 @@ fn test_pending_task_with_cooldown_active_skips_resume() {
             id: "77".to_string(),
             subject: "Fix auth bug".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             description: None,
             blocked_by: vec![],
             channel: None,
             pr: None,
-            created_at: None,
+            ..Default::default()
         }],
         sessions: [("sess-loop-123".to_string(), session)]
             .into_iter()
@@ -846,7 +850,7 @@ fn test_pending_task_with_cooldown_active_skips_resume() {
 /// the pending task resume path should emit a SpawnSession with resume=true.
 #[test]
 fn test_pending_task_stopped_session_resumes_when_no_cooldown() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let session = make_session_record("sess-resume-456", Some("88"), Some("broadway"), false);
 
@@ -855,12 +859,12 @@ fn test_pending_task_stopped_session_resumes_when_no_cooldown() {
             id: "88".to_string(),
             subject: "Add logging feature".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             description: None,
             blocked_by: vec![],
             channel: None,
             pr: None,
-            created_at: None,
+            ..Default::default()
         }],
         sessions: [("sess-resume-456".to_string(), session)]
             .into_iter()
@@ -964,7 +968,7 @@ fn test_session_dispatch_on_success_includes_session_recovered_cooldown() {
 /// and emit ClearSessionWorkingDir to prevent retrying the stale path next tick.
 #[test]
 fn test_pending_task_stale_working_dir_falls_back_and_clears() {
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let stale_path = "/tmp/nonexistent-worktree-for-test";
 
@@ -981,12 +985,12 @@ fn test_pending_task_stale_working_dir_falls_back_and_clears() {
             id: "99".to_string(),
             subject: "Fix stale working dir".to_string(),
             status: TaskStatus::Pending,
-            owner: None,
+            agent_name: String::new(),
             description: None,
             blocked_by: vec![],
             channel: None,
             pr: None,
-            created_at: None,
+            ..Default::default()
         }],
         sessions: [("sess-stale-wd-123".to_string(), session)]
             .into_iter()

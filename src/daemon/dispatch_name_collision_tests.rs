@@ -1,6 +1,5 @@
 use super::*;
 use std::collections::HashSet;
-use std::time::SystemTime;
 
 fn make_test_state() -> (
     DaemonState,
@@ -72,16 +71,16 @@ fn make_test_state() -> (
 #[test]
 fn test_dispatch_excludes_active_session_names() {
     let snap = snapshot::WorldSnapshot {
-        pending_tasks_without_owners: vec![crate::tasks::Task {
+        pending_tasks_without_owners: vec![crate::task_store::Task {
             id: "300".to_string(),
             subject: "New feature".to_string(),
-            status: crate::tasks::TaskStatus::Pending,
-            owner: None,
+            status: crate::task_store::TaskStatus::Pending,
+            agent_name: String::new(),
             blocked_by: vec![],
             description: None,
             channel: None,
             pr: None,
-            created_at: Some(SystemTime::now()),
+            ..Default::default()
         }],
         coworkers: snapshot::SnapshotCoworkerState {
             // "park" has an active session but is NOT in CoworkerManager

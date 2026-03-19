@@ -10,7 +10,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthProvider;
-use crate::session_key::SessionKey;
 use crate::worktree::WorktreeManager;
 
 /// Status of a coworker.
@@ -86,16 +85,6 @@ fn default_profile() -> String {
 }
 
 impl Coworker {
-    /// Get the SessionKey for this coworker, if a session ID is known.
-    ///
-    /// Returns `None` if `session_id` is `None` (e.g., provisional recovery entries
-    /// that haven't been registered yet).
-    pub fn session_key(&self) -> Option<SessionKey> {
-        self.session_id
-            .as_ref()
-            .map(|sid| SessionKey::new(&self.name, sid))
-    }
-
     /// Create a Coworker entry for recovery (headless session discovery).
     ///
     /// Used when a running session is found that isn't tracked in
@@ -270,40 +259,6 @@ impl CoworkerManager {
             .values()
             .find(|cw| cw.session_id.as_deref() == Some(session_id))
             .cloned()
-    }
-
-    /// Get the SessionKey for a coworker by name.
-    ///
-    /// Returns a `SessionKey` combining the coworker's name and session ID.
-    /// Returns `None` if the coworker doesn't exist or has no session ID yet.
-    pub fn session_key(&self, name: &str) -> Option<SessionKey> {
-        let coworkers = self.coworkers.read().unwrap();
-        coworkers
-            .values()
-            .find(|cw| cw.name == name)
-            .and_then(|cw| {
-                cw.session_id
-                    .as_ref()
-                    .map(|sid| SessionKey::new(&cw.name, sid))
-            })
-    }
-
-    /// Get all SessionKeys for coworkers with a given name.
-    ///
-    /// Currently returns at most one (single-session-per-name), but this method
-    /// is designed for the multi-session future where a name can have multiple
-    /// concurrent sessions.
-    pub fn session_keys_for_name(&self, name: &str) -> Vec<SessionKey> {
-        let coworkers = self.coworkers.read().unwrap();
-        coworkers
-            .values()
-            .filter(|cw| cw.name == name)
-            .filter_map(|cw| {
-                cw.session_id
-                    .as_ref()
-                    .map(|sid| SessionKey::new(&cw.name, sid))
-            })
-            .collect()
     }
 
     /// Get the session ID for a coworker.

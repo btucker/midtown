@@ -11,7 +11,7 @@
 // Expected: should_recover_task() returns false (skip recovery)
 // Actual (before fix): returns true, spawning duplicate coworkers
 
-use midtown::tasks::{Task, TaskStatus};
+use midtown::task_store::{Task, TaskStatus};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -20,13 +20,10 @@ fn create_test_task(id: &str, subject: &str, pr: Option<u64>) -> Task {
     Task {
         id: id.to_string(),
         subject: subject.to_string(),
-        description: None,
         status: TaskStatus::InProgress,
-        owner: Some("lexington".to_string()),
-        blocked_by: vec![],
-        channel: None,
+        agent_name: "lexington".to_string(),
         pr,
-        created_at: None,
+        ..Default::default()
     }
 }
 

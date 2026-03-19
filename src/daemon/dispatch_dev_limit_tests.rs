@@ -98,17 +98,17 @@ fn make_running_coworker(name: &str) -> crate::coworker::Coworker {
 }
 
 /// Build a minimal pending task for testing.
-fn make_pending_task(id: &str) -> crate::tasks::Task {
-    crate::tasks::Task {
+fn make_pending_task(id: &str) -> crate::task_store::Task {
+    crate::task_store::Task {
         id: id.to_string(),
         subject: format!("Task {}", id),
-        status: crate::tasks::TaskStatus::Pending,
-        owner: None,
+        status: crate::task_store::TaskStatus::Pending,
+        agent_name: String::new(),
         blocked_by: vec![],
         description: None,
         channel: None,
         pr: None,
-        created_at: Some(std::time::SystemTime::now()),
+        ..Default::default()
     }
 }
 
@@ -120,7 +120,7 @@ fn make_pending_task(id: &str) -> crate::tasks::Task {
 /// When false, leaves `in_progress_tasks` empty and uses the default cap.
 fn make_task_limit_snapshot(
     running: Vec<crate::coworker::Coworker>,
-    pending_tasks: Vec<crate::tasks::Task>,
+    pending_tasks: Vec<crate::task_store::Task>,
     is_at_task_limit: bool,
 ) -> crate::daemon::snapshot::WorldSnapshot {
     let active_names: std::collections::HashSet<String> =
@@ -435,39 +435,23 @@ fn test_dispatch_with_legacy_lead() {
 fn test_is_at_task_limit_excludes_dead_owner_tasks() {
     let state = make_test_state_with_max(8);
 
-    // Create 8 in_progress tasks on disk via create_task_for_repo,
-    // then update their status to in_progress.
-    let dir_key = state.paths.dir_key().to_string();
+    // Create 8 in_progress tasks via TaskStore
     for i in 0..8 {
-        let owner = format!("coworker-{}", i);
-        let task_id = crate::tasks::create_task_for_repo(
-            &format!("Task {}", i),
-            "test task",
-            "",
-            &owner,
-            &dir_key,
-            None,
-            None,
-            None,
-        )
-        .expect("create task");
-        let _ = crate::tasks::update_task_fields_for_repo(
-            &task_id,
-            &dir_key,
-            None,
-            Some("in_progress"),
-            None,
-            None,
-            None,
-            None,
-        );
+        let task = crate::task_store::Task {
+            id: (i + 1).to_string(),
+            subject: format!("Task {}", i),
+            status: crate::task_store::TaskStatus::InProgress,
+            agent_name: format!("coworker-{}", i),
+            ..Default::default()
+        };
+        state.task_store.save(&task).expect("save task");
     }
 
     // Verify tasks were created
-    let tasks = crate::tasks::read_tasks_for_repo(Some(&dir_key));
+    let tasks = state.task_store.load_all();
     let in_progress = tasks
         .iter()
-        .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
+        .filter(|t| t.status == crate::task_store::TaskStatus::InProgress)
         .count();
     assert_eq!(in_progress, 8, "Should have 8 in_progress tasks");
 

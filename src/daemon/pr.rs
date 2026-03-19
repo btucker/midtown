@@ -305,7 +305,7 @@ pub(super) fn detect_abandoned_pr_tasks(
 
                         // Check if task status is completed
                         let task_completed = task
-                            .map(|t| matches!(t.status, crate::tasks::TaskStatus::Completed))
+                            .map(|t| matches!(t.status, crate::task_store::TaskStatus::Completed))
                             .unwrap_or(false);
 
                         // Check if any other PR associated with this task was merged
@@ -487,7 +487,7 @@ async fn update_pr_caches(
             .map(|pr| {
                 let pf = PrFields::from_json(pr);
                 let status = format_pr_status_for_rpc(pr);
-                let task_id = crate::tasks::extract_task_id_from_pr_title(pf.title);
+                let task_id = crate::task_store::extract_task_id_from_pr_title(pf.title);
                 let task_name = task_id.and_then(|id| task_map.get(&id).cloned());
                 serde_json::json!({
                     "number": pf.number,
@@ -866,7 +866,7 @@ pub(super) async fn poll_prs_for_issues(
                 active_coworkers.contains(name)
                     // Must have reported Idle phase
                     && record.workflow_phase
-                        == Some(crate::coworker_state::WorkflowPhase::Idle)
+                        == Some(crate::workflow_phase::WorkflowPhase::Idle)
             })
             .map(|(name, _)| name.clone())
             .collect()
@@ -1849,10 +1849,13 @@ async fn silent_coworker_scenario(
             continue;
         }
 
-        let task_info = crate::tasks::get_in_progress_tasks_with_subjects()
+        let task_info = state
+            .task_store
+            .load_all()
             .into_iter()
-            .find(|(_, _, owner)| owner.eq_ignore_ascii_case(name))
-            .map(|(id, subject, _)| format!("task !{} ({})", id, truncate_str(&subject, 30)))
+            .filter(|t| t.status == crate::task_store::TaskStatus::InProgress)
+            .find(|t| t.agent_name.eq_ignore_ascii_case(name))
+            .map(|t| format!("task !{} ({})", t.id, truncate_str(&t.subject, 30)))
             .unwrap_or_else(|| "their task".to_string());
 
         let prior_nudges = tracker.nudge_count(name, StuckConditionType::SilentCoworker);
@@ -2217,7 +2220,7 @@ async fn collect_comment_notification_effects(
         // If the linked task is completed, create a follow-up task rather than
         // trying to spawn/resume the original coworker with stale session context.
         if let Some(task_id) = pr_ctx.pr_task_associations.get(&pr_number)
-            && let Some(task) = crate::tasks::read_task(task_id)
+            && let Some(task) = state.task_store.load(task_id).ok()
             && crate::rules::review_comment_creates_followup(&task.status)
         {
             let subject = format!("Address review feedback on PR #{}", pr_number);
@@ -2532,7 +2535,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         pr_last_webhook_event,
     ) = {
         let ps = state.persistent_state.lock().await;
-        let all_tasks = crate::tasks::read_tasks_for_repo(Some(state.paths.dir_key()));
+        let all_tasks = state.task_store.load_all();
         let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
         let session_task_map: HashMap<String, String> = ps
             .sessions
@@ -2671,7 +2674,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         {
             let has_review_task = all_tasks.iter().any(|t| {
                 t.pr == Some(pr_number)
-                    && t.status != crate::tasks::TaskStatus::Completed
+                    && t.status != crate::task_store::TaskStatus::Completed
                     && t.subject.starts_with("Review PR #")
             });
             if has_review_task {
@@ -2705,7 +2708,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             .get_by_pr(pr_number)
             .or_else(|| {
                 // Extract task ID from title and look up by task
-                crate::tasks::extract_task_id_from_pr_title(title).and_then(|task_id| {
+                crate::task_store::extract_task_id_from_pr_title(title).and_then(|task_id| {
                     let task_id_str = task_id.to_string();
                     worktree_registry
                         .all_assignments()
@@ -3199,25 +3202,25 @@ pub(super) async fn handle_pr_comment_nudge(
             .get(&pr_number)
             .cloned()
             .map(|tid| (tid, ps.channel_lead_names()))
-    } && let Some(task) = crate::tasks::read_task(&task_id)
+    } && let Some(task) = state.task_store.load(&task_id).ok()
     {
-        if task.status == crate::tasks::TaskStatus::InProgress {
+        if task.status == crate::task_store::TaskStatus::InProgress {
             // Route the review feedback to the task owner instead of the PR owner.
             // This handles cases where a task was reassigned (e.g., via orphan recovery)
             // and the PR metadata still shows the original author.
-            if let Some(task_owner) = task.owner {
+            if !task.agent_name.is_empty() {
                 let task_owner_active = state
                     .coworkers
                     .list()
                     .iter()
-                    .any(|c| c.name.eq_ignore_ascii_case(&task_owner));
+                    .any(|c| c.name.eq_ignore_ascii_case(&task.agent_name));
 
                 if task_owner_active {
                     debug!(
                         "PR #{} linked to task !{} with active owner {} — routing review feedback to task owner instead of PR owner {}",
-                        pr_number, task_id, task_owner, owner
+                        pr_number, task_id, task.agent_name, owner
                     );
-                    owner = task_owner;
+                    owner = task.agent_name.clone();
                 }
             }
         } else if crate::rules::review_comment_creates_followup(&task.status) {
@@ -4004,20 +4007,19 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
         // If we previously nudged the lead about this PR, clear the record so
         // re-nudging is possible if the task later completes without merging.
         let has_index_link = snap.pr.pr_task_index.pr_has_task(&pr_number);
-        let has_title_link =
-            snap.pr
-                .pr_task_index
-                .github_task_pr_pairs()
-                .any(|(tid, pr)| {
-                    pr == pr_number
-                        && snap.all_tasks.iter().any(|t| {
-                            t.id == *tid && t.status != crate::tasks::TaskStatus::Completed
-                        })
-                });
-        let has_task_pr_link = snap
-            .all_tasks
-            .iter()
-            .any(|t| t.pr == Some(pr_number) && t.status != crate::tasks::TaskStatus::Completed);
+        let has_title_link = snap
+            .pr
+            .pr_task_index
+            .github_task_pr_pairs()
+            .any(|(tid, pr)| {
+                pr == pr_number
+                    && snap.all_tasks.iter().any(|t| {
+                        t.id == *tid && t.status != crate::task_store::TaskStatus::Completed
+                    })
+            });
+        let has_task_pr_link = snap.all_tasks.iter().any(|t| {
+            t.pr == Some(pr_number) && t.status != crate::task_store::TaskStatus::Completed
+        });
 
         if has_index_link || has_title_link || has_task_pr_link {
             if snap.pr.orphaned_pr_lead_nudges_sent.contains(&pr_number) {
@@ -4096,7 +4098,7 @@ pub fn collect_pr_task_link_effects(snap: &WorldSnapshot) -> Vec<Effect> {
         // Skip completed tasks — their PR may still be open (e.g., manual close),
         // but emitting SetTaskPr on every tick would cause unnecessary disk writes.
         let needs_link = match task {
-            Some(t) if t.status == crate::tasks::TaskStatus::Completed => false,
+            Some(t) if t.status == crate::task_store::TaskStatus::Completed => false,
             Some(t) => t.pr != Some(pr_number),
             None => false, // task not found — skip, nothing to link
         };

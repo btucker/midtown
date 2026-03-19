@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use midtown::tasks::extract_task_id_from_pr_title;
+use midtown::task_store::extract_task_id_from_pr_title;
 use midtown::{Channel, Message};
 
 use ratatui::style::{Color, Modifier, Style};
@@ -3274,10 +3274,14 @@ fn fetch_prs() -> Vec<KanbanPr> {
     let mut prs = Vec::new();
 
     // Build task map for task_id -> subject lookup (Task.id is String)
-    let task_map: HashMap<String, String> = midtown::tasks::read_tasks()
-        .into_iter()
-        .map(|t| (t.id, t.subject))
-        .collect();
+    let repo = midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+    let task_map: HashMap<String, String> = midtown::task_store::TaskStore::new(
+        midtown::paths::projects_dir_for_repo(&repo).join("tasks"),
+    )
+    .load_all()
+    .into_iter()
+    .map(|t| (t.id, t.subject))
+    .collect();
 
     if let Ok(output) = std::process::Command::new("gh")
         .args([

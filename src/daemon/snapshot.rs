@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use crate::coworker::Coworker;
 use crate::message::Message;
 use crate::rules::CoworkerSnapshot;
-use crate::tasks::Task;
+use crate::task_store::Task;
 
 use super::DaemonState;
 
@@ -1040,35 +1040,23 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     // causing the same task to appear in both in_progress_tasks AND
     // pending_tasks_without_owners — bypassing the dispatch exclusion set
     // and leading to duplicate task assignment.
-    let all_tasks = crate::tasks::read_tasks_for_repo(Some(state.paths.dir_key()));
+    let all_tasks = state.task_store.load_all();
     let in_progress_tasks: Vec<(String, String, String)> = all_tasks
         .iter()
-        .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
-        .map(|t| {
-            (
-                t.id.clone(),
-                t.subject.clone(),
-                t.owner.clone().unwrap_or_default(),
-            )
-        })
+        .filter(|t| t.status == crate::task_store::TaskStatus::InProgress)
+        .map(|t| (t.id.clone(), t.subject.clone(), t.agent_name.clone()))
         .collect();
     let pending_tasks_with_owners: Vec<(String, String, String)> = all_tasks
         .iter()
-        .filter(|t| t.status == crate::tasks::TaskStatus::Pending && t.owner.is_some())
-        .map(|t| {
-            (
-                t.id.clone(),
-                t.subject.clone(),
-                t.owner.clone().unwrap_or_default(),
-            )
-        })
+        .filter(|t| t.status == crate::task_store::TaskStatus::Pending && !t.agent_name.is_empty())
+        .map(|t| (t.id.clone(), t.subject.clone(), t.agent_name.clone()))
         .collect();
     let pending_tasks_without_owners =
-        crate::tasks::filter_pending_tasks_without_owners(&all_tasks, 45);
+        crate::task_store::filter_pending_tasks_without_owners(&all_tasks, 45);
     let mut blocks_map: HashMap<String, Vec<String>> = HashMap::new();
     for task in all_tasks
         .iter()
-        .filter(|t| t.status != crate::tasks::TaskStatus::Completed)
+        .filter(|t| t.status != crate::task_store::TaskStatus::Completed)
     {
         for blocker_id in &task.blocked_by {
             blocks_map
@@ -1224,7 +1212,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         .filter_map(|pr| {
             let number = pr.get("number")?.as_u64()?;
             let title = pr.get("title")?.as_str()?;
-            let task_id = crate::tasks::extract_task_id_from_pr_title(title)?;
+            let task_id = crate::task_store::extract_task_id_from_pr_title(title)?;
             Some((task_id.to_string(), number))
         })
         .collect();
@@ -1377,8 +1365,9 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         match cached {
             Some(result) => result,
             None => {
-                let result =
-                    crate::tasks::get_coworkers_with_unblocked_dependents_from_tasks(&all_tasks);
+                let result = crate::task_store::get_coworkers_with_unblocked_dependents_from_tasks(
+                    &all_tasks,
+                );
                 let mut cache = state.coworkers_with_unblocked_deps_cache.lock().unwrap();
                 *cache = Some((std::time::Instant::now(), result.clone()));
                 result

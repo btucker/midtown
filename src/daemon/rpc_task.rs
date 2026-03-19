@@ -329,7 +329,7 @@ pub(super) async fn handle_task_create(
     }
 
     // Generate active_form (present continuous) from subject for task UI spinner
-    let active_form = generate_active_form(subject);
+    let _active_form = generate_active_form(subject);
 
     // Determine the requested channel, then resolve to an effective channel.
     // Archived channels (e.g., "daemon") cannot receive messages and have no
@@ -355,26 +355,6 @@ pub(super) async fn handle_task_create(
         );
     }
 
-    // Create task in old Claude Code format (backward compatibility)
-    let task_id = match crate::tasks::create_task_for_repo(
-        subject,
-        description,
-        &active_form,
-        "",
-        &dir_key,
-        blocked_by,
-        Some(effective_channel),
-        pr,
-    ) {
-        Ok(id) => id,
-        Err(e) => {
-            return Response::error(
-                id,
-                RpcError::new(-32603, format!("Failed to create task: {}", e)),
-            );
-        }
-    };
-
     // Normalize parent
     let normalized_parent = parent.map(|p| {
         p.strip_prefix('!')
@@ -383,7 +363,8 @@ pub(super) async fn handle_task_create(
             .to_string()
     });
 
-    // Save to new TaskStore alongside old format
+    // Create task via TaskStore
+    let task_id = state.task_store.next_task_id().to_string();
     let new_task = crate::task_store::Task {
         id: task_id.clone(),
         subject: subject.to_string(),
@@ -415,7 +396,10 @@ pub(super) async fn handle_task_create(
         updated_at: chrono::Utc::now(),
     };
     if let Err(e) = state.task_store.save(&new_task) {
-        warn!("Failed to save task to TaskStore: {}", e);
+        return Response::error(
+            id,
+            RpcError::new(-32603, format!("Failed to create task: {}", e)),
+        );
     }
 
     // Persist channel mapping using the effective channel so downstream reads
@@ -595,12 +579,16 @@ pub(super) async fn handle_task_update(
 
     let dir_key = state.paths.dir_key().to_string();
 
-    // Update old Claude Code format (backward compatibility)
-    if let Err(e) = crate::tasks::update_task_fields_for_repo(
+    let status_enum = status.map(|s| match s {
+        "in_progress" => crate::task_store::TaskStatus::InProgress,
+        "completed" => crate::task_store::TaskStatus::Completed,
+        _ => crate::task_store::TaskStatus::Pending,
+    });
+
+    if let Err(e) = state.task_store.update_task_fields(
         task_id,
-        &dir_key,
-        None, // owner removed — session binding is via session_id now
-        status,
+        None, // agent_name
+        status_enum,
         description,
         blocked_by,
         channel,
@@ -763,7 +751,7 @@ pub(super) async fn handle_task_done(
 ) -> Response {
     let dir_key = state.paths.dir_key().to_string();
 
-    if let Err(e) = crate::tasks::complete_task_for_repo(task_id, &dir_key) {
+    if let Err(e) = state.task_store.complete_task(task_id) {
         return Response::error(
             id,
             RpcError::new(-32603, format!("Failed to complete task: {}", e)),
@@ -786,7 +774,7 @@ pub(super) async fn handle_task_done(
     state.clear_task_assignment_by_task(task_id).await;
 
     // Unblock dependent tasks
-    if let Err(e) = crate::tasks::clear_blocked_by_for_repo(task_id, &dir_key) {
+    if let Err(e) = state.task_store.clear_blocked_by(task_id) {
         warn!("Failed to clear blockedBy for task !{}: {}", task_id, e);
     }
 
@@ -840,7 +828,7 @@ pub(super) async fn handle_task_metadata(
     }
 
     // Fallback: verify the task exists in native task storage before returning metadata.
-    let tasks = crate::tasks::read_tasks();
+    let tasks = state.task_store.load_all();
     if !tasks.iter().any(|t| t.id == task_id) {
         return Response::error(
             id,
@@ -883,7 +871,7 @@ pub(super) async fn handle_task_claim(
     from: &str,
     state: &DaemonState,
 ) -> Response {
-    let tasks = crate::tasks::read_tasks();
+    let tasks = state.task_store.load_all();
     let task = tasks.iter().find(|t| t.id == task_id);
 
     let Some(task) = task else {
@@ -893,7 +881,7 @@ pub(super) async fn handle_task_claim(
         );
     };
 
-    if task.status != crate::tasks::TaskStatus::Pending {
+    if task.status != crate::task_store::TaskStatus::Pending {
         return Response::error(
             id,
             RpcError::new(
@@ -907,7 +895,7 @@ pub(super) async fn handle_task_claim(
     }
 
     let task_subject = task.subject.clone();
-    let dir_key = state.paths.dir_key().to_string();
+    let _dir_key = state.paths.dir_key().to_string();
 
     // Write owner and status directly to disk (with retry on transient failures).
     // Disk write happens BEFORE in-memory recording so that a failure leaves
@@ -915,11 +903,10 @@ pub(super) async fn handle_task_claim(
     // depends on this ordering.
     let mut last_err = None;
     for attempt in 0..3 {
-        match crate::tasks::update_task_fields_for_repo(
+        match state.task_store.update_task_fields(
             task_id,
-            &dir_key,
             Some(from),
-            Some("in_progress"),
+            Some(crate::task_store::TaskStatus::InProgress),
             None,
             None,
             None,
@@ -1005,7 +992,7 @@ pub(crate) async fn deliver_task_prompt(
         .strip_prefix('#')
         .or_else(|| task_id.strip_prefix('!'))
         .unwrap_or(task_id);
-    let tasks = crate::tasks::read_tasks();
+    let tasks = state.task_store.load_all();
     let task = tasks.iter().find(|t| t.id == task_id);
     let Some(task) = task else {
         return Err(format!("Task !{} not found", task_id));
@@ -1107,8 +1094,10 @@ pub(crate) async fn deliver_task_prompt(
         // Determine coworker name for resume
         let name = if !record.name.is_empty() {
             record.name.as_str()
+        } else if task.agent_name.is_empty() {
+            "unknown"
         } else {
-            task.owner.as_deref().unwrap_or("unknown")
+            &task.agent_name
         };
 
         // Build LaunchConfig for resume
@@ -1206,8 +1195,8 @@ pub(super) async fn handle_task_handoff(
 
     // Validate task exists (use repo-scoped lookup so tests with
     // set_test_midtown_base_dir can find their tasks)
-    let dir_key = state.paths.dir_key();
-    let tasks = crate::tasks::read_tasks_for_repo(Some(dir_key));
+    let _dir_key = state.paths.dir_key();
+    let tasks = state.task_store.load_all();
     if !tasks.iter().any(|t| t.id == task_id) {
         return Response::error(
             id,

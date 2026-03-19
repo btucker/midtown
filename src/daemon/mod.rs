@@ -1135,7 +1135,7 @@ impl DaemonState {
     /// Tasks whose owners are dead (e.g., after a restart) don't consume
     /// coworker slots and should not block new spawns.
     fn is_at_task_limit(&self) -> bool {
-        let tasks = crate::tasks::read_tasks_for_repo(Some(self.paths.dir_key()));
+        let tasks = self.task_store.load_all();
         let registered: std::collections::HashSet<String> = self
             .coworkers
             .list()
@@ -1144,10 +1144,13 @@ impl DaemonState {
             .collect();
         let active_in_progress_count = tasks
             .iter()
-            .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
-            .filter(|t| match &t.owner {
-                Some(owner) => registered.contains(&owner.to_lowercase()),
-                None => true, // ownerless tasks count (freshly dispatched)
+            .filter(|t| t.status == crate::task_store::TaskStatus::InProgress)
+            .filter(|t| {
+                if t.agent_name.is_empty() {
+                    true // ownerless tasks count (freshly dispatched)
+                } else {
+                    registered.contains(&t.agent_name.to_lowercase())
+                }
             })
             .count();
         active_in_progress_count >= self.max_in_progress_tasks
@@ -1798,10 +1801,10 @@ impl DaemonState {
     /// of reading task file owners.
     pub(crate) async fn get_busy_session_names(&self) -> HashSet<String> {
         let ps = self.persistent_state.lock().await;
-        let all_tasks = crate::tasks::read_tasks_for_repo(Some(self.paths.dir_key()));
+        let all_tasks = self.task_store.load_all();
         let in_progress_ids: HashSet<String> = all_tasks
             .iter()
-            .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
+            .filter(|t| t.status == crate::task_store::TaskStatus::InProgress)
             .map(|t| t.id.clone())
             .collect();
         ps.sessions
@@ -1843,7 +1846,12 @@ impl DaemonState {
     /// 1. Clears stale task_id values (task no longer in_progress)
     /// 2. Backfills missing task_id from in_progress tasks with owners
     pub(crate) async fn restore_task_assignments_from_disk(&self) {
-        let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
+        let all_tasks = self.task_store.load_all();
+        let in_progress_tasks: Vec<(String, String, String)> = all_tasks
+            .iter()
+            .filter(|t| t.status == crate::task_store::TaskStatus::InProgress)
+            .map(|t| (t.id.clone(), t.subject.clone(), t.agent_name.clone()))
+            .collect();
         let in_progress_task_ids: std::collections::HashSet<&str> = in_progress_tasks
             .iter()
             .map(|(id, _, _)| id.as_str())
@@ -3519,7 +3527,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
                     // Auto-set task PR association when PR title contains [Midtown !XX]
                     if let Some(task_id) =
-                        crate::tasks::extract_task_id_from_pr_title(&pr_opened.title)
+                        crate::task_store::extract_task_id_from_pr_title(&pr_opened.title)
                     {
                         pr_effects.push(effects::Effect::SetTaskPr {
                             task_id: task_id.to_string(),
@@ -3587,13 +3595,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         // File I/O (read_task_for_repo) happens before acquiring the
                         // async mutex to avoid blocking other tasks that need the lock.
                         let (task_channel, task_event_ctx) = if let Some(task_id) =
-                            crate::tasks::extract_task_id_from_pr_title(&pr_merged_info.title)
+                            crate::task_store::extract_task_id_from_pr_title(&pr_merged_info.title)
                         {
                             let task_id_str = task_id.to_string();
-                            let task = crate::tasks::read_task_for_repo(
-                                &task_id_str,
-                                state.paths.dir_key(),
-                            );
+                            let task = state.task_store.load(&task_id_str).ok();
                             let ps = state.persistent_state.lock().await;
                             let channel = ps.task_channel.get(&task_id_str).cloned();
                             let ctx = dispatch::TaskEventContext {

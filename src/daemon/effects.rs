@@ -910,10 +910,10 @@ impl Effect {
 /// creation when multiple review comments arrive in quick succession.  The caller
 /// must pass `continue` (not `return`) after this returns `true` so that remaining
 /// effects in the batch are still processed.
-pub(crate) fn create_task_duplicate_exists(tasks: &[crate::tasks::Task], pr_num: u64) -> bool {
+pub(crate) fn create_task_duplicate_exists(tasks: &[crate::task_store::Task], pr_num: u64) -> bool {
     tasks
         .iter()
-        .any(|t| t.pr == Some(pr_num) && t.status != crate::tasks::TaskStatus::Completed)
+        .any(|t| t.pr == Some(pr_num) && t.status != crate::task_store::TaskStatus::Completed)
 }
 
 /// Deduplicate nudge effects targeting the same session within a single batch.
@@ -1521,8 +1521,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                 }
             }
-            Effect::ResetTaskToPending { task_id, dir_key } => {
-                if let Err(e) = crate::tasks::reset_task_to_pending_for_repo(&task_id, &dir_key) {
+            Effect::ResetTaskToPending {
+                task_id,
+                dir_key: _dir_key,
+            } => {
+                if let Err(e) = state.task_store.reset_task_to_pending(&task_id) {
                     warn!("Failed to reset task !{} to pending: {}", task_id, e);
                 }
                 // Clear task assignment tracking (task is no longer assigned)
@@ -1721,7 +1724,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         }
 
                         // Set task owner on disk
-                        if let Err(e) = crate::tasks::update_task_owner(&task_id, &name) {
+                        if let Err(e) = state.task_store.set_agent_name(&task_id, &name) {
                             warn!(
                                 "SpawnForTask: failed to set task !{} owner to {}: {}",
                                 task_id, name, e
@@ -1729,9 +1732,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         }
 
                         // Transition task from pending to in_progress
-                        if let Err(e) =
-                            crate::tasks::set_task_in_progress_for_repo(&task_id, &dir_key)
-                        {
+                        if let Err(e) = state.task_store.set_task_in_progress(&task_id) {
                             warn!(
                                 "SpawnForTask: failed to set task !{} to in_progress: {}",
                                 task_id, e
@@ -1739,10 +1740,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         }
 
                         // Post DM separator
-                        let task_subject = crate::tasks::read_tasks_for_repo(Some(&dir_key))
-                            .into_iter()
-                            .find(|t| t.id == task_id)
-                            .map(|t| t.subject);
+                        let task_subject = state.task_store.load(&task_id).ok().map(|t| t.subject);
                         let separator_effect = build_dm_separator_effect(
                             &name,
                             &task_id,
@@ -2061,7 +2059,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::CompleteTask { task_id, dir_key } => {
-                if let Err(e) = crate::tasks::complete_task_for_repo(&task_id, &dir_key) {
+                if let Err(e) = state.task_store.complete_task(&task_id) {
                     warn!("Failed to complete task !{}: {}", task_id, e);
                 } else {
                     info!("Auto-completed task !{}", task_id);
@@ -2082,11 +2080,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             }
             Effect::ClearBlockedBy {
                 completed_task_id,
-                dir_key,
+                dir_key: _,
             } => {
-                if let Err(e) =
-                    crate::tasks::clear_blocked_by_for_repo(&completed_task_id, &dir_key)
-                {
+                if let Err(e) = state.task_store.clear_blocked_by(&completed_task_id) {
                     warn!(
                         "Failed to clear blockedBy for task !{}: {}",
                         completed_task_id, e
@@ -2101,12 +2097,11 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::SetTaskPr {
                 task_id,
                 pr_number,
-                dir_key,
+                dir_key: _,
             } => {
-                if let Err(e) = crate::tasks::update_task_fields_for_repo(
+                if let Err(e) = state.task_store.update_task_fields(
                     &task_id,
-                    &dir_key,
-                    None, // owner
+                    None, // agent_name
                     None, // status
                     None, // description
                     None, // blocked_by
@@ -2127,23 +2122,41 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 channel,
             } => {
                 let dir_key = state.paths.dir_key().to_string();
-                let subject = format!("Review PR #{}", pr_number);
-                let description = format!(
-                    "Code review for PR #{}. Spawned automatically by the daemon.",
-                    pr_number
-                );
-                let active_form = format!("Reviewing PR #{}", pr_number);
-                match crate::tasks::create_task_for_repo(
-                    &subject,
-                    &description,
-                    &active_form,
-                    "",
-                    &dir_key,
-                    None,
-                    channel.as_deref(),
-                    Some(pr_number),
-                ) {
-                    Ok(task_id) => {
+                let task_id = state.task_store.next_task_id().to_string();
+                // Inherit parent thread for review tasks
+                let parent_thread = parent_task_id.as_ref().and_then(|pid| {
+                    let ps_guard = state.persistent_state.try_lock();
+                    ps_guard
+                        .ok()
+                        .and_then(|ps| ps.task_thread_id.get(pid).cloned())
+                });
+                let store_task = crate::task_store::Task {
+                    id: task_id.clone(),
+                    subject: format!("Review PR #{}", pr_number),
+                    status: crate::task_store::TaskStatus::Pending,
+                    description: Some(format!(
+                        "Code review for PR #{}. Spawned automatically by the daemon.",
+                        pr_number
+                    )),
+                    blocked_by: vec![],
+                    channel: channel.clone(),
+                    pr: Some(pr_number),
+                    agent_name: String::new(), // Will be set by task dispatch
+                    agent_type: "midtown-code-reviewer".to_string(),
+                    session_id: None,
+                    parent: parent_task_id.clone(),
+                    message_id: None,
+                    thread_id: parent_thread,
+                    model: None,
+                    plan: None,
+                    placeholder_comment_id: None,
+                    restart_count: 0,
+                    execution_skill: None,
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                };
+                match state.task_store.save(&store_task) {
+                    Ok(()) => {
                         info!(
                             "Created review task !{} for PR #{} (parent: {:?})",
                             task_id, pr_number, parent_task_id
@@ -2168,36 +2181,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         }
                         if let Err(e) = ps.save_for_repo(&dir_key) {
                             warn!("Failed to save review task metadata: {}", e);
-                        }
-                        // Also write to TaskStore for new task storage layer
-                        let parent_thread = parent_task_id
-                            .as_ref()
-                            .and_then(|pid| ps.task_thread_id.get(pid).cloned());
-                        drop(ps);
-                        let store_task = crate::task_store::Task {
-                            id: task_id.clone(),
-                            subject: format!("Review PR #{}", pr_number),
-                            status: crate::task_store::TaskStatus::Pending,
-                            description: None,
-                            blocked_by: vec![],
-                            channel: channel.clone(),
-                            pr: Some(pr_number),
-                            agent_name: task_id.clone(), // Will be set properly by task dispatch
-                            agent_type: "midtown-code-reviewer".to_string(),
-                            session_id: None,
-                            parent: parent_task_id.clone(),
-                            message_id: None,
-                            thread_id: parent_thread,
-                            model: None,
-                            plan: None,
-                            placeholder_comment_id: None,
-                            restart_count: 0,
-                            execution_skill: None,
-                            created_at: chrono::Utc::now(),
-                            updated_at: chrono::Utc::now(),
-                        };
-                        if let Err(e) = state.task_store.save(&store_task) {
-                            warn!("Failed to save review task to TaskStore: {}", e);
                         }
                     }
                     Err(e) => {
@@ -2854,30 +2837,19 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
                     warn!("Failed to save task_channel after assignment: {}", e);
                 }
-                // Also update the task file on disk so dispatch.rs reads the correct channel
-                // (dispatch reads task.channel from the file, not from persistent state)
-                if let Err(e) = crate::tasks::update_task_fields_for_repo(
-                    &task_id,
-                    state.paths.dir_key(),
-                    None, // owner
-                    None, // status
-                    None, // description
-                    None, // blocked_by
-                    Some(&channel),
-                    None, // pr
-                ) {
-                    warn!("Failed to update task file channel for !{}: {}", task_id, e);
-                }
-                // Also update TaskStore
+                // Update the task file on disk
                 if let Ok(mut task) = state.task_store.load(&task_id) {
                     task.channel = Some(channel.clone());
                     if let Err(e) = state.task_store.save(&task) {
-                        warn!("Failed to update TaskStore task {} channel: {}", task_id, e);
+                        warn!("Failed to update task {} channel: {}", task_id, e);
                     }
                 }
             }
-            Effect::UnassignTask { task_id, dir_key } => {
-                if let Err(e) = crate::tasks::unassign_task_for_repo(&task_id, &dir_key) {
+            Effect::UnassignTask {
+                task_id,
+                dir_key: _dir_key,
+            } => {
+                if let Err(e) = state.task_store.unassign_task(&task_id) {
                     warn!("Failed to unassign task !{}: {}", task_id, e);
                 } else {
                     info!(
@@ -2890,9 +2862,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::ResetAbandonedTask {
                 task_id,
                 pr_number,
-                dir_key,
+                dir_key: _,
             } => {
-                if let Err(e) = crate::tasks::reset_task_to_pending_for_repo(&task_id, &dir_key) {
+                if let Err(e) = state.task_store.reset_task_to_pending(&task_id) {
                     warn!(
                         "Failed to reset abandoned task !{} (PR #{} closed): {}",
                         task_id, pr_number, e
@@ -2925,7 +2897,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // when multiple review comments arrive in quick succession (e.g., after
                 // a daemon restart resets the in-memory cooldown).
                 if let Some(pr_num) = pr {
-                    let existing = crate::tasks::read_tasks_for_repo(Some(&dir_key));
+                    let existing = state.task_store.load_all();
                     if create_task_duplicate_exists(&existing, pr_num) {
                         debug!(
                             "Skipping CreateTask for PR #{}: non-completed task already exists",
@@ -2935,28 +2907,32 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
 
-                // Derive active_form from subject (simple present progressive form)
-                let active_form = if subject.starts_with("Merge") {
-                    subject.replace("Merge", "Merging")
-                } else {
-                    format!("Working on: {}", subject)
+                let task_id = state.task_store.next_task_id().to_string();
+                let store_task = crate::task_store::Task {
+                    id: task_id.clone(),
+                    subject: subject.clone(),
+                    status: crate::task_store::TaskStatus::Pending,
+                    description: Some(description.clone()),
+                    blocked_by: vec![],
+                    channel: None,
+                    pr,
+                    agent_name: String::new(),
+                    agent_type: "midtown-code-author".to_string(),
+                    session_id: None,
+                    parent: None,
+                    message_id: None,
+                    thread_id: None,
+                    model: None,
+                    plan: None,
+                    placeholder_comment_id: None,
+                    restart_count: 0,
+                    execution_skill: None,
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
                 };
-
-                match crate::tasks::create_task_for_repo(
-                    &subject,
-                    &description,
-                    &active_form,
-                    "", // owner (empty = unassigned)
-                    &dir_key,
-                    None, // blocked_by
-                    None, // channel
-                    pr,   // pr (from effect)
-                ) {
-                    Ok(task_id) => {
+                match state.task_store.save(&store_task) {
+                    Ok(()) => {
                         info!("Created task !{}: {}", task_id, subject);
-                        // Post channel notification attributed to the project lead.
-                        // Use task_announcement_message for consistency with the RPC path,
-                        // and capture the message ID for task-as-thread linking.
                         let channel = state.default_channel_name();
                         let msg = crate::daemon::rpc_task::task_announcement_message(
                             channel, "lead", &subject, None,
@@ -2964,6 +2940,19 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         let message_id = msg.id.clone();
                         match state.send_and_broadcast_async(&msg).await {
                             Ok(()) => {
+                                // Update TaskStore with message/thread IDs
+                                if let Ok(mut store_task) = state.task_store.load(&task_id) {
+                                    store_task.message_id = Some(message_id.clone());
+                                    if store_task.thread_id.is_none() {
+                                        store_task.thread_id = Some(message_id.clone());
+                                    }
+                                    if let Err(e) = state.task_store.save(&store_task) {
+                                        warn!(
+                                            "Failed to update task {} message_id: {}",
+                                            task_id, e
+                                        );
+                                    }
+                                }
                                 let mut ps = state.persistent_state.lock().await;
                                 ps.task_message_id
                                     .insert(task_id.clone(), message_id.clone());
@@ -2973,19 +2962,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 }
                                 if let Err(e) = ps.save_for_repo(&dir_key) {
                                     warn!("Failed to save task message_id mapping: {}", e);
-                                }
-                                // Also update TaskStore
-                                if let Ok(mut store_task) = state.task_store.load(&task_id) {
-                                    store_task.message_id = Some(message_id.clone());
-                                    if store_task.thread_id.is_none() {
-                                        store_task.thread_id = Some(message_id);
-                                    }
-                                    if let Err(e) = state.task_store.save(&store_task) {
-                                        warn!(
-                                            "Failed to update TaskStore task {} message_id: {}",
-                                            task_id, e
-                                        );
-                                    }
                                 }
                             }
                             Err(e) => {

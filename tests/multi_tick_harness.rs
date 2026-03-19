@@ -34,7 +34,7 @@ use midtown::coworker::{Coworker, CoworkerStatus};
 use midtown::daemon::Effect;
 use midtown::daemon::SessionRecord;
 use midtown::daemon::snapshot::{PrTaskIndex, ProcessHealth, WorldSnapshot};
-use midtown::tasks::{Task, TaskStatus};
+use midtown::task_store::{Task, TaskStatus};
 
 /// A test harness for simulating multiple daemon ticks.
 ///
@@ -491,7 +491,7 @@ impl MultiTickHarness {
         for task in &mut self.snapshot.all_tasks {
             if task.id == task_id {
                 task.status = TaskStatus::InProgress;
-                task.owner = Some(owner.to_string());
+                task.agent_name = owner.to_string();
                 break;
             }
         }
@@ -608,8 +608,8 @@ impl MultiTickHarness {
         for task in &mut self.snapshot.all_tasks {
             if task.id == task_id {
                 task.status = TaskStatus::Pending;
-                let owner = task.owner.clone();
-                task.owner = None;
+                let owner = task.agent_name.clone();
+                task.agent_name = String::new();
 
                 self.snapshot
                     .pending_tasks_without_owners
@@ -643,12 +643,8 @@ impl MultiTickHarness {
             id: task_id,
             subject: subject.to_string(),
             status: TaskStatus::Pending,
-            owner: None,
-            description: None,
-            blocked_by: vec![],
-            channel: None,
             pr,
-            created_at: None,
+            ..Default::default()
         };
         self.snapshot.all_tasks.push(task.clone());
         self.snapshot.pending_tasks_without_owners.push(task);

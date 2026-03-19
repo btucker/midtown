@@ -91,7 +91,7 @@ mod tests {
     #[test]
     fn test_completed_task_requires_followup_task() {
         use crate::rules::review_comment_creates_followup;
-        use crate::tasks::TaskStatus;
+        use crate::task_store::TaskStatus;
 
         assert!(
             review_comment_creates_followup(&TaskStatus::Completed),
@@ -149,7 +149,7 @@ mod tests {
     fn test_followup_task_gate_requires_coworker_owner_and_completed_task() {
         use crate::daemon::helpers::is_non_lead_coworker;
         use crate::rules::review_comment_creates_followup;
-        use crate::tasks::TaskStatus;
+        use crate::task_store::TaskStatus;
         use std::collections::HashSet;
 
         let project_name = "midtown";

@@ -1474,7 +1474,7 @@ mod tests {
 
     #[test]
     fn test_phase_column_width_fits_all_abbreviations() {
-        use midtown::coworker_state::WorkflowPhase;
+        use midtown::workflow_phase::WorkflowPhase;
 
         // w_phase in draw_coworker_status must fit the longest abbreviation.
         let w_phase: usize = 6;

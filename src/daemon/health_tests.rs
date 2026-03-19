@@ -3205,7 +3205,7 @@ fn check_for_stale_worktrees_cleans_abandoned_without_completed_at() {
 #[test]
 fn build_reviewer_respawn_task_id_is_some_when_matching_task_exists() {
     use crate::coworker::{Coworker, CoworkerStatus};
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let now = chrono::Utc::now();
     let mut snap = empty_snap();
@@ -3254,12 +3254,12 @@ fn build_reviewer_respawn_task_id_is_some_when_matching_task_exists() {
         id: review_task_id.to_string(),
         subject: "Review PR #77".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("broadway".to_string()),
+        agent_name: "broadway".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(pr_number),
-        created_at: None,
+        ..Default::default()
     });
     snap.task_agent_type_map.insert(
         review_task_id.to_string(),
