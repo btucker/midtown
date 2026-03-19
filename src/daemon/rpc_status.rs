@@ -43,24 +43,20 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
     // Read all persistent state in a single lock: reviewer assignments, worktree PR map,
     // rate limit, channel lead names, task-message-id map, and task-thread-id map.
     // Avoids multiple lock acquires.
-    let (
-        reviewer_pr_map,
-        worktree_pr_map,
-        rate_limit,
-        channel_lead_names,
-        task_message_ids,
-        task_thread_ids,
-        task_plan_map,
-        task_parent_map,
-    ) = {
+    let (reviewer_pr_map, worktree_pr_map, rate_limit, channel_lead_names) = {
         let ps = state.persistent_state.lock().await;
         let rev_map: std::collections::HashMap<String, u64> = ps
             .active_reviewer_sessions()
             .into_iter()
             .filter_map(|s| {
-                ps.task_pr_number
-                    .get(s.task_id.as_deref().unwrap_or(""))
-                    .map(|&pr| (s.name.clone(), pr))
+                s.pr_number
+                    .or_else(|| {
+                        s.task_id
+                            .as_ref()
+                            .and_then(|tid| ps.task_pr_number.get(tid))
+                            .copied()
+                    })
+                    .map(|pr| (s.name.clone(), pr))
             })
             .collect();
         let wt_map: std::collections::HashMap<String, u64> = ps
@@ -74,20 +70,32 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
             })
             .collect();
         let channel_leads = ps.channel_lead_names();
-        let msg_ids = ps.task_message_id.clone();
-        let thread_ids = ps.task_thread_id.clone();
-        let plan_map = ps.task_plan.clone();
-        let parent_map = ps.task_parent.clone();
-        (
-            rev_map,
-            wt_map,
-            ps.github.rate_limit.clone(),
-            channel_leads,
-            msg_ids,
-            thread_ids,
-            plan_map,
-            parent_map,
-        )
+        (rev_map, wt_map, ps.github.rate_limit.clone(), channel_leads)
+    };
+    // Build task metadata maps from TaskStore, with legacy fallbacks
+    let all_loaded_tasks_for_maps = state.task_store.load_all();
+    let (task_message_ids, task_thread_ids, task_plan_map, task_parent_map) = {
+        let ps = state.persistent_state.lock().await;
+        let mut msg_ids = ps.task_message_id.clone();
+        let mut thread_ids = ps.task_thread_id.clone();
+        let mut plan_map = ps.task_plan.clone();
+        let mut parent_map = ps.task_parent.clone();
+        // TaskStore entries take precedence
+        for t in &all_loaded_tasks_for_maps {
+            if let Some(ref m) = t.message_id {
+                msg_ids.insert(t.id.clone(), m.clone());
+            }
+            if let Some(ref tid) = t.thread_id {
+                thread_ids.insert(t.id.clone(), tid.clone());
+            }
+            if let Some(ref p) = t.plan {
+                plan_map.insert(t.id.clone(), p.clone());
+            }
+            if let Some(ref p) = t.parent {
+                parent_map.insert(t.id.clone(), p.clone());
+            }
+        }
+        (msg_ids, thread_ids, plan_map, parent_map)
     };
 
     // Get token usage from session manager (keyed by coworker name).

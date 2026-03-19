@@ -355,7 +355,7 @@ fn reset_orphaned_skips_active_owner() {
 fn session_recovery_skips_lead() {
     let ps = make_ps("test-repo");
 
-    let action = decide_session_recovery("1", "Fix", "test-repo", &ps);
+    let action = decide_session_recovery("1", "Fix", "test-repo", &ps, &[]);
     assert!(matches!(
         action,
         crate::rules::SessionRecoveryAction::Skip(
@@ -368,7 +368,7 @@ fn session_recovery_skips_lead() {
 fn session_recovery_skips_legacy_lead() {
     let ps = make_ps("test");
 
-    let action = decide_session_recovery("1", "Fix", "lead", &ps);
+    let action = decide_session_recovery("1", "Fix", "lead", &ps, &[]);
     assert!(matches!(
         action,
         crate::rules::SessionRecoveryAction::Skip(
@@ -381,7 +381,7 @@ fn session_recovery_skips_legacy_lead() {
 fn session_recovery_falls_back_when_no_session() {
     let ps = make_ps("test");
 
-    let action = decide_session_recovery("1", "Fix", "park", &ps);
+    let action = decide_session_recovery("1", "Fix", "park", &ps, &[]);
     assert!(matches!(
         action,
         crate::rules::SessionRecoveryAction::FallbackToOrphan { .. }
@@ -397,7 +397,7 @@ fn session_recovery_skips_running_session() {
     );
     ps.tick_session_task_map.insert("1".into(), "sess-1".into());
 
-    let action = decide_session_recovery("1", "Fix", "park", &ps);
+    let action = decide_session_recovery("1", "Fix", "park", &ps, &[]);
     assert!(matches!(
         action,
         crate::rules::SessionRecoveryAction::Skip(
@@ -415,7 +415,7 @@ fn session_recovery_recovers_stopped_session() {
     );
     ps.tick_session_task_map.insert("1".into(), "sess-1".into());
 
-    let action = decide_session_recovery("1", "Fix", "park", &ps);
+    let action = decide_session_recovery("1", "Fix", "park", &ps, &[]);
     assert!(matches!(
         action,
         crate::rules::SessionRecoveryAction::Recover { .. }

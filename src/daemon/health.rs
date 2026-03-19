@@ -65,7 +65,7 @@ pub fn check_and_restart_dead_reviewers(ps: &DaemonPersistentState, tasks: &[Tas
             .tick_pr_task_index
             .task_for_pr(restart.pr_number)
             .map(|s| s.to_string());
-        let reviewer_channel = ps.channel_for_pr_or_default(restart.pr_number);
+        let reviewer_channel = ps.channel_for_pr_or_default(restart.pr_number, tasks);
         effects.push(Effect::EmitWorkflowEvent(
             crate::workflow::WorkflowEvent::CoworkerStuck {
                 channel: reviewer_channel,
@@ -1185,7 +1185,7 @@ fn build_reviewer_respawn_effects(
     config.working_dir = Some(wt_path.clone());
 
     // Route reviewer to the task's topic channel.
-    config.channel = ps.channel_for_pr(pr_number);
+    config.channel = ps.channel_for_pr(pr_number, tasks);
 
     // Route escalation mentions to the channel lead when available.
     if let Some(ref channel_name) = config.channel {

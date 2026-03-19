@@ -192,16 +192,9 @@ pub async fn evaluate_tick(
                     }
 
                     let gc_retention = chrono::Duration::hours(retention_hours as i64);
-                    let task_metadata_keys: std::collections::HashSet<String> = ps
-                        .task_channel
-                        .keys()
-                        .chain(ps.task_model.keys())
-                        .chain(ps.task_plan.keys())
-                        .chain(ps.task_execution_skill.keys())
-                        .chain(ps.task_thread_id.keys())
-                        .chain(ps.task_message_id.keys())
-                        .cloned()
-                        .collect();
+                    // Task metadata lives in TaskStore now; GC only removes dead sessions.
+                    let task_metadata_keys: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
                     let active_task_ids: std::collections::HashSet<String> =
                         tasks.iter().map(|t| t.id.clone()).collect();
                     effects.extend(super::health::check_for_state_gc(

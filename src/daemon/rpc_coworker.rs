@@ -1111,9 +1111,14 @@ async fn build_coworkers_data(
                 .active_reviewer_sessions()
                 .into_iter()
                 .filter_map(|s| {
-                    ps.task_pr_number
-                        .get(s.task_id.as_deref().unwrap_or(""))
-                        .map(|&pr| (s.name.clone(), pr))
+                    s.pr_number
+                        .or_else(|| {
+                            s.task_id
+                                .as_ref()
+                                .and_then(|tid| ps.task_pr_number.get(tid))
+                                .copied()
+                        })
+                        .map(|pr| (s.name.clone(), pr))
                 })
                 .collect();
             // Build coworker -> PR map from worktree registry (for reviewers)

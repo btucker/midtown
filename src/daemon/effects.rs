@@ -1918,26 +1918,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 restart_count,
                 ..
             } => {
-                // Legacy effect — span creation removed, but we still need to
-                // persist task_pr_number and task_restart_count, and update TaskStore.
-                let mut ps = state.persistent_state.lock().await;
-                if let Some(pr) = pr_number {
-                    ps.task_pr_number.insert(task_id.clone(), pr);
-                }
-                if restart_count > 0 {
-                    ps.task_restart_count.insert(task_id.clone(), restart_count);
-                }
-                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                    warn!(
-                        "Failed to save daemon-state.json after recording task metadata: {}",
-                        e
-                    );
-                }
-                // Also update TaskStore with session_id and pr
+                // Update TaskStore with session_id, pr, and restart_count.
                 if let Ok(mut store_task) = state.task_store.load(&task_id) {
                     store_task.session_id = Some(session_id.clone());
                     if let Some(pr) = pr_number {
                         store_task.pr = Some(pr);
+                    }
+                    if restart_count > 0 {
+                        store_task.restart_count = restart_count;
                     }
                     if let Err(e) = state.task_store.save(&store_task) {
                         warn!("Failed to update TaskStore task {} session: {}", task_id, e);
@@ -2121,15 +2109,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 parent_task_id,
                 channel,
             } => {
-                let dir_key = state.paths.dir_key().to_string();
                 let task_id = state.task_store.next_task_id().to_string();
                 // Inherit parent thread for review tasks
-                let parent_thread = parent_task_id.as_ref().and_then(|pid| {
-                    let ps_guard = state.persistent_state.try_lock();
-                    ps_guard
-                        .ok()
-                        .and_then(|ps| ps.task_thread_id.get(pid).cloned())
-                });
+                let parent_thread = parent_task_id
+                    .as_ref()
+                    .and_then(|pid| state.task_store.load(pid).ok())
+                    .and_then(|t| t.thread_id.clone());
                 let store_task = crate::task_store::Task {
                     id: task_id.clone(),
                     subject: format!("Review PR #{}", pr_number),
@@ -2161,27 +2146,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             "Created review task !{} for PR #{} (parent: {:?})",
                             task_id, pr_number, parent_task_id
                         );
-                        let mut ps = state.persistent_state.lock().await;
-                        // Store agent type so dispatch uses reviewer config
-                        ps.task_agent_type
-                            .insert(task_id.clone(), "midtown-code-reviewer".to_string());
-                        // Store parent relationship + inherit thread
-                        if let Some(ref parent_id) = parent_task_id {
-                            ps.task_parent.insert(task_id.clone(), parent_id.clone());
-                            if !ps.task_thread_id.contains_key(&task_id)
-                                && let Some(parent_thread) =
-                                    ps.task_thread_id.get(parent_id).cloned()
-                            {
-                                ps.task_thread_id.insert(task_id.clone(), parent_thread);
-                            }
-                        }
-                        // Store channel mapping
-                        if let Some(ref ch) = channel {
-                            ps.task_channel.insert(task_id.clone(), ch.clone());
-                        }
-                        if let Err(e) = ps.save_for_repo(&dir_key) {
-                            warn!("Failed to save review task metadata: {}", e);
-                        }
                     }
                     Err(e) => {
                         warn!("Failed to create review task for PR #{}: {}", pr_number, e);
@@ -2766,19 +2730,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
 
-                // Update task_channel mappings: any task assigned to `from` should now point to `into`
-                {
-                    let mut ps = state.persistent_state.lock().await;
-                    for (_task_id, channel) in ps.task_channel.iter_mut() {
-                        if channel == &from {
-                            *channel = into.clone();
-                        }
-                    }
-                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                        warn!("Failed to save task_channel after merge: {}", e);
-                    }
-                }
-                // Also update TaskStore tasks that reference the merged channel
+                // Update TaskStore tasks that reference the merged channel
                 for mut task in state.task_store.load_all() {
                     if task.channel.as_deref() == Some(&from) {
                         task.channel = Some(into.clone());
@@ -2830,14 +2782,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::AssignTaskChannel { task_id, channel } => {
-                // Update task_channel mapping in persistent state
-                let mut ps = state.persistent_state.lock().await;
-                ps.task_channel.insert(task_id.clone(), channel.clone());
                 debug!("Assigned task !{} to channel '{}'", task_id, channel);
-                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                    warn!("Failed to save task_channel after assignment: {}", e);
-                }
-                // Update the task file on disk
                 if let Ok(mut task) = state.task_store.load(&task_id) {
                     task.channel = Some(channel.clone());
                     if let Err(e) = state.task_store.save(&task) {
@@ -2887,7 +2832,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::CreateTask {
-                dir_key,
+                dir_key: _,
                 subject,
                 description,
                 pr,
@@ -2952,16 +2897,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                             task_id, e
                                         );
                                     }
-                                }
-                                let mut ps = state.persistent_state.lock().await;
-                                ps.task_message_id
-                                    .insert(task_id.clone(), message_id.clone());
-                                if !ps.task_thread_id.contains_key(&task_id) {
-                                    ps.task_thread_id
-                                        .insert(task_id.clone(), message_id.clone());
-                                }
-                                if let Err(e) = ps.save_for_repo(&dir_key) {
-                                    warn!("Failed to save task message_id mapping: {}", e);
                                 }
                             }
                             Err(e) => {
@@ -3738,20 +3673,31 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
 /// This reuses the same lookup infrastructure as `collect_world_snapshot` in
 /// `snapshot.rs`, avoiding divergent detection criteria and pagination issues.
 async fn lookup_existing_placeholder(state: &DaemonState, pr_number: u64) -> Option<u64> {
-    // Tier 1: Check stored task_placeholder_comment_id.
+    // Tier 1: Check TaskStore for placeholder_comment_id on reviewer tasks.
     {
         let ps = state.persistent_state.lock().await;
-        // Find the task ID for this PR from active reviewer spans
-        let id = ps
+        let task_id = ps
             .active_reviewer_sessions()
             .iter()
-            .find(|s| ps.task_pr_number.get(s.task_id.as_deref().unwrap_or("")) == Some(&pr_number))
-            .and_then(|s| {
-                ps.task_placeholder_comment_id
-                    .get(s.task_id.as_deref().unwrap_or(""))
-                    .copied()
-            });
-        if let Some(id) = id {
+            .filter(|s| {
+                s.pr_number == Some(pr_number)
+                    || s.task_id
+                        .as_ref()
+                        .and_then(|tid| ps.task_pr_number.get(tid))
+                        == Some(&pr_number)
+            })
+            .find_map(|s| s.task_id.clone());
+        // Also check legacy task_placeholder_comment_id map
+        if let Some(ref tid) = task_id
+            && let Some(&id) = ps.task_placeholder_comment_id.get(tid)
+        {
+            return Some(id);
+        }
+        drop(ps);
+        if let Some(tid) = task_id
+            && let Ok(task) = state.task_store.load(&tid)
+            && let Some(id) = task.placeholder_comment_id
+        {
             return Some(id);
         }
     }
@@ -3916,44 +3862,38 @@ async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &st
             comment_id, pr_number, reviewer_name
         );
 
-        // Store the comment ID in task_placeholder_comment_id for the reviewer task.
-        // Serialize under the lock, then write to disk after releasing it
-        // to avoid blocking the tokio runtime with file I/O.
-        let serialized = {
+        // Store the comment ID in TaskStore and legacy persistent state.
+        {
             let mut ps = state.persistent_state.lock().await;
-            // Find the reviewer task for this PR and store the placeholder comment ID.
             let task_ids: Vec<String> = ps
                 .active_reviewer_sessions()
                 .iter()
                 .filter(|s| {
-                    ps.task_pr_number.get(s.task_id.as_deref().unwrap_or("")) == Some(&pr_number)
+                    s.pr_number == Some(pr_number)
+                        || s.task_id
+                            .as_ref()
+                            .and_then(|tid| ps.task_pr_number.get(tid))
+                            == Some(&pr_number)
                 })
                 .filter_map(|s| s.task_id.clone())
                 .collect();
+            // Write to legacy map (for tests and backward compat)
             for tid in &task_ids {
                 ps.task_placeholder_comment_id
                     .insert(tid.clone(), comment_id);
             }
-            // TODO: migrate placeholder_comment_id to frontmatter lookup
-            serde_json::to_string_pretty(&*ps).ok()
-        };
-        if let Some(json) = serialized {
-            let path = state.paths.daemon_state_file();
-            if let Err(e) = tokio::task::spawn_blocking(move || {
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent)?;
+            drop(ps);
+            // Write to TaskStore (primary)
+            for tid in &task_ids {
+                if let Ok(mut task) = state.task_store.load(tid) {
+                    task.placeholder_comment_id = Some(comment_id);
+                    if let Err(e) = state.task_store.save(&task) {
+                        warn!(
+                            "Failed to save placeholder comment ID on task {}: {}",
+                            tid, e
+                        );
+                    }
                 }
-                let tmp_path = path.with_extension("json.tmp");
-                std::fs::write(&tmp_path, &json)?;
-                crate::paths::atomic_rename(&tmp_path, &path)
-            })
-            .await
-            .unwrap_or_else(|e| Err(std::io::Error::other(e)))
-            {
-                warn!(
-                    "Failed to save daemon-state.json after storing placeholder comment ID: {}",
-                    e
-                );
             }
         }
 
@@ -4646,7 +4586,7 @@ async fn post_insight(state: &DaemonState, agent: &str, insight: &str) {
             .find(|r| r.is_running && r.name == agent)
             .or_else(|| ps.sessions.values().find(|r| r.name == agent))
             .and_then(|r| r.task_id.as_deref());
-        // Try TaskStore first, then fall back to persistent state HashMaps
+        // Try TaskStore first, then fall back to legacy persistent state HashMaps
         let (ch, thread) = if let Some(tid) = task_id {
             if let Ok(store_task) = state.task_store.load(tid) {
                 (store_task.channel.clone(), store_task.thread_id.clone())

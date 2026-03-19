@@ -4,8 +4,6 @@
 //! `task.request`, and `task.claim` methods, plus their supporting helpers
 //! (model/channel mapping, active form generation).
 
-use std::collections::HashMap;
-
 use tracing::{debug, info, warn};
 
 use crate::message::{Message, MessageType};
@@ -116,8 +114,9 @@ fn validate_model_format(model: &str) -> Result<(), String> {
 /// Returns `Ok(true)` if the mapping was modified (caller should save persistent state).
 /// Returns `Ok(false)` if no change was made.
 /// Returns `Err` if the model format is invalid.
+#[cfg(test)]
 fn apply_task_model_mapping(
-    task_model: &mut HashMap<String, String>,
+    task_model: &mut std::collections::HashMap<String, String>,
     task_id: &str,
     model: Option<&str>,
     allow_clear: bool,
@@ -147,8 +146,9 @@ fn apply_task_model_mapping(
 /// the mapping; an empty string clears it; `None` means no change.
 ///
 /// Returns `true` if the mapping was modified (caller should save persistent state).
+#[cfg(test)]
 fn apply_task_channel_mapping(
-    task_channel: &mut HashMap<String, String>,
+    task_channel: &mut std::collections::HashMap<String, String>,
     task_id: &str,
     channel: Option<&str>,
     allow_clear: bool,
@@ -293,8 +293,6 @@ pub(super) async fn handle_task_create(
     agent_type: Option<&str>,
     state: &DaemonState,
 ) -> Response {
-    let dir_key = state.paths.dir_key().to_string();
-
     // Require agent_name
     let agent_name = match agent_name {
         Some(name) if !name.is_empty() => name,
@@ -402,69 +400,25 @@ pub(super) async fn handle_task_create(
         );
     }
 
-    // Persist channel mapping using the effective channel so downstream reads
-    // (handle_task_metadata, WorldSnapshot.task_channel, MIDTOWN_CHANNEL) all
-    // see the routable channel.
+    // Validate model format if provided
+    if let Some(m) = model
+        && !m.is_empty()
+        && let Err(e) = validate_model_format(m)
     {
-        let mut ps = state.persistent_state.lock().await;
-        if apply_task_channel_mapping(
-            &mut ps.task_channel,
-            &task_id,
-            Some(effective_channel),
-            false,
-        ) && let Err(e) = ps.save_for_repo(&dir_key)
-        {
-            warn!("Failed to save task channel mapping: {}", e);
-        }
+        return Response::error(id, RpcError::new(-32602, e));
     }
 
-    // Apply model mapping if provided
+    // For child tasks, inherit the parent's thread if no explicit thread_id was given.
+    // This ensures child tasks thread under the same conversation as the parent.
+    if thread_id.is_none()
+        && let Some(ref parent_id) = normalized_parent
+        && let Ok(parent_task) = state.task_store.load(parent_id)
+        && let Some(ref parent_thread) = parent_task.thread_id
     {
-        let mut ps = state.persistent_state.lock().await;
-        match apply_task_model_mapping(&mut ps.task_model, &task_id, model, false) {
-            Ok(changed) => {
-                if changed && let Err(e) = ps.save_for_repo(&dir_key) {
-                    warn!("Failed to save task model mapping: {}", e);
-                }
-            }
-            Err(e) => {
-                // Model format validation failed - return error
-                return Response::error(id, RpcError::new(-32602, e));
-            }
-        }
-    }
-
-    // Apply plan, thread_id, parent, and agent_type mappings in daemon state
-    // (backward compatibility — Tasks 8/9 will remove these)
-    {
-        let mut ps = state.persistent_state.lock().await;
-        let mut changed = false;
-        if let Some(plan_path) = plan {
-            ps.task_plan.insert(task_id.clone(), plan_path.to_string());
-            changed = true;
-        }
-        if let Some(tid) = thread_id {
-            ps.task_thread_id.insert(task_id.clone(), tid.to_string());
-            changed = true;
-        }
-        if let Some(ref norm) = normalized_parent {
-            ps.task_parent.insert(task_id.clone(), norm.clone());
-            // Child tasks inherit the parent's thread so all messages
-            // appear in the same thread (unless an explicit thread_id
-            // was already set above).
-            if !ps.task_thread_id.contains_key(&task_id)
-                && let Some(parent_thread) = ps.task_thread_id.get(norm.as_str()).cloned()
-            {
-                ps.task_thread_id.insert(task_id.clone(), parent_thread);
-            }
-            changed = true;
-        }
-        if let Some(at) = agent_type {
-            ps.task_agent_type.insert(task_id.clone(), at.to_string());
-            changed = true;
-        }
-        if changed && let Err(e) = ps.save_for_repo(&dir_key) {
-            warn!("Failed to save task plan/thread_id/parent mapping: {}", e);
+        // Re-save the new task with the inherited thread_id
+        if let Ok(mut task) = state.task_store.load(&task_id) {
+            task.thread_id = Some(parent_thread.clone());
+            let _ = state.task_store.save(&task);
         }
     }
 
@@ -477,10 +431,11 @@ pub(super) async fn handle_task_create(
     // otherwise check if the child inherited a thread from its parent.
     let effective_thread_id: Option<String> = match thread_id {
         Some(t) => Some(t.to_string()),
-        None => {
-            let ps = state.persistent_state.lock().await;
-            ps.task_thread_id.get(&task_id).cloned()
-        }
+        None => state
+            .task_store
+            .load(&task_id)
+            .ok()
+            .and_then(|t| t.thread_id.clone()),
     };
     let author = task_created_message_author(effective_channel, state.default_channel_name());
     let msg = task_announcement_message(
@@ -495,22 +450,20 @@ pub(super) async fn handle_task_create(
     match state.send_and_broadcast_async(&msg).await {
         Ok(()) => {
             event_message_id = Some(announcement_message_id.clone());
-            let mut ps = state.persistent_state.lock().await;
-            ps.task_message_id
-                .insert(task_id.clone(), announcement_message_id.clone());
-            // Default task_thread_id to the announcement message ID when no
-            // thread_id was resolved (explicit --thread-id, or inherited from
-            // parent). This ensures SpawnForTask picks up a bound_thread_id
-            // so coworker messages auto-route to the task's thread.
-            if !ps.task_thread_id.contains_key(&task_id) {
-                ps.task_thread_id
-                    .insert(task_id.clone(), announcement_message_id.clone());
-                // Also use the effective thread_id for the workflow event so
-                // scripts can post into the task's thread.
-                event_thread_id = Some(announcement_message_id);
-            }
-            if let Err(e) = ps.save_for_repo(&dir_key) {
-                warn!("Failed to save task message_id mapping: {}", e);
+            // Update TaskStore with the announcement message ID
+            if let Ok(mut task) = state.task_store.load(&task_id) {
+                task.message_id = Some(announcement_message_id.clone());
+                // Default thread_id to the announcement message ID when no
+                // thread_id was resolved (explicit --thread-id, or inherited from
+                // parent). This ensures SpawnForTask picks up a bound_thread_id
+                // so coworker messages auto-route to the task's thread.
+                if task.thread_id.is_none() {
+                    task.thread_id = Some(announcement_message_id.clone());
+                    event_thread_id = Some(announcement_message_id);
+                }
+                if let Err(e) = state.task_store.save(&task) {
+                    warn!("Failed to save task {} message_id: {}", task_id, e);
+                }
             }
         }
         Err(e) => {
@@ -577,8 +530,6 @@ pub(super) async fn handle_task_update(
         return Response::error(id, RpcError::new(-32602, format!("Invalid status: {}", s)));
     }
 
-    let dir_key = state.paths.dir_key().to_string();
-
     let status_enum = status.map(|s| match s {
         "in_progress" => crate::task_store::TaskStatus::InProgress,
         "completed" => crate::task_store::TaskStatus::Completed,
@@ -605,60 +556,15 @@ pub(super) async fn handle_task_update(
         state.clear_task_assignment_by_task(task_id).await;
     }
 
-    // Update daemon-side task-to-channel and task-to-model mappings
+    // Validate model format if provided
+    if let Some(m) = model
+        && !m.is_empty()
+        && let Err(e) = validate_model_format(m)
     {
-        let mut ps = state.persistent_state.lock().await;
-        let mut needs_save = false;
-
-        // Apply channel mapping — when the channel changes, clear the stale
-        // task_thread_id since it points to a message in the old channel.
-        if apply_task_channel_mapping(&mut ps.task_channel, task_id, channel, true) {
-            ps.task_thread_id.remove(task_id);
-            needs_save = true;
-        }
-
-        // Apply model mapping
-        match apply_task_model_mapping(&mut ps.task_model, task_id, model, true) {
-            Ok(changed) => {
-                if changed {
-                    needs_save = true;
-                }
-            }
-            Err(e) => {
-                // Model format validation failed - return error
-                return Response::error(id, RpcError::new(-32602, e));
-            }
-        }
-
-        // Apply plan mapping
-        if let Some(plan_path) = plan {
-            if plan_path.is_empty() {
-                ps.task_plan.remove(task_id);
-            } else {
-                ps.task_plan
-                    .insert(task_id.to_string(), plan_path.to_string());
-            }
-            needs_save = true;
-        }
-
-        // Apply thread_id mapping (backward compat)
-        if let Some(tid) = thread_id {
-            if tid.is_empty() {
-                ps.task_thread_id.remove(task_id);
-            } else {
-                ps.task_thread_id
-                    .insert(task_id.to_string(), tid.to_string());
-            }
-            needs_save = true;
-        }
-
-        // Save if any mapping changed
-        if needs_save && let Err(e) = ps.save_for_repo(&dir_key) {
-            warn!("Failed to save task mappings: {}", e);
-        }
+        return Response::error(id, RpcError::new(-32602, e));
     }
 
-    // Also update TaskStore
+    // Update TaskStore with additional fields
     if let Ok(mut store_task) = state.task_store.load(task_id) {
         if let Some(s) = status {
             store_task.status = match s {
@@ -683,6 +589,11 @@ pub(super) async fn handle_task_update(
                 store_task.channel = None;
                 store_task.thread_id = None;
             } else {
+                // When channel changes, clear stale thread_id (it pointed to a
+                // message in the old channel).
+                if store_task.channel.as_deref() != Some(ch) {
+                    store_task.thread_id = None;
+                }
                 store_task.channel = Some(ch.to_string());
             }
         }
@@ -836,15 +747,41 @@ pub(super) async fn handle_task_metadata(
         );
     }
 
+    // Read task metadata from TaskStore (primary), falling back to legacy maps.
+    let task = state.task_store.load(task_id).ok();
     let ps = state.persistent_state.lock().await;
-    let channel = ps.task_channel.get(task_id).cloned();
-    let model = ps.task_model.get(task_id).cloned();
-    let plan = ps.task_plan.get(task_id).cloned();
-    let execution_skill = ps.task_execution_skill.get(task_id).cloned();
-    let message_id = ps.task_message_id.get(task_id).cloned();
-    let thread_id = ps.task_thread_id.get(task_id).cloned();
-    let parent = ps.task_parent.get(task_id).cloned();
-    let agent_type = ps.task_agent_type.get(task_id).cloned();
+    let channel = task
+        .as_ref()
+        .and_then(|t| t.channel.clone())
+        .or_else(|| ps.task_channel.get(task_id).cloned());
+    let model = task
+        .as_ref()
+        .and_then(|t| t.model.clone())
+        .or_else(|| ps.task_model.get(task_id).cloned());
+    let plan = task
+        .as_ref()
+        .and_then(|t| t.plan.clone())
+        .or_else(|| ps.task_plan.get(task_id).cloned());
+    let execution_skill = task
+        .as_ref()
+        .and_then(|t| t.execution_skill.clone())
+        .or_else(|| ps.task_execution_skill.get(task_id).cloned());
+    let message_id = task
+        .as_ref()
+        .and_then(|t| t.message_id.clone())
+        .or_else(|| ps.task_message_id.get(task_id).cloned());
+    let thread_id = task
+        .as_ref()
+        .and_then(|t| t.thread_id.clone())
+        .or_else(|| ps.task_thread_id.get(task_id).cloned());
+    let parent = task
+        .as_ref()
+        .and_then(|t| t.parent.clone())
+        .or_else(|| ps.task_parent.get(task_id).cloned());
+    let agent_type = task
+        .as_ref()
+        .map(|t| t.agent_type.clone())
+        .or_else(|| ps.task_agent_type.get(task_id).cloned());
 
     Response::success(
         id,
@@ -1240,17 +1177,7 @@ pub(super) async fn handle_task_handoff(
         state.cleanup_coworker_state(name).await;
     }
 
-    // Update task_agent_type in persistent state
-    let dir_key = state.paths.dir_key().to_string();
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.task_agent_type
-            .insert(task_id.to_string(), agent.to_string());
-        if let Err(e) = ps.save_for_repo(&dir_key) {
-            warn!("Failed to save task_agent_type after handoff: {}", e);
-        }
-    }
-    // Also update TaskStore
+    // Update agent_type in TaskStore
     if let Ok(mut store_task) = state.task_store.load(task_id) {
         store_task.agent_type = agent.to_string();
         if let Err(e) = state.task_store.save(&store_task) {

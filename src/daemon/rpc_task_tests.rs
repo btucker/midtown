@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 
 // ── apply_task_channel_mapping tests ─────────────────────────────────────────
 

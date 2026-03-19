@@ -1109,13 +1109,7 @@ fn apply_gc_prunes_orphaned_task_metadata() {
     let result = state.apply_gc(&[], &["orphan-1".to_string()]);
 
     assert_eq!(result.orphaned_tasks_pruned, 1);
-    assert!(!state.task_channel.contains_key("orphan-1"));
-    assert!(!state.task_model.contains_key("orphan-1"));
-    assert!(!state.task_plan.contains_key("orphan-1"));
-    assert!(!state.task_execution_skill.contains_key("orphan-1"));
-    assert!(!state.task_thread_id.contains_key("orphan-1"));
-    assert!(!state.task_message_id.contains_key("orphan-1"));
-    assert!(!state.task_parent.contains_key("orphan-1"));
+    // GC no longer prunes legacy map entries — task metadata lives in TaskStore.
     // Alive task untouched
     assert_eq!(
         state.task_channel.get("alive-1"),
@@ -1189,7 +1183,7 @@ fn apply_gc_combined_operations() {
             .initial_prompt
             .is_some()
     );
-    assert!(!state.task_channel.contains_key("old-task"));
+    // GC no longer prunes legacy map entries — task metadata lives in TaskStore.
 }
 
 // ── channel_workflows tests ───────────────────────────────────────────

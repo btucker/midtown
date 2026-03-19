@@ -179,88 +179,28 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub worktree_registry: WorktreeRegistry,
 
-    /// Task-to-channel assignment mapping for message routing.
-    /// Maps task ID → channel name. Used by the daemon to route coworker messages
-    /// to the appropriate topic channel based on the task they're working on.
-    /// Persists across daemon restarts so channel routing survives.
+    // Legacy task metadata HashMaps — kept for deserialization compat and migration.
+    // Production reads/writes go through TaskStore. These maps are only populated
+    // by deserialization of old daemon-state.json files (for migration) and by
+    // tests. They will be removed in a future cleanup.
     #[serde(default)]
     pub task_channel: HashMap<String, String>,
-
-    /// Task-to-model assignment mapping for coworker spawn.
-    /// Maps task ID → model specification (e.g., "claude/opus", "claude/sonnet").
-    /// Used by the daemon to launch coworkers with the requested model when spawning
-    /// for a task. Stored separately from Claude Code's native task storage for
-    /// compatibility. Persists across daemon restarts.
     #[serde(default)]
     pub task_model: HashMap<String, String>,
-
-    /// Task-to-plan mapping for plan-driven execution.
-    /// Maps task ID → absolute path to a plan file (e.g., "docs/plans/2026-02-13-feature.md").
-    /// When a coworker is spawned for a task with a plan, the daemon reads the file
-    /// and includes its content in the coworker's initial prompt. Stored separately
-    /// from Claude Code's native task storage for compatibility.
     #[serde(default)]
     pub task_plan: HashMap<String, String>,
-
-    /// Task-to-execution-skill mapping for plan-driven execution.
-    /// Maps task ID → skill name (e.g., "subagent-driven-development", "executing-plans").
-    /// When a coworker is spawned for a task with an execution skill, the daemon includes
-    /// an explicit instruction to use that skill. Stored separately from Claude Code's
-    /// native task storage for compatibility.
     #[serde(default)]
     pub task_execution_skill: HashMap<String, String>,
-
-    /// Task-to-thread-ID mapping for thread routing.
-    ///
-    /// Maps task ID → thread_parent_id. Populated in two ways:
-    /// 1. Explicitly via `--thread-id` on `midtown task create` (e.g., from fork sessions).
-    /// 2. Auto-defaulted to the task's announcement message ID when no explicit
-    ///    thread ID is provided, ensuring coworker posts route to the task thread.
-    ///
-    /// The daemon sets `bound_thread_id` on the spawned coworker's `SessionRecord`
-    /// using this mapping, wiring the coworker's channel output into the correct thread.
     #[serde(default)]
     pub task_thread_id: HashMap<String, String>,
-
-    /// Task-to-creation-message mapping for opening tasks as threads.
-    ///
-    /// Maps task ID → message ID (UUID of the "created task:" channel message).
-    /// When a task is created, the daemon posts a notification message and stores
-    /// its ID here. The TUI and web app use this to open a task as a thread,
-    /// showing the task metadata as the header and allowing discussion replies.
     #[serde(default)]
     pub task_message_id: HashMap<String, String>,
-
-    /// Task-to-parent mapping for UI grouping of related tasks.
-    ///
-    /// Maps child task ID → parent task ID. Parent-child is a UI grouping
-    /// relationship for showing related tasks (e.g., a review task as a child
-    /// of its implementation task). Child tasks can start while the parent is
-    /// open — this is purely organizational, not a blocking dependency.
     #[serde(default)]
     pub task_parent: HashMap<String, String>,
-
-    /// Task-to-agent-type mapping for specialized task dispatch.
-    ///
-    /// Maps task ID → agent type name (e.g., "midtown-code-reviewer").
-    /// When set, the task dispatch system uses the specified agent definition
-    /// instead of the default coworker agent. Used to route review tasks
-    /// through the task dispatch system with the correct agent behavior.
     #[serde(default)]
     pub task_agent_type: HashMap<String, String>,
-
-    /// Task-to-placeholder-comment-ID mapping for reviewer status comments.
-    ///
-    /// Maps task ID → GitHub comment ID. When a reviewer is spawned for a PR,
-    /// a "Review in progress..." placeholder comment is posted. The comment ID
-    /// is stored here so the reviewer can update it with the final review.
     #[serde(default)]
     pub task_placeholder_comment_id: HashMap<String, u64>,
-
-    /// Task-to-restart-count mapping for reviewer backoff.
-    ///
-    /// Maps task ID → number of times the reviewer session has been restarted.
-    /// Used to implement exponential backoff for stuck reviewers.
     #[serde(default)]
     pub task_restart_count: HashMap<String, u32>,
 
@@ -326,9 +266,6 @@ pub struct DaemonPersistentState {
     #[serde(default, rename = "task_session_spans", skip_serializing)]
     pub _task_session_spans: serde_json::Value,
 
-    /// Task-to-PR-number mapping for reviewer tasks.
-    /// Set at review task creation so PR lookups work before the reviewer session
-    /// populates SessionRecord.pr_number.
     #[serde(default)]
     pub task_pr_number: HashMap<String, u64>,
 
@@ -595,17 +532,10 @@ impl DaemonPersistentState {
                 }
 
                 debug!(
-                    "Loaded daemon state: {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} task-parent mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
+                    "Loaded daemon state: {} reminders, CI stats: {}, {} worktree assignments, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
                     state.worktree_registry.len(),
-                    state.task_channel.len(),
-                    state.task_model.len(),
-                    state.task_plan.len(),
-                    state.task_execution_skill.len(),
-                    state.task_thread_id.len(),
-                    state.task_message_id.len(),
-                    state.task_parent.len(),
                     state.channel_lead_sessions.len(),
                     state.profile_pool_state.len(),
                     state.channel_workflows.len(),
@@ -633,15 +563,10 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-parent mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
+            "Saved daemon state: {} reminders, CI stats: {}, {} worktree assignments, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
             self.worktree_registry.len(),
-            self.task_channel.len(),
-            self.task_model.len(),
-            self.task_plan.len(),
-            self.task_execution_skill.len(),
-            self.task_parent.len(),
             self.channel_lead_sessions.len(),
             self.profile_pool_state.len(),
             self.channel_workflows.len(),
@@ -672,29 +597,15 @@ impl DaemonPersistentState {
             }
         }
 
-        // 2. Prune orphaned task metadata maps
-        for task_id in orphaned_task_ids {
-            self.task_channel.remove(task_id);
-            self.task_model.remove(task_id);
-            self.task_plan.remove(task_id);
-            self.task_execution_skill.remove(task_id);
-            self.task_thread_id.remove(task_id);
-            self.task_message_id.remove(task_id);
-            self.task_parent.remove(task_id);
-            self.task_agent_type.remove(task_id);
-            self.task_placeholder_comment_id.remove(task_id);
-            self.task_restart_count.remove(task_id);
-            self.task_pr_number.remove(task_id);
-            result.orphaned_tasks_pruned += 1;
-        }
+        // 2. Count orphaned tasks (metadata lives in TaskStore now, no maps to prune)
+        result.orphaned_tasks_pruned = orphaned_task_ids.len();
 
         result
     }
 
     /// Returns the active reviewer session for a PR, if any.
     ///
-    /// Checks both `task_pr_number` (set at task creation) and
-    /// `SessionRecord.pr_number` (set when the session opens the PR).
+    /// Checks `SessionRecord.pr_number` (primary) and legacy `task_pr_number` map (fallback).
     pub fn active_reviewer_for_pr(&self, pr_number: u64) -> Option<&SessionRecord> {
         self.sessions
             .values()
@@ -730,10 +641,10 @@ impl DaemonPersistentState {
             .collect()
     }
 
-    /// Look up the bound thread ID for a task from `task_thread_id`.
+    /// Look up the bound thread ID for a task from the legacy `task_thread_id` map.
     ///
-    /// Used by both the `SpawnForTask` effect path and `spawn_coworker()` to
-    /// resolve a task's announcement thread so channel posts are auto-tagged.
+    /// Used by `spawn_coworker()` as a fallback when TaskStore doesn't have the data.
+    /// Primary source should be TaskStore; this is kept for backward compat.
     pub fn resolve_bound_thread_id(&self, task_id: Option<&str>) -> Option<String> {
         task_id.and_then(|tid| self.task_thread_id.get(tid).cloned())
     }
@@ -741,8 +652,8 @@ impl DaemonPersistentState {
     /// Insert a reviewer session record — replacement for the removed `create_span()`.
     ///
     /// Creates a `SessionRecord` with the given parameters and inserts it into
-    /// `self.sessions`. Also populates `task_pr_number` if a PR number is provided
-    /// via the task_id lookup.
+    /// `self.sessions`. The `pr_number` parameter should be loaded from TaskStore
+    /// by the caller if needed.
     pub fn insert_session_for_task(
         &mut self,
         task_id: &str,
@@ -804,16 +715,6 @@ impl DaemonPersistentState {
             reminders,
             ci_stats: CiCheckStats::default(),
             worktree_registry: WorktreeRegistry::default(),
-            task_channel: HashMap::new(),
-            task_model: HashMap::new(),
-            task_plan: HashMap::new(),
-            task_execution_skill: HashMap::new(),
-            task_thread_id: HashMap::new(),
-            task_message_id: HashMap::new(),
-            task_parent: HashMap::new(),
-            task_agent_type: HashMap::new(),
-            task_placeholder_comment_id: HashMap::new(),
-            task_restart_count: HashMap::new(),
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
             profile_pool_state: HashMap::new(),
@@ -822,7 +723,6 @@ impl DaemonPersistentState {
             workflow_state,
             permanent_pr_nudges: Vec::new(),
             _task_session_spans: serde_json::Value::Null,
-            task_pr_number: HashMap::new(),
             task_index: HashMap::new(),
             ..Default::default()
         };
@@ -926,15 +826,29 @@ impl DaemonPersistentState {
             .find(|s| s.task_id.as_deref() == Some(task_id))
     }
 
-    /// Look up the topic channel for a PR via tick_pr_task_index → task_channel.
-    pub fn channel_for_pr(&self, pr_number: u64) -> Option<String> {
+    /// Look up the topic channel for a PR via tick_pr_task_index and a tasks slice.
+    ///
+    /// Checks the tasks slice first, then falls back to the legacy `task_channel` map.
+    pub fn channel_for_pr(
+        &self,
+        pr_number: u64,
+        tasks: &[crate::task_store::Task],
+    ) -> Option<String> {
         let task_id = self.tick_pr_task_index.task_for_pr(pr_number)?;
-        self.task_channel.get(task_id).cloned()
+        tasks
+            .iter()
+            .find(|t| t.id == task_id)
+            .and_then(|t| t.channel.clone())
+            .or_else(|| self.task_channel.get(task_id).cloned())
     }
 
     /// Look up the topic channel for a PR, falling back to project name.
-    pub fn channel_for_pr_or_default(&self, pr_number: u64) -> String {
-        self.channel_for_pr(pr_number)
+    pub fn channel_for_pr_or_default(
+        &self,
+        pr_number: u64,
+        tasks: &[crate::task_store::Task],
+    ) -> String {
+        self.channel_for_pr(pr_number, tasks)
             .unwrap_or_else(|| self.tick_project_name.clone())
     }
 

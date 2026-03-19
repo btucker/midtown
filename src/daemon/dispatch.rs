@@ -271,7 +271,7 @@ fn build_spawn_effects(
     config.working_dir = Some(wt.path);
     config.channel = channel;
 
-    // Apply model from task directly, falling back to persistent state map
+    // Apply model from task, falling back to legacy persistent state map
     if let Some(model) = task.and_then(|t| t.model.as_deref()) {
         config.model = model.to_string();
     } else if let Some(model) = ps.task_model.get(&decision.task_id) {
@@ -569,7 +569,7 @@ fn dispatch_via_sessions_inner(ps: &DaemonPersistentState, tasks: &[Task]) -> Ve
     let mut effects = Vec::new();
 
     for (task_id, task_subject, owner) in &ps.tick_in_progress_tasks {
-        let action = decide_session_recovery(task_id, task_subject, owner, ps);
+        let action = decide_session_recovery(task_id, task_subject, owner, ps, tasks);
 
         match action {
             crate::rules::SessionRecoveryAction::Skip(ref reason) => {
@@ -1734,6 +1734,7 @@ fn decide_session_recovery(
     task_subject: &str,
     owner: &str,
     ps: &DaemonPersistentState,
+    tasks: &[Task],
 ) -> crate::rules::SessionRecoveryAction {
     if owner.is_empty()
         || is_project_lead(owner, &ps.tick_project_name)
@@ -1744,11 +1745,10 @@ fn decide_session_recovery(
         );
     }
 
-    if ps
-        .task_channel
-        .get(task_id)
-        .is_some_and(|ch| ps.lead_driven_channels.contains(ch))
-    {
+    let task_channel = task_by_id(tasks, task_id)
+        .and_then(|t| t.channel.as_deref())
+        .or_else(|| ps.task_channel.get(task_id).map(|s| s.as_str()));
+    if task_channel.is_some_and(|ch| ps.lead_driven_channels.contains(ch)) {
         return crate::rules::SessionRecoveryAction::Skip(
             crate::rules::SessionRecoverySkipReason::LeadDrivenChannel,
         );
@@ -1833,11 +1833,10 @@ fn decide_owned_pending_dispatch(
         };
     }
 
-    if ps
-        .task_channel
-        .get(task_id)
-        .is_some_and(|ch| ps.lead_driven_channels.contains(ch))
-    {
+    let task_channel = task_by_id(tasks, task_id)
+        .and_then(|t| t.channel.as_deref())
+        .or_else(|| ps.task_channel.get(task_id).map(|s| s.as_str()));
+    if task_channel.is_some_and(|ch| ps.lead_driven_channels.contains(ch)) {
         return crate::rules::PendingTaskAction::Skip(
             crate::rules::OwnedPendingSkipReason::LeadDrivenChannel,
         );

@@ -1116,7 +1116,7 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         let mut task_channel = HashMap::new();
         let mut task_model_map = HashMap::new();
         let mut task_plan_map = HashMap::new();
-        let mut task_execution_skill_map = HashMap::new();
+        let mut task_execution_skill_map: HashMap<String, String> = HashMap::new();
         let mut task_thread_id_map = HashMap::new();
         let mut task_message_id_map = HashMap::new();
         let mut task_parent_map = HashMap::new();
@@ -1132,6 +1132,9 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             if let Some(ref p) = t.plan {
                 task_plan_map.insert(t.id.clone(), p.clone());
             }
+            if let Some(ref es) = t.execution_skill {
+                task_execution_skill_map.insert(t.id.clone(), es.clone());
+            }
             if let Some(ref tid) = t.thread_id {
                 task_thread_id_map.insert(t.id.clone(), tid.clone());
             }
@@ -1146,8 +1149,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
                 task_agent_name_map.insert(t.id.clone(), t.agent_name.clone());
             }
         }
-        // Merge with persistent state HashMap fields for backward compatibility
-        // (pre-migration data). TaskStore entries take precedence.
+        // Merge with legacy persistent state HashMap fields for backward
+        // compatibility (pre-migration data). TaskStore entries take precedence.
         let ps = state.persistent_state.lock().await;
         for (k, v) in &ps.task_channel {
             task_channel.entry(k.clone()).or_insert_with(|| v.clone());
@@ -1236,6 +1239,8 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
 
     // ── Reviewer state ──────────────────────────────────────────────────
+    // Load all tasks once for reviewer metadata lookups
+    let all_store_tasks = state.task_store.load_all();
     let (active_reviewers, reviewer_pr_assignments, reviewer_restart_counts) = {
         let ps = state.persistent_state.lock().await;
         let reviewers = compute_active_reviewers_from_spans(&ps, &headless_process_health);
@@ -1245,13 +1250,17 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         // respawn reviewers whose processes have exited without posting a review.
         let assignments = build_reviewer_pr_assignments_from_spans(&ps);
         // Collect PR → restart_count for stuck reviewer backoff.
-        // Primary source: task_restart_count + task_pr_number on persistent state
-        // (these fields stay on DaemonPersistentState until SessionRecord migration).
-        let restart_counts: HashMap<u64, u32> = ps
-            .task_restart_count
+        // Primary: TaskStore. Fallback: legacy persistent state maps.
+        let mut restart_counts: HashMap<u64, u32> = all_store_tasks
             .iter()
-            .filter_map(|(task_id, &count)| ps.task_pr_number.get(task_id).map(|&pr| (pr, count)))
+            .filter(|t| t.pr.is_some() && t.restart_count > 0)
+            .filter_map(|t| t.pr.map(|pr| (pr, t.restart_count)))
             .collect();
+        for (task_id, &count) in &ps.task_restart_count {
+            if let Some(&pr) = ps.task_pr_number.get(task_id) {
+                restart_counts.entry(pr).or_insert(count);
+            }
+        }
         (reviewers, assignments, restart_counts)
     };
 
@@ -1288,20 +1297,27 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .filter(|pr| !reviewed_prs.contains(pr))
             .collect();
 
-        // Pre-fetch stored placeholder IDs from persistent state.
+        // Pre-fetch stored placeholder IDs from TaskStore + legacy maps.
         let stored_placeholder_ids: HashMap<u64, Option<u64>> = {
             let ps = state.persistent_state.lock().await;
             assigned_unreviewed_prs
                 .iter()
                 .map(|&pr| {
-                    // Try TaskStore first: find task with this PR and a placeholder_comment_id
-                    // Look up placeholder_comment_id from persistent state
-                    let id = ps
-                        .task_pr_number
+                    // Primary: TaskStore
+                    let id = all_store_tasks
                         .iter()
-                        .find(|&(_, &p)| p == pr)
-                        .and_then(|(task_id, _)| ps.task_placeholder_comment_id.get(task_id))
-                        .copied();
+                        .find(|t| t.pr == Some(pr))
+                        .and_then(|t| t.placeholder_comment_id)
+                        // Fallback: legacy map
+                        .or_else(|| {
+                            ps.task_pr_number
+                                .iter()
+                                .find(|&(_, &p)| p == pr)
+                                .and_then(|(task_id, _)| {
+                                    ps.task_placeholder_comment_id.get(task_id)
+                                })
+                                .copied()
+                        });
                     (pr, id)
                 })
                 .collect()
@@ -1984,18 +2000,24 @@ pub(crate) fn compute_active_reviewers_from_spans(
     reviewers
 }
 
-/// Build the reviewer → PR number assignment map from task_session_spans.
+/// Build the reviewer → PR number assignment map from reviewer sessions.
 ///
-/// Reads from open reviewer spans (end_time = None, agent_type = "reviewer"),
-/// mapping agent_name → PR number via task_pr_number. Dead reviewers (whose
-/// process has exited but whose span is still open) are included so that
-/// `decide_dead_reviewer_respawns` can detect and respawn them.
+/// Maps agent_name → PR number. Checks `SessionRecord.pr_number` first,
+/// then falls back to the legacy `task_pr_number` map. Dead reviewers (whose
+/// process has exited but whose session record is still open) are included so
+/// that `decide_dead_reviewer_respawns` can detect and respawn them.
 pub(crate) fn build_reviewer_pr_assignments_from_spans(
     ps: &crate::daemon::state::DaemonPersistentState,
 ) -> HashMap<String, u64> {
     let mut assignments = HashMap::new();
     for span in ps.all_reviewer_sessions() {
-        if let Some(&pr) = ps.task_pr_number.get(span.task_id.as_deref().unwrap_or("")) {
+        let pr = span.pr_number.or_else(|| {
+            span.task_id
+                .as_ref()
+                .and_then(|tid| ps.task_pr_number.get(tid))
+                .copied()
+        });
+        if let Some(pr) = pr {
             assignments.insert(span.name.clone(), pr);
         }
     }

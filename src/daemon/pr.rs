@@ -2447,7 +2447,9 @@ async fn collect_review_complete_effects(
                 .iter()
                 .filter(|s| {
                     s.pr_number == Some(pr_number)
-                        || ps.task_pr_number.get(s.task_id.as_deref().unwrap_or(""))
+                        || s.task_id
+                            .as_ref()
+                            .and_then(|tid| ps.task_pr_number.get(tid))
                             == Some(&pr_number)
                 })
                 .map(|s| s.session_id.clone())

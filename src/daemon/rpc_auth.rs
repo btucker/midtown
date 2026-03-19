@@ -298,10 +298,14 @@ pub(super) async fn handle_auth_switch(
                     .into_iter()
                     .find(|s| s.name == cw.name)
                     .and_then(|s| {
-                        persistent
-                            .task_pr_number
-                            .get(s.task_id.as_deref().unwrap_or(""))
-                            .map(|&pr| (cw.name.clone(), pr))
+                        s.pr_number
+                            .or_else(|| {
+                                s.task_id
+                                    .as_ref()
+                                    .and_then(|tid| persistent.task_pr_number.get(tid))
+                                    .copied()
+                            })
+                            .map(|pr| (cw.name.clone(), pr))
                     })
             })
             .collect();
