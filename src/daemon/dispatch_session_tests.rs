@@ -181,7 +181,6 @@ fn session_dispatch_skips_spawn_failure_cooldown() {
 fn session_dispatch_skips_lead_driven_channel_task() {
     let mut ps = make_ps("test");
     ps.lead_driven_channels = ["web".to_string()].into_iter().collect();
-    ps.task_channel.insert("1".to_string(), "web".to_string());
     ps.tick_in_progress_tasks = vec![("1".into(), "Fix".into(), "park".into())];
     ps.sessions.insert(
         "sess-1".into(),
@@ -189,7 +188,9 @@ fn session_dispatch_skips_lead_driven_channel_task() {
     );
     ps.tick_session_task_map.insert("1".into(), "sess-1".into());
 
-    let tasks = vec![make_task("1", "Fix", "park", TaskStatus::InProgress)];
+    let mut task = make_task("1", "Fix", "park", TaskStatus::InProgress);
+    task.channel = Some("web".to_string());
+    let tasks = vec![task];
     let effects = dispatch_via_sessions_inner(&ps, &tasks);
     assert!(
         effects.is_empty(),

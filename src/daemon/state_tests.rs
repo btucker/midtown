@@ -194,14 +194,6 @@ fn test_full_roundtrip_with_all_fields() {
         crate::reminders::RepeatPolicy::Once,
     );
 
-    // Populate task-channel mappings
-    state
-        .task_channel
-        .insert("10".to_string(), "auth".to_string());
-    state
-        .task_channel
-        .insert("11".to_string(), "frontend".to_string());
-
     // Serialize and deserialize
     let json = serde_json::to_string_pretty(&state).unwrap();
     let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
@@ -209,9 +201,6 @@ fn test_full_roundtrip_with_all_fields() {
     assert!(loaded.github.has_cached_review(10));
     assert!(loaded.github.has_cached_review(11));
     assert_eq!(loaded.reminders.reminders.len(), 2);
-    assert_eq!(loaded.task_channel.len(), 2);
-    assert_eq!(loaded.task_channel.get("10"), Some(&"auth".to_string()));
-    assert_eq!(loaded.task_channel.get("11"), Some(&"frontend".to_string()));
 }
 
 #[test]
@@ -892,45 +881,12 @@ fn apply_gc_removes_dead_sessions() {
 }
 
 #[test]
-fn apply_gc_prunes_orphaned_task_metadata() {
+fn apply_gc_counts_orphaned_tasks() {
     let mut state = DaemonPersistentState::default();
-    state
-        .task_channel
-        .insert("orphan-1".to_string(), "auth".to_string());
-    state
-        .task_model
-        .insert("orphan-1".to_string(), "opus".to_string());
-    state
-        .task_plan
-        .insert("orphan-1".to_string(), "/path".to_string());
-    state
-        .task_execution_skill
-        .insert("orphan-1".to_string(), "subagent".to_string());
-    state
-        .task_thread_id
-        .insert("orphan-1".to_string(), "thread-1".to_string());
-    state
-        .task_message_id
-        .insert("orphan-1".to_string(), "msg-1".to_string());
-
-    state
-        .task_parent
-        .insert("orphan-1".to_string(), "parent-1".to_string());
-
-    // Also add a surviving task to make sure it's not touched
-    state
-        .task_channel
-        .insert("alive-1".to_string(), "frontend".to_string());
-
-    let result = state.apply_gc(&[], &["orphan-1".to_string()]);
-
-    assert_eq!(result.orphaned_tasks_pruned, 1);
     // GC no longer prunes legacy map entries — task metadata lives in TaskStore.
-    // Alive task untouched
-    assert_eq!(
-        state.task_channel.get("alive-1"),
-        Some(&"frontend".to_string())
-    );
+    // Just verify the count is reported correctly.
+    let result = state.apply_gc(&[], &["orphan-1".to_string()]);
+    assert_eq!(result.orphaned_tasks_pruned, 1);
 }
 
 #[test]
@@ -978,10 +934,7 @@ fn apply_gc_combined_operations() {
         "alive".to_string(),
         make_gc_session("alive", Some("active-task"), true),
     );
-    // Orphaned task metadata
-    state
-        .task_channel
-        .insert("old-task".to_string(), "backend".to_string());
+    // Orphaned task metadata (lives in TaskStore, not in state maps)
 
     let result = state.apply_gc(&["dead".to_string()], &["old-task".to_string()]);
 
@@ -1068,51 +1021,6 @@ fn test_channel_workflows_unassign() {
     let json = serde_json::to_string(&state).unwrap();
     let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
     assert!(!loaded.channel_workflows.contains_key("proj-auth"));
-}
-
-// ── resolve_bound_thread_id tests ────────────────────────────────────────────
-//
-// These tests verify DaemonPersistentState::resolve_bound_thread_id(), which
-// looks up a task_id in task_thread_id to find the bound thread for a coworker.
-// spawn_coworker() should call this to bind reviewers to their task thread —
-// mirroring the SpawnSession effect path in effects.rs:2786-2798.
-
-/// When task_id maps to an entry in task_thread_id, resolve returns the thread.
-#[test]
-fn test_resolve_bound_thread_id_found() {
-    let mut ps = DaemonPersistentState::default();
-    ps.task_thread_id
-        .insert("42".to_string(), "thread-announce-42".to_string());
-
-    assert_eq!(
-        ps.resolve_bound_thread_id(Some("42")),
-        Some("thread-announce-42".to_string()),
-        "Should resolve task_id to bound thread from task_thread_id"
-    );
-}
-
-/// When task_id is None, resolve returns None.
-#[test]
-fn test_resolve_bound_thread_id_none_task() {
-    let ps = DaemonPersistentState::default();
-
-    assert_eq!(
-        ps.resolve_bound_thread_id(None),
-        None,
-        "Should return None when task_id is None"
-    );
-}
-
-/// When task_id has no entry in task_thread_id, resolve returns None.
-#[test]
-fn test_resolve_bound_thread_id_missing_mapping() {
-    let ps = DaemonPersistentState::default();
-
-    assert_eq!(
-        ps.resolve_bound_thread_id(Some("99")),
-        None,
-        "Should return None when task_id has no thread mapping"
-    );
 }
 
 #[test]

@@ -2,6 +2,20 @@ use super::*;
 use crate::daemon::trackers::PrIssueType;
 use std::process::Command;
 
+/// Helper: create a reviewer task in TaskStore so post_pr_comment can write to it.
+fn create_reviewer_task(state: &DaemonState, task_id: &str, pr_number: u64) {
+    let task = crate::task_store::Task {
+        id: task_id.to_string(),
+        subject: "Review PR".to_string(),
+        status: crate::task_store::TaskStatus::InProgress,
+        pr: Some(pr_number),
+        agent_type: "midtown-code-reviewer".to_string(),
+        agent_name: "park".to_string(),
+        ..Default::default()
+    };
+    let _ = state.task_store.save(&task);
+}
+
 fn mk_session_record(
     session_id: &str,
     task_id: Option<&str>,
@@ -1320,13 +1334,20 @@ async fn test_post_pr_comment_stores_comment_id_on_assignment() {
 
     let (state, _project_dir, _guard) = make_workflow_test_state("post-pr-test");
 
-    // Pre-create a reviewer span so post_pr_comment can store the comment ID
+    // Pre-create a reviewer task in TaskStore and a span so post_pr_comment can store the comment ID
     let pr_number = 42u64;
     let task_id = "42";
+    create_reviewer_task(&state, task_id, pr_number);
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task(task_id, "park", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert(task_id.to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some(task_id))
+        {
+            s.pr_number = Some(pr_number);
+        }
     }
 
     // Mock `gh` to output a comment URL (like real `gh pr comment` does)
@@ -1364,9 +1385,12 @@ async fn test_post_pr_comment_stores_comment_id_on_assignment() {
 
     // Verify the comment ID was parsed and stored in task_placeholder_comment_id
     {
-        let ps = state.persistent_state.lock().await;
         assert_eq!(
-            ps.task_placeholder_comment_id.get(task_id).copied(),
+            state
+                .task_store
+                .load(task_id)
+                .ok()
+                .and_then(|t| t.placeholder_comment_id),
             Some(98765),
             "Should parse comment ID 98765 from the issuecomment URL"
         );
@@ -1397,10 +1421,17 @@ async fn test_post_pr_comment_parses_bare_numeric_url() {
 
     let pr_number = 55u64;
     let task_id = "55";
+    create_reviewer_task(&state, task_id, pr_number);
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task(task_id, "madison", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert(task_id.to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some(task_id))
+        {
+            s.pr_number = Some(pr_number);
+        }
     }
 
     // Mock gh to output just a URL ending in a bare number
@@ -1436,9 +1467,12 @@ async fn test_post_pr_comment_parses_bare_numeric_url() {
     }
 
     {
-        let ps = state.persistent_state.lock().await;
         assert_eq!(
-            ps.task_placeholder_comment_id.get(task_id).copied(),
+            state
+                .task_store
+                .load(task_id)
+                .ok()
+                .and_then(|t| t.placeholder_comment_id),
             Some(11223),
             "Should parse comment ID 11223 from the bare numeric URL"
         );
@@ -1464,13 +1498,31 @@ async fn test_post_pr_comment_reuses_existing_placeholder() {
     let existing_comment_id = 55555u64;
     let task_id = "77";
     {
+        // Pre-create task with existing placeholder comment ID
+        let mut task = crate::task_store::Task {
+            id: task_id.to_string(),
+            subject: "Review PR".to_string(),
+            status: crate::task_store::TaskStatus::InProgress,
+            pr: Some(pr_number),
+            agent_type: "midtown-code-reviewer".to_string(),
+            agent_name: "riverside".to_string(),
+            ..Default::default()
+        };
+        task.placeholder_comment_id = Some(existing_comment_id);
+        let _ = state.task_store.save(&task);
+    }
+    {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task(task_id, "riverside", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert(task_id.to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some(task_id))
+        {
+            s.pr_number = Some(pr_number);
+        }
         // Pre-populate the placeholder_comment_id (as if a previous reviewer
         // cycle posted it before timing out). This is the tier 1 lookup path.
-        ps.task_placeholder_comment_id
-            .insert(task_id.to_string(), existing_comment_id);
     }
 
     // Mock `gh` to:
@@ -1540,9 +1592,12 @@ fi
 
     // Verify: the existing comment ID is still stored in task_placeholder_comment_id
     {
-        let ps = state.persistent_state.lock().await;
         assert_eq!(
-            ps.task_placeholder_comment_id.get(task_id).copied(),
+            state
+                .task_store
+                .load(task_id)
+                .ok()
+                .and_then(|t| t.placeholder_comment_id),
             Some(existing_comment_id),
             "Should preserve the existing comment ID in task_placeholder_comment_id"
         );
@@ -1578,10 +1633,17 @@ async fn test_post_pr_comment_reuses_placeholder_via_api_fallback() {
     let pr_number = 88u64;
     let existing_comment_id = 66666u64;
     let task_id = "88";
+    create_reviewer_task(&state, task_id, pr_number);
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task(task_id, "madison", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert(task_id.to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some(task_id))
+        {
+            s.pr_number = Some(pr_number);
+        }
         // Do NOT set task_placeholder_comment_id — simulates daemon restart
     }
 
@@ -1660,9 +1722,12 @@ fi
 
     // Verify: the placeholder ID was stored in task_placeholder_comment_id
     {
-        let ps = state.persistent_state.lock().await;
         assert_eq!(
-            ps.task_placeholder_comment_id.get(task_id).copied(),
+            state
+                .task_store
+                .load(task_id)
+                .ok()
+                .and_then(|t| t.placeholder_comment_id),
             Some(existing_comment_id),
         );
     }
@@ -2249,9 +2314,16 @@ async fn test_post_insight_threads_in_default_channel_when_task_channel_is_none(
             },
         );
         // Deliberately NOT setting task_channel — task lives in default channel
-        ps.task_thread_id
-            .insert("50".to_string(), thread_id.to_string());
     }
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "50".into(),
+            channel: None, // no channel — task lives in default channel
+            thread_id: Some(thread_id.into()),
+            ..Default::default()
+        })
+        .unwrap();
 
     super::post_insight(&state, "coworker1", "Default channel threaded insight").await;
 
@@ -2310,18 +2382,32 @@ async fn test_post_insight_prefers_running_session_over_stale_with_same_name() {
             },
         );
 
-        // Old task in a different channel
-        ps.task_channel
-            .insert("88".to_string(), "old-channel".to_string());
-        ps.task_thread_id
-            .insert("88".to_string(), "old-thread-id".to_string());
+        // Old task in a different channel (stale session — not checked, but add for completeness)
 
         // Current task in the correct channel
-        ps.task_channel
-            .insert("99".to_string(), "my-feature".to_string());
-        ps.task_thread_id
-            .insert("99".to_string(), thread_parent_id.to_string());
     }
+
+    // Old task in a different channel (stale, should not be used)
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "88".into(),
+            channel: Some("old-stale-channel".into()),
+            thread_id: Some("old-thread-id".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // Active task routes to "my-feature" channel with the expected thread
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "99".into(),
+            channel: Some("my-feature".into()),
+            thread_id: Some(thread_parent_id.into()),
+            ..Default::default()
+        })
+        .unwrap();
 
     super::post_insight(&state, "coworker1", "Insight from reused name session").await;
 
@@ -2363,11 +2449,16 @@ async fn test_post_insight_routes_to_task_thread() {
                 ..Default::default()
             },
         );
-        ps.task_channel
-            .insert("42".to_string(), "my-feature".to_string());
-        ps.task_thread_id
-            .insert("42".to_string(), thread_parent_id.to_string());
     }
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "42".into(),
+            channel: Some("my-feature".into()),
+            thread_id: Some(thread_parent_id.into()),
+            ..Default::default()
+        })
+        .unwrap();
 
     super::post_insight(&state, "coworker1", "A threaded insight").await;
 
@@ -2409,9 +2500,16 @@ async fn test_post_insight_threads_when_task_channel_is_none() {
             },
         );
         // Deliberately NOT setting task_channel — simulates task created without --channel
-        ps.task_thread_id
-            .insert("99".to_string(), thread_parent_id.to_string());
     }
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "99".into(),
+            channel: None, // no channel — task lives in default channel
+            thread_id: Some(thread_parent_id.into()),
+            ..Default::default()
+        })
+        .unwrap();
 
     super::post_insight(&state, "coworker1", "Insight with no task channel").await;
 
@@ -2451,10 +2549,17 @@ async fn test_post_insight_no_thread_when_no_thread_id() {
                 ..Default::default()
             },
         );
-        ps.task_channel
-            .insert("42".to_string(), "my-feature".to_string());
         // Deliberately NOT setting task_thread_id
     }
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "42".into(),
+            channel: Some("my-feature".into()),
+            thread_id: None, // no thread binding
+            ..Default::default()
+        })
+        .unwrap();
 
     super::post_insight(&state, "coworker1", "An unthreaded insight").await;
 
@@ -2899,17 +3004,27 @@ async fn test_record_task_assignment_fixes_insight_routing() {
                 ..Default::default()
             },
         );
-
-        // Old task routes to old channel
-        ps.task_channel
-            .insert("old-task".to_string(), "old-channel".to_string());
-
-        // New task routes to new channel
-        ps.task_channel
-            .insert("new-task".to_string(), "new-channel".to_string());
-        ps.task_thread_id
-            .insert("new-task".to_string(), "new-thread-id".to_string());
     }
+
+    // Old task routes to old channel
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "old-task".into(),
+            channel: Some("old-channel".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // New task routes to new channel
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "new-task".into(),
+            channel: Some("new-channel".into()),
+            ..Default::default()
+        })
+        .unwrap();
 
     // Reassign the session to the new task
     execute_effects(
@@ -3042,12 +3157,29 @@ async fn test_post_pr_comment_reuses_placeholder_from_task_placeholder_comment_i
     let existing_comment_id = 77777u64;
     let task_id = "review-task-66";
     {
+        // Pre-create task with placeholder comment ID
+        let mut task = crate::task_store::Task {
+            id: task_id.to_string(),
+            subject: "Review PR".to_string(),
+            status: crate::task_store::TaskStatus::InProgress,
+            pr: Some(pr_number),
+            agent_type: "midtown-code-reviewer".to_string(),
+            agent_name: "lexington".to_string(),
+            ..Default::default()
+        };
+        task.placeholder_comment_id = Some(existing_comment_id);
+        let _ = state.task_store.save(&task);
+    }
+    {
         let mut ps = state.persistent_state.lock().await;
-        // Create a reviewer span and populate task_placeholder_comment_id
         ps.insert_session_for_task(task_id, "lexington", "midtown-code-reviewer", "sess-lex-1");
-        ps.task_pr_number.insert(task_id.to_string(), pr_number);
-        ps.task_placeholder_comment_id
-            .insert(task_id.to_string(), existing_comment_id);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some(task_id))
+        {
+            s.pr_number = Some(pr_number);
+        }
     }
 
     // Mock `gh` to accept the PATCH and log all calls.

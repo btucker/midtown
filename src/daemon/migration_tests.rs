@@ -25,31 +25,9 @@ fn make_task(
     })
 }
 
-fn make_state_with_maps(task_id: &str) -> DaemonPersistentState {
-    let mut state = DaemonPersistentState::default();
-    state
-        .task_channel
-        .insert(task_id.to_string(), "auth".to_string());
-    state
-        .task_model
-        .insert(task_id.to_string(), "claude/opus".to_string());
-    state
-        .task_plan
-        .insert(task_id.to_string(), "/path/to/plan.md".to_string());
-    state
-        .task_thread_id
-        .insert(task_id.to_string(), "thread-abc".to_string());
-    state
-        .task_message_id
-        .insert(task_id.to_string(), "msg-xyz".to_string());
-    state
-        .task_parent
-        .insert(task_id.to_string(), "0".to_string());
-    state
-        .task_agent_type
-        .insert(task_id.to_string(), "midtown-code-reviewer".to_string());
-    state.task_pr_number.insert(task_id.to_string(), 42);
-    state
+fn make_state_with_maps(_task_id: &str) -> DaemonPersistentState {
+    // Legacy maps have been removed. Migration no longer reads from them.
+    DaemonPersistentState::default()
 }
 
 #[test]
@@ -78,14 +56,15 @@ fn test_migrate_all_fields_populated() {
     assert_eq!(value["status"], "in_progress");
     assert_eq!(value["owner"], "park");
     assert_eq!(value["agent_name"], "park");
-    assert_eq!(value["agent_type"], "midtown-code-reviewer");
-    assert_eq!(value["channel"], "auth");
-    assert_eq!(value["model"], "claude/opus");
-    assert_eq!(value["plan"], "/path/to/plan.md");
-    assert_eq!(value["thread_id"], "thread-abc");
-    assert_eq!(value["message_id"], "msg-xyz");
-    assert_eq!(value["parent"], "0");
-    assert_eq!(value["pr"], 42);
+    assert_eq!(value["agent_type"], "midtown-code-author");
+    // Legacy maps no longer enriched — these fields are null for migrated tasks
+    assert!(value["channel"].is_null());
+    assert!(value["model"].is_null());
+    assert!(value["plan"].is_null());
+    assert!(value["thread_id"].is_null());
+    assert!(value["message_id"].is_null());
+    assert!(value["parent"].is_null());
+    assert!(value["pr"].is_null());
     assert!(value["session_id"].is_null());
     assert!(value["created_at"].is_string());
     assert!(value["updated_at"].is_string());
@@ -201,17 +180,14 @@ fn test_migrate_empty_tasks_is_noop() {
 }
 
 #[test]
-fn test_migrate_uses_task_channel_over_task_field() {
+fn test_migrate_preserves_task_channel_field() {
     let temp_dir = TempDir::new().unwrap();
     let new_tasks_dir = temp_dir.path().join("tasks");
 
     let mut task = make_task("5", "Channel test", TaskStatus::Pending, Some("park"));
     task["channel"] = serde_json::json!("old-channel");
 
-    let mut state = DaemonPersistentState::default();
-    state
-        .task_channel
-        .insert("5".to_string(), "new-channel".to_string());
+    let state = DaemonPersistentState::default();
 
     let migrated = migrate_tasks_if_needed(&[task], &state, &new_tasks_dir);
     assert_eq!(migrated, vec!["5"]);
@@ -219,39 +195,19 @@ fn test_migrate_uses_task_channel_over_task_field() {
     let content = std::fs::read_to_string(new_tasks_dir.join("5.json")).unwrap();
     let value: serde_json::Value = serde_json::from_str(&content).unwrap();
 
-    // State map takes precedence
-    assert_eq!(value["channel"], "new-channel");
+    // Channel from task JSON is preserved
+    assert_eq!(value["channel"], "old-channel");
 }
 
 #[test]
-fn test_migrate_falls_back_to_task_channel_field() {
-    let temp_dir = TempDir::new().unwrap();
-    let new_tasks_dir = temp_dir.path().join("tasks");
-
-    let mut task = make_task("6", "Fallback test", TaskStatus::Pending, Some("park"));
-    task["channel"] = serde_json::json!("task-channel");
-
-    let state = DaemonPersistentState::default(); // no task_channel entry
-
-    let migrated = migrate_tasks_if_needed(&[task], &state, &new_tasks_dir);
-    assert_eq!(migrated, vec!["6"]);
-
-    let content = std::fs::read_to_string(new_tasks_dir.join("6.json")).unwrap();
-    let value: serde_json::Value = serde_json::from_str(&content).unwrap();
-
-    assert_eq!(value["channel"], "task-channel");
-}
-
-#[test]
-fn test_migrate_pr_from_state_overrides_task() {
+fn test_migrate_preserves_pr_from_task() {
     let temp_dir = TempDir::new().unwrap();
     let new_tasks_dir = temp_dir.path().join("tasks");
 
     let mut task = make_task("7", "PR test", TaskStatus::Pending, Some("park"));
     task["pr"] = serde_json::json!(100);
 
-    let mut state = DaemonPersistentState::default();
-    state.task_pr_number.insert("7".to_string(), 200);
+    let state = DaemonPersistentState::default();
 
     let migrated = migrate_tasks_if_needed(&[task], &state, &new_tasks_dir);
     assert_eq!(migrated, vec!["7"]);
@@ -259,7 +215,8 @@ fn test_migrate_pr_from_state_overrides_task() {
     let content = std::fs::read_to_string(new_tasks_dir.join("7.json")).unwrap();
     let value: serde_json::Value = serde_json::from_str(&content).unwrap();
 
-    assert_eq!(value["pr"], 200);
+    // PR comes from task JSON (100), legacy maps no longer consulted
+    assert_eq!(value["pr"], 100);
 }
 
 #[test]

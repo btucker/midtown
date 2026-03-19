@@ -81,7 +81,7 @@ fn completed_task_is_always_protected() {
     assert!(is_task_pr_protected(
         &task,
         &HashSet::new(),
-        &snapshot::PrTaskIndex::default(),
+        &crate::daemon::snapshot::PrTaskIndex::default(),
         &HashSet::new(),
     ));
 }
@@ -90,7 +90,7 @@ fn completed_task_is_always_protected() {
 fn task_with_merged_pr_via_session_is_protected() {
     let task = make_task("1", "Fix bug", "park", TaskStatus::InProgress);
     let merged = [42u64].into_iter().collect();
-    let pr_index = snapshot::PrTaskIndex::from_task_maps(
+    let pr_index = crate::daemon::snapshot::PrTaskIndex::from_task_maps(
         [("1".to_string(), 42)].into_iter().collect(),
         HashMap::new(),
     );
@@ -110,7 +110,7 @@ fn task_with_merged_explicit_pr_is_protected() {
     assert!(is_task_pr_protected(
         &task,
         &merged,
-        &snapshot::PrTaskIndex::default(),
+        &crate::daemon::snapshot::PrTaskIndex::default(),
         &active_names_for(&task),
     ));
 }
@@ -118,7 +118,7 @@ fn task_with_merged_explicit_pr_is_protected() {
 #[test]
 fn task_with_no_active_owner_not_protected_by_open_pr() {
     let task = make_task("1", "Fix bug", "park", TaskStatus::InProgress);
-    let pr_index = snapshot::PrTaskIndex::from_task_maps(
+    let pr_index = crate::daemon::snapshot::PrTaskIndex::from_task_maps(
         [("1".to_string(), 42)].into_iter().collect(),
         HashMap::new(),
     );
@@ -134,7 +134,7 @@ fn task_with_no_active_owner_not_protected_by_open_pr() {
 #[test]
 fn task_with_active_owner_and_open_pr_is_protected() {
     let task = make_task("1", "Fix bug", "park", TaskStatus::InProgress);
-    let pr_index = snapshot::PrTaskIndex::from_task_maps(
+    let pr_index = crate::daemon::snapshot::PrTaskIndex::from_task_maps(
         [("1".to_string(), 42)].into_iter().collect(),
         HashMap::new(),
     );
@@ -326,7 +326,7 @@ fn reset_orphaned_ownerless_in_progress_task() {
 fn reset_orphaned_skips_task_with_open_pr() {
     let mut ps = make_ps("test");
     ps.tick_in_progress_tasks = vec![("1".into(), "Fix bug".into(), "park".into())];
-    ps.tick_pr_task_index = snapshot::PrTaskIndex::from_task_maps(
+    ps.tick_pr_task_index = crate::daemon::snapshot::PrTaskIndex::from_task_maps(
         [("1".to_string(), 42)].into_iter().collect(),
         HashMap::new(),
     );
@@ -588,9 +588,10 @@ fn owned_pending_skips_lead_driven_channel_task() {
     // GIVEN: a task in a lead-driven channel
     let mut ps = make_ps("test");
     ps.lead_driven_channels = ["web".to_string()].into_iter().collect();
-    ps.task_channel.insert("42".to_string(), "web".to_string());
 
-    let tasks = vec![make_task("42", "Fix bug", "park", TaskStatus::Pending)];
+    let mut task = make_task("42", "Fix bug", "park", TaskStatus::Pending);
+    task.channel = Some("web".to_string());
+    let tasks = vec![task];
 
     // WHEN: decide owned pending dispatch
     let action = decide_owned_pending_dispatch("42", "Fix bug", "park", &ps, &tasks);

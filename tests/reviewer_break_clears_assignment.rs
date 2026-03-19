@@ -26,7 +26,14 @@ fn insert_reviewer_session(
             ..Default::default()
         },
     );
-    ps.task_pr_number.insert(task_id.to_string(), pr);
+    // Set PR number on the session record
+    if let Some(s) = ps
+        .sessions
+        .values_mut()
+        .find(|s| s.task_id.as_deref() == Some(task_id))
+    {
+        s.pr_number = Some(pr);
+    }
 }
 
 #[test]

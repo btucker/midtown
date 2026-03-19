@@ -114,9 +114,7 @@ fn test_persistent_state_prevents_duplicate_spawns() {
     // Create DaemonPersistentState with reviewer spans and session records
     let mut state = DaemonPersistentState::default();
 
-    // Create reviewer spans
-    state.task_pr_number.insert("review-42".to_string(), 42);
-    state.task_pr_number.insert("review-43".to_string(), 43);
+    // PR numbers are set on session records below
 
     state.sessions.insert(
         "session-amsterdam-123".to_string(),

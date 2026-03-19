@@ -1018,10 +1018,6 @@ pub(super) fn check_for_stale_worktrees(
 ///   are removed entirely (including their `initial_prompt`, which is dropped
 ///   with the whole record).
 ///
-/// **Task metadata pruning:**
-/// - Entries in task_channel, task_model, task_plan, task_execution_skill,
-///   task_thread_id, and task_message_id are pruned when their task_id doesn't
-///   appear in any surviving session record or active task.
 ///
 /// **Note:** `initial_prompt` is intentionally preserved on stopped sessions
 /// within the retention window because `session.clear` uses it to restart

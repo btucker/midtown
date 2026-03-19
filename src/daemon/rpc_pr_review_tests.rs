@@ -71,7 +71,14 @@ async fn test_pr_review_already_assigned_returns_message() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task("task-42", "lexington", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert("task-42".to_string(), 42);
+        // Set PR number on the session record
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("task-42"))
+        {
+            s.pr_number = Some(42);
+        }
     }
 
     let response = handle_pr_review(RequestId::Number(1), 42, &state).await;

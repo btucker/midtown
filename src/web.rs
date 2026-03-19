@@ -1053,8 +1053,8 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 crate::task_store::TaskStatus::InProgress => "in_progress",
                 crate::task_store::TaskStatus::Completed => "completed",
             };
-            let message_id = task.message_id.clone().or_else(|| persistent_state.task_message_id.get(&task.id).cloned());
-            let thread_id = task.thread_id.clone().or_else(|| persistent_state.task_thread_id.get(&task.id).cloned());
+            let message_id = task.message_id.clone();
+            let thread_id = task.thread_id.clone();
             serde_json::json!({
                 "id": task.id,
                 "subject": task.subject,

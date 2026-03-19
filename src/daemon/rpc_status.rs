@@ -48,16 +48,7 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
         let rev_map: std::collections::HashMap<String, u64> = ps
             .active_reviewer_sessions()
             .into_iter()
-            .filter_map(|s| {
-                s.pr_number
-                    .or_else(|| {
-                        s.task_id
-                            .as_ref()
-                            .and_then(|tid| ps.task_pr_number.get(tid))
-                            .copied()
-                    })
-                    .map(|pr| (s.name.clone(), pr))
-            })
+            .filter_map(|s| s.pr_number.map(|pr| (s.name.clone(), pr)))
             .collect();
         let wt_map: std::collections::HashMap<String, u64> = ps
             .worktree_registry
@@ -72,15 +63,13 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
         let channel_leads = ps.channel_lead_names();
         (rev_map, wt_map, ps.github.rate_limit.clone(), channel_leads)
     };
-    // Build task metadata maps from TaskStore, with legacy fallbacks
+    // Build task metadata maps from TaskStore
     let all_loaded_tasks_for_maps = state.task_store.load_all();
     let (task_message_ids, task_thread_ids, task_plan_map, task_parent_map) = {
-        let ps = state.persistent_state.lock().await;
-        let mut msg_ids = ps.task_message_id.clone();
-        let mut thread_ids = ps.task_thread_id.clone();
-        let mut plan_map = ps.task_plan.clone();
-        let mut parent_map = ps.task_parent.clone();
-        // TaskStore entries take precedence
+        let mut msg_ids = std::collections::HashMap::new();
+        let mut thread_ids = std::collections::HashMap::new();
+        let mut plan_map = std::collections::HashMap::new();
+        let mut parent_map = std::collections::HashMap::new();
         for t in &all_loaded_tasks_for_maps {
             if let Some(ref m) = t.message_id {
                 msg_ids.insert(t.id.clone(), m.clone());

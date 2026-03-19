@@ -1021,101 +1021,6 @@ async fn test_completed_worktree_with_open_pr_gets_reviewer() {
 }
 
 /// Test the completed worktree bug fix using real captured snapshot worktree data.
-///
-/// This test uses the worktree registry from a real snapshot (where task 1323's
-/// worktree is completed) combined with synthetic PR JSON to verify that
-/// `collect_reviewer_effects_with_source` correctly spawns a reviewer for a PR
-/// with a completed worktree.
-///
-/// Complements `test_completed_worktree_with_open_pr_gets_reviewer` by using
-/// real worktree registry data instead of fully synthetic data.
-#[tokio::test]
-async fn test_completed_worktree_with_snapshot_data() {
-    let fixture = include_str!(
-        "../../tests/fixtures/snapshot/snapshot-review-spawn-lost-after-restart-20260217-003046.json"
-    );
-    let snap: super::super::snapshot::WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize WorldSnapshot from fixture");
-
-    // Verify the snapshot has the completed worktree we're testing
-    let task_1323_worktree = snap
-        .worktree_registry
-        .all_assignments()
-        .values()
-        .find(|a| a.task_id.as_deref() == Some("1323"))
-        .expect("Snapshot should contain worktree for task 1323");
-
-    assert!(
-        task_1323_worktree.completed_at.is_some(),
-        "Task 1323 worktree should be completed in the snapshot"
-    );
-
-    // Create a PR JSON for testing (GitHub API format with all required fields)
-    // Use a unique PR number that won't conflict with any cached review state.
-    // Title includes task ID so the function can find the completed worktree.
-    let pr_json = serde_json::json!({
-        "number": 99999,  // Unique PR number to avoid cached state
-        "headRefName": "test/snapshot-worktree-bug",
-        "title": "Test PR with completed worktree [Midtown !1323]",
-        "mergeable": "MERGEABLE",
-        "statusCheckRollup": null,
-        "reviewDecision": null,  // No review yet
-        "isDraft": false,
-        "createdAt": "2026-01-01T00:00:00Z",
-        "state": "OPEN",
-    });
-
-    // Create minimal test state
-    let (state, _tmp, _guard) = make_test_state("midtown");
-    let active_names = std::collections::HashSet::new();
-
-    // Call the function under test with snapshot's worktree registry and synthetic PR
-    let effects = collect_reviewer_effects_with_source(
-        &snap.worktree_registry, // Real snapshot data with task 1323's completed worktree
-        &active_names,
-        &state,
-        &[pr_json], // Synthetic PR that extracts task ID 1323 from title
-        true,
-        &std::collections::HashMap::new(),
-        false, // not at task limit
-    )
-    .await;
-
-    // The function should return at least one effect for PR #99999
-    assert!(
-        !effects.is_empty(),
-        "Polling reconciliation should produce effects for unreviewed PR with completed worktree. \
-         Snapshot has task 1323 with completed worktree, PR #99999 should get a reviewer assigned."
-    );
-
-    // Verify that one of the effects is a CreateReviewTask for PR #99999
-    let has_create_review_task = effects.iter().any(|effect| {
-        matches!(
-            effect,
-            crate::daemon::effects::Effect::CreateReviewTask { pr_number, .. }
-            if *pr_number == 99999
-        )
-    });
-
-    assert!(
-        has_create_review_task,
-        "Expected CreateReviewTask effect for PR #99999. \
-         Before fix: completed worktrees caused PRs to be skipped as orphaned. \
-         After fix: open PRs with completed worktrees should get reviewer spawns. \
-         Effects: {:#?}",
-        effects
-    );
-}
-
-/// Bug: PRs from the lead with non-lead/ branch names are incorrectly marked as orphaned.
-///
-/// Root cause: The orphan detection in `collect_reviewer_effects_with_source` (lines 2157-2183)
-/// checks if a PR has no worktree. If not, it checks `is_lead_branch()` (only returns true for
-/// `lead/*` branches). PRs like `codex/*` fail both checks and are marked as orphaned, preventing
-/// reviewer spawning.
-///
-/// Expected: PRs authored by the lead (repo owner) should get reviewers regardless of branch name.
-/// The lead can address feedback from their main worktree even if the branch doesn't follow `lead/*`.
 #[tokio::test]
 async fn test_lead_pr_with_non_standard_branch_gets_reviewer() {
     // Create a PR with a non-lead/ branch name (like codex/*, feature/*, etc.)
@@ -1827,233 +1732,6 @@ fn action_to_effects_task_prompt_tracked_for_cross_tick_dedup() {
     );
 }
 
-/// Bug: Active coworker's PR is incorrectly marked as orphaned when its worktree is missing.
-///
-/// Scenario (from snapshot snapshot-reviewer-not-assigned-pr-1246-20260218-001618.json):
-/// - PR #1246 belongs to "park" (branch: "park/task-1483-kill-ring-yank-v2")
-/// - "park" is an actively running coworker
-/// - Task 1483's worktree was never registered (or was cleaned up)
-/// - No entry in worktree_registry for this PR's task ID
-///
-/// The orphan detection logic checks:
-/// 1. `worktree_registry.get_by_pr(1246)` → None
-/// 2. Extract task_id 1483 from title → no worktree with task_id="1483" → None
-/// 3. `worktree_registry.get_by_branch("park/task-1483-...")` → None
-/// 4. `worktree = None` → check `is_lead_branch` → false
-/// 5. Session-based lookup: PR 1246 → no session in state → falls through
-/// 6. **Incorrectly marks PR as orphaned** even though park is actively running
-///
-/// Expected: Active coworker's PR should NOT be marked as orphaned — the coworker
-/// can always address review feedback regardless of worktree status.
-///
-/// Note: The fixture's `active_names` and `worktree_registry` are used directly via
-/// the `active_names` parameter (following the WorldSnapshot architecture pattern).
-/// The fixture serves as documentation of the exact production scenario that triggered
-/// the bug.
-#[tokio::test]
-#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await to prevent test interference
-async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
-    use super::super::snapshot::WorldSnapshot;
-
-    // Load the captured snapshot that exhibits the bug scenario
-    let fixture = include_str!(
-        "../../tests/fixtures/snapshot/snapshot-reviewer-not-assigned-pr-1246-20260218-001618.json"
-    );
-    let snap: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize WorldSnapshot from fixture");
-
-    // Verify the snapshot captures the bug scenario:
-    // park is running and task 1483 has no worktree entry.
-    assert!(
-        snap.coworkers.active_names.contains("park"),
-        "Snapshot should show park as an active coworker"
-    );
-    let task_1483_worktree = snap
-        .worktree_registry
-        .all_assignments()
-        .values()
-        .find(|a| a.task_id.as_deref() == Some("1483"));
-    assert!(
-        task_1483_worktree.is_none(),
-        "Snapshot should have no worktree entry for task 1483 (the bug scenario)"
-    );
-
-    // PR #1246 in GitHub API format (collect_reviewer_effects_with_source expects this format)
-    let pr = json!({
-        "number": 1246,
-        "headRefName": "park/task-1483-kill-ring-yank-v2",
-        "title": "feat: Add kill ring append for consecutive kills and Ctrl+Y yank [Midtown !1483]",
-        "isDraft": false,
-        "createdAt": "2026-02-17T00:00:00Z",  // Old enough to pass review delay
-        "state": "OPEN",
-        "author": {"login": "btucker"},
-        "mergeable": "MERGEABLE",
-        "statusCheckRollup": null,
-        "reviewDecision": "",
-    });
-
-    // Acquire lock to prevent parallel tests from interfering with PATH mocking
-    let _path_guard = PATH_LOCK.lock().unwrap();
-
-    // Mock gh CLI to return no reviews/comments so is_pr_reviewed() returns false.
-    // Without this mock, the test makes a real API call and fails once PR #1246
-    // has a Claude review posted (is_pr_reviewed returns true → continue → no effects).
-    let temp_dir = tempfile::tempdir().unwrap();
-    let mock_gh_dir = temp_dir.path().join("bin");
-    std::fs::create_dir_all(&mock_gh_dir).unwrap();
-    let mock_gh_script = mock_gh_dir.join("gh");
-
-    #[cfg(unix)]
-    {
-        std::fs::write(
-            &mock_gh_script,
-            "#!/bin/bash\necho '{\"reviews\":[],\"comments\":[]}'",
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    unsafe {
-        std::env::set_var(
-            "PATH",
-            format!("{}:{}", mock_gh_dir.display(), original_path),
-        );
-    }
-
-    let (state, _tmp, _guard) = make_test_state("midtown");
-
-    // Populate persistent_state with session data so the session-based orphan check
-    // can resolve "park" as the PR author (PR 1246 → task 1483 → session → "park").
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.sessions.insert(
-            "sess-park".to_string(),
-            crate::daemon::state::SessionRecord {
-                session_id: "sess-park".to_string(),
-                task_id: Some("1483".to_string()),
-                pr_number: Some(1246),
-                name: "park".to_string(),
-                working_dir: "/tmp/test".to_string(),
-                ..Default::default()
-            },
-        );
-    }
-
-    let effects = collect_reviewer_effects_with_source(
-        &snap.worktree_registry,      // Real snapshot registry: no task 1483 entry
-        &snap.coworkers.active_names, // Real snapshot active_names: includes "park"
-        &state,
-        &[pr],
-        true,
-        &std::collections::HashMap::new(),
-        false, // not at task limit
-    )
-    .await;
-
-    // Restore PATH and release lock
-    unsafe {
-        std::env::set_var("PATH", original_path);
-    }
-    drop(_path_guard);
-
-    // Bug: Previously returned 0 effects (PR incorrectly marked as orphaned)
-    // Expected: Should spawn a reviewer (park is active and can address feedback)
-    assert!(
-        !effects.is_empty(),
-        "Active coworker's PR without worktree should spawn a reviewer, not be marked as orphaned. \
-         PR #1246 belongs to running coworker 'park' but has no worktree for task 1483."
-    );
-
-    let has_reviewer_effect = effects
-        .iter()
-        .any(|e| matches!(e, Effect::CreateReviewTask { pr_number, .. } if *pr_number == 1246));
-    assert!(
-        has_reviewer_effect,
-        "Expected CreateReviewTask effect for PR #1246. Effects: {:#?}",
-        effects
-    );
-}
-
-/// Headless-only coworker's PR should not be marked as orphaned.
-///
-/// This test verifies that a coworker running only as a headless session (no pane,
-/// not in CoworkerManager's list_running()) is still recognized as active via
-/// the active_names parameter. Before the fix, list_running() was called directly
-/// inside collect_reviewer_effects_with_source, which only tracked pane-based
-/// coworkers — missing headless-only sessions entirely.
-#[tokio::test]
-async fn test_headless_only_coworker_pr_is_not_orphaned() {
-    let pr = json!({
-        "number": 999,
-        "headRefName": "york/task-500-headless-feature",
-        "title": "feat: Headless feature [Midtown !500]",
-        "isDraft": false,
-        "createdAt": "2026-02-17T00:00:00Z",
-        "state": "OPEN",
-        "author": {"login": "btucker"},
-        "mergeable": "MERGEABLE",
-        "statusCheckRollup": null,
-        "reviewDecision": "",
-    });
-
-    let (state, _tmp, _guard) = make_test_state("midtown");
-
-    // active_names includes "york" (as it would from WorldSnapshot which includes
-    // headless sessions), but we do NOT insert york into state.coworkers — simulating
-    // a headless-only coworker that list_running() would miss.
-    let active_names: std::collections::HashSet<String> =
-        ["york".to_string()].into_iter().collect();
-
-    // Populate session data so the session-based orphan check resolves "york"
-    // as the PR author (PR 999 → task 500 → session → "york").
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.sessions.insert(
-            "sess-york".to_string(),
-            crate::daemon::state::SessionRecord {
-                session_id: "sess-york".to_string(),
-                task_id: Some("500".to_string()),
-                pr_number: Some(999),
-                name: "york".to_string(),
-                working_dir: "/tmp/test".to_string(),
-                ..Default::default()
-            },
-        );
-    }
-
-    let registry = crate::worktree_registry::WorktreeRegistry::new();
-
-    let effects = collect_reviewer_effects_with_source(
-        &registry,
-        &active_names,
-        &state,
-        &[pr],
-        true,
-        &std::collections::HashMap::new(),
-        false, // not at task limit
-    )
-    .await;
-
-    // With active_names containing "york", the PR should NOT be orphaned
-    assert!(
-        !effects.is_empty(),
-        "Headless-only coworker's PR should spawn a reviewer, not be marked as orphaned. \
-         active_names includes 'york' but state.coworkers does not (headless-only session)."
-    );
-}
-
-// ── Session-based PR owner resolution tests ────────────────────────────
-
-/// When a session record exists for a PR's task, the session's current_name
-/// should be preferred over the branch-based owner resolution.
-///
-/// Scenario: PR #42 is linked to task "123" via pr_task_associations. Task "123"
-/// maps to session "sess-abc" in session_task_map. Session "sess-abc" has
-/// current_name "madison". But the branch name is "lexington/fix-auth".
-///
-/// Expected: owner is "madison" (from session), not "lexington" (from branch).
 #[test]
 fn test_resolve_pr_owner_from_session_prefers_session_over_branch() {
     let pr_task_associations: HashMap<u64, String> =
@@ -3519,8 +3197,6 @@ async fn test_review_complete_without_owner_posts_merge_reminder() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.task_channel
-            .insert("2042".to_string(), "daemon-core".to_string());
         ps.github.mark_reviewed_pr(pr_number);
         ps.github.add_review_comment_id(pr_number, 1);
     }
@@ -3691,14 +3367,20 @@ async fn pr_approved_not_suppressed_when_review_cached() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task("task-42", "lexington", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert("task-42".to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("task-42"))
+        {
+            s.pr_number = Some(pr_number);
+        }
         ps.github.mark_reviewed_pr(pr_number);
     }
 
     // Build PrContext — should detect cached review and NOT flag active reviewer
     let ctx = {
         let ps = state.persistent_state.lock().await;
-        PrContext::from_persistent_state(&ps, pr_number)
+        PrContext::from_persistent_state(&ps, pr_number, std::collections::HashMap::new())
     };
 
     assert!(
@@ -4046,7 +3728,13 @@ async fn auto_merge_blocked_when_reviewer_active() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task("task-42", "york", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert("task-42".to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("task-42"))
+        {
+            s.pr_number = Some(pr_number);
+        }
     }
 
     // Build a PR JSON that passes is_auto_mergeable() — approved + CI green
@@ -4141,7 +3829,13 @@ async fn auto_merge_fires_when_reviewer_assigned_but_review_cached() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task("task-42", "york", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert("task-42".to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("task-42"))
+        {
+            s.pr_number = Some(pr_number);
+        }
         ps.github.mark_reviewed_pr(pr_number);
     }
 
@@ -4205,11 +3899,17 @@ async fn auto_merge_emits_workflow_event_when_script_exists() {
                 ..Default::default()
             },
         );
-        ps.task_channel
-            .insert(task_id.to_string(), channel.to_string());
         ps.channel_workflows
             .insert(channel.to_string(), "tdw".to_string());
     }
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: task_id.into(),
+            channel: Some(channel.into()),
+            ..Default::default()
+        })
+        .unwrap();
 
     let pr_json = json!({
         "number": pr_number,
@@ -4284,8 +3984,6 @@ async fn auto_merge_fires_inline_when_no_workflow_script() {
                 ..Default::default()
             },
         );
-        ps.task_channel
-            .insert(task_id.to_string(), channel.to_string());
     }
     // Note: NO workflow assignment — testing the no-workflow fallback
 
@@ -4368,9 +4066,15 @@ async fn test_reviewer_spawn_inherits_task_channel() {
                 ..Default::default()
             },
         );
-        ps.task_channel
-            .insert(task_id.to_string(), channel_name.to_string());
     }
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: task_id.into(),
+            channel: Some(channel_name.into()),
+            ..Default::default()
+        })
+        .unwrap();
 
     let effects = collect_reviewer_effects_with_source(
         &registry,
@@ -4693,8 +4397,6 @@ async fn test_polling_defers_to_workflow_script_with_longer_delay() {
                 ..Default::default()
             },
         );
-        ps.task_channel
-            .insert("42".to_string(), "proj-test".to_string());
         ps.save_for_repo("test-repo").unwrap();
     }
 
@@ -4790,8 +4492,6 @@ async fn test_polling_uses_normal_delay_without_workflow_script() {
                 ..Default::default()
             },
         );
-        ps.task_channel
-            .insert("43".to_string(), "proj-test".to_string());
         ps.save_for_repo("test-repo").unwrap();
     }
 

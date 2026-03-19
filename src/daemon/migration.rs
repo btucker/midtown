@@ -117,7 +117,7 @@ fn read_old_format_tasks(dir_key: &str) -> Vec<serde_json::Value> {
 
 pub fn migrate_tasks_if_needed(
     old_tasks: &[serde_json::Value],
-    old_state: &DaemonPersistentState,
+    _old_state: &DaemonPersistentState,
     new_tasks_dir: &Path,
 ) -> Vec<String> {
     if old_tasks.is_empty() {
@@ -201,20 +201,16 @@ pub fn migrate_tasks_if_needed(
             Some(slugify_subject(&subject))
         };
 
-        let agent_type = old_state
-            .task_agent_type
-            .get(&id)
-            .cloned()
-            .or_else(|| Some("midtown-code-author".to_string()));
+        let agent_type = Some("midtown-code-author".to_string());
 
-        let migrated_channel = old_state.task_channel.get(&id).cloned().or(channel);
+        let migrated_channel = channel;
 
-        let model = old_state.task_model.get(&id).cloned();
-        let plan = old_state.task_plan.get(&id).cloned();
-        let thread_id = old_state.task_thread_id.get(&id).cloned();
-        let message_id = old_state.task_message_id.get(&id).cloned();
-        let parent = old_state.task_parent.get(&id).cloned();
-        let pr = old_state.task_pr_number.get(&id).copied().or(pr_val);
+        let model = None;
+        let plan = None;
+        let thread_id = None;
+        let message_id = None;
+        let parent = None;
+        let pr = pr_val;
 
         let migrated = MigratedTask {
             id: id.clone(),

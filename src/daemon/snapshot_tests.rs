@@ -92,7 +92,6 @@ fn reviewer_pr_assignments_includes_dead_reviewers() {
     use crate::daemon::state::DaemonPersistentState;
 
     let mut ps = DaemonPersistentState::default();
-    ps.task_pr_number.insert("review-42".to_string(), 1352_u64);
     // Reviewer "riverside" — session exists but not running (dead reviewer).
     ps.insert_session_for_task(
         "review-42",
@@ -100,8 +99,9 @@ fn reviewer_pr_assignments_includes_dead_reviewers() {
         "midtown-code-reviewer",
         "sess-riverside",
     );
-    // Mark as not running to simulate dead reviewer
+    // Set PR number and mark as not running to simulate dead reviewer
     if let Some(s) = ps.sessions.get_mut("sess-riverside") {
+        s.pr_number = Some(1352);
         s.is_running = false;
     }
 
@@ -134,7 +134,6 @@ fn active_reviewer_with_running_session_in_active_set() {
     use crate::daemon::state::DaemonPersistentState;
 
     let mut ps = DaemonPersistentState::default();
-    ps.task_pr_number.insert("review-100".to_string(), 1553_u64);
     ps.insert_session_for_task(
         "review-100",
         "amsterdam",
@@ -158,7 +157,6 @@ fn active_reviewer_alive_in_process_health_in_active_set() {
     use crate::daemon::state::DaemonPersistentState;
 
     let mut ps = DaemonPersistentState::default();
-    ps.task_pr_number.insert("review-200".to_string(), 2000_u64);
     ps.insert_session_for_task(
         "review-200",
         "broadway",
@@ -193,7 +191,6 @@ fn dead_reviewer_not_in_active_reviewers() {
     use crate::daemon::state::DaemonPersistentState;
 
     let mut ps = DaemonPersistentState::default();
-    ps.task_pr_number.insert("review-300".to_string(), 3000_u64);
     ps.insert_session_for_task(
         "review-300",
         "amsterdam",
@@ -228,10 +225,10 @@ fn build_reviewer_pr_assignments_includes_stopped_sessions() {
     use crate::daemon::state::DaemonPersistentState;
 
     let mut ps = DaemonPersistentState::default();
-    ps.task_pr_number.insert("review-400".to_string(), 4000_u64);
     // Stopped reviewer session — dead but needs respawning
     ps.insert_session_for_task("review-400", "park", "midtown-code-reviewer", "sess-park");
     if let Some(s) = ps.sessions.get_mut("sess-park") {
+        s.pr_number = Some(4000);
         s.is_running = false;
     }
 
@@ -258,19 +255,6 @@ fn test_pr_task_index_deserializes_from_old_field_names() {
     assert_eq!(index.session_pr_for_task("42"), Some(100));
     assert_eq!(index.github_pr_for_task("55"), Some(200));
     assert_eq!(index.task_for_pr(100), Some("42"));
-
-    // Also verify through a captured snapshot fixture (tests the full flatten path).
-    // Use one of the existing fixtures that contains old field names.
-    let fixture = std::fs::read_to_string(
-        "tests/fixtures/snapshot/snapshot-double-assign-open-pr-20260216-231443.json",
-    )
-    .expect("fixture should exist");
-    let snap: WorldSnapshot =
-        serde_json::from_str(&fixture).expect("fixture should deserialize with alias names");
-    // This fixture has pr_task_associations — verify the flatten+alias path works
-    // Verify the fixture has PR-task data and the flatten+alias path works.
-    // This fixture has pr_task_associations entries — they should be accessible.
-    let _pair_count = snap.pr.pr_task_index.pr_task_pairs().count();
 }
 
 /// Verify PrTaskIndex::from_task_maps() derives pr_to_task from session_task_to_pr.

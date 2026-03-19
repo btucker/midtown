@@ -61,11 +61,7 @@ pub(crate) async fn handle_prs_status(id: RequestId, state: &DaemonState) -> Res
         .map(|ps| {
             ps.active_reviewer_sessions()
                 .into_iter()
-                .filter_map(|s| {
-                    ps.task_pr_number
-                        .get(s.task_id.as_deref().unwrap_or(""))
-                        .map(|&pr| (pr, s.name.clone()))
-                })
+                .filter_map(|s| s.pr_number.map(|pr| (pr, s.name.clone())))
                 .collect()
         })
         .unwrap_or_default();
@@ -1074,10 +1070,11 @@ pub(super) async fn handle_pr_review_post(
                 };
                 let task_id = span.task_id.clone();
                 let name = span.name.clone();
-                let comment_id = ps
-                    .task_placeholder_comment_id
-                    .get(span.task_id.as_deref().unwrap_or(""))
-                    .copied();
+                let comment_id: Option<u64> = span
+                    .task_id
+                    .as_deref()
+                    .and_then(|tid| state.task_store.load(tid).ok())
+                    .and_then(|t| t.placeholder_comment_id);
                 (session_id, task_id, name, comment_id)
             }
             None => {

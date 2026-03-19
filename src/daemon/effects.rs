@@ -517,9 +517,8 @@ pub enum Effect {
     CleanupOrphanedWorktrees { retention_hours: u64 },
     /// Garbage-collect stale daemon persistent state in a single batch.
     ///
-    /// Removes dead session records older than the retention period and prunes
-    /// orphaned task metadata map entries (task_channel, task_model,
-    /// task_plan, task_execution_skill, task_thread_id, task_message_id).
+    /// Removes dead session records older than the retention period.
+    /// Task metadata lives in TaskStore and is not pruned here.
     ///
     /// Runs during PollTickEvent alongside stale worktree cleanup.
     GarbageCollectState {
@@ -3679,20 +3678,8 @@ async fn lookup_existing_placeholder(state: &DaemonState, pr_number: u64) -> Opt
         let task_id = ps
             .active_reviewer_sessions()
             .iter()
-            .filter(|s| {
-                s.pr_number == Some(pr_number)
-                    || s.task_id
-                        .as_ref()
-                        .and_then(|tid| ps.task_pr_number.get(tid))
-                        == Some(&pr_number)
-            })
+            .filter(|s| s.pr_number == Some(pr_number))
             .find_map(|s| s.task_id.clone());
-        // Also check legacy task_placeholder_comment_id map
-        if let Some(ref tid) = task_id
-            && let Some(&id) = ps.task_placeholder_comment_id.get(tid)
-        {
-            return Some(id);
-        }
         drop(ps);
         if let Some(tid) = task_id
             && let Ok(task) = state.task_store.load(&tid)
@@ -3862,26 +3849,15 @@ async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &st
             comment_id, pr_number, reviewer_name
         );
 
-        // Store the comment ID in TaskStore and legacy persistent state.
+        // Store the comment ID in TaskStore.
         {
-            let mut ps = state.persistent_state.lock().await;
+            let ps = state.persistent_state.lock().await;
             let task_ids: Vec<String> = ps
                 .active_reviewer_sessions()
                 .iter()
-                .filter(|s| {
-                    s.pr_number == Some(pr_number)
-                        || s.task_id
-                            .as_ref()
-                            .and_then(|tid| ps.task_pr_number.get(tid))
-                            == Some(&pr_number)
-                })
+                .filter(|s| s.pr_number == Some(pr_number))
                 .filter_map(|s| s.task_id.clone())
                 .collect();
-            // Write to legacy map (for tests and backward compat)
-            for tid in &task_ids {
-                ps.task_placeholder_comment_id
-                    .insert(tid.clone(), comment_id);
-            }
             drop(ps);
             // Write to TaskStore (primary)
             for tid in &task_ids {
@@ -4586,15 +4562,11 @@ async fn post_insight(state: &DaemonState, agent: &str, insight: &str) {
             .find(|r| r.is_running && r.name == agent)
             .or_else(|| ps.sessions.values().find(|r| r.name == agent))
             .and_then(|r| r.task_id.as_deref());
-        // Try TaskStore first, then fall back to legacy persistent state HashMaps
         let (ch, thread) = if let Some(tid) = task_id {
             if let Ok(store_task) = state.task_store.load(tid) {
                 (store_task.channel.clone(), store_task.thread_id.clone())
             } else {
-                (
-                    ps.task_channel.get(tid).cloned(),
-                    ps.task_thread_id.get(tid).cloned(),
-                )
+                (None, None)
             }
         } else {
             (None, None)

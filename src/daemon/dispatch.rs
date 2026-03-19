@@ -14,10 +14,10 @@ use crate::daemon::state::DaemonPersistentState;
 use crate::daemon_messages;
 use crate::task_store::Task;
 
+use super::DaemonState;
 use super::constants::*;
 use super::effects::{self, Effect};
 use super::helpers::is_project_lead;
-use super::{DaemonState, snapshot};
 
 /// Look up a task by ID in a task slice.
 fn task_by_id<'a>(tasks: &'a [Task], id: &str) -> Option<&'a Task> {
@@ -230,9 +230,7 @@ fn build_spawn_effects(
     let task = task_by_id(tasks, &decision.task_id);
     let task_subject = task.map(|t| t.subject.as_str()).unwrap_or("(unknown)");
 
-    let channel = task
-        .and_then(|t| t.channel.clone())
-        .or_else(|| ps.task_channel.get(&decision.task_id).cloned());
+    let channel = task.and_then(|t| t.channel.clone());
 
     // Build prompt — includes resume context when session is being resumed
     let plan_section = build_plan_prompt_section(&decision.task_id, tasks);
@@ -271,11 +269,9 @@ fn build_spawn_effects(
     config.working_dir = Some(wt.path);
     config.channel = channel;
 
-    // Apply model from task, falling back to legacy persistent state map
+    // Apply model from task
     if let Some(model) = task.and_then(|t| t.model.as_deref()) {
         config.model = model.to_string();
-    } else if let Some(model) = ps.task_model.get(&decision.task_id) {
-        config.model = model.clone();
     }
 
     // For session resume, clear stale working_dir if needed
@@ -377,7 +373,7 @@ fn task_completed_effects(
 pub(crate) fn is_task_pr_protected(
     task: &crate::task_store::Task,
     merged_pr_numbers: &HashSet<u64>,
-    pr_task_index: &snapshot::PrTaskIndex,
+    pr_task_index: &super::snapshot::PrTaskIndex,
     active_names: &HashSet<String>,
 ) -> bool {
     if task.status == crate::task_store::TaskStatus::Completed {
@@ -536,24 +532,6 @@ pub(super) fn dispatch_via_sessions(
     _state: &DaemonState,
 ) -> Vec<effects::Effect> {
     dispatch_via_sessions_inner(ps, tasks)
-}
-
-#[cfg(test)]
-#[allow(dead_code)]
-pub(super) fn dispatch_via_sessions_for_test(
-    snap: &snapshot::WorldSnapshot,
-) -> Vec<effects::Effect> {
-    let ps = ps_from_snapshot(snap);
-    let tasks: Vec<Task> = snap.all_tasks.clone();
-    dispatch_via_sessions_inner(&ps, &tasks)
-}
-
-/// Snapshot-only dispatch_via_sessions for integration tests.
-#[doc(hidden)]
-pub fn dispatch_via_sessions_snapshot_only(snap: &snapshot::WorldSnapshot) -> Vec<effects::Effect> {
-    let ps = ps_from_snapshot(snap);
-    let tasks: Vec<Task> = snap.all_tasks.clone();
-    dispatch_via_sessions_inner(&ps, &tasks)
 }
 
 fn dispatch_via_sessions_inner(ps: &DaemonPersistentState, tasks: &[Task]) -> Vec<effects::Effect> {
@@ -1528,29 +1506,17 @@ pub fn build_subject_based_completion_effects(
             continue;
         }
 
-        let task_channel = task
-            .channel
-            .clone()
-            .or_else(|| ps.task_channel.get(&task.id).cloned());
+        let task_channel = task.channel.clone();
 
-        let task_msg_id = task
-            .message_id
-            .as_deref()
-            .or_else(|| ps.task_message_id.get(&task.id).map(|s| s.as_str()));
+        let task_msg_id = task.message_id.as_deref();
 
         if let Some(pr_number) = task.pr {
             if ps.tick_merged_pr_numbers.contains(&pr_number) {
                 let push_url = task_channel
                     .as_ref()
                     .map(|ch| build_push_deep_link(&ps.tick_project_name, ch, task_msg_id, None));
-                let thread_id = task
-                    .thread_id
-                    .clone()
-                    .or_else(|| ps.task_thread_id.get(&task.id).cloned());
-                let message_id = task
-                    .message_id
-                    .clone()
-                    .or_else(|| ps.task_message_id.get(&task.id).cloned());
+                let thread_id = task.thread_id.clone();
+                let message_id = task.message_id.clone();
                 effects.extend(task_completed_effects(
                     &task.id,
                     &ps.tick_dir_key,
@@ -1594,14 +1560,8 @@ pub fn build_subject_based_completion_effects(
                 let push_url = task_channel
                     .as_ref()
                     .map(|ch| build_push_deep_link(&ps.tick_project_name, ch, task_msg_id, None));
-                let thread_id = task
-                    .thread_id
-                    .clone()
-                    .or_else(|| ps.task_thread_id.get(&task.id).cloned());
-                let message_id = task
-                    .message_id
-                    .clone()
-                    .or_else(|| ps.task_message_id.get(&task.id).cloned());
+                let thread_id = task.thread_id.clone();
+                let message_id = task.message_id.clone();
                 effects.extend(task_completed_effects(
                     &task.id,
                     &ps.tick_dir_key,
@@ -1647,7 +1607,7 @@ pub fn should_recover_task_test_helper(
     if !task.agent_name.is_empty() {
         active_names.insert(task.agent_name.to_lowercase());
     }
-    let pr_task_index = snapshot::PrTaskIndex::from_task_maps(
+    let pr_task_index = super::snapshot::PrTaskIndex::from_task_maps(
         tasks_with_open_prs.clone(),
         github_open_pr_task_ids.clone(),
     );
@@ -1745,9 +1705,7 @@ fn decide_session_recovery(
         );
     }
 
-    let task_channel = task_by_id(tasks, task_id)
-        .and_then(|t| t.channel.as_deref())
-        .or_else(|| ps.task_channel.get(task_id).map(|s| s.as_str()));
+    let task_channel = task_by_id(tasks, task_id).and_then(|t| t.channel.as_deref());
     if task_channel.is_some_and(|ch| ps.lead_driven_channels.contains(ch)) {
         return crate::rules::SessionRecoveryAction::Skip(
             crate::rules::SessionRecoverySkipReason::LeadDrivenChannel,
@@ -1833,9 +1791,7 @@ fn decide_owned_pending_dispatch(
         };
     }
 
-    let task_channel = task_by_id(tasks, task_id)
-        .and_then(|t| t.channel.as_deref())
-        .or_else(|| ps.task_channel.get(task_id).map(|s| s.as_str()));
+    let task_channel = task_by_id(tasks, task_id).and_then(|t| t.channel.as_deref());
     if task_channel.is_some_and(|ch| ps.lead_driven_channels.contains(ch)) {
         return crate::rules::PendingTaskAction::Skip(
             crate::rules::OwnedPendingSkipReason::LeadDrivenChannel,
@@ -1874,97 +1830,6 @@ fn decide_owned_pending_dispatch(
         has_in_progress_task,
         is_channel_lead,
     )
-}
-
-// ============================================================================
-// Legacy snapshot bridge
-// ============================================================================
-
-/// Build a minimal DaemonPersistentState from a WorldSnapshot.
-#[allow(clippy::field_reassign_with_default)]
-fn ps_from_snapshot(snap: &snapshot::WorldSnapshot) -> DaemonPersistentState {
-    let mut ps = DaemonPersistentState::default();
-    ps.sessions = snap.sessions.clone();
-    ps.channel_lead_sessions = snap.channel_lead_sessions.clone();
-    ps.lead_driven_channels = snap.lead_driven_channels.clone();
-    ps.task_channel = snap.task_channel.clone();
-    ps.task_model = snap.task_model_map.clone();
-    ps.task_plan = snap.task_plan_map.clone();
-    ps.task_execution_skill = snap.task_execution_skill_map.clone();
-    ps.task_thread_id = snap.task_thread_id_map.clone();
-    ps.task_message_id = snap.task_message_id_map.clone();
-    ps.task_parent = snap.task_parent_map.clone();
-    ps.task_agent_type = snap.task_agent_type_map.clone();
-    ps.worktree_registry = snap.worktree_registry.clone();
-
-    ps.tick_dir_key = snap.dir_key.clone();
-    ps.tick_project_name = snap.project_name.clone();
-    ps.tick_default_channel = snap.default_channel.clone();
-    ps.tick_now = snap.now_utc;
-    ps.tick_max_in_progress_tasks = snap.max_in_progress_tasks;
-    ps.tick_active_session_names = snap.coworkers.active_names.clone();
-    ps.tick_active_session_ids = snap.coworkers.active_session_ids.clone();
-    ps.tick_active_coworkers = snap.coworkers.active_coworkers.clone();
-    ps.tick_running_coworkers = snap.coworkers.running_coworkers.clone();
-    ps.tick_coworker_start_times = snap.coworkers.coworker_start_times.clone();
-    ps.tick_coworker_stop_times = snap.coworkers.coworker_stop_times.clone();
-    ps.tick_attached_coworkers = snap.coworkers.attached_coworkers.clone();
-    ps.tick_process_health = snap.health.headless_process_health.clone();
-    ps.tick_merged_pr_numbers = snap.pr.merged_pr_numbers.clone();
-    ps.tick_open_prs = snap.pr.open_prs_data.clone();
-    ps.tick_pr_task_index = snap.pr.pr_task_index.clone();
-    ps.tick_prs_needing_review = snap.reviewer.prs_needing_review;
-    ps.tick_reviewer_pr_assignments = snap.reviewer.reviewer_pr_assignments.clone();
-    ps.tick_orphan_spawn_cooldown_active = snap.orphan_spawn_cooldown_active;
-    ps.tick_session_dispatch_cooldown_active = snap.session_dispatch_cooldown_active;
-    ps.tick_spawn_failure_cooldown_names = snap.spawn_failure_cooldown_names.clone();
-    ps.tick_recently_recovered_session_ids = snap.recently_recovered_session_ids.clone();
-    ps.tick_in_flight_task_spawns = snap.in_flight_task_spawns.clone();
-    ps.tick_is_at_task_limit = snap.is_at_task_limit;
-    ps.tick_name_session_map = snap.name_session_map.clone();
-    ps.tick_stale_working_dir_sessions = snap.stale_working_dir_sessions.clone();
-    ps.tick_pr_protected_tasks = snap.pr_protected_tasks.clone();
-    ps.tick_busy_coworkers = snap.busy_coworkers.clone();
-    ps.tick_task_nudge_cooldown_ids = snap.task_nudge_cooldown_ids.clone();
-    ps.tick_blocks_map = snap.blocks_map.clone();
-    ps.tick_in_progress_tasks = snap.in_progress_tasks.clone();
-    ps.tick_pending_tasks_with_owners = snap.pending_tasks_with_owners.clone();
-    ps.tick_session_task_map = snap.session_task_map.clone();
-    ps.tick_active_reviewers = snap.reviewer.active_reviewers.clone();
-
-    ps
-}
-
-// ============================================================================
-// Snapshot-only wrappers for integration tests
-// ============================================================================
-
-/// Snapshot-only wrapper for `reset_orphaned_tasks` — for integration tests.
-#[doc(hidden)]
-#[allow(dead_code)]
-pub fn reset_orphaned_tasks_snapshot_only(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
-    let ps = ps_from_snapshot(snap);
-    reset_orphaned_tasks(&ps, &snap.all_tasks)
-}
-
-/// Snapshot-only wrapper for `check_for_duplicate_task_workers` — for integration tests.
-#[doc(hidden)]
-#[allow(dead_code)]
-pub fn check_for_duplicate_task_workers_snapshot_only(
-    snap: &snapshot::WorldSnapshot,
-) -> Vec<Effect> {
-    let ps = ps_from_snapshot(snap);
-    check_for_duplicate_task_workers(&ps, &snap.all_tasks)
-}
-
-/// Snapshot-only wrapper for `build_subject_based_completion_effects` — for integration tests.
-#[doc(hidden)]
-#[allow(dead_code)]
-pub fn build_subject_based_completion_effects_snapshot_only(
-    snap: &snapshot::WorldSnapshot,
-) -> Vec<Effect> {
-    let ps = ps_from_snapshot(snap);
-    build_subject_based_completion_effects(&ps, &snap.all_tasks)
 }
 
 #[path = "dispatch_dev_limit_tests.rs"]

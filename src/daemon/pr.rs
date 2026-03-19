@@ -45,6 +45,17 @@ fn resolve_pr_owner_from_session(
     }
 }
 
+/// Build task_id → channel mapping from TaskStore.
+fn task_channel_map_from_store(
+    task_store: &crate::task_store::TaskStore,
+) -> HashMap<String, String> {
+    task_store
+        .load_all()
+        .into_iter()
+        .filter_map(|t| t.channel.map(|ch| (t.id, ch)))
+        .collect()
+}
+
 /// Data extracted from persistent state for PR decision-making.
 ///
 /// Bundles channel routing and session context extraction into a single
@@ -74,7 +85,11 @@ impl PrContext {
     /// Caller must hold `persistent_state.lock().await`. This method reads
     /// channel routing data (shared across all PRs) and session context
     /// (specific to `pr_number`) in a single pass.
-    fn from_persistent_state(ps: &super::state::DaemonPersistentState, pr_number: u64) -> Self {
+    fn from_persistent_state(
+        ps: &super::state::DaemonPersistentState,
+        pr_number: u64,
+        task_channel: HashMap<String, String>,
+    ) -> Self {
         let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
 
         // Gate check: active reviewer span exists for this PR.
@@ -87,7 +102,7 @@ impl PrContext {
 
         Self {
             pr_task_associations,
-            task_channel: ps.task_channel.clone(),
+            task_channel,
             has_active_reviewer,
             channel_workflows: ps.channel_workflows.clone(),
             lead_driven_channels: ps.lead_driven_channels.clone(),
@@ -99,10 +114,13 @@ impl PrContext {
     /// Note: `has_active_reviewer` defaults to `false` because this constructor
     /// is only used for `ReviewComplete` contexts where the reviewer has already
     /// finished. Do NOT use this for `PrIssueType::Approved` code paths.
-    fn routing_only(ps: &super::state::DaemonPersistentState) -> Self {
+    fn routing_only(
+        ps: &super::state::DaemonPersistentState,
+        task_channel: HashMap<String, String>,
+    ) -> Self {
         Self {
             pr_task_associations: super::state::pr_to_task_map_from_sessions(&ps.sessions),
-            task_channel: ps.task_channel.clone(),
+            task_channel,
             has_active_reviewer: false,
             channel_workflows: ps.channel_workflows.clone(),
             lead_driven_channels: ps.lead_driven_channels.clone(),
@@ -583,9 +601,15 @@ async fn decide_and_build_pr_issue_effects(
     );
 
     // Extract all decision context from persistent state in one lock
+    let task_channel_map: HashMap<String, String> = state
+        .task_store
+        .load_all()
+        .into_iter()
+        .filter_map(|t| t.channel.map(|ch| (t.id, ch)))
+        .collect();
     let mut pr_ctx = {
         let ps = state.persistent_state.lock().await;
-        PrContext::from_persistent_state(&ps, pr_number)
+        PrContext::from_persistent_state(&ps, pr_number, task_channel_map)
     };
 
     // Defense-in-depth: check reviewer_pr_assignments from tick state.
@@ -1562,7 +1586,12 @@ async fn collect_stuck_condition_effects(
                 })
                 .collect()
         };
-        let task_channel = ps.task_channel.clone();
+        let task_channel: HashMap<String, String> = state
+            .task_store
+            .load_all()
+            .into_iter()
+            .filter_map(|t| t.channel.map(|ch| (t.id, ch)))
+            .collect();
         let channel_workflows = ps.channel_workflows.clone();
         let lead_driven_channels = ps.lead_driven_channels.clone();
         StuckEvalContext {
@@ -2305,8 +2334,9 @@ async fn collect_comment_notification_effects(
 
         // Extract all decision context from persistent state in one lock
         let pr_ctx = {
+            let tc = task_channel_map_from_store(&state.task_store);
             let ps = state.persistent_state.lock().await;
-            PrContext::from_persistent_state(&ps, pr_number)
+            PrContext::from_persistent_state(&ps, pr_number, tc)
         };
 
         // If the linked task is completed, create a follow-up task rather than
@@ -2445,13 +2475,7 @@ async fn collect_review_complete_effects(
             let session_ids: Vec<String> = ps
                 .active_reviewer_sessions()
                 .iter()
-                .filter(|s| {
-                    s.pr_number == Some(pr_number)
-                        || s.task_id
-                            .as_ref()
-                            .and_then(|tid| ps.task_pr_number.get(tid))
-                            == Some(&pr_number)
-                })
+                .filter(|s| s.pr_number == Some(pr_number))
                 .map(|s| s.session_id.clone())
                 .collect();
             // Mark them as stopped so pr_has_active_reviewer returns false
@@ -2642,9 +2666,14 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             })
             .collect();
         let sessions = ps.sessions.clone();
-        let pr_ctx = PrContext::routing_only(&ps);
+        let task_channel: HashMap<String, String> = state
+            .task_store
+            .load_all()
+            .into_iter()
+            .filter_map(|t| t.channel.map(|ch| (t.id, ch)))
+            .collect();
+        let pr_ctx = PrContext::routing_only(&ps, task_channel.clone());
         let is_at_task_limit = at_task_limit;
-        let task_channel = ps.task_channel.clone();
         let channel_workflow_channels: std::collections::HashSet<String> =
             ps.channel_workflows.keys().cloned().collect();
         let pr_last_webhook_event = ps.github.pr_last_webhook_event.clone();
@@ -3523,8 +3552,9 @@ pub(super) async fn handle_pr_comment_nudge(
 
     // Extract all decision context from persistent state in one lock
     let pr_ctx = {
+        let tc = task_channel_map_from_store(&state.task_store);
         let ps = state.persistent_state.lock().await;
-        PrContext::from_persistent_state(&ps, pr_number)
+        PrContext::from_persistent_state(&ps, pr_number, tc)
     };
 
     // Decide action using pure decision function with handoff support
@@ -3658,8 +3688,9 @@ pub(super) async fn handle_webhook_review_state_change(
 
     // Extract all decision context from persistent state in one lock
     let pr_ctx = {
+        let tc = task_channel_map_from_store(&state.task_store);
         let ps = state.persistent_state.lock().await;
-        let mut ctx = PrContext::from_persistent_state(&ps, pr_number);
+        let mut ctx = PrContext::from_persistent_state(&ps, pr_number, tc);
 
         // Defense-in-depth: check spans for an active reviewer on this PR.
         if !ctx.has_active_reviewer {
@@ -3759,8 +3790,9 @@ pub(super) async fn handle_webhook_ci_failure(
 
     // Extract all decision context from persistent state in one lock
     let pr_ctx = {
+        let tc = task_channel_map_from_store(&state.task_store);
         let ps = state.persistent_state.lock().await;
-        PrContext::from_persistent_state(&ps, pr_number)
+        PrContext::from_persistent_state(&ps, pr_number, tc)
     };
 
     let at_task_limit = state.is_at_task_limit();

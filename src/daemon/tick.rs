@@ -466,42 +466,22 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         ps.tick_reviewer_pr_assignments =
             super::snapshot::build_reviewer_pr_assignments_from_spans(&ps);
 
-        // PR → restart_count for stuck reviewer backoff.
-        // Primary: TaskStore fields. Fallback: legacy persistent state maps.
-        ps.tick_reviewer_restart_counts = {
-            let mut counts: std::collections::HashMap<u64, u32> = tasks
-                .iter()
-                .filter(|t| t.pr.is_some() && t.restart_count > 0)
-                .filter_map(|t| t.pr.map(|pr| (pr, t.restart_count)))
-                .collect();
-            // Merge legacy map entries (TaskStore takes precedence)
-            for (task_id, &count) in &ps.task_restart_count {
-                if let Some(&pr) = ps.task_pr_number.get(task_id) {
-                    counts.entry(pr).or_insert(count);
-                }
-            }
-            counts
-        };
+        // PR → restart_count for stuck reviewer backoff (from TaskStore).
+        ps.tick_reviewer_restart_counts = tasks
+            .iter()
+            .filter(|t| t.pr.is_some() && t.restart_count > 0)
+            .filter_map(|t| t.pr.map(|pr| (pr, t.restart_count)))
+            .collect();
 
         // Placeholder comment IDs for PRs with unupdated "Review in progress" comments.
-        // Primary: TaskStore. Fallback: legacy persistent state maps.
-        ps.tick_reviewer_in_progress_comment_ids = {
-            let mut ids: std::collections::HashMap<u64, u64> = tasks
-                .iter()
-                .filter_map(|t| {
-                    let pr = t.pr?;
-                    let comment_id = t.placeholder_comment_id?;
-                    Some((pr, comment_id))
-                })
-                .collect();
-            // Merge legacy map entries
-            for (task_id, &comment_id) in &ps.task_placeholder_comment_id {
-                if let Some(&pr) = ps.task_pr_number.get(task_id) {
-                    ids.entry(pr).or_insert(comment_id);
-                }
-            }
-            ids
-        };
+        ps.tick_reviewer_in_progress_comment_ids = tasks
+            .iter()
+            .filter_map(|t| {
+                let pr = t.pr?;
+                let comment_id = t.placeholder_comment_id?;
+                Some((pr, comment_id))
+            })
+            .collect();
 
         // Name → session ID mapping (lowercase name → session_id)
         ps.tick_name_session_map = ps

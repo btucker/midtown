@@ -858,13 +858,6 @@ pub(super) async fn handle_channel_rename(
         // A fresh lead will be spawned on-demand when the new channel gets activity.
         ps.channel_lead_sessions.remove(old);
 
-        // Update legacy task_channel entries that reference the old channel name.
-        for value in ps.task_channel.values_mut() {
-            if value == old {
-                *value = new.to_string();
-            }
-        }
-
         // Mark any SessionRecord for the old channel lead as no longer running.
         // Like channel_lead_sessions, we clear rather than migrate to avoid stale
         // references to the dead session.

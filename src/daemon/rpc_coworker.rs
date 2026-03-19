@@ -138,12 +138,11 @@ pub(super) async fn handle_coworker_spawn(
     let task_prompt = if let Some(ref t) = task {
         // Read plan/execution-skill data. Try TaskStore first, then persistent state.
         let plan_section = {
-            let plan_path = if let Ok(store_task) = state.task_store.load(&t.id) {
-                store_task.plan.clone()
-            } else {
-                let ps = state.persistent_state.lock().await;
-                ps.task_plan.get(&t.id).cloned()
-            };
+            let plan_path = state
+                .task_store
+                .load(&t.id)
+                .ok()
+                .and_then(|st| st.plan.clone());
             super::dispatch::build_plan_prompt_section_from_parts(
                 &t.id,
                 plan_path.as_deref(),
@@ -1110,16 +1109,7 @@ async fn build_coworkers_data(
             let rev_map: HashMap<String, u64> = ps
                 .active_reviewer_sessions()
                 .into_iter()
-                .filter_map(|s| {
-                    s.pr_number
-                        .or_else(|| {
-                            s.task_id
-                                .as_ref()
-                                .and_then(|tid| ps.task_pr_number.get(tid))
-                                .copied()
-                        })
-                        .map(|pr| (s.name.clone(), pr))
-                })
+                .filter_map(|s| s.pr_number.map(|pr| (s.name.clone(), pr)))
                 .collect();
             // Build coworker -> PR map from worktree registry (for reviewers)
             let wt_map: HashMap<String, u64> = ps

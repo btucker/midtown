@@ -179,31 +179,6 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub worktree_registry: WorktreeRegistry,
 
-    // Legacy task metadata HashMaps — kept for deserialization compat and migration.
-    // Production reads/writes go through TaskStore. These maps are only populated
-    // by deserialization of old daemon-state.json files (for migration) and by
-    // tests. They will be removed in a future cleanup.
-    #[serde(default)]
-    pub task_channel: HashMap<String, String>,
-    #[serde(default)]
-    pub task_model: HashMap<String, String>,
-    #[serde(default)]
-    pub task_plan: HashMap<String, String>,
-    #[serde(default)]
-    pub task_execution_skill: HashMap<String, String>,
-    #[serde(default)]
-    pub task_thread_id: HashMap<String, String>,
-    #[serde(default)]
-    pub task_message_id: HashMap<String, String>,
-    #[serde(default)]
-    pub task_parent: HashMap<String, String>,
-    #[serde(default)]
-    pub task_agent_type: HashMap<String, String>,
-    #[serde(default)]
-    pub task_placeholder_comment_id: HashMap<String, u64>,
-    #[serde(default)]
-    pub task_restart_count: HashMap<String, u32>,
-
     /// Channel lead session IDs for resume-on-demand.
     ///
     /// Maps channel name → Claude Code session ID. One channel lead session
@@ -265,9 +240,6 @@ pub struct DaemonPersistentState {
     /// Legacy field — kept for deserialization compat, not used.
     #[serde(default, rename = "task_session_spans", skip_serializing)]
     pub _task_session_spans: serde_json::Value,
-
-    #[serde(default)]
-    pub task_pr_number: HashMap<String, u64>,
 
     /// Write-through task index for fast lookups without directory scanning.
     ///
@@ -604,19 +576,11 @@ impl DaemonPersistentState {
     }
 
     /// Returns the active reviewer session for a PR, if any.
-    ///
-    /// Checks `SessionRecord.pr_number` (primary) and legacy `task_pr_number` map (fallback).
     pub fn active_reviewer_for_pr(&self, pr_number: u64) -> Option<&SessionRecord> {
         self.sessions
             .values()
             .filter(|s| s.agent_type == "midtown-code-reviewer" && s.is_running)
-            .find(|s| {
-                s.pr_number == Some(pr_number)
-                    || s.task_id
-                        .as_ref()
-                        .and_then(|tid| self.task_pr_number.get(tid))
-                        == Some(&pr_number)
-            })
+            .find(|s| s.pr_number == Some(pr_number))
     }
 
     /// Returns true if PR has an active reviewer session that is currently running.
@@ -641,19 +605,11 @@ impl DaemonPersistentState {
             .collect()
     }
 
-    /// Look up the bound thread ID for a task from the legacy `task_thread_id` map.
-    ///
-    /// Used by `spawn_coworker()` as a fallback when TaskStore doesn't have the data.
-    /// Primary source should be TaskStore; this is kept for backward compat.
-    pub fn resolve_bound_thread_id(&self, task_id: Option<&str>) -> Option<String> {
-        task_id.and_then(|tid| self.task_thread_id.get(tid).cloned())
-    }
-
-    /// Insert a reviewer session record — replacement for the removed `create_span()`.
+    /// Insert a session record for a task.
     ///
     /// Creates a `SessionRecord` with the given parameters and inserts it into
-    /// `self.sessions`. The `pr_number` parameter should be loaded from TaskStore
-    /// by the caller if needed.
+    /// `self.sessions`. The caller should set `pr_number` on the returned record
+    /// if needed (loaded from TaskStore).
     pub fn insert_session_for_task(
         &mut self,
         task_id: &str,
@@ -673,7 +629,6 @@ impl DaemonPersistentState {
                 name: agent_name.to_string(),
                 agent_type: agent_type.to_string(),
                 task_id: Some(task_id.to_string()),
-                pr_number: self.task_pr_number.get(task_id).copied(),
                 is_running: true,
                 ..Default::default()
             },
@@ -827,8 +782,6 @@ impl DaemonPersistentState {
     }
 
     /// Look up the topic channel for a PR via tick_pr_task_index and a tasks slice.
-    ///
-    /// Checks the tasks slice first, then falls back to the legacy `task_channel` map.
     pub fn channel_for_pr(
         &self,
         pr_number: u64,
@@ -839,7 +792,6 @@ impl DaemonPersistentState {
             .iter()
             .find(|t| t.id == task_id)
             .and_then(|t| t.channel.clone())
-            .or_else(|| self.task_channel.get(task_id).cloned())
     }
 
     /// Look up the topic channel for a PR, falling back to project name.

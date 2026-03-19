@@ -747,41 +747,16 @@ pub(super) async fn handle_task_metadata(
         );
     }
 
-    // Read task metadata from TaskStore (primary), falling back to legacy maps.
+    // Read task metadata from TaskStore.
     let task = state.task_store.load(task_id).ok();
-    let ps = state.persistent_state.lock().await;
-    let channel = task
-        .as_ref()
-        .and_then(|t| t.channel.clone())
-        .or_else(|| ps.task_channel.get(task_id).cloned());
-    let model = task
-        .as_ref()
-        .and_then(|t| t.model.clone())
-        .or_else(|| ps.task_model.get(task_id).cloned());
-    let plan = task
-        .as_ref()
-        .and_then(|t| t.plan.clone())
-        .or_else(|| ps.task_plan.get(task_id).cloned());
-    let execution_skill = task
-        .as_ref()
-        .and_then(|t| t.execution_skill.clone())
-        .or_else(|| ps.task_execution_skill.get(task_id).cloned());
-    let message_id = task
-        .as_ref()
-        .and_then(|t| t.message_id.clone())
-        .or_else(|| ps.task_message_id.get(task_id).cloned());
-    let thread_id = task
-        .as_ref()
-        .and_then(|t| t.thread_id.clone())
-        .or_else(|| ps.task_thread_id.get(task_id).cloned());
-    let parent = task
-        .as_ref()
-        .and_then(|t| t.parent.clone())
-        .or_else(|| ps.task_parent.get(task_id).cloned());
-    let agent_type = task
-        .as_ref()
-        .map(|t| t.agent_type.clone())
-        .or_else(|| ps.task_agent_type.get(task_id).cloned());
+    let channel = task.as_ref().and_then(|t| t.channel.clone());
+    let model = task.as_ref().and_then(|t| t.model.clone());
+    let plan = task.as_ref().and_then(|t| t.plan.clone());
+    let execution_skill = task.as_ref().and_then(|t| t.execution_skill.clone());
+    let message_id = task.as_ref().and_then(|t| t.message_id.clone());
+    let thread_id = task.as_ref().and_then(|t| t.thread_id.clone());
+    let parent = task.as_ref().and_then(|t| t.parent.clone());
+    let agent_type = task.as_ref().map(|t| t.agent_type.clone());
 
     Response::success(
         id,
@@ -1056,15 +1031,12 @@ pub(crate) async fn deliver_task_prompt(
             let mut task_model_map = std::collections::HashMap::new();
             task_model_map.insert(task_id.to_string(), m.to_string());
             config.apply_task_model(&task_model_map, task_id);
-        } else if let Ok(store_task) = state.task_store.load(task_id) {
-            if let Some(ref m) = store_task.model {
-                let mut task_model_map = std::collections::HashMap::new();
-                task_model_map.insert(task_id.to_string(), m.clone());
-                config.apply_task_model(&task_model_map, task_id);
-            }
-        } else {
-            let ps = state.persistent_state.lock().await;
-            config.apply_task_model(&ps.task_model, task_id);
+        } else if let Ok(store_task) = state.task_store.load(task_id)
+            && let Some(ref m) = store_task.model
+        {
+            let mut task_model_map = std::collections::HashMap::new();
+            task_model_map.insert(task_id.to_string(), m.clone());
+            config.apply_task_model(&task_model_map, task_id);
         }
 
         // Set channel from task

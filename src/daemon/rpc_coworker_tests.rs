@@ -892,7 +892,13 @@ async fn test_reviewer_idle_not_nudged_when_review_cached() {
             "midtown-code-reviewer",
             "sess-rev-42",
         );
-        ps.task_pr_number.insert("review-42".to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("review-42"))
+        {
+            s.pr_number = Some(pr_number);
+        }
         // Mark the review as completed (simulates webhook having arrived)
         ps.github.mark_reviewed_pr(pr_number);
     }
@@ -989,7 +995,13 @@ async fn test_reviewer_idle_nudged_when_review_not_posted() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task("task-43", reviewer_name, "midtown-code-reviewer", "");
-        ps.task_pr_number.insert("task-43".to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("task-43"))
+        {
+            s.pr_number = Some(pr_number);
+        }
         // Deliberately NOT calling mark_reviewed_pr — review hasn't been posted
     }
 

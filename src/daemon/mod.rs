@@ -58,13 +58,11 @@ pub use dispatch::should_recover_task_test_helper;
 #[doc(hidden)]
 pub use effects::Effect;
 
-// Test helpers for E2E tests with captured snapshots.
+// Test helpers for E2E tests.
 // Pure functions that take &DaemonPersistentState + &[Task] and return Vec<Effect>.
-// The _snapshot_only variants bridge from legacy WorldSnapshot fixtures.
 #[doc(hidden)]
 pub use dispatch::{
-    build_subject_based_completion_effects, check_for_duplicate_task_workers,
-    dispatch_via_sessions_snapshot_only, reset_orphaned_tasks, reset_orphaned_tasks_snapshot_only,
+    build_subject_based_completion_effects, check_for_duplicate_task_workers, reset_orphaned_tasks,
 };
 #[doc(hidden)]
 pub use events::DaemonEvent;
@@ -591,7 +589,7 @@ pub(crate) struct DaemonState {
     headless_health_generation: std::sync::atomic::AtomicU64,
     /// Cached health-derived sets (4 HashSets), valid for the generation in `.0`.
     /// Invalidated when `headless_health_generation` advances past the cached generation.
-    #[allow(dead_code)] // Used by collect_world_snapshot (retained for test fixtures)
+    #[allow(dead_code)]
     health_derived_cache: std::sync::Mutex<Option<(u64, snapshot::CachedHealthSets)>>,
     /// Coworkers currently in "attached" state (interactive session).
     ///
@@ -623,7 +621,7 @@ pub(crate) struct DaemonState {
     /// Cached set of coworkers whose completed tasks have unblocked pending follow-ups.
     /// Task dependency relationships change rarely; 30s staleness is acceptable
     /// because this set is only used for idle shutdown protection.
-    #[allow(dead_code)] // Used by collect_world_snapshot (retained for test fixtures)
+    #[allow(dead_code)]
     coworkers_with_unblocked_deps_cache:
         std::sync::Mutex<Option<(std::time::Instant, HashSet<String>)>>,
     /// PR data cache with 60s TTL for the `prs.status` RPC.
@@ -1509,14 +1507,15 @@ impl DaemonState {
         // Build headless config from the unified launch config
         let mut headless_config = launch_config.to_headless_config(&self.paths);
 
-        // Override agent_name from task_agent_type if the task has a custom agent type.
+        // Override agent_name from TaskStore if the task has a custom agent type.
         // This supports task handoff: when `midtown task handoff --agent <type>` changes
         // the agent type, subsequent resumes pick up the new agent definition via --agent.
-        if let Some(ref task_id) = config.task_id {
-            let ps = self.persistent_state.lock().await;
-            if let Some(agent_type) = ps.task_agent_type.get(task_id) {
-                headless_config.agent_name = Some(agent_type.clone());
-            }
+        if let Some(ref task_id) = config.task_id
+            && let Ok(store_task) = self.task_store.load(task_id)
+            && !store_task.agent_type.is_empty()
+            && store_task.agent_type != "midtown-code-author"
+        {
+            headless_config.agent_name = Some(store_task.agent_type.clone());
         }
 
         // Apply cwd_subdir: if a subdirectory is configured (e.g., channel_directory),
@@ -1667,9 +1666,13 @@ impl DaemonState {
             let mut ps = self.persistent_state.lock().await;
             let agent_type_str = config.agent_type.clone();
             let is_reviewer = config.agent_type == "midtown-code-reviewer";
-            // Look up bound thread from task_thread_id — mirrors SpawnForTask path
+            // Look up bound thread from TaskStore — mirrors SpawnForTask path
             // in effects.rs so reviewers get thread-bound like dispatched dev tasks.
-            let bound_thread_id = ps.resolve_bound_thread_id(config.task_id.as_deref());
+            let bound_thread_id = config
+                .task_id
+                .as_deref()
+                .and_then(|tid| self.task_store.load(tid).ok())
+                .and_then(|t| t.thread_id.clone());
             ps.upsert_session_running(
                 session_id_for_record.clone(),
                 crate::daemon::state::SessionRecord {
@@ -2440,9 +2443,8 @@ impl DaemonState {
         // Extract task ID from the message content
         let task_id = helpers::extract_task_id(message)?;
 
-        // Look up the task's assigned channel
-        let ps = self.persistent_state.lock().await;
-        ps.task_channel.get(&task_id).cloned()
+        // Look up the task's assigned channel from TaskStore
+        self.task_store.load(&task_id).ok().and_then(|t| t.channel)
     }
 }
 
@@ -2687,10 +2689,14 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
                     .map(|s| (s.task_id.clone(),));
                 if let Some((task_id,)) = reviewer_span {
                     info.coworker_type = Some("reviewer".to_string());
-                    if let Some(&pr_num) = task_id
-                        .as_ref()
-                        .and_then(|tid| persistent.task_pr_number.get(tid))
-                    {
+                    let pr_num = task_id.as_ref().and_then(|tid| {
+                        persistent
+                            .sessions
+                            .values()
+                            .find(|s| s.task_id.as_deref() == Some(tid))
+                            .and_then(|s| s.pr_number)
+                    });
+                    if let Some(pr_num) = pr_num {
                         info.pr_number = Some(pr_num);
                         info.purpose = format!("reviewer for PR #{}", pr_num);
                     } else {
@@ -3542,10 +3548,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
                         // Emit PrOpened workflow event if we know the task's channel.
                         if let Some(author) = &pr_opened.author_coworker {
-                            let task_channel = {
-                                let ps = state.persistent_state.lock().await;
-                                ps.task_channel.get(&task_id.to_string()).cloned()
-                            };
+                            let task_channel = state
+                                .task_store
+                                .load(&task_id.to_string())
+                                .ok()
+                                .and_then(|t| t.channel);
                             if let Some(ch) = task_channel {
                                 pr_effects.push(effects::Effect::EmitWorkflowEvent(
                                     crate::workflow::WorkflowEvent::PrOpened {
@@ -3600,13 +3607,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         {
                             let task_id_str = task_id.to_string();
                             let task = state.task_store.load(&task_id_str).ok();
-                            let ps = state.persistent_state.lock().await;
-                            let channel = ps.task_channel.get(&task_id_str).cloned();
+                            let channel = task.as_ref().and_then(|t| t.channel.clone());
                             let ctx = dispatch::TaskEventContext {
                                 subject: task.as_ref().map(|t| t.subject.clone()),
-                                description: task.and_then(|t| t.description),
-                                thread_id: ps.task_thread_id.get(&task_id_str).cloned(),
-                                message_id: ps.task_message_id.get(&task_id_str).cloned(),
+                                description: task.as_ref().and_then(|t| t.description.clone()),
+                                thread_id: task.as_ref().and_then(|t| t.thread_id.clone()),
+                                message_id: task.and_then(|t| t.message_id),
                             };
                             (channel, Some(ctx))
                         } else {

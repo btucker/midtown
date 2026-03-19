@@ -1671,13 +1671,9 @@ async fn test_channel_rename_success() {
 
     let old_lead_session_name = crate::launch::channel_lead_session_name("auth-v1");
 
-    // Seed persistent state: task_channel, channel_lead_sessions, sessions
+    // Seed persistent state: channel_lead_sessions, sessions
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.task_channel
-            .insert("42".to_string(), "auth-v1".to_string());
-        ps.task_channel
-            .insert("99".to_string(), "other-channel".to_string());
         ps.channel_lead_sessions
             .insert("auth-v1".to_string(), "session-auth-123".to_string());
         ps.sessions.insert(
@@ -1711,16 +1707,6 @@ async fn test_channel_rename_success() {
 
     // Verify persistent state was updated
     let ps = state.persistent_state.lock().await;
-    assert_eq!(
-        ps.task_channel.get("42").map(String::as_str),
-        Some("auth-v2"),
-        "task_channel entry for task 42 should be updated to new name"
-    );
-    assert_eq!(
-        ps.task_channel.get("99").map(String::as_str),
-        Some("other-channel"),
-        "unrelated task_channel entry should be unchanged"
-    );
 
     // Verify channel_lead_sessions is cleaned up (removed, not migrated)
     // so a fresh lead can be spawned on-demand for the new channel name.

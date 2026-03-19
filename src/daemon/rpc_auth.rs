@@ -297,16 +297,7 @@ pub(super) async fn handle_auth_switch(
                     .active_reviewer_sessions()
                     .into_iter()
                     .find(|s| s.name == cw.name)
-                    .and_then(|s| {
-                        s.pr_number
-                            .or_else(|| {
-                                s.task_id
-                                    .as_ref()
-                                    .and_then(|tid| persistent.task_pr_number.get(tid))
-                                    .copied()
-                            })
-                            .map(|pr| (cw.name.clone(), pr))
-                    })
+                    .and_then(|s| s.pr_number.map(|pr| (cw.name.clone(), pr)))
             })
             .collect();
         let channel_leads = persistent

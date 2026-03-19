@@ -584,10 +584,15 @@ fn dead_reviewer_respawn_emits_coworker_stuck_event() {
     let task_to_pr: HashMap<String, u64> = [(task_id.to_string(), pr_number)].into_iter().collect();
     ps.tick_pr_task_index =
         crate::daemon::snapshot::PrTaskIndex::from_task_maps(task_to_pr, HashMap::new());
-    ps.task_channel
-        .insert(task_id.to_string(), channel_name.to_string());
 
-    let effects = check_and_restart_dead_reviewers(&ps, &[]);
+    let tasks = vec![crate::task_store::Task {
+        id: task_id.to_string(),
+        subject: "Review PR".to_string(),
+        channel: Some(channel_name.to_string()),
+        pr: Some(pr_number),
+        ..Default::default()
+    }];
+    let effects = check_and_restart_dead_reviewers(&ps, &tasks);
 
     let stuck_event = effects.iter().find_map(|e| {
         if let Effect::EmitWorkflowEvent(crate::workflow::WorkflowEvent::CoworkerStuck {
@@ -632,10 +637,15 @@ fn dead_reviewer_respawn_inherits_task_channel() {
     let task_to_pr: HashMap<String, u64> = [(task_id.to_string(), pr_number)].into_iter().collect();
     ps.tick_pr_task_index =
         crate::daemon::snapshot::PrTaskIndex::from_task_maps(task_to_pr, HashMap::new());
-    ps.task_channel
-        .insert(task_id.to_string(), channel_name.to_string());
 
-    let effects = check_and_restart_dead_reviewers(&ps, &[]);
+    let tasks = vec![crate::task_store::Task {
+        id: task_id.to_string(),
+        subject: "Review PR".to_string(),
+        channel: Some(channel_name.to_string()),
+        pr: Some(pr_number),
+        ..Default::default()
+    }];
+    let effects = check_and_restart_dead_reviewers(&ps, &tasks);
 
     let config = effects.iter().find_map(|e| {
         if let Effect::SpawnCoworkerWithCallbacks { config, .. } = e {

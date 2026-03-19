@@ -78,7 +78,13 @@ async fn test_merge_blocked_while_reviewer_actively_assigned() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task("task-1624", "park", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert("task-1624".to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("task-1624"))
+        {
+            s.pr_number = Some(pr_number);
+        }
     }
 
     // Attempt to merge — should be rejected because reviewer is active
@@ -133,7 +139,13 @@ async fn test_merge_not_blocked_when_reviewed_but_assignment_not_yet_cleared() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task("task-88", "park", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert("task-88".to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("task-88"))
+        {
+            s.pr_number = Some(pr_number);
+        }
         ps.github.mark_reviewed_pr(pr_number);
     }
 
@@ -160,7 +172,13 @@ async fn test_merge_not_blocked_after_reviewer_assignment_removed() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task("task-42", "park", "midtown-code-reviewer", "sess-park-1");
-        ps.task_pr_number.insert("task-42".to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("task-42"))
+        {
+            s.pr_number = Some(pr_number);
+        }
         // Stop the session (review complete)
         if let Some(s) = ps.sessions.get_mut("sess-park-1") {
             s.is_running = false;
@@ -328,10 +346,22 @@ async fn test_review_post_with_stored_comment_id_succeeds() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task("task-42", "park", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert("task-42".to_string(), pr_number);
-        ps.task_placeholder_comment_id
-            .insert("task-42".to_string(), comment_id);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("task-42"))
+        {
+            s.pr_number = Some(pr_number);
+        }
     }
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "task-42".into(),
+            placeholder_comment_id: Some(comment_id),
+            ..Default::default()
+        })
+        .unwrap();
 
     // Mock `gh` to handle both `repo view` and `api --method PATCH` calls
     let temp_dir = tempfile::tempdir().unwrap();
@@ -434,7 +464,13 @@ async fn test_review_post_body_format() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task("task-50", "lexington", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert("task-50".to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("task-50"))
+        {
+            s.pr_number = Some(pr_number);
+        }
     }
 
     // The handler constructs the body at line 1015-1018 of rpc_prs.rs:
@@ -504,10 +540,22 @@ async fn test_review_post_gh_api_failure_returns_error() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task("task-77", "york", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert("task-77".to_string(), pr_number);
-        ps.task_placeholder_comment_id
-            .insert("task-77".to_string(), 55555);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("task-77"))
+        {
+            s.pr_number = Some(pr_number);
+        }
     }
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "task-77".into(),
+            placeholder_comment_id: Some(11111u64),
+            ..Default::default()
+        })
+        .unwrap();
 
     // Mock `gh` — `repo view` succeeds but `api PATCH` fails
     let temp_dir = tempfile::tempdir().unwrap();
