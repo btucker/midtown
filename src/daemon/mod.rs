@@ -1044,7 +1044,6 @@ impl DaemonState {
                     changed = true;
                 }
                 // Close any open task-session spans for the exiting session.
-                ps.close_spans_for_session(&session_id);
             }
 
             if clear_worktree_binding {
@@ -1209,7 +1208,7 @@ impl DaemonState {
             let ps = self.persistent_state.lock().await;
             let cached = ps.github.has_cached_review(pr_number);
             let span = ps.active_reviewer_for_pr(pr_number);
-            let reviewer = span.map(|s| s.agent_name.clone());
+            let reviewer = span.map(|s| s.name.clone());
             let session_id = span.map(|s| s.session_id.clone());
             (cached, reviewer, session_id)
         };
@@ -2675,13 +2674,16 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
             let is_reviewer = {
                 let persistent = state.persistent_state.lock().await;
                 let reviewer_span = persistent
-                    .active_reviewer_spans()
+                    .active_reviewer_sessions()
                     .into_iter()
-                    .find(|s| s.agent_name == coworker.name)
+                    .find(|s| s.name == coworker.name)
                     .map(|s| (s.task_id.clone(),));
                 if let Some((task_id,)) = reviewer_span {
                     info.coworker_type = Some("reviewer".to_string());
-                    if let Some(&pr_num) = persistent.task_pr_number.get(&task_id) {
+                    if let Some(&pr_num) = task_id
+                        .as_ref()
+                        .and_then(|tid| persistent.task_pr_number.get(tid))
+                    {
                         info.pr_number = Some(pr_num);
                         info.purpose = format!("reviewer for PR #{}", pr_num);
                     } else {
@@ -2758,9 +2760,7 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
                 .sessions
                 .get(session_id)
                 .is_some_and(|r| !r.is_running)
-            {
-                persistent.close_spans_for_session(session_id);
-            }
+            {}
         }
 
         persistent.save_for_repo(state.paths.dir_key())?;
@@ -3681,7 +3681,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     let (assigned_reviewer, assigned_session_id) = {
                         let ps = state.persistent_state.lock().await;
                         let span = ps.active_reviewer_for_pr(pr_number);
-                        let reviewer = span.map(|s| s.agent_name.clone());
+                        let reviewer = span.map(|s| s.name.clone());
                         let session_id = span.map(|s| s.session_id.clone());
                         (reviewer, session_id)
                     };

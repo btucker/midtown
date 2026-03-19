@@ -52,24 +52,6 @@ impl GcResult {
 /// A temporal record of a session working on a task.
 ///
 /// Tracks the time span during which a specific session was assigned to a task.
-/// Single source of truth for session-task assignments.
-/// Open spans (end_time = None) represent active assignments.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskSessionSpan {
-    /// Task ID this span belongs to.
-    pub task_id: String,
-    /// Coworker name at the time of this span.
-    pub agent_name: String,
-    /// Agent type: e.g., "midtown-code-author", "midtown-code-reviewer", "midtown-channel-lead".
-    pub agent_type: String,
-    /// Claude Code session ID.
-    pub session_id: String,
-    /// When the session started working on this task.
-    pub start_time: DateTime<Utc>,
-    /// When the session stopped (None = still active).
-    pub end_time: Option<DateTime<Utc>>,
-}
-
 /// A session record for the session-centric coworker model.
 ///
 /// Keyed by `session_id` in `DaemonPersistentState::sessions`.
@@ -340,8 +322,9 @@ pub struct DaemonPersistentState {
     pub permanent_pr_nudges: Vec<(u64, PrIssueType)>,
 
     /// Temporal session history for tasks.
-    #[serde(default)]
-    pub task_session_spans: Vec<TaskSessionSpan>,
+    /// Legacy field — kept for deserialization compat, not used.
+    #[serde(default, rename = "task_session_spans", skip_serializing)]
+    pub _task_session_spans: serde_json::Value,
 
     /// Task-to-PR-number mapping for reviewer tasks.
     /// Set at review task creation so PR lookups work before the reviewer session
@@ -633,145 +616,46 @@ impl DaemonPersistentState {
             result.orphaned_tasks_pruned += 1;
         }
 
-        // 3. Force-close open spans for sessions that no longer exist.
-        // Skip spans with empty session_id — these are optimistic assignments
-        // created before the session spawns (session_id is backfilled later).
-        let now = Utc::now();
-        for span in &mut self.task_session_spans {
-            if span.end_time.is_none()
-                && !span.session_id.is_empty()
-                && !self.sessions.contains_key(&span.session_id)
-            {
-                span.end_time = Some(now);
-            }
-        }
-
-        // 4. GC closed spans older than 48 hours
-        let gc_cutoff = now - chrono::Duration::hours(48);
-        self.task_session_spans.retain(|s| match s.end_time {
-            Some(end) => end > gc_cutoff,
-            None => true,
-        });
-
-        // 5. Cap at 500 spans (keep open spans + most recent closed ones)
-        if self.task_session_spans.len() > 500 {
-            self.task_session_spans
-                .sort_by_key(|s| (s.end_time.is_some(), std::cmp::Reverse(s.start_time)));
-            self.task_session_spans.truncate(500);
-        }
-
         result
     }
 
-    /// Returns the most recently added open span for a task, or None if all are closed.
-    pub fn active_span_for_task(&self, task_id: &str) -> Option<&TaskSessionSpan> {
-        self.task_session_spans
-            .iter()
-            .rfind(|s| s.task_id == task_id && s.end_time.is_none())
-    }
-
-    /// Returns all spans for a task, sorted by start_time ascending.
-    pub fn spans_for_task(&self, task_id: &str) -> Vec<&TaskSessionSpan> {
-        let mut spans: Vec<_> = self
-            .task_session_spans
-            .iter()
-            .filter(|s| s.task_id == task_id)
-            .collect();
-        spans.sort_by_key(|s| s.start_time);
-        spans
-    }
-
-    /// Returns the active reviewer span for a PR, if any.
+    /// Returns the active reviewer session for a PR, if any.
     ///
     /// Checks both `task_pr_number` (set at task creation) and
     /// `SessionRecord.pr_number` (set when the session opens the PR).
-    pub fn active_reviewer_for_pr(&self, pr_number: u64) -> Option<&TaskSessionSpan> {
-        self.task_session_spans
-            .iter()
-            .filter(|s| s.end_time.is_none() && s.agent_type == "midtown-code-reviewer")
+    pub fn active_reviewer_for_pr(&self, pr_number: u64) -> Option<&SessionRecord> {
+        self.sessions
+            .values()
+            .filter(|s| s.agent_type == "midtown-code-reviewer" && s.is_running)
             .find(|s| {
-                self.task_pr_number.get(&s.task_id) == Some(&pr_number)
-                    || self.sessions.get(&s.session_id).and_then(|r| r.pr_number) == Some(pr_number)
+                s.pr_number == Some(pr_number)
+                    || s.task_id
+                        .as_ref()
+                        .and_then(|tid| self.task_pr_number.get(tid))
+                        == Some(&pr_number)
             })
     }
 
     /// Returns true if PR has an active reviewer session that is currently running.
-    ///
-    /// Checks both task_session_spans (legacy) and sessions directly.
     pub fn pr_has_active_reviewer(&self, pr_number: u64) -> bool {
-        // Check spans (legacy path)
-        if let Some(span) = self.active_reviewer_for_pr(pr_number)
-            && self
-                .sessions
-                .get(&span.session_id)
-                .map(|s| s.is_running)
-                .unwrap_or(false)
-        {
-            return true;
-        }
-        // Check sessions directly (new path — sessions may exist without spans)
-        self.sessions.values().any(|s| {
-            s.agent_type == "midtown-code-reviewer"
-                && s.is_running
-                && (s.pr_number == Some(pr_number)
-                    || s.task_id
-                        .as_ref()
-                        .and_then(|tid| self.task_pr_number.get(tid))
-                        == Some(&pr_number))
-        })
+        self.active_reviewer_for_pr(pr_number).is_some()
     }
 
-    /// Returns all open spans with agent_type == "reviewer".
-    pub fn active_reviewer_spans(&self) -> Vec<&TaskSessionSpan> {
-        self.task_session_spans
-            .iter()
-            .filter(|s| s.end_time.is_none() && s.agent_type == "midtown-code-reviewer")
+    /// Returns all running reviewer sessions.
+    pub fn active_reviewer_sessions(&self) -> Vec<&SessionRecord> {
+        self.sessions
+            .values()
+            .filter(|s| s.agent_type == "midtown-code-reviewer" && s.is_running)
             .collect()
     }
 
-    /// Close the open span for a specific session + task combination.
-    pub fn close_span(&mut self, session_id: &str, task_id: &str) {
-        for span in &mut self.task_session_spans {
-            if span.session_id == session_id && span.task_id == task_id && span.end_time.is_none() {
-                span.end_time = Some(Utc::now());
-            }
-        }
-    }
-
-    /// Close all open spans for a session.
-    pub fn close_spans_for_session(&mut self, session_id: &str) {
-        for span in &mut self.task_session_spans {
-            if span.session_id == session_id && span.end_time.is_none() {
-                span.end_time = Some(Utc::now());
-            }
-        }
-    }
-
-    /// Close all open spans for a task.
-    pub fn close_spans_for_task(&mut self, task_id: &str) {
-        for span in &mut self.task_session_spans {
-            if span.task_id == task_id && span.end_time.is_none() {
-                span.end_time = Some(Utc::now());
-            }
-        }
-    }
-
-    /// Create a new open span for a session working on a task.
-    pub fn create_span(
-        &mut self,
-        task_id: &str,
-        agent_name: &str,
-        agent_type: &str,
-        session_id: &str,
-    ) {
-        self.task_session_spans.push(TaskSessionSpan {
-            task_id: task_id.to_string(),
-            agent_name: agent_name.to_string(),
-            agent_type: agent_type.to_string(),
-            session_id: session_id.to_string(),
-            start_time: Utc::now(),
-            end_time: None,
-        });
+    /// Returns all reviewer sessions (running or stopped).
+    /// Used by snapshot to include dead reviewers for respawn detection.
+    pub fn all_reviewer_sessions(&self) -> Vec<&SessionRecord> {
+        self.sessions
+            .values()
+            .filter(|s| s.agent_type == "midtown-code-reviewer")
+            .collect()
     }
 
     /// Look up the bound thread ID for a task from `task_thread_id`.
@@ -780,6 +664,37 @@ impl DaemonPersistentState {
     /// resolve a task's announcement thread so channel posts are auto-tagged.
     pub fn resolve_bound_thread_id(&self, task_id: Option<&str>) -> Option<String> {
         task_id.and_then(|tid| self.task_thread_id.get(tid).cloned())
+    }
+
+    /// Insert a reviewer session record — replacement for the removed `create_span()`.
+    ///
+    /// Creates a `SessionRecord` with the given parameters and inserts it into
+    /// `self.sessions`. Also populates `task_pr_number` if a PR number is provided
+    /// via the task_id lookup.
+    pub fn insert_session_for_task(
+        &mut self,
+        task_id: &str,
+        agent_name: &str,
+        agent_type: &str,
+        session_id: &str,
+    ) {
+        let sid = if session_id.is_empty() {
+            format!("sess-{}", task_id)
+        } else {
+            session_id.to_string()
+        };
+        self.sessions.insert(
+            sid.clone(),
+            SessionRecord {
+                session_id: sid,
+                name: agent_name.to_string(),
+                agent_type: agent_type.to_string(),
+                task_id: Some(task_id.to_string()),
+                pr_number: self.task_pr_number.get(task_id).copied(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
     }
 
     /// Migrate from legacy separate files into the unified format.
@@ -834,7 +749,7 @@ impl DaemonPersistentState {
             lead_driven_channels: HashSet::new(),
             workflow_state,
             permanent_pr_nudges: Vec::new(),
-            task_session_spans: Vec::new(),
+            _task_session_spans: serde_json::Value::Null,
             task_pr_number: HashMap::new(),
             task_index: HashMap::new(),
             ..Default::default()
@@ -890,19 +805,7 @@ impl DaemonPersistentState {
     /// Used by both RPC handlers (coworker.break) and Effect handlers to avoid
     /// duplicating the cleanup logic.
     pub fn clear_reviewer_assignment(&mut self, reviewer_name: &str, repo: &str) -> bool {
-        // Close active reviewer spans (legacy path)
-        let span_task_ids: Vec<String> = self
-            .active_reviewer_spans()
-            .iter()
-            .filter(|s| s.agent_name == reviewer_name)
-            .map(|s| s.task_id.clone())
-            .collect();
-        for tid in &span_task_ids {
-            tracing::info!("Cleared reviewer span for {} (task {})", reviewer_name, tid);
-            self.close_spans_for_task(tid);
-        }
-
-        // Also mark matching reviewer sessions as not running
+        // Mark matching reviewer sessions as not running
         let session_ids: Vec<String> = self
             .sessions
             .values()
@@ -919,7 +822,7 @@ impl DaemonPersistentState {
             }
         }
 
-        let cleared = !span_task_ids.is_empty() || !session_ids.is_empty();
+        let cleared = !session_ids.is_empty();
         if cleared && let Err(e) = self.save_for_repo(repo) {
             tracing::warn!(
                 "Failed to save persistent state after clearing reviewer assignment: {}",
@@ -1079,7 +982,3 @@ pub fn task_to_pr_map_from_sessions(
 #[path = "state_tests.rs"]
 #[cfg(test)]
 mod tests;
-
-#[path = "span_tests.rs"]
-#[cfg(test)]
-mod span_tests;

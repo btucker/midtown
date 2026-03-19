@@ -412,19 +412,21 @@ fn test_snapshot_session_health_map_populated() {
 /// to detect and respawn reviewers that died before posting their review.
 #[test]
 fn reviewer_pr_assignments_includes_dead_reviewers() {
-    use crate::daemon::state::{DaemonPersistentState, TaskSessionSpan};
+    use crate::daemon::state::DaemonPersistentState;
 
     let mut ps = DaemonPersistentState::default();
-    // Reviewer "riverside" has an open span for task "review-42" → PR 1352.
-    ps.task_session_spans.push(TaskSessionSpan {
-        task_id: "review-42".to_string(),
-        agent_name: "riverside".to_string(),
-        agent_type: "midtown-code-reviewer".to_string(),
-        session_id: "sess-riverside".to_string(),
-        start_time: chrono::Utc::now(),
-        end_time: None, // open span — reviewer is/was active
-    });
     ps.task_pr_number.insert("review-42".to_string(), 1352_u64);
+    // Reviewer "riverside" — session exists but not running (dead reviewer).
+    ps.insert_session_for_task(
+        "review-42",
+        "riverside",
+        "midtown-code-reviewer",
+        "sess-riverside",
+    );
+    // Mark as not running to simulate dead reviewer
+    if let Some(s) = ps.sessions.get_mut("sess-riverside") {
+        s.is_running = false;
+    }
 
     // No active process (riverside has died — is_running=false, health absent).
     let process_health: HashMap<String, ProcessHealth> = HashMap::new();
@@ -452,27 +454,15 @@ fn reviewer_pr_assignments_includes_dead_reviewers() {
 /// compute_active_reviewers_from_spans: reviewer with is_running=true appears in active set.
 #[test]
 fn active_reviewer_with_running_session_in_active_set() {
-    use crate::daemon::state::{DaemonPersistentState, SessionRecord, TaskSessionSpan};
+    use crate::daemon::state::DaemonPersistentState;
 
     let mut ps = DaemonPersistentState::default();
-    ps.task_session_spans.push(TaskSessionSpan {
-        task_id: "review-100".to_string(),
-        agent_name: "amsterdam".to_string(),
-        agent_type: "midtown-code-reviewer".to_string(),
-        session_id: "sess-amsterdam".to_string(),
-        start_time: chrono::Utc::now(),
-        end_time: None,
-    });
     ps.task_pr_number.insert("review-100".to_string(), 1553_u64);
-
-    // Session record shows is_running = true
-    ps.sessions.insert(
-        "sess-amsterdam".to_string(),
-        SessionRecord {
-            session_id: "sess-amsterdam".to_string(),
-            is_running: true,
-            ..Default::default()
-        },
+    ps.insert_session_for_task(
+        "review-100",
+        "amsterdam",
+        "midtown-code-reviewer",
+        "sess-amsterdam",
     );
 
     let process_health: HashMap<String, ProcessHealth> = HashMap::new();
@@ -488,28 +478,20 @@ fn active_reviewer_with_running_session_in_active_set() {
 /// if SessionRecord.is_running is false (process alive but session not yet updated).
 #[test]
 fn active_reviewer_alive_in_process_health_in_active_set() {
-    use crate::daemon::state::{DaemonPersistentState, SessionRecord, TaskSessionSpan};
+    use crate::daemon::state::DaemonPersistentState;
 
     let mut ps = DaemonPersistentState::default();
-    ps.task_session_spans.push(TaskSessionSpan {
-        task_id: "review-200".to_string(),
-        agent_name: "broadway".to_string(),
-        agent_type: "midtown-code-reviewer".to_string(),
-        session_id: "sess-broadway".to_string(),
-        start_time: chrono::Utc::now(),
-        end_time: None,
-    });
     ps.task_pr_number.insert("review-200".to_string(), 2000_u64);
-
-    // Session record shows is_running = false (stale), but process is alive
-    ps.sessions.insert(
-        "sess-broadway".to_string(),
-        SessionRecord {
-            session_id: "sess-broadway".to_string(),
-            is_running: false,
-            ..Default::default()
-        },
+    ps.insert_session_for_task(
+        "review-200",
+        "broadway",
+        "midtown-code-reviewer",
+        "sess-broadway",
     );
+    // Mark as not running (stale), but process is alive
+    if let Some(s) = ps.sessions.get_mut("sess-broadway") {
+        s.is_running = false;
+    }
 
     let mut process_health = HashMap::new();
     process_health.insert(
@@ -531,28 +513,20 @@ fn active_reviewer_alive_in_process_health_in_active_set() {
 /// Dead reviewers (is_alive=false AND is_running=false) must NOT appear in active_reviewers.
 #[test]
 fn dead_reviewer_not_in_active_reviewers() {
-    use crate::daemon::state::{DaemonPersistentState, SessionRecord, TaskSessionSpan};
+    use crate::daemon::state::DaemonPersistentState;
 
     let mut ps = DaemonPersistentState::default();
-    ps.task_session_spans.push(TaskSessionSpan {
-        task_id: "review-300".to_string(),
-        agent_name: "amsterdam".to_string(),
-        agent_type: "midtown-code-reviewer".to_string(),
-        session_id: "sess-amsterdam".to_string(),
-        start_time: chrono::Utc::now(),
-        end_time: None, // span still open (not yet closed)
-    });
     ps.task_pr_number.insert("review-300".to_string(), 3000_u64);
-
-    // Session shows not running
-    ps.sessions.insert(
-        "sess-amsterdam".to_string(),
-        SessionRecord {
-            session_id: "sess-amsterdam".to_string(),
-            is_running: false,
-            ..Default::default()
-        },
+    ps.insert_session_for_task(
+        "review-300",
+        "amsterdam",
+        "midtown-code-reviewer",
+        "sess-amsterdam",
     );
+    // Mark as not running
+    if let Some(s) = ps.sessions.get_mut("sess-amsterdam") {
+        s.is_running = false;
+    }
 
     // Process is dead
     let mut process_health = HashMap::new();
@@ -571,28 +545,24 @@ fn dead_reviewer_not_in_active_reviewers() {
     );
 }
 
-/// build_reviewer_pr_assignments_from_spans excludes closed spans.
+/// build_reviewer_pr_assignments includes stopped reviewers (for respawn detection).
 #[test]
-fn build_reviewer_pr_assignments_excludes_closed_spans() {
-    use crate::daemon::state::{DaemonPersistentState, TaskSessionSpan};
+fn build_reviewer_pr_assignments_includes_stopped_sessions() {
+    use crate::daemon::state::DaemonPersistentState;
 
     let mut ps = DaemonPersistentState::default();
-    // Closed span — review is done
-    ps.task_session_spans.push(TaskSessionSpan {
-        task_id: "review-400".to_string(),
-        agent_name: "park".to_string(),
-        agent_type: "midtown-code-reviewer".to_string(),
-        session_id: "sess-park".to_string(),
-        start_time: chrono::Utc::now() - chrono::Duration::hours(1),
-        end_time: Some(chrono::Utc::now()), // closed span
-    });
     ps.task_pr_number.insert("review-400".to_string(), 4000_u64);
+    // Stopped reviewer session — dead but needs respawning
+    ps.insert_session_for_task("review-400", "park", "midtown-code-reviewer", "sess-park");
+    if let Some(s) = ps.sessions.get_mut("sess-park") {
+        s.is_running = false;
+    }
 
     let assignments = super::build_reviewer_pr_assignments_from_spans(&ps);
 
     assert!(
-        !assignments.contains_key("park"),
-        "closed spans must NOT appear in reviewer_pr_assignments"
+        assignments.contains_key("park"),
+        "stopped reviewer sessions should be in assignments for respawn detection"
     );
 }
 

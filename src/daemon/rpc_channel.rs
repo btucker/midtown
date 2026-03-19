@@ -724,9 +724,7 @@ pub(super) async fn handle_channel_archive(
                         stopped_ids.push(record.session_id.clone());
                     }
                 }
-                for sid in &stopped_ids {
-                    ps.close_spans_for_session(sid);
-                }
+                for _sid in &stopped_ids {}
                 if removed_lead || removed_session {
                     debug!(
                         "Removed channel lead session for archived channel '{}'",
@@ -878,9 +876,7 @@ pub(super) async fn handle_channel_rename(
                 stopped_ids.push(record.session_id.clone());
             }
         }
-        for sid in &stopped_ids {
-            ps.close_spans_for_session(sid);
-        }
+        for _sid in &stopped_ids {}
 
         if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
             warn!(

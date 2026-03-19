@@ -1974,18 +1974,18 @@ pub(crate) fn compute_active_reviewers_from_spans(
     process_health: &HashMap<String, ProcessHealth>,
 ) -> HashSet<String> {
     let mut reviewers = HashSet::new();
-    for span in ps.active_reviewer_spans() {
+    for span in ps.all_reviewer_sessions() {
         let is_running = ps
             .sessions
             .get(&span.session_id)
             .map(|s| s.is_running)
             .unwrap_or(false);
         let is_alive = process_health
-            .get(&span.agent_name)
+            .get(&span.name)
             .map(|h| h.is_alive)
             .unwrap_or(false);
         if is_running || is_alive {
-            reviewers.insert(span.agent_name.clone());
+            reviewers.insert(span.name.clone());
         }
     }
     reviewers
@@ -2001,9 +2001,9 @@ pub(crate) fn build_reviewer_pr_assignments_from_spans(
     ps: &crate::daemon::state::DaemonPersistentState,
 ) -> HashMap<String, u64> {
     let mut assignments = HashMap::new();
-    for span in ps.active_reviewer_spans() {
-        if let Some(&pr) = ps.task_pr_number.get(&span.task_id) {
-            assignments.insert(span.agent_name.clone(), pr);
+    for span in ps.all_reviewer_sessions() {
+        if let Some(&pr) = ps.task_pr_number.get(span.task_id.as_deref().unwrap_or("")) {
+            assignments.insert(span.name.clone(), pr);
         }
     }
     assignments

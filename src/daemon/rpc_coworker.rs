@@ -1106,12 +1106,12 @@ async fn build_coworkers_data(
         .map(|ps| {
             // Build reviewer -> PR map from active spans
             let rev_map: HashMap<String, u64> = ps
-                .active_reviewer_spans()
+                .active_reviewer_sessions()
                 .into_iter()
                 .filter_map(|s| {
                     ps.task_pr_number
-                        .get(&s.task_id)
-                        .map(|&pr| (s.agent_name.clone(), pr))
+                        .get(s.task_id.as_deref().unwrap_or(""))
+                        .map(|&pr| (s.name.clone(), pr))
                 })
                 .collect();
             // Build coworker -> PR map from worktree registry (for reviewers)

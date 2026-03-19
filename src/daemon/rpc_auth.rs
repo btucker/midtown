@@ -294,13 +294,13 @@ pub(super) async fn handle_auth_switch(
             .iter()
             .filter_map(|cw| {
                 persistent
-                    .active_reviewer_spans()
+                    .active_reviewer_sessions()
                     .into_iter()
-                    .find(|s| s.agent_name == cw.name)
+                    .find(|s| s.name == cw.name)
                     .and_then(|s| {
                         persistent
                             .task_pr_number
-                            .get(&s.task_id)
+                            .get(s.task_id.as_deref().unwrap_or(""))
                             .map(|&pr| (cw.name.clone(), pr))
                     })
             })

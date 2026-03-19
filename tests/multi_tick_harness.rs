@@ -419,24 +419,6 @@ impl MultiTickHarness {
                 Effect::ShutdownCoworkerWithCallbacks { name, .. } => {
                     self.remove_coworker(name);
                 }
-                Effect::CreateTaskSessionSpan {
-                    pr_number: Some(pr_number),
-                    agent_name,
-                    agent_type,
-                    ..
-                } if agent_type == "midtown-code-reviewer" => {
-                    self.snapshot
-                        .reviewer
-                        .active_reviewers
-                        .insert(agent_name.to_lowercase());
-                    self.snapshot
-                        .reviewer
-                        .reviewer_pr_assignments
-                        .insert(agent_name.to_lowercase(), *pr_number);
-                }
-                Effect::CloseTaskSessionSpan { .. } => {
-                    // Span closures are handled via state, no snapshot update needed
-                }
                 Effect::CompleteTask { task_id, .. } => {
                     self.complete_task(task_id);
                 }

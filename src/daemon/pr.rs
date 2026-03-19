@@ -2342,17 +2342,31 @@ async fn collect_review_complete_effects(
     {
         let mut ps = state.persistent_state.lock().await;
         if ps.active_reviewer_for_pr(pr_number).is_some() {
-            debug!("PR #{} review completed, closing reviewer spans", pr_number);
-            let task_ids: Vec<String> = ps
-                .active_reviewer_spans()
+            debug!(
+                "PR #{} review completed, marking reviewer sessions as stopped",
+                pr_number
+            );
+            // Find session IDs of active reviewers for this PR
+            let session_ids: Vec<String> = ps
+                .active_reviewer_sessions()
                 .iter()
-                .filter(|s| ps.task_pr_number.get(&s.task_id) == Some(&pr_number))
-                .map(|s| s.task_id.clone())
+                .filter(|s| {
+                    s.pr_number == Some(pr_number)
+                        || ps.task_pr_number.get(s.task_id.as_deref().unwrap_or(""))
+                            == Some(&pr_number)
+                })
+                .map(|s| s.session_id.clone())
                 .collect();
-            for tid in task_ids {
-                ps.close_spans_for_task(&tid);
+            // Mark them as stopped so pr_has_active_reviewer returns false
+            for sid in &session_ids {
+                if let Some(record) = ps.sessions.get_mut(sid) {
+                    record.is_running = false;
+                    record.resume_on_startup = false;
+                }
             }
-            if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+            if !session_ids.is_empty()
+                && let Err(e) = ps.save_for_repo(state.paths.dir_key())
+            {
                 warn!("Failed to save daemon-state.json: {}", e);
             }
         }
@@ -3304,7 +3318,7 @@ pub(super) async fn handle_pr_comment_nudge(
             let span = ps.active_reviewer_for_pr(pr_number);
             match span {
                 Some(s) => {
-                    let name = s.agent_name.clone();
+                    let name = s.name.clone();
                     let sid = if s.session_id.is_empty() {
                         None
                     } else {
