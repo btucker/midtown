@@ -919,20 +919,14 @@ async fn test_reviewer_idle_not_nudged_when_review_cached() {
         });
     assert!(inserted, "reviewer coworker should be inserted");
 
-    // Create a reviewer session and mark review as completed
+    // Create a reviewer span and mark review as completed
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.sessions.insert(
-            "sess-rev-42".to_string(),
-            crate::daemon::state::SessionRecord {
-                session_id: "sess-rev-42".to_string(),
-                name: reviewer_name.to_string(),
-                agent_type: "midtown-code-reviewer".to_string(),
-                task_id: Some("review-42".to_string()),
-                pr_number: Some(pr_number),
-                is_running: true,
-                ..Default::default()
-            },
+        ps.insert_session_for_task(
+            "review-42",
+            reviewer_name,
+            "midtown-code-reviewer",
+            "sess-rev-42",
         );
         ps.task_pr_number.insert("review-42".to_string(), pr_number);
         // Mark the review as completed (simulates webhook having arrived)
@@ -1030,6 +1024,7 @@ async fn test_reviewer_idle_nudged_when_review_not_posted() {
     // Create reviewer span for a PR but do NOT mark the review as completed
     {
         let mut ps = state.persistent_state.lock().await;
+        ps.insert_session_for_task("task-43", reviewer_name, "midtown-code-reviewer", "");
         ps.task_pr_number.insert("task-43".to_string(), pr_number);
         // Deliberately NOT calling mark_reviewed_pr — review hasn't been posted
     }

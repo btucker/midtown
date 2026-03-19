@@ -3705,6 +3705,7 @@ async fn pr_approved_not_suppressed_when_review_cached() {
     // Simulate: reviewer span exists BUT review is already cached (complete)
     {
         let mut ps = state.persistent_state.lock().await;
+        ps.insert_session_for_task("task-42", "lexington", "midtown-code-reviewer", "");
         ps.task_pr_number.insert("task-42".to_string(), pr_number);
         ps.github.mark_reviewed_pr(pr_number);
     }
@@ -4060,6 +4061,7 @@ async fn auto_merge_blocked_when_reviewer_active() {
     // Create a reviewer span for this PR (without marking the review as cached/complete)
     {
         let mut ps = state.persistent_state.lock().await;
+        ps.insert_session_for_task("task-42", "york", "midtown-code-reviewer", "");
         ps.task_pr_number.insert("task-42".to_string(), pr_number);
     }
 
@@ -4154,6 +4156,7 @@ async fn auto_merge_fires_when_reviewer_assigned_but_review_cached() {
     // Create reviewer span AND mark review as cached (complete)
     {
         let mut ps = state.persistent_state.lock().await;
+        ps.insert_session_for_task("task-42", "york", "midtown-code-reviewer", "");
         ps.task_pr_number.insert("task-42".to_string(), pr_number);
         ps.github.mark_reviewed_pr(pr_number);
     }
@@ -5572,6 +5575,7 @@ async fn test_multiple_prs_get_distinct_reviewer_names() {
     )
     .await;
 
+    // Extract all reviewer names from CreateTaskSessionSpan effects
     let reviewer_names: Vec<String> = effects
         .iter()
         .filter_map(|e| {

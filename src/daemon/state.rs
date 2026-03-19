@@ -649,12 +649,52 @@ impl DaemonPersistentState {
             .collect()
     }
 
+    /// Returns all reviewer sessions (running or stopped).
+    /// Used by snapshot to include dead reviewers for respawn detection.
+    pub fn all_reviewer_sessions(&self) -> Vec<&SessionRecord> {
+        self.sessions
+            .values()
+            .filter(|s| s.agent_type == "midtown-code-reviewer")
+            .collect()
+    }
+
     /// Look up the bound thread ID for a task from `task_thread_id`.
     ///
     /// Used by both the `SpawnForTask` effect path and `spawn_coworker()` to
     /// resolve a task's announcement thread so channel posts are auto-tagged.
     pub fn resolve_bound_thread_id(&self, task_id: Option<&str>) -> Option<String> {
         task_id.and_then(|tid| self.task_thread_id.get(tid).cloned())
+    }
+
+    /// Insert a reviewer session record — replacement for the removed `create_span()`.
+    ///
+    /// Creates a `SessionRecord` with the given parameters and inserts it into
+    /// `self.sessions`. Also populates `task_pr_number` if a PR number is provided
+    /// via the task_id lookup.
+    pub fn insert_session_for_task(
+        &mut self,
+        task_id: &str,
+        agent_name: &str,
+        agent_type: &str,
+        session_id: &str,
+    ) {
+        let sid = if session_id.is_empty() {
+            format!("sess-{}", task_id)
+        } else {
+            session_id.to_string()
+        };
+        self.sessions.insert(
+            sid.clone(),
+            SessionRecord {
+                session_id: sid,
+                name: agent_name.to_string(),
+                agent_type: agent_type.to_string(),
+                task_id: Some(task_id.to_string()),
+                pr_number: self.task_pr_number.get(task_id).copied(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
     }
 
     /// Migrate from legacy separate files into the unified format.

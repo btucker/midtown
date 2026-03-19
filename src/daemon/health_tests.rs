@@ -3268,6 +3268,7 @@ fn build_reviewer_respawn_task_id_is_some_when_matching_task_exists() {
 
     let effects = check_and_restart_dead_reviewers(&snap);
 
+    // CreateTaskSessionSpan is nested in SpawnCoworkerWithCallbacks.on_success
     let span_task_id = effects.iter().find_map(|e| {
         if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
             on_success.iter().find_map(|inner| {
@@ -3293,13 +3294,18 @@ fn build_reviewer_respawn_task_id_is_some_when_matching_task_exists() {
 
     assert!(
         span_task_id.is_some(),
-        "expected CreateTaskSessionSpan in effects: {:#?}",
+        "expected a CreateTaskSessionSpan effect in SpawnCoworkerWithCallbacks.on_success; got: {:#?}",
         effects
     );
-    assert_eq!(span_task_id.unwrap(), review_task_id.to_string(),);
+    assert_eq!(
+        span_task_id.unwrap(),
+        review_task_id.to_string(),
+        "CreateTaskSessionSpan.task_id should match the review task ID"
+    );
 }
 
 /// Verify that `build_reviewer_respawn_effects` sets `task_id` to empty string on the
+/// `CreateTaskSessionSpan` effect when no matching review task exists in `all_tasks`.
 ///
 /// This covers the fallback path when the review task hasn't been created yet
 /// (legacy flow) or when no task matched the PR + agent-type filter.
@@ -3352,6 +3358,7 @@ fn build_reviewer_respawn_task_id_is_empty_when_no_matching_task() {
 
     let effects = check_and_restart_dead_reviewers(&snap);
 
+    // CreateTaskSessionSpan is nested in SpawnCoworkerWithCallbacks.on_success
     let span_task_id = effects.iter().find_map(|e| {
         if let Effect::SpawnCoworkerWithCallbacks { on_success, .. } = e {
             on_success.iter().find_map(|inner| {
@@ -3377,10 +3384,13 @@ fn build_reviewer_respawn_task_id_is_empty_when_no_matching_task() {
 
     assert!(
         span_task_id.is_some(),
-        "expected CreateTaskSessionSpan in effects: {:#?}",
+        "expected a CreateTaskSessionSpan effect in SpawnCoworkerWithCallbacks.on_success; got: {:#?}",
         effects
     );
-    assert!(span_task_id.unwrap().is_empty(),);
+    assert!(
+        span_task_id.unwrap().is_empty(),
+        "CreateTaskSessionSpan.task_id should be empty when no matching review task exists in all_tasks"
+    );
 }
 
 #[test]
