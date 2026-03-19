@@ -30,6 +30,21 @@ fn ps_from_snapshot(snap: &WorldSnapshot) -> DaemonPersistentState {
     ps.tick_name_session_map = snap.name_session_map.clone();
     ps.tick_session_profile_map = snap.session_profile_map.clone();
     ps.tick_limited_pool_profiles = snap.limited_pool_profiles.clone();
+    // PR-specific tick fields
+    ps.tick_open_prs = snap.pr.open_prs_data.clone();
+    ps.tick_merged_pr_numbers = snap.pr.merged_pr_numbers.clone();
+    ps.tick_pr_task_index = snap.pr.pr_task_index.clone();
+    ps.tick_orphaned_pr_nudges_sent = snap.pr.orphaned_pr_lead_nudges_sent.clone();
+    ps.github.reviewed_prs = snap.reviewer.reviewed_prs.clone();
+    ps.sessions = snap.sessions.clone();
+    ps.worktree_registry = snap.worktree_registry.clone();
+    // Build merged_pr_branches from worktree registry
+    ps.tick_merged_pr_branches = ps
+        .worktree_registry
+        .all_assignments()
+        .iter()
+        .filter_map(|(_, a)| a.pr_number.map(|pr| (pr, a.branch_name.clone())))
+        .collect();
     ps
 }
 
@@ -124,7 +139,10 @@ fn test_lead_nudge_not_working() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     // Check if orphaned PRs generate lead nudges
-    let pr_effects = reconcile_orphaned_prs(&snapshot);
+    let pr_effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "reconcile_orphaned_prs returned {} effects for lead nudge",
@@ -274,7 +292,10 @@ fn test_reviewer_not_spawning_20260210() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     // Check if orphaned PRs are detected and spawn reviewers
-    let pr_effects = reconcile_orphaned_prs(&snapshot);
+    let pr_effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "reconcile_orphaned_prs returned {} effects for reviewer spawn",
@@ -302,7 +323,10 @@ fn test_reviewer_not_spawning_20260211() {
     let snapshot: WorldSnapshot =
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
-    let pr_effects = reconcile_orphaned_prs(&snapshot);
+    let pr_effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "reconcile_orphaned_prs returned {} effects for reviewer spawn (20260211)",
@@ -332,7 +356,10 @@ fn test_orphan_recovery_pr_ref_bug() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     // Check if orphaned PRs are reconciled
-    let effects = reconcile_orphaned_prs(&snapshot);
+    let effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "reconcile_orphaned_prs returned {} effects for orphan recovery",
@@ -360,7 +387,10 @@ fn test_recovery_loop_completed_tasks() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     // Check if merged PR cleanup works correctly
-    let effects = collect_merged_pr_cleanup_effects(&snapshot);
+    let effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        collect_merged_pr_cleanup_effects(&ps)
+    };
 
     println!(
         "collect_merged_pr_cleanup_effects returned {} effects for completed tasks",
@@ -388,7 +418,10 @@ fn test_reviewer_worktree_branch_exists() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     // Check if orphaned PRs are reconciled even with branch conflicts
-    let effects = reconcile_orphaned_prs(&snapshot);
+    let effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "reconcile_orphaned_prs returned {} effects for branch conflict",
@@ -416,7 +449,10 @@ fn test_review_spawn_lost_after_restart_20260216() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     // Check if orphaned PRs are reconciled after restart
-    let effects = reconcile_orphaned_prs(&snapshot);
+    let effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "reconcile_orphaned_prs returned {} effects for review spawn after restart (20260216)",
@@ -445,7 +481,10 @@ fn test_review_spawn_lost_after_restart_20260217_001806() {
     let snapshot: WorldSnapshot =
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
-    let effects = reconcile_orphaned_prs(&snapshot);
+    let effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "reconcile_orphaned_prs returned {} effects for review spawn after restart (20260217-001806)",
@@ -470,7 +509,10 @@ fn test_review_spawn_lost_after_restart_20260217_003046() {
     let snapshot: WorldSnapshot =
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
-    let effects = reconcile_orphaned_prs(&snapshot);
+    let effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "reconcile_orphaned_prs returned {} effects for review spawn after restart (20260217-003046)",
@@ -569,7 +611,10 @@ fn test_daemon_not_dispatching_tasks() {
 
     // Check multiple decision functions for dispatch issues
     let orphan_effects = reset_orphaned_tasks(&snapshot);
-    let pr_effects = reconcile_orphaned_prs(&snapshot);
+    let pr_effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "Dispatch check: orphan_effects={}, pr_effects={}",
@@ -597,7 +642,10 @@ fn test_triple_spawn_pleasant_875() {
 
     // Check multiple decision functions for spawn loop detection
     let orphan_effects = reset_orphaned_tasks(&snapshot);
-    let pr_effects = reconcile_orphaned_prs(&snapshot);
+    let pr_effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "Triple spawn check: orphan_effects={}, pr_effects={}",
@@ -626,7 +674,10 @@ fn test_call_in_failed_and_false_recovery() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     // Check if orphaned PR reconciliation handles call-in failures
-    let effects = reconcile_orphaned_prs(&snapshot);
+    let effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "reconcile_orphaned_prs returned {} effects for call-in failure recovery",
@@ -650,7 +701,10 @@ fn test_double_assign_open_pr() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     // Check if orphaned PRs are reconciled without double-assigning reviewers
-    let effects = reconcile_orphaned_prs(&snapshot);
+    let effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "reconcile_orphaned_prs returned {} effects for double-assign prevention",
@@ -697,7 +751,10 @@ fn test_double_assign_orphan_recovery_20260214() {
 
     // Check multiple decision functions for double-assignment prevention
     let orphan_effects = reset_orphaned_tasks(&snapshot);
-    let pr_effects = reconcile_orphaned_prs(&snapshot);
+    let pr_effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "Orphan recovery (20260214): orphan_effects={}, pr_effects={}",
@@ -726,7 +783,10 @@ fn test_double_assign_orphan_recovery_20260216() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     let orphan_effects = reset_orphaned_tasks(&snapshot);
-    let pr_effects = reconcile_orphaned_prs(&snapshot);
+    let pr_effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "Orphan recovery (20260216): orphan_effects={}, pr_effects={}",
@@ -751,7 +811,10 @@ fn test_duplicate_merge_tasks() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     // Check if merged PR cleanup creates duplicate tasks
-    let effects = collect_merged_pr_cleanup_effects(&snapshot);
+    let effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        collect_merged_pr_cleanup_effects(&ps)
+    };
 
     println!(
         "collect_merged_pr_cleanup_effects returned {} effects for duplicate merge task prevention",
@@ -794,7 +857,10 @@ fn test_pr_1164_still_no_reviewer_after_orphan_fix() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     // Check if orphaned PRs are reconciled
-    let effects = reconcile_orphaned_prs(&snapshot);
+    let effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "reconcile_orphaned_prs returned {} effects for PR 1164 reviewer assignment",
@@ -837,7 +903,10 @@ fn test_double_nudge_pr_merge() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     // Check if merged PR cleanup prevents duplicate nudges
-    let effects = collect_merged_pr_cleanup_effects(&snapshot);
+    let effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        collect_merged_pr_cleanup_effects(&ps)
+    };
 
     println!(
         "collect_merged_pr_cleanup_effects returned {} effects for double nudge prevention",
@@ -864,7 +933,10 @@ fn test_broadway_debug() {
 
     // Check multiple decision functions for broadway-specific issues
     let orphan_effects = reset_orphaned_tasks(&snapshot);
-    let pr_effects = reconcile_orphaned_prs(&snapshot);
+    let pr_effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "Broadway debug: orphan={}, pr={}",
@@ -888,7 +960,10 @@ fn test_snapshot_20260203_023607() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     let orphan_effects = reset_orphaned_tasks(&snapshot);
-    let pr_effects = reconcile_orphaned_prs(&snapshot);
+    let pr_effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "Snapshot 20260203-023607: orphan={}, pr={}",
@@ -931,7 +1006,10 @@ fn test_snapshot_20260203_162511() {
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
     let orphan_effects = reset_orphaned_tasks(&snapshot);
-    let pr_effects = reconcile_orphaned_prs(&snapshot);
+    let pr_effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!(
         "Snapshot 20260203-162511: orphan={}, pr={}",
@@ -954,7 +1032,10 @@ fn test_snapshot_20260203_193252() {
     let snapshot: WorldSnapshot =
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
-    let effects = reconcile_orphaned_prs(&snapshot);
+    let effects = {
+        let ps = ps_from_snapshot(&snapshot);
+        reconcile_orphaned_prs(&ps, &snapshot.all_tasks)
+    };
 
     println!("Snapshot 20260203-193252: pr={}", effects.len());
 

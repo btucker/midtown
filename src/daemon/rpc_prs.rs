@@ -635,22 +635,26 @@ pub(super) async fn handle_pr_review(
         Err(msg) => return Response::error(id, RpcError::new(-32603, msg)),
     };
 
-    // Collect a world snapshot so collect_reviewer_effects_with_source has
-    // the worktree registry, active coworker names, and branch owner map.
-    let snap = super::snapshot::collect_world_snapshot(state).await;
+    // Extract tick state for reviewer selection logic.
+    let (worktree_registry, active_names, is_at_task_limit) = {
+        let ps = state.persistent_state.lock().await;
+        (
+            ps.worktree_registry.clone(),
+            ps.tick_active_session_names.clone(),
+            ps.tick_is_at_task_limit,
+        )
+    };
 
     // Call the shared reviewer selection logic.
     // is_polling_fallback=false bypasses the webhook-deference guard (only active for polling).
-    // We pass the branch_owners_map so task-based branches (e.g. "task-42-...")
-    // can be resolved to their author — preserving the self-review guard.
     let effects = super::pr::collect_reviewer_effects_with_source(
-        &snap.worktree_registry,
-        &snap.coworkers.active_names,
+        &worktree_registry,
+        &active_names,
         state,
         &[pr_json],
         false,                             // not polling fallback
         &std::collections::HashMap::new(), // RPC path: spawning reviewers, not nudging authors
-        snap.is_at_task_limit,
+        is_at_task_limit,
     )
     .await;
 

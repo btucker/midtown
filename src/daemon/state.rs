@@ -546,6 +546,10 @@ pub struct DaemonPersistentState {
     /// Session task map: task_id → session_id.
     #[serde(skip)]
     pub tick_session_task_map: HashMap<String, String>,
+
+    /// PR number → branch name for merged PRs (from worktree registry).
+    #[serde(skip)]
+    pub tick_merged_pr_branches: HashMap<u64, String>,
 }
 
 impl DaemonPersistentState {

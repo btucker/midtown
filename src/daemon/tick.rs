@@ -348,6 +348,18 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         ps.tick_open_prs = open_prs_data;
         ps.tick_merged_pr_numbers = merged_pr_numbers;
 
+        // Merged PR → branch mapping (from worktree registry)
+        ps.tick_merged_pr_branches = ps
+            .worktree_registry
+            .all_assignments()
+            .iter()
+            .filter_map(|(_, assignment)| {
+                assignment
+                    .pr_number
+                    .map(|pr| (pr, assignment.branch_name.clone()))
+            })
+            .collect();
+
         // Rate limit (from persistent state's own github field)
         ps.tick_rate_limit = ps.github.rate_limit.clone();
         ps.tick_fresh_rate_limit = None; // Set by RateLimitCheckTick handler if needed

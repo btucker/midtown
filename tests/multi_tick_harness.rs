@@ -320,6 +320,22 @@ impl MultiTickHarness {
         ps.tick_session_profile_map = snap.session_profile_map.clone();
         ps.tick_limited_pool_profiles = snap.limited_pool_profiles.clone();
 
+        // PR state
+        ps.tick_open_prs = snap.pr.open_prs_data.clone();
+        ps.tick_merged_pr_numbers = snap.pr.merged_pr_numbers.clone();
+        ps.tick_orphaned_pr_nudges_sent = snap.pr.orphaned_pr_lead_nudges_sent.clone();
+        ps.worktree_registry = snap.worktree_registry.clone();
+        // Build from worktree registry, then overlay snapshot's merged_pr_branches
+        // (tests may inject entries directly into merged_pr_branches)
+        let mut pr_branches: std::collections::HashMap<u64, String> = ps
+            .worktree_registry
+            .all_assignments()
+            .iter()
+            .filter_map(|(_, a)| a.pr_number.map(|pr| (pr, a.branch_name.clone())))
+            .collect();
+        pr_branches.extend(snap.merged_pr_branches.iter().map(|(&k, v)| (k, v.clone())));
+        ps.tick_merged_pr_branches = pr_branches;
+
         // Stale state
         ps.tick_stale_lead_worktrees = snap.stale_channel_lead_worktrees.clone();
         ps.tick_lead_worktree_freshness_cooldown_channels =
@@ -372,10 +388,12 @@ impl MultiTickHarness {
             }
             DaemonEvent::PrPollTick => {
                 let mut effects = Vec::new();
-                effects.extend(midtown::daemon::collect_merged_pr_cleanup_effects(
-                    &self.snapshot,
+                let ps = self.build_ps();
+                effects.extend(midtown::daemon::collect_merged_pr_cleanup_effects(&ps));
+                effects.extend(midtown::daemon::reconcile_orphaned_prs(
+                    &ps,
+                    &self.snapshot.all_tasks,
                 ));
-                effects.extend(midtown::daemon::reconcile_orphaned_prs(&self.snapshot));
                 effects.extend(midtown::daemon::build_subject_based_completion_effects(
                     &self.build_ps(),
                     &self.snapshot.all_tasks,

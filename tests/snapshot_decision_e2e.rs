@@ -112,7 +112,16 @@ mod tests {
             serde_json::from_str(fixture).expect("Failed to deserialize snapshot fixture");
 
         // Call the actual production decision function
-        let effects = collect_merged_pr_cleanup_effects(&snapshot);
+        let mut ps = ps_from_snapshot(&snapshot);
+        ps.tick_merged_pr_numbers = snapshot.pr.merged_pr_numbers.clone();
+        ps.worktree_registry = snapshot.worktree_registry.clone();
+        ps.tick_merged_pr_branches = ps
+            .worktree_registry
+            .all_assignments()
+            .iter()
+            .filter_map(|(_, a)| a.pr_number.map(|pr| (pr, a.branch_name.clone())))
+            .collect();
+        let effects = collect_merged_pr_cleanup_effects(&ps);
 
         // Merged PR cleanup should return effects to complete tasks
         // and send coworkers on break.

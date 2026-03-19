@@ -17,7 +17,6 @@ use super::constants::*;
 use super::effects::Effect;
 use super::helpers::is_lead_branch;
 use super::helpers::*;
-use super::snapshot::WorldSnapshot;
 use super::trackers::{PrIssueType, StuckConditionType};
 
 /// Resolve a PR's owner via the session-centric path:
@@ -121,32 +120,49 @@ impl PrContext {
         self.get_channel(pr_number)
             .is_some_and(|ch| self.lead_driven_channels.contains(&ch))
     }
+}
 
-    /// Defense-in-depth: check snapshot signals for an active reviewer.
-    ///
-    /// Checks if any coworker has an assignment to this PR in the snapshot.
-    /// The span-based model populates `reviewer_pr_assignments` from open spans
-    /// so dead reviewers (process exited but span open) are still included.
-    fn augment_reviewer_from_snapshot(
-        &mut self,
-        pr_number: u64,
-        snap: &super::snapshot::WorldSnapshot,
-    ) {
-        if self.has_active_reviewer {
-            return; // Already flagged via get_reviewer()
-        }
+/// Get coworker names that have sessions with open PRs.
+///
+/// Derived from `SessionRecord.pr_number` cross-referenced with `tick_open_prs`.
+fn sessions_with_open_prs(ps: &super::state::DaemonPersistentState) -> HashSet<String> {
+    let open_pr_numbers: HashSet<u64> = ps
+        .tick_open_prs
+        .iter()
+        .filter_map(|pr| pr["number"].as_u64())
+        .collect();
 
-        // Check if any coworker is assigned to this PR in the snapshot.
-        // reviewer_pr_assignments is built from open reviewer spans so it
-        // includes both running and recently-dead reviewers.
-        let has_snapshot_assignment = snap
-            .reviewer
-            .reviewer_pr_assignments
-            .iter()
-            .any(|(_, &assigned_pr)| assigned_pr == pr_number);
+    ps.sessions
+        .values()
+        .filter(|s| s.pr_number.is_some_and(|pr| open_pr_numbers.contains(&pr)))
+        .filter_map(|s| {
+            if s.name.is_empty() {
+                None
+            } else {
+                Some(s.name.clone())
+            }
+        })
+        .collect()
+}
 
-        self.has_active_reviewer = has_snapshot_assignment;
-    }
+/// Get coworker names that have sessions with recently merged PRs.
+///
+/// Derived from `SessionRecord.pr_number` cross-referenced with `tick_merged_pr_numbers`.
+fn sessions_with_merged_prs(ps: &super::state::DaemonPersistentState) -> HashSet<String> {
+    ps.sessions
+        .values()
+        .filter(|s| {
+            s.pr_number
+                .is_some_and(|pr| ps.tick_merged_pr_numbers.contains(&pr))
+        })
+        .filter_map(|s| {
+            if s.name.is_empty() {
+                None
+            } else {
+                Some(s.name.clone())
+            }
+        })
+        .collect()
 }
 
 /// How often to re-fetch merged PRs (5 minutes). Merges aren't urgent so
@@ -273,8 +289,9 @@ fn compute_time_aware_hash_at(data: &str, bucket_secs: u64, timestamp_secs: u64)
 /// build_task_completion_effects. Only resets tasks that are still in_progress.
 ///
 /// Called from `poll_prs_for_issues` after fetching open PR list from GitHub.
-pub(super) fn detect_abandoned_pr_tasks(
-    snap: &WorldSnapshot,
+fn detect_abandoned_pr_tasks(
+    tick: &PrPollTickState,
+    tasks: &[crate::task_store::Task],
     open_pr_numbers: &[u64],
     dir_key: &str,
 ) -> Vec<Effect> {
@@ -282,14 +299,14 @@ pub(super) fn detect_abandoned_pr_tasks(
     let mut effects = Vec::new();
 
     // Check each PR with an associated task ID
-    for (pr_number, task_id) in snap.pr.pr_task_index.pr_task_pairs() {
+    for (pr_number, task_id) in tick.pr_task_index.pr_task_pairs() {
         // PR is closed if it's not in the open set and wasn't merged
         let is_closed = !open_set.contains(&pr_number);
-        let is_merged = snap.pr.merged_pr_numbers.contains(&pr_number);
+        let is_merged = tick.merged_pr_numbers.contains(&pr_number);
 
         if is_closed && !is_merged {
             // Check if the task is still in_progress (not already completed)
-            let is_in_progress = snap
+            let is_in_progress = tick
                 .in_progress_tasks
                 .iter()
                 .any(|(tid, _, _)| tid == task_id);
@@ -298,33 +315,33 @@ pub(super) fn detect_abandoned_pr_tasks(
                 // Before resetting, check if the work was already completed by a DIFFERENT PR.
                 // This prevents resetting tasks when a duplicate PR is closed but a sibling
                 // PR for the same task was already merged.
-                let work_already_landed =
-                    {
-                        // Find the task once and reuse it
-                        let task = snap.all_tasks.iter().find(|t| t.id == task_id);
+                let work_already_landed = {
+                    // Find the task once and reuse it
+                    let task = tasks.iter().find(|t| t.id == task_id);
 
-                        // Check if task status is completed
-                        let task_completed = task
-                            .map(|t| matches!(t.status, crate::task_store::TaskStatus::Completed))
-                            .unwrap_or(false);
+                    // Check if task status is completed
+                    let task_completed = task
+                        .map(|t| matches!(t.status, crate::task_store::TaskStatus::Completed))
+                        .unwrap_or(false);
 
-                        // Check if any other PR associated with this task was merged
-                        let has_merged_sibling = snap.pr.pr_task_index.pr_task_pairs().any(
-                            |(other_pr, other_task_id)| {
+                    // Check if any other PR associated with this task was merged
+                    let has_merged_sibling =
+                        tick.pr_task_index
+                            .pr_task_pairs()
+                            .any(|(other_pr, other_task_id)| {
                                 other_task_id == task_id
                                     && other_pr != pr_number
-                                    && snap.pr.merged_pr_numbers.contains(&other_pr)
-                            },
-                        );
+                                    && tick.merged_pr_numbers.contains(&other_pr)
+                            });
 
-                        // Check if task.pr field points to a merged PR
-                        let task_pr_merged = task
-                            .and_then(|t| t.pr)
-                            .map(|pr| snap.pr.merged_pr_numbers.contains(&pr))
-                            .unwrap_or(false);
+                    // Check if task.pr field points to a merged PR
+                    let task_pr_merged = task
+                        .and_then(|t| t.pr)
+                        .map(|pr| tick.merged_pr_numbers.contains(&pr))
+                        .unwrap_or(false);
 
-                        task_completed || has_merged_sibling || task_pr_merged
-                    };
+                    task_completed || has_merged_sibling || task_pr_merged
+                };
 
                 if !work_already_landed {
                     effects.push(Effect::ResetAbandonedTask {
@@ -344,12 +361,12 @@ pub(super) fn detect_abandoned_pr_tasks(
 ///
 /// Uses session-based resolution only: PR# → task → session → current_name.
 /// Returns `None` if no session owns the PR.
-fn resolve_pr_owner(pf: &PrFields<'_>, snap: &WorldSnapshot) -> Option<String> {
+fn resolve_pr_owner(pf: &PrFields<'_>, tick: &PrPollTickState) -> Option<String> {
     resolve_pr_owner_from_session(
         pf.number,
-        snap.pr.pr_task_index.pr_to_task_map(),
-        &snap.session_task_map,
-        &snap.sessions,
+        tick.pr_task_index.pr_to_task_map(),
+        &tick.session_task_map,
+        &tick.sessions,
     )
 }
 
@@ -466,14 +483,14 @@ async fn cleanup_pr_tracking_state(state: &DaemonState) {
 /// up persistent reviewer assignments for closed PRs.
 async fn update_pr_caches(
     state: &DaemonState,
-    snap: &WorldSnapshot,
+    tick: &PrPollTickState,
+    tasks: &[crate::task_store::Task],
     prs: &[serde_json::Value],
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
     // Cache full open PR data for RPC responses (avoids gh CLI calls in handle_status).
     {
-        let tasks = &snap.all_tasks;
         let task_map: std::collections::HashMap<u64, String> = tasks
             .iter()
             .filter_map(|t| {
@@ -514,7 +531,8 @@ async fn update_pr_caches(
         .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
         .collect();
     effects.extend(detect_abandoned_pr_tasks(
-        snap,
+        tick,
+        tasks,
         &open_pr_numbers,
         state.paths.dir_key(),
     ));
@@ -547,7 +565,8 @@ async fn decide_and_build_pr_issue_effects(
     title: &str,
     issue_type: PrIssueType,
     review_content: Option<&str>,
-    snap: &WorldSnapshot,
+    at_task_limit: bool,
+    reviewer_pr_assignments: &HashMap<String, u64>,
     state: &DaemonState,
     active_coworkers: &[String],
     idle_coworkers: &[String],
@@ -569,11 +588,15 @@ async fn decide_and_build_pr_issue_effects(
         PrContext::from_persistent_state(&ps, pr_number)
     };
 
-    // Defense-in-depth: check reviewer_pr_assignments from snapshot (span-based).
-    pr_ctx.augment_reviewer_from_snapshot(pr_number, snap);
+    // Defense-in-depth: check reviewer_pr_assignments from tick state.
+    if !pr_ctx.has_active_reviewer {
+        let has_assignment = reviewer_pr_assignments
+            .iter()
+            .any(|(_, &assigned_pr)| assigned_pr == pr_number);
+        pr_ctx.has_active_reviewer = has_assignment;
+    }
 
     // Decide action using handoff-aware decision function (matches webhook path)
-    let at_task_limit = snap.is_at_task_limit;
     let action = decide_pr_action(
         owner,
         active_coworkers,
@@ -615,7 +638,8 @@ async fn maybe_decide_pr_issue_effects(
     pf: &PrFields<'_>,
     issue_type: PrIssueType,
     review_content: Option<&str>,
-    snap: &WorldSnapshot,
+    at_task_limit: bool,
+    reviewer_pr_assignments: &HashMap<String, u64>,
     state: &DaemonState,
     active_coworkers: &[String],
     idle_coworkers: &[String],
@@ -635,7 +659,8 @@ async fn maybe_decide_pr_issue_effects(
         pf.title,
         issue_type,
         review_content,
-        snap,
+        at_task_limit,
+        reviewer_pr_assignments,
         state,
         active_coworkers,
         idle_coworkers,
@@ -649,7 +674,7 @@ async fn maybe_decide_pr_issue_effects(
 /// conflicts, CI failures, review status), handles orphaned PRs, and generates
 /// nudge effects using the author-driven merge decision model.
 async fn process_pr_issue_nudges(
-    snap: &WorldSnapshot,
+    tick: &PrPollTickState,
     state: &DaemonState,
     prs: &[serde_json::Value],
     active_coworkers: &[String],
@@ -665,12 +690,12 @@ async fn process_pr_issue_nudges(
         }
 
         // Session-based resolution: PR# → task → session → current_name.
-        let owner_opt = resolve_pr_owner(&pf, snap);
+        let owner_opt = resolve_pr_owner(&pf, tick);
         let issues = detect_pr_issues(pr);
 
         // Handle PRs whose owner is not currently active (on break, never spawned, etc.)
         if let Some(ref owner) = owner_opt {
-            let is_active = snap.coworkers.active_names.contains(&owner.to_lowercase());
+            let is_active = tick.active_session_names.contains(&owner.to_lowercase());
 
             if !is_active && !issues.is_empty() {
                 effects.extend(
@@ -716,7 +741,8 @@ async fn process_pr_issue_nudges(
                     &pf,
                     issue_type,
                     review_content.as_deref(),
-                    snap,
+                    tick.is_at_task_limit,
+                    &tick.reviewer_pr_assignments,
                     state,
                     active_coworkers,
                     idle_coworkers,
@@ -759,11 +785,12 @@ fn update_review_status_cache(
 /// directed at the user (not agents).
 async fn detect_and_block_external_prs(
     state: &DaemonState,
-    snap: &WorldSnapshot,
+    repo_owner: Option<&str>,
+    default_channel: &str,
     prs: &[serde_json::Value],
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
-    let repo_owner = match snap.repo_owner.as_deref() {
+    let repo_owner = match repo_owner {
         Some(owner) => owner,
         None => return effects, // Can't detect forks without knowing our repo owner
     };
@@ -817,10 +844,10 @@ async fn detect_and_block_external_prs(
                      To allow it, run: `midtown pr allow {}`",
                     pr_number, source_repo, pr_number
                 ),
-                channel: if snap.default_channel.is_empty() {
+                channel: if default_channel.is_empty() {
                     None
                 } else {
-                    Some(snap.default_channel.clone())
+                    Some(default_channel.to_string())
                 },
             });
         }
@@ -840,17 +867,62 @@ async fn detect_and_block_external_prs(
 /// executing the returned effects via `execute_effects()`.
 ///
 /// Called from `evaluate_tick(PrPollTick)` in the main event loop.
+/// Snapshot of tick fields needed by PR polling.
+///
+/// Extracted from `DaemonPersistentState` under a single lock, then passed
+/// to sub-functions. This avoids holding the persistent_state lock while
+/// calling async functions that also need to lock it.
+#[derive(Default)]
+pub(super) struct PrPollTickState {
+    pub(super) active_coworkers: Vec<crate::coworker::Coworker>,
+    pub(super) active_session_names: HashSet<String>,
+    pub(super) is_at_task_limit: bool,
+    pub(super) reviewer_pr_assignments: HashMap<String, u64>,
+    pub(super) repo_owner: Option<String>,
+    pub(super) default_channel: String,
+    pub(super) pr_task_index: super::snapshot::PrTaskIndex,
+    pub(super) session_task_map: HashMap<String, String>,
+    pub(super) sessions: HashMap<String, super::state::SessionRecord>,
+    pub(super) worktree_registry: crate::worktree_registry::WorktreeRegistry,
+    pub(super) merged_pr_numbers: HashSet<u64>,
+    pub(super) in_progress_tasks: Vec<(String, String, String)>,
+}
+
+impl PrPollTickState {
+    fn from_persistent_state(ps: &super::state::DaemonPersistentState) -> Self {
+        Self {
+            active_coworkers: ps.tick_active_coworkers.clone(),
+            active_session_names: ps.tick_active_session_names.clone(),
+            is_at_task_limit: ps.tick_is_at_task_limit,
+            reviewer_pr_assignments: ps.tick_reviewer_pr_assignments.clone(),
+            repo_owner: ps.tick_repo_owner.clone(),
+            default_channel: ps.tick_default_channel.clone(),
+            pr_task_index: ps.tick_pr_task_index.clone(),
+            session_task_map: ps.tick_session_task_map.clone(),
+            sessions: ps.sessions.clone(),
+            worktree_registry: ps.worktree_registry.clone(),
+            merged_pr_numbers: ps.tick_merged_pr_numbers.clone(),
+            in_progress_tasks: ps.tick_in_progress_tasks.clone(),
+        }
+    }
+}
+
 pub(super) async fn poll_prs_for_issues(
-    snap: &WorldSnapshot,
     state: &DaemonState,
 ) -> Result<Vec<Effect>, Box<dyn std::error::Error + Send + Sync>> {
     debug!("Polling PRs for actionable issues...");
 
     let mut effects: Vec<Effect> = Vec::new();
 
-    // Get list of active coworkers from snapshot (consistent with other tick handlers)
-    let active_coworkers: Vec<String> = snap
-        .coworkers
+    // Extract tick state under a single lock, then drop before async calls.
+    let (tick, tasks) = {
+        let ps = state.persistent_state.lock().await;
+        let tasks = state.task_store.load_all();
+        (PrPollTickState::from_persistent_state(&ps), tasks)
+    };
+
+    // Get list of active coworkers from tick state
+    let active_coworkers: Vec<String> = tick
         .active_coworkers
         .iter()
         .map(|c| c.name.clone())
@@ -931,7 +1003,15 @@ pub(super) async fn poll_prs_for_issues(
     // External PRs are detected by comparing headRepositoryOwner against the base repo owner.
     // Blocked PRs generate a one-time channel notification and are excluded from all
     // downstream processing (reviewer spawning, nudges, task linking, etc.).
-    effects.extend(detect_and_block_external_prs(state, snap, &prs).await);
+    effects.extend(
+        detect_and_block_external_prs(
+            state,
+            tick.repo_owner.as_deref(),
+            &tick.default_channel,
+            &prs,
+        )
+        .await,
+    );
 
     // Collect ALL open PR numbers before filtering, so cleanup_closed_external_prs
     // sees the full set and doesn't purge still-open blocked external PRs.
@@ -941,23 +1021,25 @@ pub(super) async fn poll_prs_for_issues(
         .collect();
 
     let prs: Vec<serde_json::Value> = {
-        let ps = state.persistent_state.lock().await;
+        let ps_lock = state.persistent_state.lock().await;
         prs.into_iter()
             .filter(|pr| {
                 let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-                !ps.github.is_blocked_external_pr(pr_number)
+                !ps_lock.github.is_blocked_external_pr(pr_number)
             })
             .collect()
     };
 
-    effects.extend(update_pr_caches(state, snap, &prs).await);
+    effects.extend(update_pr_caches(state, &tick, &tasks, &prs).await);
 
     // Clean up external PR tracking for truly closed PRs, using the unfiltered
     // open PR list so blocked-but-still-open external PRs are preserved.
     {
-        let mut ps = state.persistent_state.lock().await;
-        ps.github.cleanup_closed_external_prs(&all_open_pr_numbers);
-        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+        let mut ps_lock = state.persistent_state.lock().await;
+        ps_lock
+            .github
+            .cleanup_closed_external_prs(&all_open_pr_numbers);
+        if let Err(e) = ps_lock.save_for_repo(state.paths.dir_key()) {
             warn!(
                 "Failed to save daemon-state.json after external PR cleanup: {}",
                 e
@@ -966,13 +1048,19 @@ pub(super) async fn poll_prs_for_issues(
     }
 
     effects.extend(
-        process_pr_issue_nudges(snap, state, &prs, &active_coworkers, &idle_coworkers).await,
+        process_pr_issue_nudges(&tick, state, &prs, &active_coworkers, &idle_coworkers).await,
     );
 
     // Polling fallback for review comment notifications (when webhooks are degraded)
     effects.extend(
-        collect_comment_notification_effects(snap, state, &prs, &active_coworkers, &idle_coworkers)
-            .await,
+        collect_comment_notification_effects(
+            &tick,
+            state,
+            &prs,
+            &active_coworkers,
+            &idle_coworkers,
+        )
+        .await,
     );
 
     // Pre-collect review status for all PRs before decision functions (pure decision logic
@@ -996,7 +1084,7 @@ pub(super) async fn poll_prs_for_issues(
     let pre_fetched_review_content = pre_fetch_review_content_for_prs(&prs, &reviewed_prs).await;
 
     // Auto-spawn reviewers for PRs that need review
-    effects.extend(collect_reviewer_effects(snap, state, &prs, &pre_fetched_review_content).await);
+    effects.extend(collect_reviewer_effects(&tick, state, &prs, &pre_fetched_review_content).await);
 
     update_review_status_cache(state, &prs, &reviewed_prs);
 
@@ -1004,7 +1092,7 @@ pub(super) async fn poll_prs_for_issues(
     // This covers the case where a coworker is waiting for CI while feedback awaits.
     effects.extend(
         collect_green_with_feedback_effects(
-            snap,
+            &tick,
             state,
             &prs,
             &reviewed_prs,
@@ -1023,7 +1111,7 @@ pub(super) async fn poll_prs_for_issues(
             &prs,
             &reviewed_prs,
             review_mode,
-            snap.is_at_task_limit,
+            tick.is_at_task_limit,
         )
         .await,
     );
@@ -1040,7 +1128,7 @@ pub(super) async fn poll_prs_for_issues(
 /// nudge them to address any feedback and merge. This covers the case where
 /// a coworker is waiting for CI to pass while feedback awaits.
 async fn collect_green_with_feedback_effects(
-    snap: &WorldSnapshot,
+    tick: &PrPollTickState,
     state: &DaemonState,
     prs: &[serde_json::Value],
     reviewed_prs: &HashSet<u64>,
@@ -1073,7 +1161,7 @@ async fn collect_green_with_feedback_effects(
         }
 
         // Only process coworker-owned PRs — session-first, branch fallback.
-        let owner = match resolve_pr_owner(&pf, snap) {
+        let owner = match resolve_pr_owner(&pf, tick) {
             Some(o) => o,
             None => continue, // Not a coworker PR (e.g., dependabot, btucker/*)
         };
@@ -1107,7 +1195,8 @@ async fn collect_green_with_feedback_effects(
                 &pf,
                 PrIssueType::GreenWithFeedback,
                 review_content,
-                snap,
+                tick.is_at_task_limit,
+                &tick.reviewer_pr_assignments,
                 state,
                 active_coworkers,
                 idle_coworkers,
@@ -2052,7 +2141,7 @@ async fn pre_fetch_review_content_for_prs(
 /// Both paths create tasks so the Lead sees consistent formatting, while preserving
 /// handoff-to-idle-coworker and session resume capabilities.
 async fn collect_comment_notification_effects(
-    snap: &WorldSnapshot,
+    tick: &PrPollTickState,
     state: &DaemonState,
     prs: &[serde_json::Value],
     active_coworkers: &[String],
@@ -2126,7 +2215,7 @@ async fn collect_comment_notification_effects(
                         pr_number
                     );
                     effects.push(Effect::nudge_channel_lead(
-                        &snap.default_channel,
+                        &tick.default_channel,
                         lead_nudge_msg,
                     ));
                 }
@@ -2140,11 +2229,14 @@ async fn collect_comment_notification_effects(
         }
 
         // Only check coworker-owned PRs beyond this point
-        let owner = match snap
-            .pr
+        let owner = match tick
             .pr_task_index
             .task_for_pr(pr_number)
-            .and_then(|task_id| snap.find_session_for_task(task_id))
+            .and_then(|task_id| {
+                tick.session_task_map
+                    .get(task_id)
+                    .and_then(|sid| tick.sessions.get(sid))
+            })
             .map(|s| s.name.clone())
             .filter(|n| !n.is_empty())
         {
@@ -2252,7 +2344,7 @@ async fn collect_comment_notification_effects(
             &owner,
             active_coworkers,
             idle_coworkers,
-            snap.is_at_task_limit,
+            tick.is_at_task_limit,
             &nudge_msg,
             crate::rules::PrActionContext::PrComment {
                 actor: "reviewer".to_string(), // Generic actor since we don't know the specific commenter from polling
@@ -2276,7 +2368,7 @@ async fn collect_comment_notification_effects(
                 truncate_str(title, 40)
             );
             effects.push(Effect::nudge_channel_lead(
-                &snap.default_channel,
+                &tick.default_channel,
                 lead_nudge_msg,
             ));
         }
@@ -2292,19 +2384,19 @@ async fn collect_comment_notification_effects(
 /// Uses `SpawnCoworkerWithCallbacks` so that reviewer assignment and channel
 /// messages only happen on successful spawn.
 async fn collect_reviewer_effects(
-    snap: &WorldSnapshot,
+    tick: &PrPollTickState,
     state: &DaemonState,
     prs: &[serde_json::Value],
     pre_fetched_review_content: &HashMap<u64, String>,
 ) -> Vec<Effect> {
     collect_reviewer_effects_with_source(
-        &snap.worktree_registry,
-        &snap.coworkers.active_names,
+        &tick.worktree_registry,
+        &tick.active_session_names,
         state,
         prs,
         true, // is_polling_fallback
         pre_fetched_review_content,
-        snap.is_at_task_limit,
+        tick.is_at_task_limit,
     )
     .await
 }
@@ -2757,7 +2849,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
                     // A session owns this PR's task. Only treat as orphaned if the
                     // coworker is NOT currently active — an active coworker can always
                     // address review feedback regardless of whether a worktree is registered.
-                    // Uses the caller-provided active_names (from WorldSnapshot) which includes
+                    // Uses the caller-provided active_names (from tick state) which includes
                     // both pane-based and headless sessions, unlike list_running() which only
                     // tracks pane-based coworkers.
                     let is_active = active_names.contains(&owner.to_lowercase());
@@ -3956,7 +4048,7 @@ fn collect_stale_check_effects_with_time(
 /// Reconciles orphaned PRs by nudging the lead when a PR is reviewed + CI green
 /// but has no associated in_progress task.
 ///
-/// Uses the pre-computed `open_prs_data` from WorldSnapshot to avoid I/O.
+/// Uses the pre-computed `open_prs_data` from tick state to avoid I/O.
 ///
 /// This handles the case where a PR was opened under the old lifecycle (task completed
 /// on PR open), leaving the PR orphaned with no one to merge it even after review + CI green.
@@ -3973,11 +4065,14 @@ fn collect_stale_check_effects_with_time(
 ///
 /// This is the PR equivalent of orphan task recovery. Pure decision function that
 /// returns effects, following the same pattern as `reconcile_tasks_in_review()`.
-pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
+pub fn reconcile_orphaned_prs(
+    ps: &super::state::DaemonPersistentState,
+    tasks: &[crate::task_store::Task],
+) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    // Iterate over open PRs from the snapshot (pre-collected during collect_world_snapshot)
-    for pr in &snap.pr.open_prs_data {
+    // Iterate over open PRs from the tick state
+    for pr in &ps.tick_open_prs {
         let pr_number = match pr.get("number").and_then(|n| n.as_u64()) {
             Some(n) => n,
             None => continue,
@@ -4006,35 +4101,34 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
         //
         // If we previously nudged the lead about this PR, clear the record so
         // re-nudging is possible if the task later completes without merging.
-        let has_index_link = snap.pr.pr_task_index.pr_has_task(&pr_number);
-        let has_title_link = snap
-            .pr
-            .pr_task_index
+        let has_index_link = ps.tick_pr_task_index.pr_has_task(&pr_number);
+        let has_title_link = ps
+            .tick_pr_task_index
             .github_task_pr_pairs()
             .any(|(tid, pr)| {
                 pr == pr_number
-                    && snap.all_tasks.iter().any(|t| {
+                    && tasks.iter().any(|t| {
                         t.id == *tid && t.status != crate::task_store::TaskStatus::Completed
                     })
             });
-        let has_task_pr_link = snap.all_tasks.iter().any(|t| {
+        let has_task_pr_link = tasks.iter().any(|t| {
             t.pr == Some(pr_number) && t.status != crate::task_store::TaskStatus::Completed
         });
 
         if has_index_link || has_title_link || has_task_pr_link {
-            if snap.pr.orphaned_pr_lead_nudges_sent.contains(&pr_number) {
+            if ps.tick_orphaned_pr_nudges_sent.contains(&pr_number) {
                 effects.push(Effect::ClearOrphanedPrLeadNudge { pr_number });
             }
             continue;
         }
 
         // Skip if the lead has already been nudged about this PR (prevents repeated nudges)
-        if snap.pr.orphaned_pr_lead_nudges_sent.contains(&pr_number) {
+        if ps.tick_orphaned_pr_nudges_sent.contains(&pr_number) {
             continue;
         }
 
         // Check if PR has been reviewed
-        if !snap.reviewer.reviewed_prs.contains(&pr_number) {
+        if !ps.github.reviewed_prs.contains(&pr_number) {
             continue;
         }
 
@@ -4061,7 +4155,7 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
 
         // Nudge the lead to decide what to do with this PR
         effects.push(Effect::nudge_channel_lead(
-            &snap.project_name,
+            &ps.tick_project_name,
             format!(
                 "PR #{} ({}) is reviewed and CI is green, but has no active task. \
                  Please check the PR and either tell the author to merge it or handle it manually.",
@@ -4083,16 +4177,19 @@ pub fn reconcile_orphaned_prs(snap: &WorldSnapshot) -> Vec<Effect> {
 /// never fires.
 ///
 /// This pure function runs on every `PrPollTick` as a reconciliation pass:
-/// for every (task_id, pr_number) pair in `snap.github_open_pr_task_ids`
+/// for every (task_id, pr_number) pair from the PR task index
 /// (derived from open PR titles), it checks whether the corresponding task
 /// already has `task.pr` set correctly. If not, it emits `Effect::SetTaskPr`
 /// to repair the missing link.
-pub fn collect_pr_task_link_effects(snap: &WorldSnapshot) -> Vec<Effect> {
+pub fn collect_pr_task_link_effects(
+    ps: &super::state::DaemonPersistentState,
+    tasks: &[crate::task_store::Task],
+) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    for (task_id_str, pr_number) in snap.pr.pr_task_index.github_task_pr_pairs() {
+    for (task_id_str, pr_number) in ps.tick_pr_task_index.github_task_pr_pairs() {
         // Find the task by ID
-        let task = snap.all_tasks.iter().find(|t| t.id == task_id_str);
+        let task = tasks.iter().find(|t| t.id == task_id_str);
 
         // Only emit if the link is missing or points to the wrong PR.
         // Skip completed tasks — their PR may still be open (e.g., manual close),
@@ -4107,7 +4204,7 @@ pub fn collect_pr_task_link_effects(snap: &WorldSnapshot) -> Vec<Effect> {
             effects.push(Effect::SetTaskPr {
                 task_id: task_id_str.to_string(),
                 pr_number,
-                dir_key: snap.dir_key.clone(),
+                dir_key: ps.tick_dir_key.clone(),
             });
         }
     }
@@ -4120,19 +4217,19 @@ pub fn collect_pr_task_link_effects(snap: &WorldSnapshot) -> Vec<Effect> {
 ///
 /// Called during polling ticks to clean up task-based worktrees after
 /// their PRs are merged.
-pub fn collect_merged_pr_cleanup_effects(snap: &WorldSnapshot) -> Vec<Effect> {
+pub fn collect_merged_pr_cleanup_effects(ps: &super::state::DaemonPersistentState) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    // Use pre-computed PR → branch mapping from snapshot
-    for &pr_num in &snap.pr.merged_pr_numbers {
-        if let Some(branch) = snap.merged_pr_branches.get(&pr_num) {
+    // Use pre-computed PR → branch mapping from tick state
+    for &pr_num in &ps.tick_merged_pr_numbers {
+        if let Some(branch) = ps.tick_merged_pr_branches.get(&pr_num) {
             debug!(
                 "PR #{} merged, scheduling worktree cleanup for branch {}",
                 pr_num, branch
             );
 
             // Build a descriptive channel message with task ID when available
-            let assignment = snap.worktree_registry.get_by_pr(pr_num);
+            let assignment = ps.worktree_registry.get_by_pr(pr_num);
             let message = if let Some(task_id) = assignment.and_then(|a| a.task_id.as_deref()) {
                 format!(
                     "🧹 Cleaned up worktree for PR #{} (task !{})",
@@ -4166,8 +4263,8 @@ pub fn collect_merged_pr_cleanup_effects(snap: &WorldSnapshot) -> Vec<Effect> {
 /// - The coworker whose PR just merged (they're being cleaned up)
 /// - Coworkers on the merge-rebase nudge cooldown
 /// - Coworkers without an active session (no `name_session_map` entry)
-pub fn collect_merge_rebase_nudge_effects(snap: &WorldSnapshot) -> Vec<Effect> {
-    if snap.pr.merged_pr_numbers.is_empty() {
+pub fn collect_merge_rebase_nudge_effects(ps: &super::state::DaemonPersistentState) -> Vec<Effect> {
+    if ps.tick_merged_pr_numbers.is_empty() {
         return vec![];
     }
 
@@ -4175,12 +4272,11 @@ pub fn collect_merge_rebase_nudge_effects(snap: &WorldSnapshot) -> Vec<Effect> {
     // `gh pr list --state merged --limit 10` returns the same PRs every fetch,
     // causing coworkers to be re-nudged every cooldown cycle for old merges.
     let new_merged_prs: Vec<u64> = {
-        let mut prs: Vec<u64> = snap
-            .pr
-            .merged_pr_numbers
+        let mut prs: Vec<u64> = ps
+            .tick_merged_pr_numbers
             .iter()
             .copied()
-            .filter(|pr_num| !snap.rebase_nudge_processed_prs.contains(pr_num))
+            .filter(|pr_num| !ps.tick_rebase_nudge_processed_prs.contains(pr_num))
             .collect();
         prs.sort_unstable();
         prs
@@ -4199,8 +4295,8 @@ pub fn collect_merge_rebase_nudge_effects(snap: &WorldSnapshot) -> Vec<Effect> {
         .collect::<Vec<_>>()
         .join(", ");
 
-    let open_pr_coworkers = snap.sessions_with_open_prs();
-    let merged_pr_coworkers = snap.sessions_with_merged_prs();
+    let open_pr_coworkers = sessions_with_open_prs(ps);
+    let merged_pr_coworkers = sessions_with_merged_prs(ps);
 
     for coworker_name in &open_pr_coworkers {
         // Skip the coworker(s) whose PR just merged
@@ -4209,13 +4305,13 @@ pub fn collect_merge_rebase_nudge_effects(snap: &WorldSnapshot) -> Vec<Effect> {
         }
 
         // Skip coworkers without an active session
-        if !snap.name_session_map.contains_key(coworker_name) {
+        if !ps.tick_name_session_map.contains_key(coworker_name) {
             continue;
         }
 
         // Skip coworkers on cooldown
-        if snap
-            .merge_rebase_nudge_cooldown_names
+        if ps
+            .tick_merge_rebase_nudge_cooldown_names
             .contains(coworker_name)
         {
             continue;
@@ -4536,29 +4632,29 @@ fn run_git_in_worktree(working_dir: &str, args: &[&str]) -> Vec<String> {
 /// 4. If overlap detected, nudges the coworker and posts to ops
 ///
 /// Called from `evaluate_tick(PrPollTick)`.
-pub async fn check_for_rebase_regressions(snap: &WorldSnapshot) -> Vec<Effect> {
+pub async fn check_for_rebase_regressions(ps: &super::state::DaemonPersistentState) -> Vec<Effect> {
     let mut effects = Vec::new();
-    let open_pr_coworkers = snap.sessions_with_open_prs();
+    let open_pr_coworkers = sessions_with_open_prs(ps);
 
     for coworker_name in &open_pr_coworkers {
         // Skip coworkers on cooldown
-        if snap
-            .rebase_regression_cooldown_names
+        if ps
+            .tick_rebase_regression_cooldown_names
             .contains(coworker_name)
         {
             continue;
         }
 
         // Skip coworkers without an active session
-        if !snap.name_session_map.contains_key(coworker_name) {
+        if !ps.tick_name_session_map.contains_key(coworker_name) {
             continue;
         }
 
         // Find the working directory for this coworker's session
-        let working_dir = snap
-            .name_session_map
+        let working_dir = ps
+            .tick_name_session_map
             .get(coworker_name)
-            .and_then(|sid| snap.sessions.get(sid))
+            .and_then(|sid| ps.sessions.get(sid))
             .map(|rec| rec.working_dir.as_str())
             .unwrap_or("");
 
@@ -4731,6 +4827,12 @@ fn parse_reflog_timestamp_is_recent(line: &str, max_age_secs: i64) -> bool {
 
 #[path = "pr_tests.rs"]
 #[cfg(test)]
+#[allow(
+    unused_variables,
+    unused_mut,
+    clippy::vec_init_then_push,
+    clippy::field_reassign_with_default
+)]
 mod tests;
 
 #[path = "pr_review_feedback_tests.rs"]
