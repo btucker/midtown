@@ -146,11 +146,32 @@ pub struct TaskIndexEntry {
 /// Persistent task storage — one JSON file per task.
 pub struct TaskStore {
     tasks_dir: PathBuf,
+    /// High-water mark for task ID allocation (prevents concurrent ID collisions).
+    next_id: std::sync::atomic::AtomicU64,
 }
 
 impl TaskStore {
     pub fn new(tasks_dir: PathBuf) -> Self {
-        Self { tasks_dir }
+        // Initialize high-water mark from existing tasks on disk
+        let max_id = std::fs::read_dir(&tasks_dir)
+            .ok()
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| {
+                        e.path()
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .and_then(|s| s.parse::<u64>().ok())
+                    })
+                    .max()
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+        Self {
+            tasks_dir,
+            next_id: std::sync::atomic::AtomicU64::new(max_id + 1),
+        }
     }
 
     /// Save a task to disk. Sets `updated_at` automatically.
@@ -230,13 +251,8 @@ impl TaskStore {
 
     /// Compute the next sequential task ID from existing tasks.
     pub fn next_task_id(&self) -> u64 {
-        let all = self.load_all();
-        let max_existing = all
-            .iter()
-            .filter_map(|t| t.id.parse::<u64>().ok())
-            .max()
-            .unwrap_or(0);
-        max_existing + 1
+        self.next_id
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Mark a task as completed.
