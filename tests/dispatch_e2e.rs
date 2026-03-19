@@ -493,28 +493,28 @@ fn blocked_task_detection() {
             id: "1".to_string(),
             subject: "Task 1".to_string(),
             status: "completed".to_string(),
-            agent_name: String::new(),
+            owner: None,
             blocked_by: vec![],
         },
         Task {
             id: "2".to_string(),
             subject: "Task 2".to_string(),
             status: "in_progress".to_string(),
-            agent_name: "york".to_string(),
+            owner: Some("york".to_string()),
             blocked_by: vec![],
         },
         Task {
             id: "3".to_string(),
             subject: "Task 3 - blocked".to_string(),
             status: "pending".to_string(),
-            agent_name: String::new(),
+            owner: None,
             blocked_by: vec!["2".to_string()], // blocked by in_progress task
         },
         Task {
             id: "4".to_string(),
             subject: "Task 4 - unblocked".to_string(),
             status: "pending".to_string(),
-            agent_name: String::new(),
+            owner: None,
             blocked_by: vec!["1".to_string()], // blocked by completed task
         },
     ];
@@ -569,14 +569,14 @@ fn completed_blockers_unblock_tasks() {
             id: "1".to_string(),
             subject: "Blocker task".to_string(),
             status: "completed".to_string(),
-            agent_name: String::new(),
+            owner: None,
             blocked_by: vec![],
         },
         Task {
             id: "2".to_string(),
             subject: "Blocked task".to_string(),
             status: "pending".to_string(),
-            agent_name: String::new(),
+            owner: None,
             blocked_by: vec!["1".to_string()],
         },
     ];
@@ -599,21 +599,21 @@ fn transitive_blocking_not_expanded() {
             id: "1".to_string(),
             subject: "Root task".to_string(),
             status: "in_progress".to_string(),
-            agent_name: "york".to_string(),
+            owner: Some("york".to_string()),
             blocked_by: vec![],
         },
         Task {
             id: "2".to_string(),
             subject: "Middle task".to_string(),
             status: "pending".to_string(),
-            agent_name: String::new(),
+            owner: None,
             blocked_by: vec!["1".to_string()], // blocked by in_progress task 1
         },
         Task {
             id: "3".to_string(),
             subject: "Leaf task".to_string(),
             status: "pending".to_string(),
-            agent_name: String::new(),
+            owner: None,
             blocked_by: vec!["2".to_string()], // blocked by pending task 2
         },
     ];
@@ -845,7 +845,7 @@ fn task_owner_validation() {
     let snap = load_snapshot(fixture);
 
     for task in &snap.all_tasks {
-        if let Some(owner) = &task.agent_name
+        if let Some(owner) = &task.owner
             && !owner.is_empty()
         {
             let owner_lower = owner.to_lowercase();

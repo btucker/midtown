@@ -619,7 +619,8 @@ impl MultiTickHarness {
                     .in_progress_tasks
                     .retain(|(id, _, _)| id != task_id);
 
-                if let Some(owner_name) = owner {
+                let owner_name = owner;
+                if !owner_name.is_empty() {
                     let owner_lower = owner_name.to_lowercase();
                     if !self
                         .snapshot
