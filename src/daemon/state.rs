@@ -890,27 +890,43 @@ impl DaemonPersistentState {
     /// Used by both RPC handlers (coworker.break) and Effect handlers to avoid
     /// duplicating the cleanup logic.
     pub fn clear_reviewer_assignment(&mut self, reviewer_name: &str, repo: &str) -> bool {
-        // Find active reviewer spans for this agent name and close them.
-        let task_ids: Vec<String> = self
+        // Close active reviewer spans (legacy path)
+        let span_task_ids: Vec<String> = self
             .active_reviewer_spans()
             .iter()
             .filter(|s| s.agent_name == reviewer_name)
             .map(|s| s.task_id.clone())
             .collect();
-        if task_ids.is_empty() {
-            return false;
-        }
-        for tid in &task_ids {
+        for tid in &span_task_ids {
             tracing::info!("Cleared reviewer span for {} (task {})", reviewer_name, tid);
             self.close_spans_for_task(tid);
         }
-        if let Err(e) = self.save_for_repo(repo) {
+
+        // Also mark matching reviewer sessions as not running
+        let session_ids: Vec<String> = self
+            .sessions
+            .values()
+            .filter(|s| {
+                s.name == reviewer_name && s.agent_type == "midtown-code-reviewer" && s.is_running
+            })
+            .map(|s| s.session_id.clone())
+            .collect();
+        for sid in &session_ids {
+            if let Some(record) = self.sessions.get_mut(sid) {
+                tracing::info!("Cleared reviewer session {} for {}", sid, reviewer_name);
+                record.is_running = false;
+                record.resume_on_startup = false;
+            }
+        }
+
+        let cleared = !span_task_ids.is_empty() || !session_ids.is_empty();
+        if cleared && let Err(e) = self.save_for_repo(repo) {
             tracing::warn!(
                 "Failed to save persistent state after clearing reviewer assignment: {}",
                 e
             );
         }
-        true
+        cleared
     }
 
     /// Returns the set of active channel lead names (keys of `channel_lead_sessions`).
