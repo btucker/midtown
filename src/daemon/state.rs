@@ -696,15 +696,29 @@ impl DaemonPersistentState {
     }
 
     /// Returns true if PR has an active reviewer session that is currently running.
+    ///
+    /// Checks both task_session_spans (legacy) and sessions directly.
     pub fn pr_has_active_reviewer(&self, pr_number: u64) -> bool {
-        self.active_reviewer_for_pr(pr_number)
-            .map(|span| {
-                self.sessions
-                    .get(&span.session_id)
-                    .map(|s| s.is_running)
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false)
+        // Check spans (legacy path)
+        if let Some(span) = self.active_reviewer_for_pr(pr_number)
+            && self
+                .sessions
+                .get(&span.session_id)
+                .map(|s| s.is_running)
+                .unwrap_or(false)
+        {
+            return true;
+        }
+        // Check sessions directly (new path — sessions may exist without spans)
+        self.sessions.values().any(|s| {
+            s.agent_type == "midtown-code-reviewer"
+                && s.is_running
+                && (s.pr_number == Some(pr_number)
+                    || s.task_id
+                        .as_ref()
+                        .and_then(|tid| self.task_pr_number.get(tid))
+                        == Some(&pr_number))
+        })
     }
 
     /// Returns all open spans with agent_type == "reviewer".
