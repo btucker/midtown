@@ -31,6 +31,7 @@ use chrono::Utc;
 
 use midtown::auth::AuthProvider;
 use midtown::coworker::{Coworker, CoworkerStatus};
+use midtown::daemon::DaemonPersistentState;
 use midtown::daemon::Effect;
 use midtown::daemon::SessionRecord;
 use midtown::daemon::snapshot::{PrTaskIndex, ProcessHealth, WorldSnapshot};
@@ -265,6 +266,70 @@ impl MultiTickHarness {
         &self.snapshot
     }
 
+    /// Build a `DaemonPersistentState` from the current snapshot for health functions.
+    ///
+    /// Maps relevant snapshot fields into the tick_* fields that health decision
+    /// functions now read from instead of WorldSnapshot.
+    #[allow(clippy::field_reassign_with_default)]
+    fn build_ps(&self) -> DaemonPersistentState {
+        let snap = &self.snapshot;
+        let mut ps = DaemonPersistentState::default();
+
+        // Config
+        ps.tick_dir_key = snap.dir_key.clone();
+        ps.tick_project_name = snap.project_name.clone();
+        ps.tick_default_channel = snap.default_channel.clone();
+        ps.tick_default_branch = snap.default_branch.clone();
+        ps.tick_repo_owner = snap.repo_owner.clone();
+        ps.tick_now = snap.now_utc;
+        ps.tick_lead_refresh_interval_secs = snap.lead_session_refresh_interval_secs;
+
+        // Coworker state
+        ps.tick_active_coworkers = snap.coworkers.active_coworkers.clone();
+        ps.tick_running_coworkers = snap.coworkers.running_coworkers.clone();
+        ps.tick_active_session_names = snap.coworkers.active_names.clone();
+        ps.tick_coworker_start_times = snap.coworkers.coworker_start_times.clone();
+        ps.tick_coworker_stop_times = snap.coworkers.coworker_stop_times.clone();
+        ps.tick_attached_coworkers = snap.coworkers.attached_coworkers.clone();
+
+        // Process health
+        ps.tick_process_health = snap.health.headless_process_health.clone();
+
+        // Usage limit nudge
+        ps.tick_usage_limit_nudge_scheduled = snap.health.usage_limit_nudge_scheduled;
+        ps.tick_usage_limit_nudge_at = snap.health.usage_limit_nudge_at;
+
+        // Reviewer state
+        ps.tick_reviewer_pr_assignments = snap.reviewer.reviewer_pr_assignments.clone();
+        ps.tick_reviewer_restart_counts = snap.reviewer.reviewer_restart_counts.clone();
+        ps.tick_reviewer_in_progress_comment_ids =
+            snap.reviewer.reviewer_in_progress_comment_ids.clone();
+        ps.tick_reviewer_escalations_posted = snap.reviewer.reviewer_escalations_posted.clone();
+        ps.github.reviewed_prs = snap.reviewer.reviewed_prs.clone();
+
+        // Session / name maps
+        ps.tick_name_session_map = snap.name_session_map.clone();
+        ps.sessions = snap.sessions.clone();
+        ps.channel_lead_sessions = snap.channel_lead_sessions.clone();
+
+        // PR task index
+        ps.tick_pr_task_index = snap.pr.pr_task_index.clone();
+        ps.task_channel = snap.task_channel.clone();
+
+        // Profile state
+        ps.tick_session_profile_map = snap.session_profile_map.clone();
+        ps.tick_limited_pool_profiles = snap.limited_pool_profiles.clone();
+
+        // Stale state
+        ps.tick_stale_lead_worktrees = snap.stale_channel_lead_worktrees.clone();
+        ps.tick_lead_worktree_freshness_cooldown_channels =
+            snap.lead_worktree_freshness_cooldown_channels.clone();
+        ps.tick_stale_channel_notes = snap.stale_channel_notes.clone();
+        ps.tick_note_staleness_cooldown_channels = snap.note_staleness_cooldown_channels.clone();
+
+        ps
+    }
+
     /// Simulate a daemon tick by calling pure decision functions.
     ///
     /// This calls only the pure decision functions that don't require DaemonState.
@@ -277,29 +342,23 @@ impl MultiTickHarness {
         // Call pure decision functions based on event type
         let effects = match event {
             DaemonEvent::SessionMonitorTick => {
+                let ps = self.build_ps();
                 let mut effects = Vec::new();
-                effects.extend(midtown::daemon::check_and_restart_dead_reviewers(
-                    &self.snapshot,
-                ));
-                effects.extend(midtown::daemon::check_for_usage_limits(&self.snapshot));
-                effects.extend(midtown::daemon::maybe_nudge_usage_limit_expiry(
-                    &self.snapshot,
-                ));
-                effects.extend(midtown::daemon::check_and_restart_tool_name_conflicts(
-                    &self.snapshot,
-                ));
+                effects.extend(midtown::daemon::check_and_restart_dead_reviewers(&ps, &[]));
+                effects.extend(midtown::daemon::check_for_usage_limits(&ps));
+                effects.extend(midtown::daemon::maybe_nudge_usage_limit_expiry(&ps));
+                effects.extend(midtown::daemon::check_and_restart_tool_name_conflicts(&ps));
                 effects
             }
             DaemonEvent::TaskDispatchTick => {
+                let ps = self.build_ps();
                 let mut effects = Vec::new();
                 effects.extend(midtown::daemon::reset_orphaned_tasks(&self.snapshot));
                 effects.extend(midtown::daemon::check_for_duplicate_task_workers(
                     &self.snapshot,
                 ));
-                effects.extend(midtown::daemon::detect_stale_attached_sessions(
-                    &self.snapshot,
-                ));
-                effects.extend(midtown::daemon::ensure_lead_alive(&self.snapshot));
+                effects.extend(midtown::daemon::detect_stale_attached_sessions(&ps));
+                effects.extend(midtown::daemon::ensure_lead_alive(&ps));
                 effects.extend(midtown::daemon::dispatch_via_sessions_snapshot_only(
                     &self.snapshot,
                 ));

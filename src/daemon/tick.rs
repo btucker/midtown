@@ -318,6 +318,12 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         )
     };
 
+    // ── Usage limit nudge state ──────────────────────────────────────
+    let (usage_limit_nudge_scheduled, usage_limit_nudge_at) = {
+        let nudge_at = state.usage_limit_nudge_at.lock().await;
+        (nudge_at.is_some(), *nudge_at)
+    };
+
     // ── Lock persistent state and populate ephemeral fields ────────────
     {
         let mut ps = state.persistent_state.lock().await;
@@ -414,6 +420,40 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         ps.tick_active_coworkers = active_coworkers;
         ps.tick_running_coworkers = running_coworkers;
         ps.tick_session_name = session_name;
+
+        // Usage limit nudge state
+        ps.tick_usage_limit_nudge_scheduled = usage_limit_nudge_scheduled;
+        ps.tick_usage_limit_nudge_at = usage_limit_nudge_at;
+
+        // Reviewer PR assignments (from all reviewer sessions)
+        ps.tick_reviewer_pr_assignments =
+            super::snapshot::build_reviewer_pr_assignments_from_spans(&ps);
+
+        // PR → restart_count for stuck reviewer backoff
+        ps.tick_reviewer_restart_counts = ps
+            .task_restart_count
+            .iter()
+            .filter_map(|(task_id, &count)| ps.task_pr_number.get(task_id).map(|&pr| (pr, count)))
+            .collect();
+
+        // Placeholder comment IDs for PRs with unupdated "Review in progress" comments.
+        // Simple version: read from task_placeholder_comment_id mapped through task_pr_number.
+        // The full API-based lookup is only needed in collect_world_snapshot for PR polling.
+        ps.tick_reviewer_in_progress_comment_ids = ps
+            .task_placeholder_comment_id
+            .iter()
+            .filter_map(|(task_id, &comment_id)| {
+                ps.task_pr_number.get(task_id).map(|&pr| (pr, comment_id))
+            })
+            .collect();
+
+        // Name → session ID mapping (lowercase name → session_id)
+        ps.tick_name_session_map = ps
+            .sessions
+            .iter()
+            .filter(|(_, r)| !r.name.is_empty())
+            .map(|(sid, r)| (r.name.to_lowercase(), sid.clone()))
+            .collect();
     }
 
     tasks

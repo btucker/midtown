@@ -6,11 +6,32 @@
 //!
 //! Run with: `cargo test --test snapshot_unused_bugs_e2e`
 
+use midtown::daemon::DaemonPersistentState;
 use midtown::daemon::snapshot::WorldSnapshot;
 use midtown::daemon::{
     Effect, check_for_usage_limits, collect_merged_pr_cleanup_effects, reconcile_orphaned_prs,
     reset_orphaned_tasks,
 };
+
+/// Build a `DaemonPersistentState` with tick fields populated from a snapshot.
+#[allow(clippy::field_reassign_with_default)]
+fn ps_from_snapshot(snap: &WorldSnapshot) -> DaemonPersistentState {
+    let mut ps = DaemonPersistentState::default();
+    ps.tick_dir_key = snap.dir_key.clone();
+    ps.tick_project_name = snap.project_name.clone();
+    ps.tick_default_channel = snap.default_channel.clone();
+    ps.tick_default_branch = snap.default_branch.clone();
+    ps.tick_now = snap.now_utc;
+    ps.tick_active_coworkers = snap.coworkers.active_coworkers.clone();
+    ps.tick_running_coworkers = snap.coworkers.running_coworkers.clone();
+    ps.tick_process_health = snap.health.headless_process_health.clone();
+    ps.tick_usage_limit_nudge_scheduled = snap.health.usage_limit_nudge_scheduled;
+    ps.tick_usage_limit_nudge_at = snap.health.usage_limit_nudge_at;
+    ps.tick_name_session_map = snap.name_session_map.clone();
+    ps.tick_session_profile_map = snap.session_profile_map.clone();
+    ps.tick_limited_pool_profiles = snap.limited_pool_profiles.clone();
+    ps
+}
 
 /// Test that duplicate task assignment is prevented.
 ///
@@ -137,8 +158,10 @@ fn test_hit_usage_limit() {
     let snapshot: WorldSnapshot =
         serde_json::from_str(fixture).expect("Failed to deserialize snapshot");
 
+    let ps = ps_from_snapshot(&snapshot);
+
     // Check for usage limit effects
-    let effects = check_for_usage_limits(&snapshot);
+    let effects = check_for_usage_limits(&ps);
 
     println!("check_for_usage_limits returned {} effects", effects.len());
     for effect in &effects {

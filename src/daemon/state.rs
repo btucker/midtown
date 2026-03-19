@@ -478,6 +478,32 @@ pub struct DaemonPersistentState {
     /// Session name string (e.g., "midtown-projectname").
     #[serde(skip)]
     pub tick_session_name: String,
+
+    // ── Health-check tick fields ──────────────────────────────────────────
+    // Populated by `prepare_tick()` for health.rs decision functions.
+    /// Whether a usage-limit nudge is already scheduled.
+    #[serde(skip)]
+    pub tick_usage_limit_nudge_scheduled: bool,
+
+    /// The scheduled usage-limit nudge time (if any).
+    #[serde(skip)]
+    pub tick_usage_limit_nudge_at: Option<tokio::time::Instant>,
+
+    /// Reviewer name → assigned PR number (from all reviewer sessions + task_pr_number).
+    #[serde(skip)]
+    pub tick_reviewer_pr_assignments: HashMap<String, u64>,
+
+    /// PR number → restart count for reviewer backoff.
+    #[serde(skip)]
+    pub tick_reviewer_restart_counts: HashMap<u64, u32>,
+
+    /// Placeholder comment IDs for PRs with an unupdated "Review in progress" comment.
+    #[serde(skip)]
+    pub tick_reviewer_in_progress_comment_ids: HashMap<u64, u64>,
+
+    /// Name → session ID mapping (lowercase name → session_id).
+    #[serde(skip)]
+    pub tick_name_session_map: HashMap<String, String>,
 }
 
 impl DaemonPersistentState {
@@ -852,6 +878,75 @@ impl DaemonPersistentState {
         self.sessions
             .values()
             .find(|s| s.task_id.as_deref() == Some(task_id))
+    }
+
+    /// Look up the topic channel for a PR via tick_pr_task_index → task_channel.
+    pub fn channel_for_pr(&self, pr_number: u64) -> Option<String> {
+        let task_id = self.tick_pr_task_index.task_for_pr(pr_number)?;
+        self.task_channel.get(task_id).cloned()
+    }
+
+    /// Look up the topic channel for a PR, falling back to project name.
+    pub fn channel_for_pr_or_default(&self, pr_number: u64) -> String {
+        self.channel_for_pr(pr_number)
+            .unwrap_or_else(|| self.tick_project_name.clone())
+    }
+
+    /// Derive usage-limited coworkers from tick_process_health.
+    pub fn usage_limited_coworkers(&self) -> std::collections::HashSet<String> {
+        self.tick_process_health
+            .iter()
+            .filter(|(_, h)| h.has_usage_limit)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Derive auth-error coworkers from tick_process_health.
+    pub fn auth_error_coworkers(&self) -> std::collections::HashSet<String> {
+        self.tick_process_health
+            .iter()
+            .filter(|(_, h)| h.has_auth_error)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Derive API-error coworkers from tick_process_health.
+    pub fn api_error_coworkers(&self) -> std::collections::HashSet<String> {
+        self.tick_process_health
+            .iter()
+            .filter(|(_, h)| h.has_api_error)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Derive tool-name-conflict coworkers from tick_process_health.
+    pub fn tool_name_conflict_coworkers(&self) -> std::collections::HashSet<String> {
+        self.tick_process_health
+            .iter()
+            .filter(|(_, h)| h.has_tool_name_conflict)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Get coworker names that have sessions with open PRs.
+    pub fn sessions_with_open_prs(&self) -> std::collections::HashSet<String> {
+        let open_pr_numbers: std::collections::HashSet<u64> = self
+            .tick_open_prs
+            .iter()
+            .filter_map(|pr| pr["number"].as_u64())
+            .collect();
+
+        self.sessions
+            .values()
+            .filter(|s| s.pr_number.is_some_and(|pr| open_pr_numbers.contains(&pr)))
+            .filter_map(|s| {
+                if s.name.is_empty() {
+                    None
+                } else {
+                    Some(s.name.clone())
+                }
+            })
+            .collect()
     }
 
     /// All running reviewer sessions.

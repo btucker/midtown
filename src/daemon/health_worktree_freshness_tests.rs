@@ -1,14 +1,25 @@
-use super::snapshot;
+use crate::daemon::state::DaemonPersistentState;
+
+#[allow(clippy::field_reassign_with_default)]
+fn test_ps() -> DaemonPersistentState {
+    let mut ps = DaemonPersistentState::default();
+    ps.tick_dir_key = "test-repo".into();
+    ps.tick_project_name = "test-repo".into();
+    ps.tick_default_channel = "test-repo".into();
+    ps.tick_default_branch = "main".into();
+    ps.tick_now = chrono::Utc::now();
+    ps
+}
 
 #[test]
 fn test_stale_worktree_emits_nudge() {
-    let mut snap = snapshot::minimal_snapshot_for_test();
-    snap.stale_channel_lead_worktrees
+    let mut ps = test_ps();
+    ps.tick_stale_lead_worktrees
         .insert("daemon-core".to_string());
-    snap.channel_lead_sessions
+    ps.channel_lead_sessions
         .insert("daemon-core".to_string(), "session-123".to_string());
 
-    let effects = super::check_channel_lead_worktree_freshness(&snap);
+    let effects = super::check_channel_lead_worktree_freshness(&ps);
 
     // Should emit a NudgeChannelLead and a RecordCooldown
     assert!(
@@ -47,12 +58,12 @@ fn test_stale_worktree_emits_nudge() {
 
 #[test]
 fn test_fresh_worktree_emits_nothing() {
-    let mut snap = snapshot::minimal_snapshot_for_test();
-    // stale_channel_lead_worktrees is empty by default
-    snap.channel_lead_sessions
+    let mut ps = test_ps();
+    // stale_lead_worktrees is empty by default
+    ps.channel_lead_sessions
         .insert("daemon-core".to_string(), "session-123".to_string());
 
-    let effects = super::check_channel_lead_worktree_freshness(&snap);
+    let effects = super::check_channel_lead_worktree_freshness(&ps);
 
     assert!(
         effects.is_empty(),
@@ -63,16 +74,16 @@ fn test_fresh_worktree_emits_nothing() {
 
 #[test]
 fn test_cooldown_prevents_re_nudge() {
-    let mut snap = snapshot::minimal_snapshot_for_test();
-    snap.stale_channel_lead_worktrees
+    let mut ps = test_ps();
+    ps.tick_stale_lead_worktrees
         .insert("daemon-core".to_string());
-    snap.channel_lead_sessions
+    ps.channel_lead_sessions
         .insert("daemon-core".to_string(), "session-123".to_string());
     // Channel is on cooldown
-    snap.lead_worktree_freshness_cooldown_channels
+    ps.tick_lead_worktree_freshness_cooldown_channels
         .insert("daemon-core".to_string());
 
-    let effects = super::check_channel_lead_worktree_freshness(&snap);
+    let effects = super::check_channel_lead_worktree_freshness(&ps);
 
     assert!(
         effects.is_empty(),

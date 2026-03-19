@@ -66,16 +66,19 @@ pub async fn evaluate_tick(
     match event {
         DaemonEvent::SessionMonitorTick => {
             let mut effects = Vec::new();
+            let ps = state.persistent_state.lock().await;
+            let tasks = state.task_store.load_all();
             // Health checks: auth errors first (require user intervention),
             // then usage limits and dead process detection.
-            effects.extend(super::health::check_and_handle_auth_errors(snap, state));
-            effects.extend(super::health::check_and_restart_dead_reviewers(snap));
-            effects.extend(super::health::check_for_usage_limits(snap));
-            effects.extend(super::health::maybe_nudge_usage_limit_expiry(snap));
-            effects.extend(super::health::check_and_nudge_api_errors(snap, state));
-            effects.extend(super::health::check_and_restart_tool_name_conflicts(snap));
-            effects.extend(super::health::maybe_refresh_lead_session(snap));
-            effects.extend(super::health::check_channel_lead_worktree_freshness(snap));
+            effects.extend(super::health::check_and_handle_auth_errors(&ps, state));
+            effects.extend(super::health::check_and_restart_dead_reviewers(&ps, &tasks));
+            effects.extend(super::health::check_for_usage_limits(&ps));
+            effects.extend(super::health::maybe_nudge_usage_limit_expiry(&ps));
+            effects.extend(super::health::check_and_nudge_api_errors(&ps, state));
+            effects.extend(super::health::check_and_restart_tool_name_conflicts(&ps));
+            effects.extend(super::health::maybe_refresh_lead_session(&ps));
+            effects.extend(super::health::check_channel_lead_worktree_freshness(&ps));
+            drop(ps);
             effects
         }
         DaemonEvent::TaskDispatchTick => {
@@ -111,19 +114,25 @@ pub async fn evaluate_tick(
                 state,
                 &claimed_ids,
             ));
-            effects.extend(super::health::check_and_respawn_dead_processes(snap, state).await);
-            // Note: fork crash recovery is handled in the session_drain handler (mod.rs),
-            // not here. Fork bindings (topic_sessions) are cleaned up during
-            // cleanup_coworker_state before the snapshot is collected, so a snapshot-based
-            // approach would never see dead forks.
-            // Auto-detach sessions attached longer than ATTACH_TIMEOUT. Both this function and
-            // ensure_lead_alive read the same immutable snapshot, so AutoDetachCoworker only
-            // removes the entry from DaemonState when executed in effects.rs. The lead respawn
-            // happens on the next tick, once ensure_lead_alive sees the entry is gone.
-            effects.extend(super::health::detect_stale_attached_sessions(snap));
-            effects.extend(super::health::ensure_lead_alive(snap));
-            effects.extend(super::health::ensure_channel_leads_alive(snap));
-            effects.extend(super::health::check_and_fire_reminders(snap, state).await);
+            {
+                let ps = state.persistent_state.lock().await;
+                let tasks = state.task_store.load_all();
+                effects.extend(
+                    super::health::check_and_respawn_dead_processes(&ps, &tasks, state).await,
+                );
+                // Note: fork crash recovery is handled in the session_drain handler (mod.rs),
+                // not here. Fork bindings (topic_sessions) are cleaned up during
+                // cleanup_coworker_state before the snapshot is collected, so a snapshot-based
+                // approach would never see dead forks.
+                // Auto-detach sessions attached longer than ATTACH_TIMEOUT. Both this function and
+                // ensure_lead_alive read the same immutable snapshot, so AutoDetachCoworker only
+                // removes the entry from DaemonState when executed in effects.rs. The lead respawn
+                // happens on the next tick, once ensure_lead_alive sees the entry is gone.
+                effects.extend(super::health::detect_stale_attached_sessions(&ps));
+                effects.extend(super::health::ensure_lead_alive(&ps));
+                effects.extend(super::health::ensure_channel_leads_alive(&ps));
+                effects.extend(super::health::check_and_fire_reminders(&ps, state).await);
+            }
             dedup_spawn_effects(effects)
         }
         DaemonEvent::PrPollTick => {
@@ -290,7 +299,10 @@ pub async fn evaluate_tick(
             }
             effects
         }
-        DaemonEvent::NoteReviewTick => super::health::check_for_stale_notes(snap),
+        DaemonEvent::NoteReviewTick => {
+            let ps = state.persistent_state.lock().await;
+            super::health::check_for_stale_notes(&ps)
+        }
     }
 }
 
