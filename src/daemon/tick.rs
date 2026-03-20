@@ -497,6 +497,7 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         ps.tick_session_task_map = ps
             .sessions
             .iter()
+            .filter(|(sid, _)| !sid.is_empty())
             .filter_map(|(sid, r)| r.task_id.as_ref().map(|tid| (tid.clone(), sid.clone())))
             .collect();
 
