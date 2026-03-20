@@ -736,10 +736,20 @@ fn test_process_lead_output_forked_session_is_inherited_to_channel() {
             extra: json!(null),
         }],
     );
-    let mut fork_bound_channels = HashMap::new();
-    fork_bound_channels.insert("fork-1234".to_string(), "topic-omega".to_string());
+    let mut sessions = HashMap::new();
+    sessions.insert(
+        "sess-fork-1234".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-fork-1234".to_string(),
+            name: "fork-1234".to_string(),
+            agent_type: "midtown-channel-lead".to_string(),
+            bound_thread_id: Some("thread-abc".to_string()),
+            channel: Some("topic-omega".to_string()),
+            ..Default::default()
+        },
+    );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &fork_bound_channels);
+    let effects = process_lead_output(&events, &HashMap::new(), "lead", &sessions);
     let fork_effect = effects
         .iter()
         .find(|e| matches!(e, Effect::PostToChannel { sender, .. } if sender == "fork-1234"));
@@ -917,10 +927,20 @@ fn test_process_lead_output_tool_data_for_fork_session() {
             extra: json!(null),
         }],
     );
-    let mut fork_bound_channels = HashMap::new();
-    fork_bound_channels.insert("fork-1234".to_string(), "topic-omega".to_string());
+    let mut sessions = HashMap::new();
+    sessions.insert(
+        "sess-fork-1234".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "sess-fork-1234".to_string(),
+            name: "fork-1234".to_string(),
+            agent_type: "midtown-channel-lead".to_string(),
+            bound_thread_id: Some("thread-abc".to_string()),
+            channel: Some("topic-omega".to_string()),
+            ..Default::default()
+        },
+    );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &fork_bound_channels);
+    let effects = process_lead_output(&events, &HashMap::new(), "lead", &sessions);
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel {

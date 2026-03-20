@@ -944,6 +944,24 @@ impl DaemonPersistentState {
         self.sessions.values_mut().find(|s| s.name == name)
     }
 
+    /// Find the session bound to a thread (for fork/thread routing).
+    /// Prefers running sessions over stopped ones when multiple sessions
+    /// are bound to the same thread.
+    pub fn session_by_thread(&self, thread_id: &str) -> Option<&SessionRecord> {
+        let mut best: Option<&SessionRecord> = None;
+        for s in self.sessions.values() {
+            if s.bound_thread_id.as_deref() == Some(thread_id) {
+                if s.is_running {
+                    return Some(s); // Running session is always preferred
+                }
+                if best.is_none() {
+                    best = Some(s); // Fall back to stopped session
+                }
+            }
+        }
+        best
+    }
+
     /// Find a session record by task ID.
     pub fn session_by_task(&self, task_id: &str) -> Option<&SessionRecord> {
         self.sessions

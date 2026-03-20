@@ -1454,9 +1454,9 @@ async fn test_spawn_task_based_name_avoids_collisions() {
 ///
 /// We can't call handle_coworker_spawn (it spawns a real process), so this
 /// tests the binding logic directly on DaemonState, mirroring the code path
-/// in handle_coworker_spawn lines 149-172.
+/// in handle_coworker_spawn that persists bound_thread_id to SessionRecord.
 #[tokio::test]
-async fn test_thread_binding_populates_fork_bound_threads_and_session_record() {
+async fn test_thread_binding_populates_session_record() {
     let (state, _tmp, _guard) = make_test_state();
     let coworker_name = "madison";
     let thread_id = "msg-abc-123";
@@ -1492,28 +1492,12 @@ async fn test_thread_binding_populates_fork_bound_threads_and_session_record() {
     }
 
     // Apply the same binding logic as handle_coworker_spawn --thread
-    {
-        state
-            .fork_bound_threads
-            .lock()
-            .unwrap()
-            .insert(coworker_name.to_string(), thread_id.to_string());
-    }
+    // (now only sets SessionRecord.bound_thread_id)
     {
         let mut ps = state.persistent_state.lock().await;
         if let Some(record) = ps.sessions.values_mut().find(|r| r.name == coworker_name) {
             record.bound_thread_id = Some(thread_id.to_string());
         }
-    }
-
-    // Verify: fork_bound_threads contains the binding
-    {
-        let bound = state.fork_bound_threads.lock().unwrap();
-        assert_eq!(
-            bound.get(coworker_name),
-            Some(&thread_id.to_string()),
-            "fork_bound_threads should contain the thread binding"
-        );
     }
 
     // Verify: SessionRecord.bound_thread_id is set
@@ -1739,24 +1723,16 @@ fn test_prompt_composition_prompt_only() {
 // ============================================================================
 
 /// Tests that when no SessionRecord matches the coworker name, the thread
-/// binding still populates fork_bound_threads (for immediate routing) even
-/// though the persistence path silently fails to find a record.
+/// binding attempt is a no-op (no SessionRecord to update).
 #[tokio::test]
-async fn test_thread_binding_no_session_record_still_sets_in_memory() {
+async fn test_thread_binding_no_session_record_is_noop() {
     let (state, _tmp, _guard) = make_test_state();
     let coworker_name = "riverside";
     let thread_id = "msg-xyz-789";
 
     // No SessionRecord exists — simulate a race or missing record
 
-    // Apply binding logic
-    {
-        state
-            .fork_bound_threads
-            .lock()
-            .unwrap()
-            .insert(coworker_name.to_string(), thread_id.to_string());
-    }
+    // Apply binding logic (same as handle_coworker_spawn --thread)
     {
         let mut ps = state.persistent_state.lock().await;
         // This find will return None — no record matches
@@ -1766,16 +1742,6 @@ async fn test_thread_binding_no_session_record_still_sets_in_memory() {
         // No save error — just no record found
     }
 
-    // Verify: fork_bound_threads still has the binding (immediate routing works)
-    {
-        let bound = state.fork_bound_threads.lock().unwrap();
-        assert_eq!(
-            bound.get(coworker_name),
-            Some(&thread_id.to_string()),
-            "fork_bound_threads should be set even without a SessionRecord"
-        );
-    }
-
     // Verify: no SessionRecord was created (we don't create records here)
     {
         let ps = state.persistent_state.lock().await;
@@ -1783,6 +1749,17 @@ async fn test_thread_binding_no_session_record_still_sets_in_memory() {
         assert!(
             record.is_none(),
             "No SessionRecord should exist — binding logic doesn't create records"
+        );
+    }
+
+    // Verify: session_by_name returns None (no thread binding without SessionRecord)
+    {
+        let ps = state.persistent_state.lock().await;
+        assert!(
+            ps.session_by_name(coworker_name)
+                .and_then(|s| s.bound_thread_id.as_ref())
+                .is_none(),
+            "No thread binding should exist without a SessionRecord"
         );
     }
 }

@@ -293,22 +293,15 @@ pub(super) async fn handle_coworker_spawn(
 
             // Register thread binding so the coworker's channel posts
             // are automatically routed to the specified thread.
-            // Note: DM channels skip fork_bound_threads (see rpc_channel.rs and effects.rs),
+            // Note: DM channels skip thread binding (see rpc_channel.rs and effects.rs),
             // so thread binding is silently ignored for dm-* channels.
             if let Some(ref tid) = thread {
                 if channel.as_deref().is_some_and(|c| c.starts_with("dm-")) {
                     warn!(
-                        "Thread binding for {} ignored: DM channels do not use fork_bound_threads",
+                        "Thread binding for {} ignored: DM channels do not use thread binding",
                         config.name
                     );
                 }
-                // In-memory binding for immediate routing
-                state
-                    .fork_bound_threads
-                    .lock()
-                    .unwrap()
-                    .insert(config.name.clone(), tid.clone());
-
                 // Persist to SessionRecord so the binding survives daemon restarts.
                 // spawn_coworker() resolves bound_thread_id from task metadata, but
                 // call-in with --thread has no task — we set it directly here.

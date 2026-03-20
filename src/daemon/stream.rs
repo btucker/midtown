@@ -111,7 +111,7 @@ pub fn process_lead_output(
     events: &HashMap<String, Vec<StreamEvent>>,
     channel_lead_sessions: &HashMap<String, String>,
     main_lead_session_name: &str,
-    fork_bound_channels: &HashMap<String, String>,
+    sessions: &HashMap<String, super::state::SessionRecord>,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
@@ -138,13 +138,17 @@ pub fn process_lead_output(
     }
 
     // Forked channel leads → posts to the channel they were inherited from.
-    for (fork_name, channel_name) in fork_bound_channels {
-        if let Some(fork_events) = events.get(fork_name.as_str()) {
+    // Derived from SessionRecord: fork sessions are channel-lead sessions with bound_thread_id.
+    for record in sessions.values() {
+        if record.is_fork_session()
+            && let Some(ref channel) = record.channel
+            && let Some(fork_events) = events.get(record.name.as_str())
+        {
             push_lead_output_effects(
                 &mut effects,
                 fork_events,
-                fork_name.clone(),
-                Some(channel_name.clone()),
+                record.name.clone(),
+                Some(channel.clone()),
             );
         }
     }
@@ -183,7 +187,7 @@ fn push_lead_output_effects(
 /// Extracts tool blocks from the session's events and posts them as a separate
 /// message. Content is empty; clients render tool_data directly (TUI generates
 /// a text summary, web app renders structured blocks). Thread routing for fork
-/// sessions is handled by the effect executor via `fork_bound_threads`.
+/// sessions is handled by the effect executor via SessionRecord.bound_thread_id.
 fn append_tool_data_effects(
     effects: &mut Vec<Effect>,
     session_events: &[StreamEvent],

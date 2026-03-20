@@ -1637,11 +1637,21 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
     };
 
     // ── Fork / topic sessions ───────────────────────────────────────────
+    // Thread→session routing now derived from SessionRecord.bound_thread_id.
     let topic_sessions: HashMap<String, String> = {
-        let ts = state.topic_sessions.lock().unwrap();
-        ts.iter()
-            .filter(|(_, sid)| sid.as_str() != "pending")
-            .map(|(k, v)| (k.clone(), v.clone()))
+        let ps = state.persistent_state.lock().await;
+        ps.sessions
+            .values()
+            .filter(|s| {
+                s.bound_thread_id.is_some()
+                    && s.agent_type == "midtown-channel-lead"
+                    && s.is_running
+            })
+            .filter_map(|s| {
+                s.bound_thread_id
+                    .as_ref()
+                    .map(|tid| (tid.clone(), s.session_id.clone()))
+            })
             .collect()
     };
 

@@ -272,10 +272,10 @@ pub enum Effect {
     /// 2. Otherwise, extract task ID from message content (e.g., "!42") and route to that task's channel
     /// 3. Fall back to the default project channel if no task ID is found
     ///
-    /// **Thread resolution**: If the sender has an entry in `fork_bound_threads`,
-    /// the message is posted as a thread reply under the bound thread parent.
-    /// DM channels (`dm-*`) skip thread resolution — messages are always top-level.
-    /// This mirrors the RPC path in `rpc_channel.rs`.
+    /// **Thread resolution**: If the sender has a `bound_thread_id` in their
+    /// SessionRecord, the message is posted as a thread reply under the bound
+    /// thread parent. DM channels (`dm-*`) skip thread resolution — messages are
+    /// always top-level. This mirrors the RPC path in `rpc_channel.rs`.
     PostToChannel {
         sender: String,
         message: String,
@@ -731,8 +731,8 @@ pub enum Effect {
     ///
     /// When `old_session_id` is provided, attempts to resume the fork's previous
     /// session (preserving conversation history). Falls back to spawning a fresh
-    /// session if resume fails. Re-establishes the topic_sessions and reverse-map
-    /// bindings so the thread continues routing to the fork.
+    /// session if resume fails. Creates a new SessionRecord with bound_thread_id
+    /// so the thread continues routing to the fork via session_by_thread().
     ///
     /// This is the fork counterpart to `SpawnCoworker` for task-based crash recovery.
     /// Fork sessions are thread-bound (not task-bound), so they need a separate
@@ -1104,7 +1104,12 @@ async fn send_session_nudge(
             // Skip DmFromUser — the user's message is already in the DM channel
             // (written by rpc_channel.rs before the nudge effect was created).
             let mut follow_up = Vec::new();
-            let is_fork = state.fork_bound_threads.lock().unwrap().contains_key(&name);
+            let is_fork = {
+                let ps = state.persistent_state.lock().await;
+                ps.session_by_name(&name)
+                    .and_then(|s| s.bound_thread_id.as_ref())
+                    .is_some()
+            };
             if !reason.already_in_dm_channel() && !is_fork {
                 follow_up.push(Effect::PostToChannel {
                     sender: reason.sender().to_owned(),
@@ -1365,12 +1370,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 } else if is_dm_channel {
                     None
                 } else {
-                    state
-                        .fork_bound_threads
-                        .lock()
-                        .unwrap()
-                        .get(&sender)
-                        .cloned()
+                    let ps = state.persistent_state.lock().await;
+                    ps.session_by_name(&sender)
+                        .and_then(|s| s.bound_thread_id.clone())
                 };
 
                 let mut msg = if let Some(parent_id) = bound_thread {
@@ -1437,11 +1439,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 // Skip system senders (midtown, user) and non-fork explicit-channel posts.
                 let is_system_sender = matches!(sender.to_lowercase().as_str(), "midtown" | "user")
                     || sender.eq_ignore_ascii_case(&state.project_name);
-                let has_fork_channel_binding = state
-                    .fork_bound_channels
-                    .lock()
-                    .unwrap()
-                    .contains_key(&sender);
+                let has_fork_channel_binding = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.session_by_name(&sender)
+                        .filter(|s| s.is_fork_session())
+                        .and_then(|s| s.channel.as_ref())
+                        .is_some()
+                };
                 let has_explicit_channel = msg.channel.is_some();
                 let skip = is_system_sender
                     || (has_explicit_channel && !has_fork_channel_binding && !is_dm_channel);
@@ -3189,65 +3193,68 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             state,
                         ))
                         .await;
-                    } else if state
-                        .fork_bound_threads
-                        .lock()
-                        .unwrap()
-                        .contains_key(agent_name)
-                    {
-                        // Fork: dead forks are not respawned (crash recovery
-                        // handles them separately). Just log.
-                        warn!(
-                            "NudgeChannelLead for DM '{}': fork '{}' is dead, not respawning",
-                            channel_name, agent_name
-                        );
                     } else {
-                        // Coworker fallback: find a stored SessionRecord and resume
-                        let stored_record = {
+                        let is_fork = {
                             let ps = state.persistent_state.lock().await;
-                            ps.sessions
-                                .iter()
-                                .find(|(_, r)| r.name == agent_name)
-                                .map(|(sid, r)| (sid.clone(), r.clone()))
+                            ps.session_by_name(agent_name)
+                                .and_then(|s| s.bound_thread_id.as_ref())
+                                .is_some()
                         };
-
-                        if let Some((stored_session_id, record)) = stored_record {
-                            let mut config = crate::launch::LaunchConfig::coworker(
-                                agent_name,
-                                state.paths.dir_key(),
-                                crate::launch::SessionMode::ResumeSession(
-                                    stored_session_id.clone(),
-                                ),
-                                Some(msg),
-                                record.task_id.clone(),
-                            );
-                            config.working_dir = Some(record.working_dir.clone().into());
-
-                            match spawn_with_resume_fallback(
-                                state,
-                                state.paths.dir_key(),
-                                &mut config,
-                            )
-                            .await
-                            {
-                                Ok((new_session_id, _resumed)) => {
-                                    info!(
-                                        "Resumed coworker '{}' for DM nudge (session: {})",
-                                        agent_name, new_session_id
-                                    );
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "Failed to resume coworker '{}' for DM nudge: {}",
-                                        agent_name, e
-                                    );
-                                }
-                            }
-                        } else {
+                        if is_fork {
+                            // Fork: dead forks are not respawned (crash recovery
+                            // handles them separately). Just log.
                             warn!(
-                                "NudgeChannelLead for DM '{}': no active session or stored record for '{}'",
+                                "NudgeChannelLead for DM '{}': fork '{}' is dead, not respawning",
                                 channel_name, agent_name
                             );
+                        } else {
+                            // Coworker fallback: find a stored SessionRecord and resume
+                            let stored_record = {
+                                let ps = state.persistent_state.lock().await;
+                                ps.sessions
+                                    .iter()
+                                    .find(|(_, r)| r.name == agent_name)
+                                    .map(|(sid, r)| (sid.clone(), r.clone()))
+                            };
+
+                            if let Some((stored_session_id, record)) = stored_record {
+                                let mut config = crate::launch::LaunchConfig::coworker(
+                                    agent_name,
+                                    state.paths.dir_key(),
+                                    crate::launch::SessionMode::ResumeSession(
+                                        stored_session_id.clone(),
+                                    ),
+                                    Some(msg),
+                                    record.task_id.clone(),
+                                );
+                                config.working_dir = Some(record.working_dir.clone().into());
+
+                                match spawn_with_resume_fallback(
+                                    state,
+                                    state.paths.dir_key(),
+                                    &mut config,
+                                )
+                                .await
+                                {
+                                    Ok((new_session_id, _resumed)) => {
+                                        info!(
+                                            "Resumed coworker '{}' for DM nudge (session: {})",
+                                            agent_name, new_session_id
+                                        );
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "Failed to resume coworker '{}' for DM nudge: {}",
+                                            agent_name, e
+                                        );
+                                    }
+                                }
+                            } else {
+                                warn!(
+                                    "NudgeChannelLead for DM '{}': no active session or stored record for '{}'",
+                                    channel_name, agent_name
+                                );
+                            }
                         }
                     }
                 } else {
@@ -4385,8 +4392,8 @@ fn auto_detach_suffix_message(
 ///
 /// When `old_session_id` is provided, attempts to resume the fork's previous
 /// session (preserving conversation history). Falls back to spawning a fresh
-/// session if resume fails. Re-establishes the topic_sessions and reverse-map
-/// bindings so the thread continues routing to the fork.
+/// session if resume fails. Creates a new SessionRecord with bound_thread_id
+/// so the thread continues routing to the fork via session_by_thread().
 #[allow(clippy::too_many_arguments)]
 async fn respawn_fork(
     state: &DaemonState,
@@ -4454,12 +4461,6 @@ async fn respawn_fork(
                     Ok(sid) => sid,
                     Err(e) => {
                         warn!("Failed to respawn fork {}: {}", fork_name, e);
-                        // Remove topic_sessions entry so caller knows respawn failed
-                        state
-                            .topic_sessions
-                            .lock()
-                            .unwrap()
-                            .remove(thread_parent_id);
                         return;
                     }
                 }
@@ -4476,24 +4477,13 @@ async fn respawn_fork(
             Ok(sid) => sid,
             Err(e) => {
                 warn!("Failed to respawn fork {}: {}", fork_name, e);
-                // Remove topic_sessions entry so caller knows respawn failed
-                state
-                    .topic_sessions
-                    .lock()
-                    .unwrap()
-                    .remove(thread_parent_id);
                 return;
             }
         }
     };
 
-    // Update topic_sessions with the new session ID
-    {
-        let mut topic = state.topic_sessions.lock().unwrap();
-        topic.insert(thread_parent_id.to_string(), fork_session_id.clone());
-    }
-
-    // Create SessionRecord for the new fork
+    // Create SessionRecord for the new fork (bound_thread_id is the source
+    // of truth for thread→session routing via session_by_thread()).
     {
         let mut ps = state.persistent_state.lock().await;
         // Clear old session records that still claim this name. Same cleanup
@@ -4546,19 +4536,8 @@ async fn respawn_fork(
         }
     }
 
-    // Cache the bound thread mapping for the output binding hot path
-    state
-        .fork_bound_threads
-        .lock()
-        .unwrap()
-        .insert(name.clone(), thread_parent_id.to_string());
-    if let Some(ch) = channel {
-        state
-            .fork_bound_channels
-            .lock()
-            .unwrap()
-            .insert(name.clone(), ch.to_string());
-    }
+    // Thread binding and channel routing are derived from the SessionRecord
+    // persisted above — no in-memory caches to populate.
 
     info!(
         "Respawned fork {} → thread={}, new_session={}",

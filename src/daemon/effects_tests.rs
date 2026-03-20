@@ -1282,10 +1282,19 @@ async fn test_post_to_channel_none_channel_with_bound_thread_uses_default() {
     let sender = "test-agent".to_string();
     let thread_id = "thread-parent-123".to_string();
 
-    // Insert a fork_bound_threads entry for the sender
+    // Insert a SessionRecord with bound_thread_id for the sender
     {
-        let mut threads = state.fork_bound_threads.lock().unwrap();
-        threads.insert(sender.clone(), thread_id.clone());
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "sess-test-agent".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-test-agent".to_string(),
+                name: sender.clone(),
+                bound_thread_id: Some(thread_id.clone()),
+                is_running: true,
+                ..Default::default()
+            },
+        );
     }
 
     // Execute PostToChannel with channel: None — should fall back to default channel
@@ -2269,7 +2278,7 @@ async fn test_post_insight_channel_lead_suppressed() {
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
             "cl-session-abc".to_string(),
-            super::super::state::SessionRecord {
+            crate::daemon::state::SessionRecord {
                 session_id: "cl-session-abc".to_string(),
                 name: "ops-lead".to_string(),
                 agent_type: "midtown-channel-lead".to_string(),
@@ -2310,7 +2319,7 @@ async fn test_post_insight_dedup_before_suppression_ordering() {
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
             "cl-session-abc".to_string(),
-            super::super::state::SessionRecord {
+            crate::daemon::state::SessionRecord {
                 session_id: "cl-session-abc".to_string(),
                 name: "ops-lead".to_string(),
                 agent_type: "midtown-channel-lead".to_string(),
@@ -2356,7 +2365,7 @@ async fn test_post_insight_threads_in_default_channel_when_task_channel_is_none(
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
             "test-session-id".to_string(),
-            super::super::state::SessionRecord {
+            crate::daemon::state::SessionRecord {
                 session_id: "test-session-id".to_string(),
                 name: "coworker1".to_string(),
                 agent_type: "midtown-code-author".to_string(),
@@ -2404,7 +2413,7 @@ async fn test_post_insight_prefers_running_session_over_stale_with_same_name() {
         // Stale session (stopped, different task in different channel)
         ps.sessions.insert(
             "old-session-id".to_string(),
-            super::super::state::SessionRecord {
+            crate::daemon::state::SessionRecord {
                 session_id: "old-session-id".to_string(),
                 name: "coworker1".to_string(),
                 agent_type: "midtown-code-author".to_string(),
@@ -2417,7 +2426,7 @@ async fn test_post_insight_prefers_running_session_over_stale_with_same_name() {
         // Active session (running, correct task)
         ps.sessions.insert(
             "new-session-id".to_string(),
-            super::super::state::SessionRecord {
+            crate::daemon::state::SessionRecord {
                 session_id: "new-session-id".to_string(),
                 name: "coworker1".to_string(),
                 agent_type: "midtown-code-author".to_string(),
@@ -2471,7 +2480,7 @@ async fn test_post_insight_routes_to_task_thread() {
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
             "test-session-id".to_string(),
-            super::super::state::SessionRecord {
+            crate::daemon::state::SessionRecord {
                 session_id: "test-session-id".to_string(),
                 name: "coworker1".to_string(),
                 agent_type: "midtown-code-author".to_string(),
@@ -2516,7 +2525,7 @@ async fn test_post_insight_threads_when_task_channel_is_none() {
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
             "test-session-id".to_string(),
-            super::super::state::SessionRecord {
+            crate::daemon::state::SessionRecord {
                 session_id: "test-session-id".to_string(),
                 name: "coworker1".to_string(),
                 agent_type: "midtown-code-author".to_string(),
@@ -2559,7 +2568,7 @@ async fn test_post_insight_no_thread_when_no_thread_id() {
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
             "test-session-id".to_string(),
-            super::super::state::SessionRecord {
+            crate::daemon::state::SessionRecord {
                 session_id: "test-session-id".to_string(),
                 name: "coworker1".to_string(),
                 agent_type: "midtown-code-author".to_string(),
@@ -2774,15 +2783,9 @@ async fn test_nudge_channel_lead_dm_fork_no_respawn() {
     let (state, _project_dir, _guard) = make_workflow_test_state("myrepo");
     let fork_name = "auth-web-push-a1b2";
 
-    // Register the fork in fork_bound_threads but NOT in name_to_session (dead fork).
-    // Also add a stored SessionRecord — without the fork guard, the coworker fallback
-    // would attempt to resume this record. The type-aware branch should detect the
-    // fork_bound_threads entry and skip respawn entirely.
-    state
-        .fork_bound_threads
-        .lock()
-        .unwrap()
-        .insert(fork_name.to_string(), "thread-001".to_string());
+    // Register the fork in SessionRecord with bound_thread_id but NOT in
+    // name_to_session (dead fork). The type-aware branch should detect the
+    // bound_thread_id and skip respawn entirely.
     {
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
@@ -2790,6 +2793,7 @@ async fn test_nudge_channel_lead_dm_fork_no_respawn() {
             crate::daemon::state::SessionRecord {
                 session_id: "sess-fork-dead".to_string(),
                 name: fork_name.to_string(),
+                bound_thread_id: Some("thread-001".to_string()),
                 working_dir: "/tmp".to_string(),
                 ..Default::default()
             },
@@ -2952,7 +2956,7 @@ async fn test_record_task_assignment_updates_session_task_id() {
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
             session_id.to_string(),
-            super::super::state::SessionRecord {
+            crate::daemon::state::SessionRecord {
                 session_id: session_id.to_string(),
                 name: coworker_name.to_string(),
                 agent_type: "midtown-code-author".to_string(),
@@ -3007,7 +3011,7 @@ async fn test_record_task_assignment_fixes_insight_routing() {
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
             session_id.to_string(),
-            super::super::state::SessionRecord {
+            crate::daemon::state::SessionRecord {
                 session_id: session_id.to_string(),
                 name: coworker_name.to_string(),
                 agent_type: "midtown-code-author".to_string(),

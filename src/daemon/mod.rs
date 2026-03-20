@@ -107,19 +107,19 @@ use crate::worktree::WorktreeManager;
 fn dm_mirror_agent_names(
     sessions: &HashMap<String, state::SessionRecord>,
     channel_lead_sessions: &HashMap<String, String>,
-    fork_bound_channels: &HashMap<String, String>,
     project_name: &str,
 ) -> HashSet<String> {
     sessions
         .values()
         .filter(|r| !r.name.is_empty())
-        .map(|r| &r.name)
-        .filter(|name| {
-            name.as_str() != project_name
-                && !channel_lead_sessions.contains_key(name.as_str())
-                && !fork_bound_channels.contains_key(name.as_str())
+        .filter(|r| {
+            r.name.as_str() != project_name
+                && !channel_lead_sessions.contains_key(r.name.as_str())
+                // Exclude fork sessions (channel-lead forks with bound threads)
+                // — they already stream to their real channel/bound thread.
+                && !(r.is_fork_session() && r.channel.is_some())
         })
-        .cloned()
+        .map(|r| r.name.clone())
         .collect()
 }
 
@@ -686,35 +686,13 @@ pub(crate) struct DaemonState {
     pending_question_id_counter: std::sync::atomic::AtomicU64,
     /// Topic session mappings for forked channel leads.
     ///
-    /// Maps `thread_parent_id → session_id` for forked topic sessions. When a thread
-    /// reply arrives for a channel with a topic session mapping, the reply is routed
-    /// to the forked session instead of the root channel lead.
+    /// Thread IDs that currently have a fork spawn in progress.
     ///
-    /// Rebuilt on daemon startup from persisted `SessionRecord.bound_thread_id` for
-    /// channel-lead sessions, using the same pattern as `fork_bound_threads`.
-    pub(crate) topic_sessions: std::sync::Mutex<HashMap<String, String>>,
-
-    /// In-memory cache of bound thread IDs for forked sessions.
-    ///
-    /// Maps `fork_name → thread_parent_id`. Used by the output binding path in
-    /// `handle_channel_post` to auto-tag forked session posts with their bound
-    /// thread — avoids acquiring the async `persistent_state` lock on the channel
-    /// post hot path.
-    ///
-    /// Populated in five places:
-    /// 1. `handle_session_fork` — when a fork is created
-    /// 2. `SpawnForTask` effect handler (`effects.rs`) — when a task with `--thread-id` spawns
-    /// 3. Daemon startup rebuild (`mod.rs`) — from persisted `SessionRecord.bound_thread_id`
-    /// 4. `spawn_coworker()` — for non-reviewer coworkers with a `bound_thread_id`
-    /// 5. `handle_coworker_spawn` (`rpc_coworker.rs`) — when `--thread` is passed to call-in
-    ///
-    /// Cleaned up in `cleanup_coworker_state` when a coworker is shut down.
-    pub(crate) fork_bound_threads: std::sync::Mutex<HashMap<String, String>>,
-    /// In-memory cache of inherited channel names for forked sessions.
-    ///
-    /// Maps `fork_name → channel_name`. Used by stream processing so forked
-    /// output is routed to the thread's topic channel.
-    pub(crate) fork_bound_channels: std::sync::Mutex<HashMap<String, String>>,
+    /// Used as a concurrency guard to prevent duplicate fork spawns for the same
+    /// thread. The thread ID is inserted before spawning and removed after the
+    /// SessionRecord is persisted (or on spawn failure). Replaces the old
+    /// the old `topic_sessions` "pending" sentinel pattern.
+    pub(crate) pending_forks: std::sync::Mutex<HashSet<String>>,
 
     /// Maps coworker session name → auth profile email for pool-based spawns.
     ///
@@ -943,7 +921,7 @@ impl DaemonState {
     ///
     /// Handles: coworker deregistration, stop-time recording, coworker records,
     /// cooldowns, pending nudges, task assignments, recent tool activity,
-    /// topic_sessions cleanup, SessionRecord persistent state update (marks
+    /// SessionRecord persistent state update (marks
     /// `is_running=false` and `current_name=None`), optional worktree
     /// unbinding, and pending questions.
     ///
@@ -984,17 +962,16 @@ impl DaemonState {
             let mut headers_map = self.tool_activity_headers.write().unwrap();
             headers_map.remove(name);
         }
-        // Capture fork bindings before cleanup for web UI notification.
-        let bound_thread_id = self.fork_bound_threads.lock().unwrap().get(name).cloned();
-        let bound_channel = self.fork_bound_channels.lock().unwrap().get(name).cloned();
-        // Clear fork thread binding (prevents stale thread routing on name reuse)
-        {
-            self.fork_bound_threads.lock().unwrap().remove(name);
-        }
-        // Clear fork channel binding (prevents stale channel routing on name reuse)
-        {
-            self.fork_bound_channels.lock().unwrap().remove(name);
-        }
+        // Capture fork bindings for web UI notification (from SessionRecord).
+        let (bound_thread_id, bound_channel) = {
+            let ps = self.persistent_state.lock().await;
+            let record = ps.session_by_name(name);
+            let tid = record.and_then(|r| r.bound_thread_id.clone());
+            let ch = record
+                .filter(|r| r.is_fork_session())
+                .and_then(|r| r.channel.clone());
+            (tid, ch)
+        };
         // Clear profile pool mapping (prevents stale profile attribution on name reuse)
         {
             let mut map = self.session_profile_map.lock().unwrap();
@@ -1005,14 +982,6 @@ impl DaemonState {
             let ps = self.persistent_state.lock().await;
             ps.session_by_name(name).map(|r| r.session_id.clone())
         };
-        // Clean up topic_sessions entries pointing to this session
-        // (prevents stale thread routing to dead fork sessions).
-        if let Some(ref session_id) = removed_session_id {
-            self.topic_sessions
-                .lock()
-                .unwrap()
-                .retain(|_, sid| sid != session_id);
-        }
         // Clear pending questions (prevents stale questions after crash/shutdown)
         {
             let mut questions = self.pending_questions.lock().unwrap();
@@ -1310,33 +1279,6 @@ impl DaemonState {
         // Clone dir_key for session_manager before moving paths into Self
         let session_manager_repo_name = dir_key.to_string();
 
-        let mut fork_bound_threads: HashMap<String, String> = HashMap::new();
-        let mut fork_bound_channels: HashMap<String, String> = HashMap::new();
-        let mut topic_sessions: HashMap<String, String> = HashMap::new();
-        {
-            for (session_id, record) in &persistent_state.sessions {
-                if !record.name.is_empty() {
-                    let name = &record.name;
-                    // Rebuild thread-binding cache from persisted SessionRecord so
-                    // coworker posts are auto-tagged after a daemon restart.
-                    if let Some(ref tid) = record.bound_thread_id {
-                        fork_bound_threads.insert(name.clone(), tid.clone());
-                        // Rebuild inherited channel map only for forked channel leads.
-                        // Regular task coworkers also carry `bound_thread_id` but should not
-                        // stream their output as lead-like activity.
-                        if record.agent_type == "midtown-channel-lead" {
-                            if let Some(ref channel) = record.channel {
-                                fork_bound_channels.insert(name.clone(), channel.clone());
-                            }
-                            // Rebuild topic_sessions so thread replies route to existing
-                            // forks after a daemon restart (prevents duplicate forks).
-                            topic_sessions.insert(tid.clone(), session_id.clone());
-                        }
-                    }
-                }
-            }
-        }
-
         // Set up the task store and build the initial task index from disk.
         let task_store = crate::task_store::TaskStore::new(paths.tasks_dir());
         let task_index = task_store.build_index();
@@ -1413,9 +1355,8 @@ impl DaemonState {
             tool_activity_headers: std::sync::RwLock::new(HashMap::new()),
             pending_questions: std::sync::Mutex::new(Vec::new()),
             pending_question_id_counter: std::sync::atomic::AtomicU64::new(1),
-            topic_sessions: std::sync::Mutex::new(topic_sessions),
-            fork_bound_threads: std::sync::Mutex::new(fork_bound_threads),
-            fork_bound_channels: std::sync::Mutex::new(fork_bound_channels),
+            // topic_sessions removed — thread routing uses SessionRecord.bound_thread_id directly
+            pending_forks: std::sync::Mutex::new(HashSet::new()),
             session_profile_map: std::sync::Mutex::new(HashMap::new()),
             dm_tool_threads: std::sync::Mutex::new(HashMap::new()),
             plugin_daemon,
@@ -1702,17 +1643,8 @@ impl DaemonState {
                     ..Default::default()
                 },
             );
-            // Populate fork_bound_threads so channel posts auto-route to the task thread.
-            // Skip reviewers: they have their own respawn path (decide_dead_reviewer_respawns)
-            // and adding them here would cause fork crash recovery to misconfigure them.
-            if let Some(ref tid) = bound_thread_id
-                && !is_reviewer
-            {
-                self.fork_bound_threads
-                    .lock()
-                    .unwrap()
-                    .insert(name.clone(), tid.clone());
-            }
+            // Thread binding is derived from SessionRecord.bound_thread_id
+            // (persisted above) — no in-memory cache to populate.
             if let Err(e) = ps.save_for_repo(self.paths.dir_key()) {
                 warn!("Failed to save persistent state after spawn: {}", e);
             }
@@ -2276,10 +2208,8 @@ impl DaemonState {
             // is redundant but kept for clarity since session_by_name only
             // matches exact name, and the old code checked all values.
         }
-        // Active fork
-        if self.fork_bound_threads.lock().unwrap().contains_key(name) {
-            return true;
-        }
+        // Active forks are already covered by session_by_name above
+        // (fork sessions have SessionRecord with bound_thread_id).
         false
     }
 
@@ -3872,23 +3802,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 // All functions need channel_lead_sessions — acquire the lock once.
                 let (lead_effects, coworker_effects) = {
                     let ps = state.persistent_state.lock().await;
-                    let fork_bound_channels = state.fork_bound_channels.lock().unwrap();
                     let lead_effects = stream::process_lead_output(
                         &events,
                         &ps.channel_lead_sessions,
                         &state.project_name,
-                        &fork_bound_channels,
+                        &ps.sessions,
                     );
 
                     // Only agents without a native home channel get DM mirrors.
                     // Root leads and fork sessions already stream to their real
                     // channel / bound thread, so a dm-* copy is duplicate noise.
-                    // Use fork_bound_channels (fork-specific) instead of
-                    // fork_bound_threads (which also includes regular coworkers).
                     let dm_agent_names = dm_mirror_agent_names(
                         &ps.sessions,
                         &ps.channel_lead_sessions,
-                        &fork_bound_channels,
                         &state.project_name,
                     );
                     let coworker_effects =
@@ -3929,19 +3855,22 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // handling is single-threaded, so no concurrent remove() is possible.
                     let failed_resume = state.session_manager.was_failed_resume(&name).await;
 
-                    // Capture session_id BEFORE cleanup (cleanup removes session record).
-                    let session_id_for_cleanup = {
+                    // Capture session_id and fork bindings BEFORE cleanup
+                    // (cleanup marks SessionRecord as non-running). Fork crash
+                    // recovery must detect dead forks here — not in the
+                    // snapshot-based TaskDispatchTick — because
+                    // cleanup_coworker_state marks SessionRecord as non-running,
+                    // making dead forks invisible to session_by_thread().
+                    let (session_id_for_cleanup, fork_thread_id, fork_channel) = {
                         let ps = state.persistent_state.lock().await;
-                        ps.session_by_name(&name).map(|r| r.session_id.clone())
+                        let record = ps.session_by_name(&name);
+                        let sid = record.map(|r| r.session_id.clone());
+                        let tid = record.and_then(|r| r.bound_thread_id.clone());
+                        let ch = record
+                            .filter(|r| r.is_fork_session())
+                            .and_then(|r| r.channel.clone());
+                        (sid, tid, ch)
                     };
-
-                    // Capture fork bindings BEFORE cleanup (cleanup clears these).
-                    // Fork crash recovery must detect dead forks here — not in the
-                    // snapshot-based TaskDispatchTick — because cleanup_coworker_state
-                    // removes topic_sessions entries, making dead forks invisible to
-                    // any snapshot collected after cleanup.
-                    let fork_thread_id = state.fork_bound_threads.lock().unwrap().get(&name).cloned();
-                    let fork_channel = state.fork_bound_channels.lock().unwrap().get(&name).cloned();
 
                     // Remove from session manager tracking (session-death-specific:
                     // shutdown path uses session_manager.shutdown() instead)
@@ -4113,12 +4042,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 "Fork {} exceeded max respawn attempts ({}) for thread {} — giving up",
                                 name, crate::rules::MAX_FORK_RESPAWN_ATTEMPTS, thread_parent_id
                             );
-                            // Clean up the topic_sessions entry so thread replies
-                            // fall back to the channel lead instead of routing to a
-                            // dead fork session.
-                            if let Some(ref sid) = session_id_for_cleanup {
-                                state.topic_sessions.lock().unwrap().retain(|_, v| v != sid);
-                            }
+                            // No topic_sessions cleanup needed — thread routing now
+                            // uses SessionRecord.bound_thread_id directly via
+                            // session_by_thread(), which skips non-running sessions.
                             // Clean up the respawn counter (no longer needed).
                             state.fork_respawn_counts.lock().unwrap().remove(&thread_parent_id);
                             let giving_up_message = {

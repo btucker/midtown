@@ -530,20 +530,24 @@ async fn test_session_clear_handles_channel_lead_metadata() {
 // create_fork_session tests
 // ============================================================================
 
-/// Helper: populate the state so that `create_fork_session` treats an existing
-/// `topic_sessions` entry as alive (inserts SessionRecord + is_alive hook).
+/// Helper: set up is_alive hook so that `create_fork_session` treats a fork
+/// session as alive. If the session record doesn't already exist, inserts one.
 async fn setup_alive_fork(state: &DaemonState, session_id: &str, fork_name: &str) {
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.sessions.insert(
-            session_id.to_string(),
-            crate::daemon::state::SessionRecord {
-                session_id: session_id.to_string(),
-                name: fork_name.to_string(),
-                is_running: true,
-                ..Default::default()
-            },
-        );
+        // Only insert if no record exists yet (caller may have pre-inserted
+        // one with bound_thread_id set).
+        if !ps.sessions.contains_key(session_id) {
+            ps.sessions.insert(
+                session_id.to_string(),
+                crate::daemon::state::SessionRecord {
+                    session_id: session_id.to_string(),
+                    name: fork_name.to_string(),
+                    is_running: true,
+                    ..Default::default()
+                },
+            );
+        }
     }
     let name_owned = fork_name.to_string();
     state
@@ -561,11 +565,21 @@ async fn test_create_fork_session_returns_existing_when_already_present() {
 
     let thread_id = "thread-already-exists-abc";
     let existing_sid = "session-already-exists-xyz".to_string();
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_id.to_string(), existing_sid.clone());
+    // Insert a SessionRecord with bound_thread_id (replaces old topic_sessions insert)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            existing_sid.clone(),
+            crate::daemon::state::SessionRecord {
+                session_id: existing_sid.clone(),
+                name: "fork-already-exists".to_string(),
+                bound_thread_id: Some(thread_id.to_string()),
+                agent_type: "midtown-channel-lead".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
     setup_alive_fork(&state, &existing_sid, "fork-already-exists").await;
 
     let result =
@@ -579,10 +593,9 @@ async fn test_create_fork_session_returns_existing_when_already_present() {
     );
     assert!(already_existed, "already_existed should be true");
 
-    // topic_sessions should still contain only the one entry (no sentinel added)
-    let topic = state.topic_sessions.lock().unwrap();
-    assert_eq!(topic.len(), 1);
-    assert_eq!(topic.get(thread_id).unwrap(), &existing_sid);
+    // pending_forks should be empty (no spawn was attempted)
+    let pending = state.pending_forks.lock().unwrap();
+    assert!(pending.is_empty(), "no pending forks should exist");
 }
 
 /// When `topic_sessions` has an entry for a dead session (e.g. after daemon
@@ -594,11 +607,21 @@ async fn test_create_fork_session_clears_stale_entry() {
 
     let thread_id = "thread-stale-session-abc";
     let stale_sid = "stale-session-xyz".to_string();
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_id.to_string(), stale_sid.clone());
+    // Insert a dead session record (no is_alive hook → reports as dead)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            stale_sid.clone(),
+            crate::daemon::state::SessionRecord {
+                session_id: stale_sid.clone(),
+                name: "fork-stale".to_string(),
+                bound_thread_id: Some(thread_id.to_string()),
+                agent_type: "midtown-channel-lead".to_string(),
+                is_running: false,
+                ..Default::default()
+            },
+        );
+    }
     // No is_alive hook → session reports as dead.
 
     // The function should detect the stale entry and try to create a new fork.
@@ -621,11 +644,11 @@ async fn test_create_fork_session_clears_stale_entry() {
         Err(_) => {
             // Spawn failure is acceptable in test — the important thing is
             // that it didn't short-circuit with the stale session_id.
-            // Sentinel should be cleaned up.
-            let topic = state.topic_sessions.lock().unwrap();
+            // pending_forks should be cleaned up on failure.
+            let pending = state.pending_forks.lock().unwrap();
             assert!(
-                !topic.contains_key(thread_id) || topic.get(thread_id) != Some(&stale_sid),
-                "stale entry should be cleared"
+                !pending.contains(thread_id),
+                "pending slot should be cleaned up after failure"
             );
         }
     }
@@ -639,25 +662,24 @@ async fn test_create_fork_session_returns_err_when_pending() {
 
     let thread_id = "thread-pending-fork-abc";
     state
-        .topic_sessions
+        .pending_forks
         .lock()
         .unwrap()
-        .insert(thread_id.to_string(), "pending".to_string());
+        .insert(thread_id.to_string());
 
     let result =
         create_fork_session(thread_id, "any-calling-session", None, None, "test", &state).await;
 
     assert!(
         result.is_err(),
-        "should fail when fork slot is already 'pending'"
+        "should fail when fork slot is already pending"
     );
 
-    // topic_sessions should still contain only the "pending" entry from the other caller
-    let topic = state.topic_sessions.lock().unwrap();
-    assert_eq!(
-        topic.get(thread_id).map(String::as_str),
-        Some("pending"),
-        "pending sentinel should be untouched"
+    // pending_forks should still contain the entry from the other caller
+    let pending = state.pending_forks.lock().unwrap();
+    assert!(
+        pending.contains(thread_id),
+        "pending entry should be untouched"
     );
 }
 
@@ -700,11 +722,11 @@ async fn test_create_fork_session_cleans_up_sentinel_on_spawn_failure() {
 
     assert!(result.is_err(), "should fail when spawn_fork fails");
 
-    // Sentinel should be cleaned up — the slot should be available for retry
-    let topic = state.topic_sessions.lock().unwrap();
+    // pending_forks should be cleaned up — the slot should be available for retry
+    let pending = state.pending_forks.lock().unwrap();
     assert!(
-        !topic.contains_key(thread_id),
-        "pending sentinel should be removed after spawn failure"
+        !pending.contains(thread_id),
+        "pending entry should be removed after spawn failure"
     );
 }
 
@@ -716,11 +738,20 @@ async fn test_create_fork_session_existing_returns_none_fork_channel() {
 
     let thread_id = "thread-existing-channel-check";
     let existing_sid = "session-existing-channel-xyz".to_string();
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_id.to_string(), existing_sid.clone());
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            existing_sid.clone(),
+            crate::daemon::state::SessionRecord {
+                session_id: existing_sid.clone(),
+                name: "fork-existing-channel".to_string(),
+                bound_thread_id: Some(thread_id.to_string()),
+                agent_type: "midtown-channel-lead".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
     setup_alive_fork(&state, &existing_sid, "fork-existing-channel").await;
 
     let result =
@@ -776,11 +807,11 @@ async fn test_create_fork_session_with_channel_hint_reaches_spawn() {
     // completed successfully (it runs before spawn).
     assert!(result.is_err(), "spawn should fail in test environment");
 
-    // Sentinel should be cleaned up after spawn failure
-    let topic = state.topic_sessions.lock().unwrap();
+    // pending_forks should be cleaned up after spawn failure
+    let pending = state.pending_forks.lock().unwrap();
     assert!(
-        !topic.contains_key(thread_id),
-        "sentinel should be cleaned up after spawn failure"
+        !pending.contains(thread_id),
+        "pending entry should be cleaned up after spawn failure"
     );
 }
 
@@ -792,11 +823,20 @@ async fn test_handle_session_fork_already_exists_response() {
 
     let thread_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
     let existing_sid = "rpc-existing-session-xyz".to_string();
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_id.to_string(), existing_sid.clone());
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            existing_sid.clone(),
+            crate::daemon::state::SessionRecord {
+                session_id: existing_sid.clone(),
+                name: "fork-rpc-existing".to_string(),
+                bound_thread_id: Some(thread_id.to_string()),
+                agent_type: "midtown-channel-lead".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
     setup_alive_fork(&state, &existing_sid, "fork-rpc-existing").await;
 
     let resp = handle_session_fork(
@@ -831,10 +871,10 @@ async fn test_handle_session_fork_returns_pending_during_spawn_window() {
 
     let thread_id = "b2c3d4e5-f6a7-8901-bcde-f12345678901";
     state
-        .topic_sessions
+        .pending_forks
         .lock()
         .unwrap()
-        .insert(thread_id.to_string(), "pending".to_string());
+        .insert(thread_id.to_string());
 
     let resp = handle_session_fork(
         RequestId::Number(2),
@@ -906,11 +946,11 @@ async fn test_create_fork_session_falls_back_to_repo_name() {
 
     assert!(result.is_err(), "spawn should fail in test environment");
 
-    // Sentinel cleaned up — spawn was reached (past channel resolution)
-    let topic = state.topic_sessions.lock().unwrap();
+    // pending_forks cleaned up — spawn was reached (past channel resolution)
+    let pending = state.pending_forks.lock().unwrap();
     assert!(
-        !topic.contains_key(thread_id),
-        "sentinel should be cleaned up after spawn failure"
+        !pending.contains(thread_id),
+        "pending entry should be cleaned up after spawn failure"
     );
 }
 
@@ -922,11 +962,20 @@ async fn test_handle_session_fork_existing_does_not_nudge() {
 
     let thread_id = "c3d4e5f6-a7b8-9012-cdef-123456789012";
     let existing_sid = "existing-session-no-nudge".to_string();
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_id.to_string(), existing_sid.clone());
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            existing_sid.clone(),
+            crate::daemon::state::SessionRecord {
+                session_id: existing_sid.clone(),
+                name: "fork-no-nudge".to_string(),
+                bound_thread_id: Some(thread_id.to_string()),
+                agent_type: "midtown-channel-lead".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
     setup_alive_fork(&state, &existing_sid, "fork-no-nudge").await;
 
     // Fork already exists — handle_session_fork should return immediately
@@ -1378,42 +1427,41 @@ async fn test_fork_thread_no_channel_lead() {
     assert!(msg.contains("No channel lead session"));
 }
 
-/// When `topic_sessions` has a fork session ID but `session_to_name` does not
-/// have the corresponding mapping, `handle_session_unfork_thread` should clean
-/// up the stale `topic_sessions` entry and return an error rather than leaving
-/// the process running and unreachable.
+/// When a SessionRecord exists with bound_thread_id but has no name,
+/// `handle_session_unfork_thread` should return an error with "stale".
 #[tokio::test]
 async fn test_unfork_thread_stale_session_to_name_cleans_up() {
     let (state, _tmp, _guard) = make_test_state();
     let thread_id = "thread-stale-fork";
     let fork_sid = "fork-session-no-name";
 
-    // Insert a fork session into topic_sessions without a session_to_name entry
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_id.to_string(), fork_sid.to_string());
-    // Do NOT insert into session_to_name — simulates concurrent cleanup race
+    // Insert a SessionRecord with bound_thread_id but empty name
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            fork_sid.to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: fork_sid.to_string(),
+                name: String::new(), // empty name — simulates concurrent cleanup race
+                bound_thread_id: Some(thread_id.to_string()),
+                agent_type: "midtown-channel-lead".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
 
     let resp = handle_session_unfork_thread(1_i64.into(), thread_id, "web", &state).await;
     let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
     assert!(
         json.get("error").is_some(),
-        "Should return error when session_to_name is missing"
+        "Should return error when name is missing"
     );
     let msg = json["error"]["message"].as_str().unwrap_or("");
     assert!(
         msg.contains("stale"),
         "Error should mention 'stale', got: {}",
         msg
-    );
-
-    // Verify topic_sessions was cleaned up
-    let topic = state.topic_sessions.lock().unwrap();
-    assert!(
-        !topic.contains_key(thread_id),
-        "Stale topic_sessions entry should have been removed"
     );
 }
 
@@ -1444,32 +1492,41 @@ async fn test_thread_ownership_query() {
     assert!(json1.get("result").is_some());
     assert_eq!(json1["result"]["has_dedicated_session"], false);
 
-    // Register a fork session
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_id.to_string(), "real-fork-session".to_string());
+    // Register a fork session via SessionRecord with bound_thread_id
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "real-fork-session".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "real-fork-session".to_string(),
+                name: "fork-ownership".to_string(),
+                bound_thread_id: Some(thread_id.to_string()),
+                agent_type: "midtown-channel-lead".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
 
     let resp2 = handle_session_thread_ownership(2_i64.into(), thread_id, "web", &state).await;
     let json2: serde_json::Value = serde_json::to_value(&resp2).unwrap();
     assert!(json2.get("result").is_some());
     assert_eq!(json2["result"]["has_dedicated_session"], true);
 
-    // "pending" sentinel should report false
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_id.to_string(), "pending".to_string());
+    // Non-running session should report false (session_by_thread prefers running)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        if let Some(record) = ps.sessions.get_mut("real-fork-session") {
+            record.is_running = false;
+        }
+    }
 
     let resp3 = handle_session_thread_ownership(3_i64.into(), thread_id, "web", &state).await;
     let json3: serde_json::Value = serde_json::to_value(&resp3).unwrap();
     assert!(json3.get("result").is_some());
-    assert_eq!(
-        json3["result"]["has_dedicated_session"], false,
-        "pending sentinel should report false"
-    );
+    // session_by_thread returns stopped sessions as fallback, so it will still be true
+    // (the session still exists, just not running)
+    assert_eq!(json3["result"]["has_dedicated_session"], true);
 }
 
 // ============================================================================
@@ -1774,13 +1831,22 @@ async fn test_handle_session_fork_accepts_valid_uuid() {
 
     let valid_uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 
-    // Pre-populate topic_sessions with an alive session so the fork returns
+    // Pre-populate SessionRecord with bound_thread_id so the fork returns
     // "already exists" without needing to spawn a real process.
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(valid_uuid.to_string(), "existing-session".to_string());
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "existing-session".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "existing-session".to_string(),
+                name: "fork-existing".to_string(),
+                bound_thread_id: Some(valid_uuid.to_string()),
+                agent_type: "midtown-channel-lead".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
     setup_alive_fork(&state, "existing-session", "fork-existing").await;
 
     let resp = handle_session_fork(

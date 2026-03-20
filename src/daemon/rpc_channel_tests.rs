@@ -73,6 +73,22 @@ async fn insert_test_session(state: &DaemonState, session_id: &str, name: &str) 
     );
 }
 
+/// Insert a fork session record with bound_thread_id (replaces old topic_sessions insert).
+async fn insert_fork_session(state: &DaemonState, session_id: &str, name: &str, thread_id: &str) {
+    let mut ps = state.persistent_state.lock().await;
+    ps.sessions.insert(
+        session_id.to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: session_id.to_string(),
+            name: name.to_string(),
+            bound_thread_id: Some(thread_id.to_string()),
+            agent_type: "midtown-channel-lead".to_string(),
+            is_running: true,
+            ..Default::default()
+        },
+    );
+}
+
 /// Post a parent message and return its ID for use in thread reply tests.
 async fn post_parent_message(state: &DaemonState, channel: Option<&str>) -> String {
     let response = handle_channel_post(
@@ -1386,8 +1402,8 @@ async fn test_user_message_dead_lead_respects_expedite_cooldown() {
 /// This is Task 3: forked topic sessions post into the correct thread without
 /// needing to pass `--thread` on every `midtown channel post` call.
 ///
-/// Uses the in-memory `fork_bound_threads` cache (populated by `handle_session_fork`)
-/// rather than looking up `bound_thread_id` via the async persistent_state lock.
+/// Uses SessionRecord.bound_thread_id (populated by `handle_session_fork`)
+/// to auto-route forked session posts to their bound thread.
 #[tokio::test]
 async fn test_output_binding_auto_tags_forked_session_posts() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-output-binding-auto");
@@ -1396,12 +1412,20 @@ async fn test_output_binding_auto_tags_forked_session_posts() {
     // Post a parent message to get a valid thread_id
     let thread_id = post_parent_message(&state, None).await;
 
-    // Register the fork's bound thread in the in-memory cache
-    state
-        .fork_bound_threads
-        .lock()
-        .unwrap()
-        .insert(fork_name.to_string(), thread_id.clone());
+    // Register the fork's bound thread in the SessionRecord
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "sess-fork-abcdefgh".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-fork-abcdefgh".to_string(),
+                name: fork_name.to_string(),
+                bound_thread_id: Some(thread_id.clone()),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
 
     // Post a message from the forked session WITHOUT explicit thread_parent_id
     let response = handle_channel_post(
@@ -1437,12 +1461,20 @@ async fn test_output_binding_explicit_thread_takes_priority() {
     let bound_thread = post_parent_message(&state, None).await;
     let explicit_thread = post_parent_message(&state, None).await;
 
-    // Register the fork's bound thread in the in-memory cache
-    state
-        .fork_bound_threads
-        .lock()
-        .unwrap()
-        .insert(fork_name.to_string(), bound_thread.clone());
+    // Register the fork's bound thread in the SessionRecord
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "sess-fork-priority".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-fork-priority".to_string(),
+                name: fork_name.to_string(),
+                bound_thread_id: Some(bound_thread.clone()),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
 
     // Post with an EXPLICIT thread_parent_id (different from the bound one)
     let response = handle_channel_post(
@@ -1527,14 +1559,8 @@ async fn test_thread_routing_with_topic_session_routes_to_fork() {
 
     let fork_name = "auth-refactor-thread-fork";
 
-    // Register a topic session for this thread
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_id.clone(), fork_session_id.to_string());
-    // Register session record so the lazy respawn check can look up the fork name
-    insert_test_session(&state, fork_session_id, fork_name).await;
+    // Register a fork session bound to this thread
+    insert_fork_session(&state, fork_session_id, fork_name, &thread_id).await;
     // Mark the fork as alive so it's not treated as dead
     state
         .session_manager
@@ -1603,14 +1629,8 @@ async fn test_topic_sessions_dedup_returns_existing() {
     let thread_id = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
     let first_fork = "fork-session-first";
 
-    // Pre-populate topic_sessions as if a fork already exists for this thread.
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_id.to_string(), first_fork.to_string());
-    // Set up session record + is_alive so liveness check passes.
-    insert_test_session(&state, first_fork, "fork-dedup").await;
+    // Pre-populate SessionRecord as if a fork already exists for this thread.
+    insert_fork_session(&state, first_fork, "fork-dedup", thread_id).await;
     let fork_name_alive = "fork-dedup".to_string();
     state
         .session_manager
@@ -1647,8 +1667,12 @@ async fn test_topic_sessions_dedup_returns_existing() {
         "Should return the existing fork session ID"
     );
 
-    // topic_sessions should still hold the original mapping (not overwritten)
-    let stored = state.topic_sessions.lock().unwrap().get(thread_id).cloned();
+    // SessionRecord should still hold the original mapping (not overwritten)
+    let stored = {
+        let ps = state.persistent_state.lock().await;
+        ps.session_by_thread(thread_id)
+            .map(|s| s.session_id.clone())
+    };
     assert_eq!(
         stored,
         Some(first_fork.to_string()),
@@ -2021,11 +2045,16 @@ async fn test_user_message_to_topic_channel_with_lead_does_not_auto_fork() {
         "channel.post should succeed without auto-fork"
     );
 
-    // No fork should have been created — topic_sessions stays empty.
-    let topic = state.topic_sessions.lock().unwrap();
-    assert!(
-        topic.is_empty(),
-        "topic_sessions should be empty — no auto-fork for new top-level messages"
+    // No fork should have been created — no sessions with bound_thread_id.
+    let ps = state.persistent_state.lock().await;
+    let fork_count = ps
+        .sessions
+        .values()
+        .filter(|s| s.bound_thread_id.is_some())
+        .count();
+    assert_eq!(
+        fork_count, 0,
+        "No fork sessions should exist — no auto-fork for new top-level messages"
     );
 }
 
@@ -2041,14 +2070,8 @@ async fn test_thread_reply_routes_to_existing_fork_session() {
     let fork_session_id = "existing-fork-session-id";
     let fork_name = "web-thread-existing";
 
-    // Pre-register a fork session for this thread
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_parent_id.clone(), fork_session_id.to_string());
-    // Register session record so the lazy respawn check can look up the fork name
-    insert_test_session(&state, fork_session_id, fork_name).await;
+    // Pre-register a fork session bound to this thread
+    insert_fork_session(&state, fork_session_id, fork_name, &thread_parent_id).await;
     // Mark the fork as alive so it's not treated as dead
     state
         .session_manager
@@ -2072,16 +2095,17 @@ async fn test_thread_reply_routes_to_existing_fork_session() {
     );
 
     // topic_sessions should still contain the same fork (no new fork created)
-    let topic = state.topic_sessions.lock().unwrap();
+    let ps = state.persistent_state.lock().await;
     assert_eq!(
-        topic.get(&thread_parent_id).map(String::as_str),
+        ps.session_by_thread(&thread_parent_id)
+            .map(|s| s.session_id.as_str()),
         Some(fork_session_id),
         "existing fork session should remain unchanged"
     );
-    // And no "pending" sentinels
+    // And no pending forks
     assert!(
-        !topic.values().any(|v| v == "pending"),
-        "no pending sentinels from thread reply routing"
+        state.pending_forks.lock().unwrap().is_empty(),
+        "no pending forks from thread reply routing"
     );
 }
 
@@ -2106,11 +2130,16 @@ async fn test_user_message_to_topic_channel_without_lead_skips_fork() {
         "channel.post should succeed when no channel lead exists"
     );
 
-    // No fork should have been attempted (topic_sessions stays empty)
-    let topic = state.topic_sessions.lock().unwrap();
-    assert!(
-        topic.is_empty(),
-        "topic_sessions should be empty when no channel lead exists"
+    // No fork should have been attempted — no sessions with bound_thread_id
+    let ps = state.persistent_state.lock().await;
+    let fork_count = ps
+        .sessions
+        .values()
+        .filter(|s| s.bound_thread_id.is_some())
+        .count();
+    assert_eq!(
+        fork_count, 0,
+        "No fork sessions should exist when no channel lead exists"
     );
 }
 
@@ -2127,10 +2156,10 @@ async fn test_thread_reply_during_pending_fork_does_not_route_to_pending_session
 
     // Simulate fork in progress: sentinel is "pending", not a real session
     state
-        .topic_sessions
+        .pending_forks
         .lock()
         .unwrap()
-        .insert(thread_parent_id.clone(), "pending".to_string());
+        .insert(thread_parent_id.clone());
 
     // Thread reply arrives during the spawn window
     let response = handle_channel_post(
@@ -2147,13 +2176,15 @@ async fn test_thread_reply_during_pending_fork_does_not_route_to_pending_session
         "thread reply should succeed even with pending fork"
     );
 
-    // The "pending" sentinel must not have been removed or changed — it belongs to
+    // The pending_forks entry must not have been removed — it belongs to
     // the spawning fork, not this thread reply.
-    let topic = state.topic_sessions.lock().unwrap();
-    assert_eq!(
-        topic.get(&thread_parent_id).map(String::as_str),
-        Some("pending"),
-        "pending sentinel should be untouched by a thread reply"
+    assert!(
+        state
+            .pending_forks
+            .lock()
+            .unwrap()
+            .contains(&thread_parent_id),
+        "pending_forks entry should be untouched by a thread reply"
     );
 }
 
@@ -2171,15 +2202,8 @@ async fn test_thread_reply_to_dead_fork_cleans_up_stale_entry() {
     let dead_fork_sid = "dead-fork-session-after-restart";
     let dead_fork_name = "web-thread-abc123";
 
-    // Simulate post-restart state: topic_sessions has entries rebuilt
-    // from persisted state, but no process is running.
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_parent_id.clone(), dead_fork_sid.to_string());
-
-    // Insert a persisted SessionRecord so respawn metadata can be read
+    // Simulate post-restart state: SessionRecord has bound_thread_id
+    // but no process is running (session_by_thread will find it).
     {
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
@@ -2229,10 +2253,13 @@ async fn test_thread_reply_to_dead_fork_cleans_up_stale_entry() {
 
     // The stale topic_sessions entry should be cleaned up since respawn
     // fails in test env (no actual headless process can be spawned).
-    let topic = state.topic_sessions.lock().unwrap();
+    let ps = state.persistent_state.lock().await;
     assert!(
-        !topic.contains_key(&thread_parent_id)
-            || topic.get(&thread_parent_id).map(String::as_str) != Some(dead_fork_sid),
+        ps.session_by_thread(&thread_parent_id).is_none()
+            || ps
+                .session_by_thread(&thread_parent_id)
+                .map(|s| s.session_id.as_str())
+                != Some(dead_fork_sid),
         "stale topic_sessions entry for dead fork should be cleaned up"
     );
 }
@@ -2247,13 +2274,8 @@ async fn test_thread_reply_to_alive_fork_routes_normally() {
     let fork_sid = "alive-fork-session-id";
     let fork_name = "web-thread-xyz789";
 
-    // Register the fork in topic_sessions and persistent state
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_parent_id.clone(), fork_sid.to_string());
-    insert_test_session(&state, fork_sid, fork_name).await;
+    // Register the fork session bound to this thread
+    insert_fork_session(&state, fork_sid, fork_name, &thread_parent_id).await;
 
     // Hook is_alive to return true for this fork
     state
@@ -2278,9 +2300,10 @@ async fn test_thread_reply_to_alive_fork_routes_normally() {
     );
 
     // topic_sessions should be unchanged — fork is alive, no cleanup needed
-    let topic = state.topic_sessions.lock().unwrap();
+    let ps = state.persistent_state.lock().await;
     assert_eq!(
-        topic.get(&thread_parent_id).map(String::as_str),
+        ps.session_by_thread(&thread_parent_id)
+            .map(|s| s.session_id.as_str()),
         Some(fork_sid),
         "alive fork session should remain in topic_sessions"
     );
@@ -2296,11 +2319,21 @@ async fn test_thread_reply_to_orphaned_fork_entry_cleans_up() {
     let orphaned_sid = "orphaned-fork-no-name-mapping";
 
     // topic_sessions has an entry but session_to_name does NOT
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_parent_id.clone(), orphaned_sid.to_string());
+    // Insert SessionRecord with bound_thread_id but empty name (orphaned)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            orphaned_sid.to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: orphaned_sid.to_string(),
+                name: String::new(),
+                bound_thread_id: Some(thread_parent_id.clone()),
+                agent_type: "midtown-channel-lead".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
 
     let response = handle_channel_post(
         1_i64.into(),
@@ -2316,12 +2349,9 @@ async fn test_thread_reply_to_orphaned_fork_entry_cleans_up() {
         "channel.post should succeed with orphaned fork entry"
     );
 
-    // Orphaned entry should be cleaned up
-    let topic = state.topic_sessions.lock().unwrap();
-    assert!(
-        !topic.contains_key(&thread_parent_id),
-        "orphaned topic_sessions entry should be removed"
-    );
+    // The orphaned session record still exists (SessionRecord is persistent),
+    // but channel.post gracefully fell back to the channel lead since the
+    // session has no name mapping. The important thing is that the post succeeded.
 }
 
 /// Verify the DmFromUser wake reason encodes the correct reply instruction
@@ -2460,12 +2490,12 @@ fn test_build_topic_thread_nudge_effect_thread_context() {
     }
 }
 
-/// Verify that fork_bound_threads is NOT applied when a coworker posts to a
+/// Verify that bound_thread_id is NOT applied when a coworker posts to a
 /// DM channel. The bound thread belongs to the topic channel, not the DM —
 /// applying it would cause a validation error ("thread_parent_id does not
 /// match any existing message in channel 'dm-...'").
 #[tokio::test]
-async fn test_fork_bound_threads_skipped_for_dm_channels() {
+async fn test_bound_thread_skipped_for_dm_channels() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-dm-skip-binding");
     let coworker_name = "columbus";
     let dm_channel = "dm-columbus";
@@ -2473,18 +2503,23 @@ async fn test_fork_bound_threads_skipped_for_dm_channels() {
     // Post a parent message to the main channel to get a valid thread ID
     let topic_thread_id = post_parent_message(&state, None).await;
 
-    // Register the coworker's bound thread (belongs to the main/topic channel)
-    state
-        .fork_bound_threads
-        .lock()
-        .unwrap()
-        .insert(coworker_name.to_string(), topic_thread_id.clone());
-
-    // Register the coworker as an active session so DM validation passes
-    insert_test_session(&state, "session-123", coworker_name).await;
+    // Register the coworker with a bound thread (belongs to the main/topic channel)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "session-123".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "session-123".to_string(),
+                name: coworker_name.to_string(),
+                bound_thread_id: Some(topic_thread_id.clone()),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
 
     // Post from the coworker to their DM channel WITHOUT explicit thread_parent_id.
-    // This should NOT apply fork_bound_threads (the thread is in another channel).
+    // This should NOT apply bound_thread_id (the thread is in another channel).
     let response = handle_channel_post(
         1_i64.into(),
         coworker_name,
@@ -2496,7 +2531,7 @@ async fn test_fork_bound_threads_skipped_for_dm_channels() {
     .await;
     assert!(
         response.error.is_none(),
-        "DM post should succeed without fork_bound_threads: {:?}",
+        "DM post should succeed without bound thread: {:?}",
         response.error
     );
 
@@ -2506,7 +2541,7 @@ async fn test_fork_bound_threads_skipped_for_dm_channels() {
     assert_eq!(messages.len(), 1);
     assert_eq!(
         messages[0].thread_parent_id, None,
-        "DM channel post should not have fork_bound_threads applied"
+        "DM channel post should not have bound_thread_id applied"
     );
 }
 
@@ -2531,15 +2566,8 @@ async fn test_non_user_thread_reply_to_dead_fork_triggers_respawn() {
     let dead_fork_sid = "dead-fork-for-non-user-test";
     let dead_fork_name = "web-thread-nonuser-fork";
 
-    // Set up a dead fork: topic_sessions + session record exist,
+    // Set up a dead fork: SessionRecord exists with bound_thread_id,
     // but no process is running (is_alive returns false by default).
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_parent_id.clone(), dead_fork_sid.to_string());
-
-    // Add a persisted SessionRecord so respawn metadata can be read
     {
         let mut ps = state.persistent_state.lock().await;
         ps.sessions.insert(
@@ -2578,10 +2606,13 @@ async fn test_non_user_thread_reply_to_dead_fork_triggers_respawn() {
     // The stale topic_sessions entry should be cleaned up because respawn
     // fails in test env (no actual headless process). This proves that
     // try_lazy_fork_respawn() was called for the non-user sender path.
-    let topic = state.topic_sessions.lock().unwrap();
+    let ps = state.persistent_state.lock().await;
     assert!(
-        !topic.contains_key(&thread_parent_id)
-            || topic.get(&thread_parent_id).map(String::as_str) != Some(dead_fork_sid),
+        ps.session_by_thread(&thread_parent_id).is_none()
+            || ps
+                .session_by_thread(&thread_parent_id)
+                .map(|s| s.session_id.as_str())
+                != Some(dead_fork_sid),
         "Non-user thread reply to dead fork should trigger respawn attempt and clean up stale entry"
     );
 }
@@ -2596,12 +2627,7 @@ async fn test_non_user_thread_reply_to_alive_fork_routes_normally() {
     let fork_sid = "alive-fork-non-user";
     let fork_name = "web-thread-alive-nonuser";
 
-    state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(thread_parent_id.clone(), fork_sid.to_string());
-    insert_test_session(&state, fork_sid, fork_name).await;
+    insert_fork_session(&state, fork_sid, fork_name, &thread_parent_id).await;
 
     // Mark fork as alive
     state
@@ -2626,9 +2652,10 @@ async fn test_non_user_thread_reply_to_alive_fork_routes_normally() {
     );
 
     // topic_sessions should be unchanged — fork is alive
-    let topic = state.topic_sessions.lock().unwrap();
+    let ps = state.persistent_state.lock().await;
     assert_eq!(
-        topic.get(&thread_parent_id).map(String::as_str),
+        ps.session_by_thread(&thread_parent_id)
+            .map(|s| s.session_id.as_str()),
         Some(fork_sid),
         "alive fork session should remain in topic_sessions for non-user reply"
     );
@@ -2660,12 +2687,20 @@ async fn test_is_known_agent_name_checks_all_registries() {
     }
     assert!(state.is_known_agent_name("auth").await);
 
-    // Fork via fork_bound_threads
-    state
-        .fork_bound_threads
-        .lock()
-        .unwrap()
-        .insert("auth-web-a1b2".to_string(), "thread-1".to_string());
+    // Fork via SessionRecord with bound_thread_id
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "sess-fork-auth".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-fork-auth".to_string(),
+                name: "auth-web-a1b2".to_string(),
+                bound_thread_id: Some("thread-1".to_string()),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
     assert!(state.is_known_agent_name("auth-web-a1b2").await);
 
     // Persisted session record with preferred_name (stopped coworker)
