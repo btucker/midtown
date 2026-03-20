@@ -936,3 +936,25 @@ fn test_activity_unknown_phase_without_task() {
         "custom"
     );
 }
+
+#[test]
+fn test_json_passthrough_to_json_does_not_double_wrap() {
+    // Response::Json should serialize the inner value directly in to_json(),
+    // not wrap it in {"value": ...}. This matters for `--format json` output
+    // consumed by hooks like channel-sync.sh that expect {"messages": [...]}.
+    let inner = serde_json::json!({"messages": [{"id": "1", "from": "alice"}]});
+    let response = Response::Json {
+        value: inner.clone(),
+    };
+    let json_output = response.to_json();
+    let parsed: serde_json::Value = serde_json::from_str(&json_output).unwrap();
+    assert_eq!(
+        parsed, inner,
+        "to_json() should output the inner value directly, not wrap in {{\"value\": ...}}"
+    );
+    assert!(
+        parsed.get("messages").is_some(),
+        "Should have top-level 'messages' key, got: {}",
+        json_output
+    );
+}
