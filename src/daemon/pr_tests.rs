@@ -5590,3 +5590,336 @@ fn test_extract_all_placeholder_comment_ids_skips_null_body_and_url() {
     let ids = super::extract_all_placeholder_comment_ids(&json);
     assert_eq!(ids, vec![111111]);
 }
+
+// ---------------------------------------------------------------------------
+// is_pr_orphaned tests
+// ---------------------------------------------------------------------------
+
+fn empty_worktree_registry() -> crate::worktree_registry::WorktreeRegistry {
+    crate::worktree_registry::WorktreeRegistry::default()
+}
+
+fn make_worktree_registry_with_pr(
+    pr_number: u64,
+    completed: bool,
+) -> crate::worktree_registry::WorktreeRegistry {
+    let mut registry = crate::worktree_registry::WorktreeRegistry::default();
+    let mut assignment = crate::worktree_registry::WorktreeAssignment {
+        worktree_id: format!("task-{}-test", pr_number),
+        branch_name: format!("task-{}-test-branch", pr_number),
+        task_id: None,
+        current_coworker: Some("test-coworker".to_string()),
+        pr_number: Some(pr_number),
+        created_at: chrono::Utc::now(),
+        completed_at: None,
+    };
+    if completed {
+        assignment.completed_at = Some(chrono::Utc::now());
+    }
+    let _ = registry.assign_worktree(assignment);
+    registry
+}
+
+fn make_pr_json(number: u64, head_ref: &str, title: &str) -> serde_json::Value {
+    json!({
+        "number": number,
+        "headRefName": head_ref,
+        "title": title,
+    })
+}
+
+#[test]
+fn orphan_detection_active_worktree_not_orphaned() {
+    let registry = make_worktree_registry_with_pr(42, false);
+    let pr = make_pr_json(42, "task-42-test-branch", "feat: do stuff [Midtown !42]");
+    let empty_tasks: HashMap<u64, String> = HashMap::new();
+    let empty_sess_tasks: HashMap<String, String> = HashMap::new();
+    let empty_sessions: HashMap<String, crate::daemon::state::SessionRecord> = HashMap::new();
+    let empty_active: HashSet<String> = HashSet::new();
+    let ctx = OrphanCheckCtx {
+        worktree_registry: &registry,
+        pr_task_associations: &empty_tasks,
+        session_task_map: &empty_sess_tasks,
+        sessions: &empty_sessions,
+        active_names: &empty_active,
+        repo_owner: None,
+    };
+    assert!(!is_pr_orphaned(
+        42,
+        "task-42-test-branch",
+        "feat: do stuff [Midtown !42]",
+        &pr,
+        &ctx,
+    ));
+}
+
+#[test]
+fn orphan_detection_completed_worktree_not_orphaned() {
+    let registry = make_worktree_registry_with_pr(42, true);
+    let pr = make_pr_json(42, "task-42-test-branch", "feat: do stuff [Midtown !42]");
+    let empty_tasks: HashMap<u64, String> = HashMap::new();
+    let empty_sess_tasks: HashMap<String, String> = HashMap::new();
+    let empty_sessions: HashMap<String, crate::daemon::state::SessionRecord> = HashMap::new();
+    let empty_active: HashSet<String> = HashSet::new();
+    let ctx = OrphanCheckCtx {
+        worktree_registry: &registry,
+        pr_task_associations: &empty_tasks,
+        session_task_map: &empty_sess_tasks,
+        sessions: &empty_sessions,
+        active_names: &empty_active,
+        repo_owner: None,
+    };
+    assert!(!is_pr_orphaned(
+        42,
+        "task-42-test-branch",
+        "feat: do stuff [Midtown !42]",
+        &pr,
+        &ctx,
+    ));
+}
+
+#[test]
+fn orphan_detection_lead_branch_not_orphaned() {
+    let registry = empty_worktree_registry();
+    let pr = make_pr_json(42, "lead/my-feature", "feat: lead work");
+    let empty_tasks: HashMap<u64, String> = HashMap::new();
+    let empty_sess_tasks: HashMap<String, String> = HashMap::new();
+    let empty_sessions: HashMap<String, crate::daemon::state::SessionRecord> = HashMap::new();
+    let empty_active: HashSet<String> = HashSet::new();
+    let ctx = OrphanCheckCtx {
+        worktree_registry: &registry,
+        pr_task_associations: &empty_tasks,
+        session_task_map: &empty_sess_tasks,
+        sessions: &empty_sessions,
+        active_names: &empty_active,
+        repo_owner: None,
+    };
+    assert!(!is_pr_orphaned(
+        42,
+        "lead/my-feature",
+        "feat: lead work",
+        &pr,
+        &ctx,
+    ));
+}
+
+#[test]
+fn orphan_detection_lead_authored_pr_not_orphaned() {
+    let registry = empty_worktree_registry();
+    let pr = json!({
+        "number": 42,
+        "headRefName": "my-feature",
+        "title": "feat: some work",
+        "author": { "login": "btucker" },
+    });
+    let empty_tasks: HashMap<u64, String> = HashMap::new();
+    let empty_sess_tasks: HashMap<String, String> = HashMap::new();
+    let empty_sessions: HashMap<String, crate::daemon::state::SessionRecord> = HashMap::new();
+    let empty_active: HashSet<String> = HashSet::new();
+    let ctx = OrphanCheckCtx {
+        worktree_registry: &registry,
+        pr_task_associations: &empty_tasks,
+        session_task_map: &empty_sess_tasks,
+        sessions: &empty_sessions,
+        active_names: &empty_active,
+        repo_owner: Some("btucker"),
+    };
+    assert!(!is_pr_orphaned(
+        42,
+        "my-feature",
+        "feat: some work",
+        &pr,
+        &ctx,
+    ));
+}
+
+#[test]
+fn orphan_detection_active_session_owner_not_orphaned() {
+    let registry = empty_worktree_registry();
+    let pr = make_pr_json(42, "some-branch", "feat: stuff [Midtown !99]");
+
+    let mut pr_task_associations = HashMap::new();
+    pr_task_associations.insert(42u64, "99".to_string());
+
+    let mut session_task_map = HashMap::new();
+    session_task_map.insert("99".to_string(), "session-abc".to_string());
+
+    let mut sessions = HashMap::new();
+    sessions.insert(
+        "session-abc".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "session-abc".to_string(),
+            task_id: Some("99".to_string()),
+            name: "madison".to_string(),
+            ..Default::default()
+        },
+    );
+
+    let mut active_names = HashSet::new();
+    active_names.insert("madison".to_string());
+
+    let ctx = OrphanCheckCtx {
+        worktree_registry: &registry,
+        pr_task_associations: &pr_task_associations,
+        session_task_map: &session_task_map,
+        sessions: &sessions,
+        active_names: &active_names,
+        repo_owner: None,
+    };
+    assert!(!is_pr_orphaned(
+        42,
+        "some-branch",
+        "feat: stuff [Midtown !99]",
+        &pr,
+        &ctx,
+    ));
+}
+
+#[test]
+fn orphan_detection_inactive_session_owner_is_orphaned() {
+    let registry = empty_worktree_registry();
+    let pr = make_pr_json(42, "some-branch", "feat: stuff [Midtown !99]");
+
+    let mut pr_task_associations = HashMap::new();
+    pr_task_associations.insert(42u64, "99".to_string());
+
+    let mut session_task_map = HashMap::new();
+    session_task_map.insert("99".to_string(), "session-abc".to_string());
+
+    let mut sessions = HashMap::new();
+    sessions.insert(
+        "session-abc".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "session-abc".to_string(),
+            task_id: Some("99".to_string()),
+            name: "madison".to_string(),
+            ..Default::default()
+        },
+    );
+
+    // active_names does NOT contain "madison"
+    let active_names = HashSet::new();
+
+    let ctx = OrphanCheckCtx {
+        worktree_registry: &registry,
+        pr_task_associations: &pr_task_associations,
+        session_task_map: &session_task_map,
+        sessions: &sessions,
+        active_names: &active_names,
+        repo_owner: None,
+    };
+    assert!(is_pr_orphaned(
+        42,
+        "some-branch",
+        "feat: stuff [Midtown !99]",
+        &pr,
+        &ctx,
+    ));
+}
+
+#[test]
+fn orphan_detection_no_owner_no_worktree_is_orphaned() {
+    let registry = empty_worktree_registry();
+    let pr = make_pr_json(42, "random-branch", "feat: unknown origin");
+    let empty_tasks: HashMap<u64, String> = HashMap::new();
+    let empty_sess_tasks: HashMap<String, String> = HashMap::new();
+    let empty_sessions: HashMap<String, crate::daemon::state::SessionRecord> = HashMap::new();
+    let empty_active: HashSet<String> = HashSet::new();
+    let ctx = OrphanCheckCtx {
+        worktree_registry: &registry,
+        pr_task_associations: &empty_tasks,
+        session_task_map: &empty_sess_tasks,
+        sessions: &empty_sessions,
+        active_names: &empty_active,
+        repo_owner: None,
+    };
+    assert!(is_pr_orphaned(
+        42,
+        "random-branch",
+        "feat: unknown origin",
+        &pr,
+        &ctx,
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// should_skip_pr_for_review tests
+// ---------------------------------------------------------------------------
+
+fn make_empty_pr_context() -> PrContext {
+    PrContext {
+        pr_task_associations: HashMap::new(),
+        task_channel: HashMap::new(),
+        has_active_reviewer: false,
+        channel_workflows: HashMap::new(),
+        lead_driven_channels: HashSet::new(),
+    }
+}
+
+#[test]
+fn skip_review_invalid_pr_number() {
+    let pr = json!({ "number": 0 });
+    let pf = PrFields::from_json(&pr);
+    let ctx = make_empty_pr_context();
+    let result = should_skip_pr_for_review(&pf, &ctx, false, 45, &pr, &HashMap::new());
+    assert!(matches!(result, Some(ReviewSkipReason::InvalidPr)));
+}
+
+#[test]
+fn skip_review_draft_pr() {
+    let pr = json!({ "number": 1, "isDraft": true });
+    let pf = PrFields::from_json(&pr);
+    let ctx = make_empty_pr_context();
+    let result = should_skip_pr_for_review(&pf, &ctx, false, 45, &pr, &HashMap::new());
+    assert!(matches!(result, Some(ReviewSkipReason::Draft)));
+}
+
+#[test]
+fn skip_review_lead_driven_channel() {
+    let pr = json!({ "number": 1 });
+    let pf = PrFields::from_json(&pr);
+    let mut ctx = make_empty_pr_context();
+    ctx.pr_task_associations.insert(1, "task-1".to_string());
+    ctx.task_channel
+        .insert("task-1".to_string(), "my-channel".to_string());
+    ctx.lead_driven_channels.insert("my-channel".to_string());
+    let result = should_skip_pr_for_review(&pf, &ctx, false, 45, &pr, &HashMap::new());
+    assert!(matches!(result, Some(ReviewSkipReason::LeadDriven)));
+}
+
+#[test]
+fn skip_review_too_new() {
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let pr = json!({ "number": 1, "createdAt": now });
+    let pf = PrFields::from_json(&pr);
+    let ctx = make_empty_pr_context();
+    let result = should_skip_pr_for_review(&pf, &ctx, false, 45, &pr, &HashMap::new());
+    assert!(matches!(result, Some(ReviewSkipReason::TooNew { .. })));
+}
+
+#[test]
+fn skip_review_webhook_deferred() {
+    // PR is old enough but webhook recently handled it.
+    let old = (chrono::Utc::now() - chrono::Duration::seconds(300))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let pr = json!({ "number": 1, "createdAt": old });
+    let pf = PrFields::from_json(&pr);
+    let ctx = make_empty_pr_context();
+    let mut webhook_events = HashMap::new();
+    webhook_events.insert(1u64, chrono::Utc::now());
+    let result = should_skip_pr_for_review(&pf, &ctx, true, 45, &pr, &webhook_events);
+    assert!(matches!(result, Some(ReviewSkipReason::WebhookDeferred)));
+}
+
+#[test]
+fn no_skip_for_eligible_pr() {
+    let old = (chrono::Utc::now() - chrono::Duration::seconds(300))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let pr = json!({ "number": 1, "createdAt": old });
+    let pf = PrFields::from_json(&pr);
+    let ctx = make_empty_pr_context();
+    let result = should_skip_pr_for_review(&pf, &ctx, false, 45, &pr, &HashMap::new());
+    assert!(result.is_none());
+}
