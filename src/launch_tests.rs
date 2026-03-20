@@ -1,6 +1,8 @@
 //! Tests for lead system prompt persistence on attach and channel lead model selection
 
-use crate::launch::{LaunchConfig, SessionMode, inject_session_id_env};
+use crate::launch::{
+    LaunchConfig, SessionMode, expand_session_id_in_prompt, inject_session_id_env,
+};
 use crate::paths;
 use std::fs;
 
@@ -595,5 +597,53 @@ fn test_default_agent_name_without_override() {
         headless.agent_name.as_deref(),
         Some("midtown-code-author"),
         "Without override, coworker role should use midtown-code-author agent"
+    );
+}
+
+#[test]
+fn test_expand_session_id_replaces_env_var_in_prompt() {
+    let prompt = "<!-- midtown session:$MIDTOWN_SESSION_ID --> some text $MIDTOWN_SESSION_ID end";
+    let expanded = expand_session_id_in_prompt(prompt, "abc-123-def");
+    assert_eq!(
+        expanded, "<!-- midtown session:abc-123-def --> some text abc-123-def end",
+        "All occurrences of $MIDTOWN_SESSION_ID should be replaced"
+    );
+}
+
+#[test]
+fn test_expand_session_id_noop_when_no_placeholder() {
+    let prompt = "no env var references here";
+    let expanded = expand_session_id_in_prompt(prompt, "abc-123");
+    assert_eq!(
+        expanded, prompt,
+        "Prompt without $MIDTOWN_SESSION_ID should be unchanged"
+    );
+}
+
+#[test]
+fn test_reviewer_system_prompt_contains_unexpanded_session_id() {
+    // This test documents the pre-expansion state: the template contains
+    // the literal $MIDTOWN_SESSION_ID before spawn_coworker() expands it.
+    let prompt = crate::agents::reviewer_system_prompt(
+        "york",
+        "midtown",
+        "midtown",
+        crate::auth::AuthProvider::Claude,
+        Some(42),
+    );
+    assert!(
+        prompt.contains("$MIDTOWN_SESSION_ID"),
+        "Reviewer system prompt template should contain $MIDTOWN_SESSION_ID before expansion"
+    );
+
+    // After expansion, the literal should be gone
+    let expanded = expand_session_id_in_prompt(&prompt, "test-uuid-999");
+    assert!(
+        !expanded.contains("$MIDTOWN_SESSION_ID"),
+        "After expand_session_id_in_prompt, no literal $MIDTOWN_SESSION_ID should remain"
+    );
+    assert!(
+        expanded.contains("test-uuid-999"),
+        "After expansion, the actual session ID should appear in the prompt"
     );
 }

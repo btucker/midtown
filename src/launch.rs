@@ -226,6 +226,17 @@ pub fn inject_session_id_env(
     env.insert("MIDTOWN_SESSION_ID".to_string(), session_id.to_string());
 }
 
+/// Expand `$MIDTOWN_SESSION_ID` in a prompt string to the actual session ID.
+///
+/// Claude Code sessions use single-quoted heredocs (`<<'EOF'`) for multi-line
+/// shell arguments, which prevents shell expansion of `$MIDTOWN_SESSION_ID`.
+/// By replacing the env-var reference with the literal UUID in the system and
+/// initial prompts, the AI sees the actual value and includes it directly in
+/// GitHub comments — no shell expansion needed.
+pub fn expand_session_id_in_prompt(prompt: &str, session_id: &str) -> String {
+    prompt.replace("$MIDTOWN_SESSION_ID", session_id)
+}
+
 /// Compute the session name for a channel lead.
 ///
 /// Channel lead sessions are named after their channel directly (e.g., "web" for
