@@ -1589,14 +1589,27 @@ impl DaemonState {
         {
             crate::launch::inject_session_id_env(&mut headless_config.env, sid);
         }
+        // Expand $MIDTOWN_SESSION_ID in the system prompt and initial prompt so the
+        // AI sees the literal UUID rather than an env-var reference. Claude Code
+        // sessions typically use single-quoted heredocs for multi-line shell args,
+        // which prevents shell expansion — embedding the value directly avoids this.
+        if let Some(ref sid) = session_id {
+            headless_config.system_prompt =
+                crate::launch::expand_session_id_in_prompt(&headless_config.system_prompt, sid);
+        }
         let persisted_session_id = session_id.clone().unwrap_or_default();
-        let initial_prompt = launch_config.initial_prompt.as_deref();
+        let initial_prompt = match (&session_id, launch_config.initial_prompt.as_deref()) {
+            (Some(sid), Some(prompt)) => {
+                Some(crate::launch::expand_session_id_in_prompt(prompt, sid))
+            }
+            (_, prompt) => prompt.map(|p| p.to_string()),
+        };
         self.session_manager
             .spawn(
                 &name,
                 &slot_id,
                 &headless_config,
-                initial_prompt,
+                initial_prompt.as_deref(),
                 session_id.clone(),
             )
             .await?;
