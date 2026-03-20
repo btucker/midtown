@@ -61,11 +61,7 @@ pub(crate) async fn handle_prs_status(id: RequestId, state: &DaemonState) -> Res
         .map(|ps| {
             ps.active_reviewer_sessions()
                 .into_iter()
-                .filter_map(|s| {
-                    ps.task_pr_number
-                        .get(s.task_id.as_deref().unwrap_or(""))
-                        .map(|&pr| (pr, s.name.clone()))
-                })
+                .filter_map(|s| s.pr_number.map(|pr| (pr, s.name.clone())))
                 .collect()
         })
         .unwrap_or_default();
@@ -635,22 +631,26 @@ pub(super) async fn handle_pr_review(
         Err(msg) => return Response::error(id, RpcError::new(-32603, msg)),
     };
 
-    // Collect a world snapshot so collect_reviewer_effects_with_source has
-    // the worktree registry, active coworker names, and branch owner map.
-    let snap = super::snapshot::collect_world_snapshot(state).await;
+    // Extract tick state for reviewer selection logic.
+    let (worktree_registry, active_names, is_at_task_limit) = {
+        let ps = state.persistent_state.lock().await;
+        (
+            ps.worktree_registry.clone(),
+            ps.tick_active_session_names.clone(),
+            ps.tick_is_at_task_limit,
+        )
+    };
 
     // Call the shared reviewer selection logic.
     // is_polling_fallback=false bypasses the webhook-deference guard (only active for polling).
-    // We pass the branch_owners_map so task-based branches (e.g. "task-42-...")
-    // can be resolved to their author — preserving the self-review guard.
     let effects = super::pr::collect_reviewer_effects_with_source(
-        &snap.worktree_registry,
-        &snap.coworkers.active_names,
+        &worktree_registry,
+        &active_names,
         state,
         &[pr_json],
         false,                             // not polling fallback
         &std::collections::HashMap::new(), // RPC path: spawning reviewers, not nudging authors
-        snap.is_at_task_limit,
+        is_at_task_limit,
     )
     .await;
 
@@ -1070,10 +1070,11 @@ pub(super) async fn handle_pr_review_post(
                 };
                 let task_id = span.task_id.clone();
                 let name = span.name.clone();
-                let comment_id = ps
-                    .task_placeholder_comment_id
-                    .get(span.task_id.as_deref().unwrap_or(""))
-                    .copied();
+                let comment_id: Option<u64> = span
+                    .task_id
+                    .as_deref()
+                    .and_then(|tid| state.task_store.load(tid).ok())
+                    .and_then(|t| t.placeholder_comment_id);
                 (session_id, task_id, name, comment_id)
             }
             None => {

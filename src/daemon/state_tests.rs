@@ -194,14 +194,6 @@ fn test_full_roundtrip_with_all_fields() {
         crate::reminders::RepeatPolicy::Once,
     );
 
-    // Populate task-channel mappings
-    state
-        .task_channel
-        .insert("10".to_string(), "auth".to_string());
-    state
-        .task_channel
-        .insert("11".to_string(), "frontend".to_string());
-
     // Serialize and deserialize
     let json = serde_json::to_string_pretty(&state).unwrap();
     let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
@@ -209,193 +201,6 @@ fn test_full_roundtrip_with_all_fields() {
     assert!(loaded.github.has_cached_review(10));
     assert!(loaded.github.has_cached_review(11));
     assert_eq!(loaded.reminders.reminders.len(), 2);
-    assert_eq!(loaded.task_channel.len(), 2);
-    assert_eq!(loaded.task_channel.get("10"), Some(&"auth".to_string()));
-    assert_eq!(loaded.task_channel.get("11"), Some(&"frontend".to_string()));
-}
-
-#[test]
-fn test_task_channel_mapping() {
-    let mut state = DaemonPersistentState::default();
-    state
-        .task_channel
-        .insert("42".to_string(), "auth".to_string());
-    state
-        .task_channel
-        .insert("43".to_string(), "frontend".to_string());
-
-    let json = serde_json::to_string_pretty(&state).unwrap();
-    let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(loaded.task_channel.len(), 2);
-    assert_eq!(loaded.task_channel.get("42"), Some(&"auth".to_string()));
-    assert_eq!(loaded.task_channel.get("43"), Some(&"frontend".to_string()));
-}
-
-#[test]
-fn test_task_channel_default_empty() {
-    // Existing state without task_channel should deserialize fine
-    let json = r#"{"github": {}, "reminders": {"reminders": []}}"#;
-    let state: DaemonPersistentState = serde_json::from_str(json).unwrap();
-    assert!(state.task_channel.is_empty());
-}
-
-#[test]
-fn test_task_channel_file_roundtrip() {
-    // Exercises save_for_repo and load_for_repo with task_channel data,
-    // covering the debug log statements that report task-channel mapping counts.
-    let tmp = tempfile::tempdir().unwrap();
-    let repo_name = "test-repo";
-
-    // Set up the repo directory structure that save_for_repo/load_for_repo expect
-    let state_dir = tmp.path().join("projects").join(repo_name);
-    std::fs::create_dir_all(&state_dir).unwrap();
-
-    // Override the state file path by saving/loading directly via serde + file I/O
-    // (save_for_repo uses crate::paths which we can't easily override in tests,
-    // so we test the serialization + deserialization of a state with task_channel)
-    let mut state = DaemonPersistentState::default();
-    state
-        .task_channel
-        .insert("100".to_string(), "backend".to_string());
-    state
-        .task_channel
-        .insert("101".to_string(), "infra".to_string());
-    state
-        .task_channel
-        .insert("102".to_string(), "frontend".to_string());
-
-    // Write to file, simulating save_for_repo
-    let state_file = state_dir.join("daemon-state.json");
-    let contents = serde_json::to_string_pretty(&state).unwrap();
-    std::fs::write(&state_file, &contents).unwrap();
-
-    // Read back, simulating load_for_repo
-    let loaded_contents = std::fs::read_to_string(&state_file).unwrap();
-    let loaded: DaemonPersistentState = serde_json::from_str(&loaded_contents).unwrap();
-
-    assert_eq!(loaded.task_channel.len(), 3);
-    assert_eq!(loaded.task_channel.get("100"), Some(&"backend".to_string()));
-    assert_eq!(loaded.task_channel.get("101"), Some(&"infra".to_string()));
-    assert_eq!(
-        loaded.task_channel.get("102"),
-        Some(&"frontend".to_string())
-    );
-}
-
-#[test]
-fn test_task_channel_overwrite_and_remove() {
-    let mut state = DaemonPersistentState::default();
-
-    // Add a mapping
-    state
-        .task_channel
-        .insert("50".to_string(), "auth".to_string());
-    assert_eq!(state.task_channel.get("50"), Some(&"auth".to_string()));
-
-    // Overwrite with a different channel
-    state
-        .task_channel
-        .insert("50".to_string(), "security".to_string());
-    assert_eq!(state.task_channel.get("50"), Some(&"security".to_string()));
-    assert_eq!(state.task_channel.len(), 1);
-
-    // Remove the mapping
-    state.task_channel.remove("50");
-    assert!(state.task_channel.is_empty());
-
-    // Roundtrip after removal
-    let json = serde_json::to_string_pretty(&state).unwrap();
-    let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
-    assert!(loaded.task_channel.is_empty());
-}
-
-#[test]
-fn test_clear_reviewer_assignment() {
-    // Note: This test validates the return value behavior but doesn't test persistence
-    // because DaemonPersistentState::save_for_repo requires a valid repo name
-    // and filesystem paths. The save/load behavior is covered by other tests.
-
-    let mut state = DaemonPersistentState::default();
-    state.insert_session_for_task("task-42", "amsterdam", "midtown-code-reviewer", "sess-1");
-    state.task_pr_number.insert("task-42".to_string(), 42);
-
-    // Verify the span exists before clearing
-    assert!(state.active_reviewer_for_pr(42).is_some());
-
-    // Clear existing assignment - should return true
-    // (Note: save will fail in tests without proper setup, but that's OK -
-    // we're testing the removal logic, not file I/O)
-    assert!(state.clear_reviewer_assignment("amsterdam", "test-repo"));
-    assert!(state.active_reviewer_for_pr(42).is_none());
-
-    // Try to clear again - should return false (no assignment)
-    assert!(!state.clear_reviewer_assignment("amsterdam", "test-repo"));
-
-    // Try to clear a coworker with no assignment - should return false
-    assert!(!state.clear_reviewer_assignment("park", "test-repo"));
-}
-
-#[test]
-fn test_task_model_mapping() {
-    let mut state = DaemonPersistentState::default();
-    state
-        .task_model
-        .insert("42".to_string(), "claude/opus".to_string());
-    state
-        .task_model
-        .insert("43".to_string(), "claude/sonnet".to_string());
-
-    let json = serde_json::to_string_pretty(&state).unwrap();
-    let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(loaded.task_model.len(), 2);
-    assert_eq!(
-        loaded.task_model.get("42"),
-        Some(&"claude/opus".to_string())
-    );
-    assert_eq!(
-        loaded.task_model.get("43"),
-        Some(&"claude/sonnet".to_string())
-    );
-}
-
-#[test]
-fn test_task_model_default_empty() {
-    // Existing state without task_model should deserialize fine
-    let json = r#"{"github": {}, "reminders": {"reminders": []}}"#;
-    let state: DaemonPersistentState = serde_json::from_str(json).unwrap();
-    assert!(state.task_model.is_empty());
-}
-
-#[test]
-fn test_task_model_overwrite_and_remove() {
-    let mut state = DaemonPersistentState::default();
-
-    // Add a mapping
-    state
-        .task_model
-        .insert("50".to_string(), "claude/opus".to_string());
-    assert_eq!(state.task_model.get("50"), Some(&"claude/opus".to_string()));
-
-    // Overwrite with a different model
-    state
-        .task_model
-        .insert("50".to_string(), "claude/haiku".to_string());
-    assert_eq!(
-        state.task_model.get("50"),
-        Some(&"claude/haiku".to_string())
-    );
-    assert_eq!(state.task_model.len(), 1);
-
-    // Remove the mapping
-    state.task_model.remove("50");
-    assert!(state.task_model.is_empty());
-
-    // Roundtrip after removal
-    let json = serde_json::to_string_pretty(&state).unwrap();
-    let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
-    assert!(loaded.task_model.is_empty());
 }
 
 #[test]
@@ -1076,51 +881,12 @@ fn apply_gc_removes_dead_sessions() {
 }
 
 #[test]
-fn apply_gc_prunes_orphaned_task_metadata() {
+fn apply_gc_counts_orphaned_tasks() {
     let mut state = DaemonPersistentState::default();
-    state
-        .task_channel
-        .insert("orphan-1".to_string(), "auth".to_string());
-    state
-        .task_model
-        .insert("orphan-1".to_string(), "opus".to_string());
-    state
-        .task_plan
-        .insert("orphan-1".to_string(), "/path".to_string());
-    state
-        .task_execution_skill
-        .insert("orphan-1".to_string(), "subagent".to_string());
-    state
-        .task_thread_id
-        .insert("orphan-1".to_string(), "thread-1".to_string());
-    state
-        .task_message_id
-        .insert("orphan-1".to_string(), "msg-1".to_string());
-
-    state
-        .task_parent
-        .insert("orphan-1".to_string(), "parent-1".to_string());
-
-    // Also add a surviving task to make sure it's not touched
-    state
-        .task_channel
-        .insert("alive-1".to_string(), "frontend".to_string());
-
+    // GC no longer prunes legacy map entries — task metadata lives in TaskStore.
+    // Just verify the count is reported correctly.
     let result = state.apply_gc(&[], &["orphan-1".to_string()]);
-
     assert_eq!(result.orphaned_tasks_pruned, 1);
-    assert!(!state.task_channel.contains_key("orphan-1"));
-    assert!(!state.task_model.contains_key("orphan-1"));
-    assert!(!state.task_plan.contains_key("orphan-1"));
-    assert!(!state.task_execution_skill.contains_key("orphan-1"));
-    assert!(!state.task_thread_id.contains_key("orphan-1"));
-    assert!(!state.task_message_id.contains_key("orphan-1"));
-    assert!(!state.task_parent.contains_key("orphan-1"));
-    // Alive task untouched
-    assert_eq!(
-        state.task_channel.get("alive-1"),
-        Some(&"frontend".to_string())
-    );
 }
 
 #[test]
@@ -1168,10 +934,7 @@ fn apply_gc_combined_operations() {
         "alive".to_string(),
         make_gc_session("alive", Some("active-task"), true),
     );
-    // Orphaned task metadata
-    state
-        .task_channel
-        .insert("old-task".to_string(), "backend".to_string());
+    // Orphaned task metadata (lives in TaskStore, not in state maps)
 
     let result = state.apply_gc(&["dead".to_string()], &["old-task".to_string()]);
 
@@ -1189,7 +952,7 @@ fn apply_gc_combined_operations() {
             .initial_prompt
             .is_some()
     );
-    assert!(!state.task_channel.contains_key("old-task"));
+    // GC no longer prunes legacy map entries — task metadata lives in TaskStore.
 }
 
 // ── channel_workflows tests ───────────────────────────────────────────
@@ -1258,74 +1021,6 @@ fn test_channel_workflows_unassign() {
     let json = serde_json::to_string(&state).unwrap();
     let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
     assert!(!loaded.channel_workflows.contains_key("proj-auth"));
-}
-
-// ── resolve_bound_thread_id tests ────────────────────────────────────────────
-//
-// These tests verify DaemonPersistentState::resolve_bound_thread_id(), which
-// looks up a task_id in task_thread_id to find the bound thread for a coworker.
-// spawn_coworker() should call this to bind reviewers to their task thread —
-// mirroring the SpawnSession effect path in effects.rs:2786-2798.
-
-/// When task_id maps to an entry in task_thread_id, resolve returns the thread.
-#[test]
-fn test_resolve_bound_thread_id_found() {
-    let mut ps = DaemonPersistentState::default();
-    ps.task_thread_id
-        .insert("42".to_string(), "thread-announce-42".to_string());
-
-    assert_eq!(
-        ps.resolve_bound_thread_id(Some("42")),
-        Some("thread-announce-42".to_string()),
-        "Should resolve task_id to bound thread from task_thread_id"
-    );
-}
-
-/// When task_id is None, resolve returns None.
-#[test]
-fn test_resolve_bound_thread_id_none_task() {
-    let ps = DaemonPersistentState::default();
-
-    assert_eq!(
-        ps.resolve_bound_thread_id(None),
-        None,
-        "Should return None when task_id is None"
-    );
-}
-
-/// When task_id has no entry in task_thread_id, resolve returns None.
-#[test]
-fn test_resolve_bound_thread_id_missing_mapping() {
-    let ps = DaemonPersistentState::default();
-
-    assert_eq!(
-        ps.resolve_bound_thread_id(Some("99")),
-        None,
-        "Should return None when task_id has no thread mapping"
-    );
-}
-
-// ── task_parent tests ────────────────────────────────────────────────────────
-
-#[test]
-fn test_task_parent_mapping_roundtrip() {
-    let mut state = DaemonPersistentState::default();
-    state.task_parent.insert("43".to_string(), "42".to_string());
-
-    let json = serde_json::to_string_pretty(&state).unwrap();
-    let loaded: DaemonPersistentState = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(loaded.task_parent.get("43"), Some(&"42".to_string()));
-}
-
-#[test]
-fn test_task_parent_default_empty() {
-    let json = r#"{}"#;
-    let state: DaemonPersistentState = serde_json::from_str(json).unwrap();
-    assert!(
-        state.task_parent.is_empty(),
-        "task_parent should default to empty for old state files"
-    );
 }
 
 #[test]

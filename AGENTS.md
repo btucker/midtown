@@ -78,7 +78,7 @@ This catches failures faster than waiting for GitHub Actions and keeps you produ
 
 ## Conventions
 
-**Decision functions are pure**: Functions in `rules.rs` (and all functions called from `evaluate_tick()`) must not perform I/O, mutation, or async operations. Return `Vec<Effect>` instead. If data is needed for a decision, add it to `WorldSnapshot` during `collect_world_snapshot()`. See [docs/architecture.md](docs/architecture.md) for the full pipeline.
+**Decision functions are pure**: Functions in `rules.rs` (and all functions called from `evaluate_tick()`) must not perform I/O, mutation, or async operations. Return `Vec<Effect>` instead. If data is needed for a decision, add it to `DaemonPersistentState` as a `tick_*` field and populate it in `prepare_tick()`. See [docs/architecture.md](docs/architecture.md) for the full pipeline.
 
 **Effect-based side effects**: Never perform I/O in decision functions. Return `Effect` variants from `rules.rs`, execute them in `effects.rs`.
 

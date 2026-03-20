@@ -222,9 +222,10 @@ impl DaemonTestHarness {
 
         let tasks_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".claude")
-            .join("tasks")
-            .join(format!("midtown-{}", &repo_name));
+            .join(".midtown")
+            .join("projects")
+            .join(&repo_name)
+            .join("tasks");
 
         // Ensure parent directories exist
         if let Some(parent) = socket_path.parent() {

@@ -25,7 +25,7 @@ use crate::channel::Channel;
 use crate::coworker::CoworkerManager;
 use crate::message::Message;
 use crate::push::PushManager;
-use crate::tasks::extract_task_id_from_pr_title;
+use crate::task_store::extract_task_id_from_pr_title;
 
 /// A command from the web API that needs daemon-side processing.
 ///
@@ -1039,25 +1039,28 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         crate::daemon::state::DaemonPersistentState::load_for_repo(&state.config.dir_key)
             .unwrap_or_default();
 
-    // Read tasks directly from Claude Code task storage (local file, cheap)
+    // Read tasks from TaskStore (local file, cheap)
     // Merge thread_id/message_id from daemon persistent state so the frontend
     // can open the originating thread when a task is clicked.
-    let tasks: Vec<serde_json::Value> = crate::tasks::read_tasks()
+    let task_store = crate::task_store::TaskStore::new(
+        crate::paths::projects_dir_for_repo(&state.config.dir_key).join("tasks"),
+    );
+    let tasks: Vec<serde_json::Value> = task_store.load_all()
         .into_iter()
         .map(|task| {
             let status = match task.status {
-                crate::tasks::TaskStatus::Pending => "pending",
-                crate::tasks::TaskStatus::InProgress => "in_progress",
-                crate::tasks::TaskStatus::Completed => "completed",
+                crate::task_store::TaskStatus::Pending => "pending",
+                crate::task_store::TaskStatus::InProgress => "in_progress",
+                crate::task_store::TaskStatus::Completed => "completed",
             };
-            let message_id = persistent_state.task_message_id.get(&task.id).cloned();
-            let thread_id = persistent_state.task_thread_id.get(&task.id).cloned();
+            let message_id = task.message_id.clone();
+            let thread_id = task.thread_id.clone();
             serde_json::json!({
                 "id": task.id,
                 "subject": task.subject,
                 "description": task.description,
                 "status": status,
-                "owner": task.owner,
+                "owner": if task.agent_name.is_empty() { serde_json::Value::Null } else { serde_json::json!(task.agent_name) },
                 "channel": task.channel,
                 "blocked_by": task.blocked_by,
                 "message_id": message_id,

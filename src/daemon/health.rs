@@ -9,10 +9,12 @@ use std::time::Duration;
 
 use tracing::{debug, info, warn};
 
+use super::DaemonState;
 use super::constants::*;
 use super::effects::Effect;
 use super::helpers::format_task_prompt;
-use super::{DaemonState, snapshot};
+use super::state::DaemonPersistentState;
+use crate::task_store::Task;
 
 /// Check for reviewer processes that exited without posting their review.
 ///
@@ -24,23 +26,24 @@ use super::{DaemonState, snapshot};
 /// This function detects dead reviewers with unposted reviews and respawns them,
 /// up to `MAX_REVIEWER_RESTARTS` attempts per PR. When a dead reviewer exhausts
 /// the restart budget, it escalates to the ops channel instead.
-pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+pub fn check_and_restart_dead_reviewers(ps: &DaemonPersistentState, tasks: &[Task]) -> Vec<Effect> {
+    let usage_limited = ps.usage_limited_coworkers();
     let respawns = crate::rules::decide_dead_reviewer_respawns(
-        &snap.health.headless_process_health,
-        &snap.reviewer.reviewer_pr_assignments,
-        &snap.reviewer.reviewed_prs,
-        &snap.reviewer.reviewer_restart_counts,
+        &ps.tick_process_health,
+        &ps.tick_reviewer_pr_assignments,
+        &ps.github.reviewed_prs,
+        &ps.tick_reviewer_restart_counts,
         MAX_REVIEWER_RESTARTS,
-        &snap.name_session_map,
-        &snap.health.usage_limited_coworkers,
+        &ps.tick_name_session_map,
+        &usage_limited,
     );
 
     let escalations = crate::rules::decide_dead_reviewer_escalations(
-        &snap.health.headless_process_health,
-        &snap.reviewer.reviewer_pr_assignments,
-        &snap.reviewer.reviewed_prs,
-        &snap.reviewer.reviewer_restart_counts,
-        &snap.reviewer.reviewer_escalations_posted,
+        &ps.tick_process_health,
+        &ps.tick_reviewer_pr_assignments,
+        &ps.github.reviewed_prs,
+        &ps.tick_reviewer_restart_counts,
+        &ps.tick_reviewer_escalations_posted,
         MAX_REVIEWER_RESTARTS,
     );
 
@@ -58,12 +61,11 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
         );
 
         // Emit a workflow event so channel scripts can react to the dead reviewer.
-        let reviewer_task_id = snap
-            .pr
-            .pr_task_index
+        let reviewer_task_id = ps
+            .tick_pr_task_index
             .task_for_pr(restart.pr_number)
             .map(|s| s.to_string());
-        let reviewer_channel = snap.channel_for_pr_or_default(restart.pr_number);
+        let reviewer_channel = ps.channel_for_pr_or_default(restart.pr_number, tasks);
         effects.push(Effect::EmitWorkflowEvent(
             crate::workflow::WorkflowEvent::CoworkerStuck {
                 channel: reviewer_channel,
@@ -74,7 +76,8 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
 
         // Respawn the reviewer with an incremented restart count.
         effects.extend(build_reviewer_respawn_effects(
-            snap,
+            ps,
+            tasks,
             &restart.name,
             restart.pr_number,
             new_restart_count,
@@ -99,7 +102,7 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
             escalation.pr_number, escalation.name, escalation.restart_count,
         )));
         effects.push(Effect::nudge_channel_lead(
-            &snap.project_name,
+            &ps.tick_project_name,
             format!(
                 "Reviewer {} failed to post a review for PR #{} after {} attempts. \
                  Escalated to ops — please investigate.",
@@ -121,20 +124,19 @@ pub fn check_and_restart_dead_reviewers(snap: &snapshot::WorldSnapshot) -> Vec<E
 /// will be stuck. We detect it from any coworker's ProcessHealth flag and
 /// schedule a nudge based on the parsed reset time (if available) or a default
 /// of 15 minutes.
-pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
-    if snap.health.usage_limit_nudge_scheduled {
+pub fn check_for_usage_limits(ps: &DaemonPersistentState) -> Vec<Effect> {
+    if ps.tick_usage_limit_nudge_scheduled {
         return vec![];
     }
 
-    if snap.coworkers.active_coworkers.is_empty() {
+    if ps.tick_active_coworkers.is_empty() {
         return vec![];
     }
 
     // Collect all coworkers with a usage limit flag. Usage limits are account-wide
     // so multiple coworkers may hit the limit simultaneously.
-    let limited: Vec<_> = snap
-        .health
-        .headless_process_health
+    let limited: Vec<_> = ps
+        .tick_process_health
         .iter()
         .filter(|(_, health)| health.has_usage_limit)
         .collect();
@@ -194,7 +196,10 @@ pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     // Mark pool profiles for ALL usage-limited coworkers, not just the first.
     // Multiple coworkers may hit the limit simultaneously when they share an account.
     for (coworker_name, health) in &limited {
-        if let Some(profile_email) = snap.session_profile_map.get(&coworker_name.to_lowercase()) {
+        if let Some(profile_email) = ps
+            .tick_session_profile_map
+            .get(&coworker_name.to_lowercase())
+        {
             info!(
                 "Marking pool profile '{}' as usage-limited (via {})",
                 profile_email, coworker_name
@@ -210,10 +215,10 @@ pub fn check_for_usage_limits(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 }
 
 /// Check if a scheduled usage limit nudge is due, and if so, nudge all running coworkers.
-pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+pub fn maybe_nudge_usage_limit_expiry(ps: &DaemonPersistentState) -> Vec<Effect> {
     // Pure decision: should we nudge?
     let decision = crate::rules::decide_usage_limit_expiry(
-        snap.health.usage_limit_nudge_at,
+        ps.tick_usage_limit_nudge_at,
         tokio::time::Instant::now(),
     );
 
@@ -221,12 +226,11 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
         return vec![];
     }
 
-    let eligible_session_ids: Vec<String> = snap
-        .coworkers
-        .running_coworkers
+    let eligible_session_ids: Vec<String> = ps
+        .tick_running_coworkers
         .iter()
         .filter_map(|cw| {
-            snap.name_session_map
+            ps.tick_name_session_map
                 .get(&cw.name.to_lowercase())
                 .cloned()
                 .filter(|sid| !sid.is_empty())
@@ -262,7 +266,7 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
     // before the nudge timer fired, its profile would stay permanently excluded
     // from pool selection. Persistent state survives both coworker exits and
     // daemon restarts.
-    for profile_email in &snap.limited_pool_profiles {
+    for profile_email in &ps.tick_limited_pool_profiles {
         info!("Clearing usage-limit on pool profile '{}'", profile_email);
         effects.push(Effect::ClearProfileLimit {
             profile_email: profile_email.clone(),
@@ -282,21 +286,22 @@ pub fn maybe_nudge_usage_limit_expiry(snap: &snapshot::WorldSnapshot) -> Vec<Eff
 ///
 /// Uses a cooldown to prevent spamming when multiple coworkers hit the same auth error.
 pub(super) fn check_and_handle_auth_errors(
-    snap: &snapshot::WorldSnapshot,
+    ps: &DaemonPersistentState,
     state: &DaemonState,
 ) -> Vec<Effect> {
-    if snap.health.auth_error_coworkers.is_empty() {
+    let auth_error_coworkers = ps.auth_error_coworkers();
+    if auth_error_coworkers.is_empty() {
         return vec![];
     }
 
     let mut effects = Vec::new();
     let mut newly_detected = Vec::new();
 
-    let channel_lead_names = snap.channel_lead_names();
+    let channel_lead_names = ps.channel_lead_names();
 
-    for name in &snap.health.auth_error_coworkers {
+    for name in &auth_error_coworkers {
         // Determine session role for logging
-        let is_lead = super::helpers::is_project_lead(name, &snap.project_name);
+        let is_lead = super::helpers::is_project_lead(name, &ps.tick_project_name);
         let is_channel_lead = channel_lead_names.contains(name);
         let session_role = if is_lead {
             "Lead"
@@ -352,7 +357,10 @@ pub(super) fn check_and_handle_auth_errors(
         effects.insert(0, Effect::post_to_ops(message.clone()));
 
         // Nudge the lead so the user sees this immediately
-        effects.push(Effect::nudge_channel_lead(&snap.default_channel, message));
+        effects.push(Effect::nudge_channel_lead(
+            &ps.tick_default_channel,
+            message,
+        ));
     }
 
     effects
@@ -368,17 +376,18 @@ pub(super) fn check_and_handle_auth_errors(
 /// First detection: posts a channel message about the API error.
 /// Subsequent detections: nudges the coworker with a cooldown (does not re-post).
 pub(super) fn check_and_nudge_api_errors(
-    snap: &snapshot::WorldSnapshot,
+    ps: &DaemonPersistentState,
     state: &DaemonState,
 ) -> Vec<Effect> {
-    if snap.health.api_error_coworkers.is_empty() {
+    let api_error_coworkers = ps.api_error_coworkers();
+    if api_error_coworkers.is_empty() {
         return vec![];
     }
 
     let mut effects = Vec::new();
     let mut first_detection = false;
 
-    for name in &snap.health.api_error_coworkers {
+    for name in &api_error_coworkers {
         // Check cooldown - only nudge if the cooldown has expired
         let should_nudge = {
             let cooldowns = state.cooldowns.lock().unwrap();
@@ -411,8 +420,8 @@ pub(super) fn check_and_nudge_api_errors(
             API_ERROR_NUDGE_COOLDOWN.as_secs()
         );
 
-        let session_id = snap
-            .name_session_map
+        let session_id = ps
+            .tick_name_session_map
             .get(&name.to_lowercase())
             .cloned()
             .unwrap_or_default();
@@ -428,14 +437,9 @@ pub(super) fn check_and_nudge_api_errors(
 
     // Post a channel message when API errors are widespread (2+ coworkers affected)
     // Only post on first detection of a widespread outage to avoid spam.
-    let affected_count = snap.health.api_error_coworkers.len();
+    let affected_count = api_error_coworkers.len();
     if first_detection && affected_count >= 2 {
-        let names: Vec<&str> = snap
-            .health
-            .api_error_coworkers
-            .iter()
-            .map(|s| s.as_str())
-            .collect();
+        let names: Vec<&str> = api_error_coworkers.iter().map(|s| s.as_str()).collect();
         effects.insert(
             0,
             Effect::post_to_ops(format!(
@@ -458,22 +462,23 @@ pub(super) fn check_and_nudge_api_errors(
 ///
 /// Generic API retries cannot fix these. We clear the saved session ID first, then
 /// shut down and restart fresh.
-pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
-    if snap.health.tool_name_conflict_coworkers.is_empty() {
+pub fn check_and_restart_tool_name_conflicts(ps: &DaemonPersistentState) -> Vec<Effect> {
+    let tool_name_conflict_coworkers = ps.tool_name_conflict_coworkers();
+    if tool_name_conflict_coworkers.is_empty() {
         return vec![];
     }
 
     let mut effects = Vec::new();
 
-    for name in &snap.health.tool_name_conflict_coworkers {
+    for name in &tool_name_conflict_coworkers {
         warn!(
             "Coworker {} has unrecoverable session error — restarting with fresh session",
             name
         );
 
         effects.push(Effect::ClearSavedSessionId { name: name.clone() });
-        let session_id = snap
-            .name_session_map
+        let session_id = ps
+            .tick_name_session_map
             .iter()
             .find(|(n, _)| n.eq_ignore_ascii_case(name))
             .map(|(_, sid)| sid);
@@ -484,14 +489,14 @@ pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> 
         ));
         // Restart the project lead immediately (don't wait for ensure_lead_alive
         // cooldown), so the user-facing lead recovers within the same tick.
-        if name.eq_ignore_ascii_case(&snap.project_name) {
-            let mut config = crate::launch::LaunchConfig::lead(&snap.dir_key, None);
+        if name.eq_ignore_ascii_case(&ps.tick_project_name) {
+            let mut config = crate::launch::LaunchConfig::lead(&ps.tick_dir_key, None);
             config.model = super::helpers::resolve_model_for_role(
-                &snap.dir_key,
+                &ps.tick_dir_key,
                 config.auth_provider,
                 &config.agent_type,
             );
-            let lead_wt = crate::paths::lead_worktree_path(&snap.dir_key);
+            let lead_wt = crate::paths::lead_worktree_path(&ps.tick_dir_key);
             if lead_wt.exists() {
                 config.working_dir = Some(lead_wt);
             }
@@ -512,14 +517,22 @@ pub fn check_and_restart_tool_name_conflicts(snap: &snapshot::WorldSnapshot) -> 
 /// process has terminated (exit_code is set, is_alive is false) while the coworker
 /// still has work assigned.
 pub(super) async fn check_and_respawn_dead_processes(
-    snap: &snapshot::WorldSnapshot,
+    ps: &DaemonPersistentState,
+    tasks: &[Task],
     state: &DaemonState,
 ) -> Vec<Effect> {
+    // Build in_progress_tasks tuples from tasks for the decision function
+    let in_progress_tasks: Vec<(String, String, String)> = tasks
+        .iter()
+        .filter(|t| t.status == crate::task_store::TaskStatus::InProgress)
+        .map(|t| (t.id.clone(), t.subject.clone(), t.agent_name.clone()))
+        .collect();
+
     // Pure decision: which processes need respawning?
     let respawns = crate::rules::decide_dead_process_respawns(
-        &snap.health.headless_process_health,
-        &snap.in_progress_tasks,
-        &snap.name_session_map,
+        &ps.tick_process_health,
+        &in_progress_tasks,
+        &ps.tick_name_session_map,
     );
 
     let mut effects = Vec::new();
@@ -547,9 +560,8 @@ pub(super) async fn check_and_respawn_dead_processes(
             ),
         );
 
-        // Look up the task's channel from the snapshot
-        let channel = snap
-            .all_tasks
+        // Look up the task's channel from tasks
+        let channel = tasks
             .iter()
             .find(|t| t.id == respawn.task_id)
             .and_then(|t| t.channel.clone());
@@ -557,7 +569,9 @@ pub(super) async fn check_and_respawn_dead_processes(
         // Emit a workflow event so channel scripts can react to the dead process.
         effects.push(Effect::EmitWorkflowEvent(
             crate::workflow::WorkflowEvent::CoworkerStuck {
-                channel: channel.clone().unwrap_or_else(|| snap.project_name.clone()),
+                channel: channel
+                    .clone()
+                    .unwrap_or_else(|| ps.tick_project_name.clone()),
                 task_id: Some(respawn.task_id.clone()),
                 coworker: respawn.name.clone(),
             },
@@ -572,8 +586,12 @@ pub(super) async fn check_and_respawn_dead_processes(
         );
         config.channel = channel.clone();
 
-        // Apply task model if available (sets both provider and model)
-        config.apply_task_model(&snap.task_model_map, &respawn.task_id);
+        // Apply task model if available
+        let task_model_map: std::collections::HashMap<String, String> = tasks
+            .iter()
+            .filter_map(|t| t.model.as_ref().map(|m| (t.id.clone(), m.clone())))
+            .collect();
+        config.apply_task_model(&task_model_map, &respawn.task_id);
 
         effects.push(Effect::ShutdownCoworker {
             name: respawn.name.clone(),
@@ -602,13 +620,12 @@ pub(super) async fn check_and_respawn_dead_processes(
 /// The lead is the human-facing session that should never be permanently down.
 /// If the lead is not in `active_coworkers` (dead and deregistered), respawn it.
 /// Uses `coworker_stop_times` as a cooldown to prevent rapid respawn loops.
-pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+pub fn ensure_lead_alive(ps: &DaemonPersistentState) -> Vec<Effect> {
     // Check if lead is already registered (any status)
-    let lead_registered = snap
-        .coworkers
-        .active_coworkers
+    let lead_registered = ps
+        .tick_active_coworkers
         .iter()
-        .any(|c| c.name.eq_ignore_ascii_case(&snap.project_name));
+        .any(|c| c.name.eq_ignore_ascii_case(&ps.tick_project_name));
 
     if lead_registered {
         return vec![];
@@ -616,10 +633,9 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 
     // Check if lead is currently attached interactively — if so, the daemon
     // shouldn't spawn a headless lead that would conflict.
-    if snap
-        .coworkers
-        .attached_coworkers
-        .contains_key(&snap.project_name.to_lowercase())
+    if ps
+        .tick_attached_coworkers
+        .contains_key(&ps.tick_project_name.to_lowercase())
     {
         return vec![];
     }
@@ -627,12 +643,11 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
     // Cooldown: if the lead was recently stopped (within 5 minutes), don't
     // respawn yet to prevent crash loops. The lead may have been stopped for
     // a good reason (e.g., auth error, attach/detach cycle).
-    if let Some(stop_time) = snap
-        .coworkers
-        .coworker_stop_times
-        .get(&snap.project_name.to_lowercase())
+    if let Some(stop_time) = ps
+        .tick_coworker_stop_times
+        .get(&ps.tick_project_name.to_lowercase())
     {
-        let since_stop = snap.now_utc.signed_duration_since(*stop_time);
+        let since_stop = ps.tick_now.signed_duration_since(*stop_time);
         if since_stop < chrono::Duration::from_std(LEAD_RESPAWN_COOLDOWN).unwrap_or_default() {
             debug!(
                 "Lead respawn cooldown: stopped {}s ago (need {}s)",
@@ -645,13 +660,13 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 
     warn!("Lead session is not running — respawning");
 
-    let mut config = crate::launch::LaunchConfig::lead(&snap.dir_key, None);
+    let mut config = crate::launch::LaunchConfig::lead(&ps.tick_dir_key, None);
     config.model = super::helpers::resolve_model_for_role(
-        &snap.dir_key,
+        &ps.tick_dir_key,
         config.auth_provider,
         &config.agent_type,
     );
-    let lead_wt = crate::paths::lead_worktree_path(&snap.dir_key);
+    let lead_wt = crate::paths::lead_worktree_path(&ps.tick_dir_key);
     if lead_wt.exists() {
         config.working_dir = Some(lead_wt);
     }
@@ -668,14 +683,13 @@ pub fn ensure_lead_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 /// For each channel in `channel_lead_sessions`, checks if the session is still
 /// alive. If not, emits a `RespawnChannelLead` effect (I/O deferred to executor).
 /// Uses `coworker_stop_times` as a cooldown to prevent rapid respawn loops.
-pub fn ensure_channel_leads_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+pub fn ensure_channel_leads_alive(ps: &DaemonPersistentState) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    for channel_name in snap.channel_lead_sessions.keys() {
+    for channel_name in ps.channel_lead_sessions.keys() {
         // Check if the channel lead is already registered (any status)
-        let is_registered = snap
-            .coworkers
-            .active_coworkers
+        let is_registered = ps
+            .tick_active_coworkers
             .iter()
             .any(|c| c.name.eq_ignore_ascii_case(channel_name));
 
@@ -685,21 +699,19 @@ pub fn ensure_channel_leads_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
 
         // Check if the channel lead is currently attached interactively — if so,
         // the daemon shouldn't spawn a headless session that would conflict.
-        if snap
-            .coworkers
-            .attached_coworkers
+        if ps
+            .tick_attached_coworkers
             .contains_key(&channel_name.to_lowercase())
         {
             continue;
         }
 
         // Cooldown: if the channel lead was recently stopped, don't respawn yet
-        if let Some(stop_time) = snap
-            .coworkers
-            .coworker_stop_times
+        if let Some(stop_time) = ps
+            .tick_coworker_stop_times
             .get(&channel_name.to_lowercase())
         {
-            let since_stop = snap.now_utc.signed_duration_since(*stop_time);
+            let since_stop = ps.tick_now.signed_duration_since(*stop_time);
             if since_stop < chrono::Duration::from_std(LEAD_RESPAWN_COOLDOWN).unwrap_or_default() {
                 debug!(
                     "Channel lead '{}' respawn cooldown: stopped {}s ago (need {}s)",
@@ -738,27 +750,25 @@ pub fn ensure_channel_leads_alive(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
 /// - The lead is attached interactively (don't cycle an interactive session)
 ///
 /// Pure function — no I/O, no `.await`, no mutex locks.
-pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
-    let interval_secs = snap.lead_session_refresh_interval_secs;
+pub fn maybe_refresh_lead_session(ps: &DaemonPersistentState) -> Vec<Effect> {
+    let interval_secs = ps.tick_lead_refresh_interval_secs;
     if interval_secs == 0 {
         return vec![];
     }
 
     // Don't refresh an interactively attached session
-    if snap
-        .coworkers
-        .attached_coworkers
-        .contains_key(&snap.project_name.to_lowercase())
+    if ps
+        .tick_attached_coworkers
+        .contains_key(&ps.tick_project_name.to_lowercase())
     {
         return vec![];
     }
 
     // Find the lead in active coworkers
-    let lead = snap
-        .coworkers
-        .active_coworkers
+    let lead = ps
+        .tick_active_coworkers
         .iter()
-        .find(|c| c.name.eq_ignore_ascii_case(&snap.project_name));
+        .find(|c| c.name.eq_ignore_ascii_case(&ps.tick_project_name));
 
     let lead = match lead {
         Some(l) => l,
@@ -766,16 +776,15 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
     };
 
     // Check how long the lead has been running
-    let start_time = match snap
-        .coworkers
-        .coworker_start_times
-        .get(&snap.project_name.to_lowercase())
+    let start_time = match ps
+        .tick_coworker_start_times
+        .get(&ps.tick_project_name.to_lowercase())
     {
         Some(t) => t,
         None => return vec![],
     };
 
-    let age = snap.now_utc.signed_duration_since(*start_time);
+    let age = ps.tick_now.signed_duration_since(*start_time);
     let threshold = chrono::Duration::seconds(interval_secs as i64);
 
     if age < threshold {
@@ -809,12 +818,12 @@ pub fn maybe_refresh_lead_session(snap: &snapshot::WorldSnapshot) -> Vec<Effect>
 ///
 /// Pure function — no I/O, no `.await`, no mutex locks. Takes `now_utc` from the
 /// snapshot so tests can control time.
-pub fn detect_stale_attached_sessions(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+pub fn detect_stale_attached_sessions(ps: &DaemonPersistentState) -> Vec<Effect> {
     let timeout = chrono::Duration::from_std(ATTACH_TIMEOUT).unwrap_or_default();
-    snap.coworkers.attached_coworkers
+    ps.tick_attached_coworkers
         .iter()
         .filter_map(|(name, attached_at)| {
-            let age = snap.now_utc.signed_duration_since(*attached_at);
+            let age = ps.tick_now.signed_duration_since(*attached_at);
             if age >= timeout {
                 info!(
                     "Stale attached session for '{}' (attached {}s ago, timeout {}s) — auto-detaching",
@@ -833,28 +842,28 @@ pub fn detect_stale_attached_sessions(snap: &snapshot::WorldSnapshot) -> Vec<Eff
 }
 
 pub(super) async fn check_and_fire_reminders(
-    snap: &snapshot::WorldSnapshot,
+    ps: &DaemonPersistentState,
     state: &DaemonState,
 ) -> Vec<Effect> {
-    let open_pr_coworkers: Vec<String> = snap.sessions_with_open_prs().into_iter().collect();
-    let ps = state.persistent_state.lock().await;
+    let open_pr_coworkers: Vec<String> = ps.sessions_with_open_prs().into_iter().collect();
+    let ps_locked = state.persistent_state.lock().await;
     let now = chrono::Utc::now();
 
     let mut effects = build_reminder_effects_at(
-        &ps.reminders.reminders,
+        &ps_locked.reminders.reminders,
         &open_pr_coworkers,
-        &snap.dir_key,
-        &snap.default_channel,
+        &ps.tick_dir_key,
+        &ps.tick_default_channel,
         now,
     );
 
     // Emit an effect to advance last_evaluated_at for all cron reminders
-    let has_cron = ps.reminders.reminders.iter().any(|r| {
+    let has_cron = ps_locked.reminders.reminders.iter().any(|r| {
         r.is_active() && matches!(r.trigger, crate::reminders::ReminderTrigger::CronUtc { .. })
     });
     if has_cron {
         effects.push(Effect::AdvanceCronEvalTimestamps {
-            dir_key: snap.dir_key.clone(),
+            dir_key: ps.tick_dir_key.clone(),
             now,
         });
     }
@@ -864,6 +873,7 @@ pub(super) async fn check_and_fire_reminders(
 
 /// Pure function: evaluate reminders and build effects (PostToChannel + NudgeChannelLead + MarkFired).
 #[cfg(test)]
+#[allow(dead_code)]
 fn build_reminder_effects(
     reminders: &[crate::reminders::Reminder],
     open_pr_coworkers: &[String],
@@ -1008,10 +1018,6 @@ pub(super) fn check_for_stale_worktrees(
 ///   are removed entirely (including their `initial_prompt`, which is dropped
 ///   with the whole record).
 ///
-/// **Task metadata pruning:**
-/// - Entries in task_channel, task_model, task_plan, task_execution_skill,
-///   task_thread_id, and task_message_id are pruned when their task_id doesn't
-///   appear in any surviving session record or active task.
 ///
 /// **Note:** `initial_prompt` is intentionally preserved on stopped sessions
 /// within the retention window because `session.clear` uses it to restart
@@ -1116,7 +1122,8 @@ pub(super) fn check_for_state_gc(
 /// **Post-spawn:** the caller appends its own trailing effects after this
 /// helper returns (e.g. the ops-channel message for dead reviewers).
 fn build_reviewer_respawn_effects(
-    snap: &snapshot::WorldSnapshot,
+    ps: &DaemonPersistentState,
+    tasks: &[Task],
     name: &str,
     pr_number: u64,
     new_restart_count: u32,
@@ -1125,20 +1132,16 @@ fn build_reviewer_respawn_effects(
     let mut effects = Vec::new();
 
     let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
-    let wt_path = crate::paths::worktrees_dir_for_repo(&snap.dir_key).join(&worktree_id);
+    let wt_path = crate::paths::worktrees_dir_for_repo(&ps.tick_dir_key).join(&worktree_id);
 
     // If there's a dangling "Review in progress" placeholder, mark it as abandoned.
-    if let Some(&comment_id) = snap
-        .reviewer
-        .reviewer_in_progress_comment_ids
-        .get(&pr_number)
-    {
+    if let Some(&comment_id) = ps.tick_reviewer_in_progress_comment_ids.get(&pr_number) {
         let repo_full_name = format!(
             "{}/{}",
-            snap.repo_owner.as_deref().unwrap_or("unknown"),
-            snap.project_name
+            ps.tick_repo_owner.as_deref().unwrap_or("unknown"),
+            ps.tick_project_name
         );
-        let task_id = snap.pr.pr_task_index.task_for_pr(pr_number);
+        let task_id = ps.tick_pr_task_index.task_for_pr(pr_number);
         let frontmatter = match task_id {
             Some(tid) => format!("<!-- midtown task:{tid} type:review-status -->"),
             None => "<!-- midtown type:review-status -->".to_string(),
@@ -1160,12 +1163,12 @@ fn build_reviewer_respawn_effects(
     }
 
     let reviewer_provider = crate::config::get_execution_provider_for_role(
-        &snap.dir_key,
+        &ps.tick_dir_key,
         crate::config::ExecutionRole::Reviewer,
     );
     let mut config = crate::launch::LaunchConfig::reviewer(
         name.to_string(),
-        &snap.dir_key,
+        &ps.tick_dir_key,
         pr_number,
         new_restart_count,
         reviewer_provider,
@@ -1178,16 +1181,13 @@ fn build_reviewer_respawn_effects(
     config.working_dir = Some(wt_path.clone());
 
     // Route reviewer to the task's topic channel.
-    config.channel = snap.channel_for_pr(pr_number);
+    config.channel = ps.channel_for_pr(pr_number, tasks);
 
     // Route escalation mentions to the channel lead when available.
     if let Some(ref channel_name) = config.channel {
-        let lead_names = snap.channel_lead_names();
+        let lead_names = ps.channel_lead_names();
         if lead_names.contains(channel_name) {
             config.escalation_target = Some(channel_name.clone());
-            // Belt-and-suspenders: regenerate the initial prompt with the escalation
-            // target so the reviewer knows who to address even if the system prompt
-            // substitution fails.
             config.initial_prompt = Some(crate::agents::reviewer_launch_prompt(
                 pr_number,
                 new_restart_count,
@@ -1219,16 +1219,9 @@ fn build_reviewer_respawn_effects(
             current_task: Some(format!("reviewing PR #{}", pr_number)),
         },
         Effect::CreateTaskSessionSpan {
-            task_id: snap
-                .all_tasks
+            task_id: tasks
                 .iter()
-                .find(|t| {
-                    t.pr == Some(pr_number)
-                        && snap
-                            .task_agent_type_map
-                            .get(&t.id)
-                            .is_some_and(|at| at == "midtown-code-reviewer")
-                })
+                .find(|t| t.pr == Some(pr_number) && t.agent_type == "midtown-code-reviewer")
                 .map(|t| t.id.clone())
                 .unwrap_or_default(),
             agent_name: name.to_string(),
@@ -1279,17 +1272,20 @@ fn shutdown_effect(name: &str, session_id: Option<&String>, reason: String) -> E
 ///
 /// Note: This function does filesystem I/O (reads note files from disk).
 /// It's called only from the low-frequency `NoteReviewTick` (once per hour).
-pub fn check_for_stale_notes(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+pub fn check_for_stale_notes(ps: &DaemonPersistentState) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    for (channel_name, stale_notes) in &snap.stale_channel_notes {
+    for (channel_name, stale_notes) in &ps.tick_stale_channel_notes {
         // Only nudge channels that have a channel lead session
-        if !snap.channel_lead_sessions.contains_key(channel_name) {
+        if !ps.channel_lead_sessions.contains_key(channel_name) {
             continue;
         }
 
         // Skip if recently nudged (pre-evaluated cooldown)
-        if snap.note_staleness_cooldown_channels.contains(channel_name) {
+        if ps
+            .tick_note_staleness_cooldown_channels
+            .contains(channel_name)
+        {
             continue;
         }
 
@@ -1326,19 +1322,19 @@ pub fn check_for_stale_notes(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
 /// Decision function — no async I/O or mutation. Staleness data is pre-computed
 /// during snapshot collection; cooldown state is pre-evaluated into the snapshot.
 /// (Uses `info!()` for logging, consistent with other health decision functions.)
-pub fn check_channel_lead_worktree_freshness(snap: &snapshot::WorldSnapshot) -> Vec<Effect> {
+pub fn check_channel_lead_worktree_freshness(ps: &DaemonPersistentState) -> Vec<Effect> {
     let mut effects = Vec::new();
 
-    for channel_name in &snap.stale_channel_lead_worktrees {
+    for channel_name in &ps.tick_stale_lead_worktrees {
         // Skip if recently nudged (pre-evaluated cooldown)
-        if snap
-            .lead_worktree_freshness_cooldown_channels
+        if ps
+            .tick_lead_worktree_freshness_cooldown_channels
             .contains(channel_name)
         {
             continue;
         }
 
-        let branch = &snap.default_branch;
+        let branch = &ps.tick_default_branch;
         info!(
             "Channel lead '{}' worktree is behind origin/{} — nudging to update",
             channel_name, branch

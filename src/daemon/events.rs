@@ -6,8 +6,8 @@
 //!
 //! ```text
 //! Timer/Webhook/RPC → DaemonEvent
-//!                   → collect WorldSnapshot (immutable)
-//!                   → evaluate_tick(event, snapshot, state) → Vec<Effect>
+//!                   → prepare_tick(state) → Vec<Task>
+//!                   → evaluate_tick(event, tasks, state) → Vec<Effect>
 //!                   → execute_effects(effects)
 //! ```
 
@@ -16,7 +16,6 @@ use std::collections::HashSet;
 use super::DaemonState;
 use super::constants::OPS_CHANNEL;
 use super::effects::Effect;
-use super::snapshot::WorldSnapshot;
 
 /// Events that drive the daemon's state machine.
 ///
@@ -60,22 +59,25 @@ pub enum DaemonEvent {
 /// expressed as pure effects (spawn success/failure determines follow-up effects).
 pub async fn evaluate_tick(
     event: &DaemonEvent,
-    snap: &WorldSnapshot,
+    _tasks: &[crate::task_store::Task],
     state: &DaemonState,
 ) -> Vec<Effect> {
     match event {
         DaemonEvent::SessionMonitorTick => {
             let mut effects = Vec::new();
+            let ps = state.persistent_state.lock().await;
+            let tasks = state.task_store.load_all();
             // Health checks: auth errors first (require user intervention),
             // then usage limits and dead process detection.
-            effects.extend(super::health::check_and_handle_auth_errors(snap, state));
-            effects.extend(super::health::check_and_restart_dead_reviewers(snap));
-            effects.extend(super::health::check_for_usage_limits(snap));
-            effects.extend(super::health::maybe_nudge_usage_limit_expiry(snap));
-            effects.extend(super::health::check_and_nudge_api_errors(snap, state));
-            effects.extend(super::health::check_and_restart_tool_name_conflicts(snap));
-            effects.extend(super::health::maybe_refresh_lead_session(snap));
-            effects.extend(super::health::check_channel_lead_worktree_freshness(snap));
+            effects.extend(super::health::check_and_handle_auth_errors(&ps, state));
+            effects.extend(super::health::check_and_restart_dead_reviewers(&ps, &tasks));
+            effects.extend(super::health::check_for_usage_limits(&ps));
+            effects.extend(super::health::maybe_nudge_usage_limit_expiry(&ps));
+            effects.extend(super::health::check_and_nudge_api_errors(&ps, state));
+            effects.extend(super::health::check_and_restart_tool_name_conflicts(&ps));
+            effects.extend(super::health::maybe_refresh_lead_session(&ps));
+            effects.extend(super::health::check_channel_lead_worktree_freshness(&ps));
+            drop(ps);
             effects
         }
         DaemonEvent::TaskDispatchTick => {
@@ -91,55 +93,135 @@ pub async fn evaluate_tick(
             // session context for that PR. The coworker going idle already frees the process slot
             // — we don't need to strip task ownership too.
             //
-            // effects.extend(super::dispatch::reconcile_tasks_in_review(snap));
-            effects.extend(super::dispatch::reset_orphaned_tasks(snap));
-            effects.extend(super::dispatch::check_for_duplicate_task_workers(snap));
-            // Session-aware dispatch handles in_progress tasks with session records:
-            // resume stopped sessions, skip running ones.
-            let session_effects = super::dispatch::dispatch_via_sessions(snap, state);
-            let mut claimed_ids =
-                super::effects::extract_claimed_task_ids_from_effects(&session_effects);
-            effects.extend(session_effects);
-            // Orphan recovery handles all orphaned in-progress tasks (with or without sessions).
-            let orphan_effects = super::dispatch::check_and_recover_orphans(snap, state);
-            let orphan_claimed =
-                super::effects::extract_claimed_task_ids_from_effects(&orphan_effects);
-            claimed_ids.extend(orphan_claimed);
-            effects.extend(orphan_effects);
-            effects.extend(super::dispatch::spawn_for_pending_tasks_excluding(
-                snap,
-                state,
-                &claimed_ids,
-            ));
-            effects.extend(super::health::check_and_respawn_dead_processes(snap, state).await);
-            // Note: fork crash recovery is handled in the session_drain handler (mod.rs),
-            // not here. Fork bindings (topic_sessions) are cleaned up during
-            // cleanup_coworker_state before the snapshot is collected, so a snapshot-based
-            // approach would never see dead forks.
-            // Auto-detach sessions attached longer than ATTACH_TIMEOUT. Both this function and
-            // ensure_lead_alive read the same immutable snapshot, so AutoDetachCoworker only
-            // removes the entry from DaemonState when executed in effects.rs. The lead respawn
-            // happens on the next tick, once ensure_lead_alive sees the entry is gone.
-            effects.extend(super::health::detect_stale_attached_sessions(snap));
-            effects.extend(super::health::ensure_lead_alive(snap));
-            effects.extend(super::health::ensure_channel_leads_alive(snap));
-            effects.extend(super::health::check_and_fire_reminders(snap, state).await);
+            // effects.extend(super::dispatch::reconcile_tasks_in_review(&ps, &tasks));
+            {
+                let ps = state.persistent_state.lock().await;
+                let tasks = state.task_store.load_all();
+                effects.extend(super::dispatch::reset_orphaned_tasks(&ps, &tasks));
+                effects.extend(super::dispatch::check_for_duplicate_task_workers(
+                    &ps, &tasks,
+                ));
+                // Session-aware dispatch handles in_progress tasks with session records:
+                // resume stopped sessions, skip running ones.
+                let session_effects = super::dispatch::dispatch_via_sessions(&ps, &tasks, state);
+                let mut claimed_ids =
+                    super::effects::extract_claimed_task_ids_from_effects(&session_effects);
+                effects.extend(session_effects);
+                // Orphan recovery handles all orphaned in-progress tasks (with or without sessions).
+                let orphan_effects = super::dispatch::check_and_recover_orphans(&ps, &tasks, state);
+                let orphan_claimed =
+                    super::effects::extract_claimed_task_ids_from_effects(&orphan_effects);
+                claimed_ids.extend(orphan_claimed);
+                effects.extend(orphan_effects);
+                effects.extend(super::dispatch::spawn_for_pending_tasks_excluding(
+                    &ps,
+                    &tasks,
+                    state,
+                    &claimed_ids,
+                ));
+            }
+            {
+                let ps = state.persistent_state.lock().await;
+                let tasks = state.task_store.load_all();
+                effects.extend(
+                    super::health::check_and_respawn_dead_processes(&ps, &tasks, state).await,
+                );
+                // Note: fork crash recovery is handled in the session_drain handler (mod.rs),
+                // not here. Fork bindings (topic_sessions) are cleaned up during
+                // cleanup_coworker_state before the snapshot is collected, so a snapshot-based
+                // approach would never see dead forks.
+                // Auto-detach sessions attached longer than ATTACH_TIMEOUT. Both this function and
+                // ensure_lead_alive read the same immutable snapshot, so AutoDetachCoworker only
+                // removes the entry from DaemonState when executed in effects.rs. The lead respawn
+                // happens on the next tick, once ensure_lead_alive sees the entry is gone.
+                effects.extend(super::health::detect_stale_attached_sessions(&ps));
+                effects.extend(super::health::ensure_lead_alive(&ps));
+                effects.extend(super::health::ensure_channel_leads_alive(&ps));
+                effects.extend(super::health::check_and_fire_reminders(&ps, state).await);
+            }
             dedup_spawn_effects(effects)
         }
         DaemonEvent::PrPollTick => {
             // PR polling: check open PRs for issues, spawn reviewers, clean up merged worktrees.
             // When GitHub API quota is critically low (< 5%), skip API-calling polls but still
-            // run pure cleanup logic (doesn't make API calls, just reads snapshot state).
+            // run pure cleanup logic (doesn't make API calls, just reads tick state).
+            //
+            // Two-phase evaluation:
+            // 1. Lock persistent_state and run pure decision functions
+            // 2. Drop lock, then run async functions (which re-lock internally)
             let mut effects = Vec::new();
+            let tasks = state.task_store.load_all();
 
-            if snap.pr.github_rate_limit.is_critical() {
-                tracing::warn!(
-                    "Skipping PR poll (GitHub API quota critical: {})",
-                    snap.pr.github_rate_limit.summary()
-                );
-            } else {
-                // Normal PR polling when quota is not critical
-                match super::pr::poll_prs_for_issues(snap, state).await {
+            // Phase 1: Pure decision functions under a single lock
+            let rate_limit_critical = {
+                let ps = state.persistent_state.lock().await;
+
+                if ps.tick_rate_limit.is_critical() {
+                    tracing::warn!(
+                        "Skipping PR poll (GitHub API quota critical: {})",
+                        ps.tick_rate_limit.summary()
+                    );
+                }
+
+                // Always run merged PR cleanup (pure function, no API calls)
+                effects.extend(super::pr::collect_merged_pr_cleanup_effects(&ps));
+
+                // Nudge coworkers with open PRs to rebase after a merge
+                effects.extend(super::pr::collect_merge_rebase_nudge_effects(&ps));
+
+                // Polling fallback for PR→task auto-link: repair missing SetTaskPr links
+                // that webhooks may have missed (no API calls, pure tick state comparison)
+                effects.extend(super::pr::collect_pr_task_link_effects(&ps, &tasks));
+
+                // Clean up stale worktrees and daemon state
+                {
+                    let daemon_config =
+                        crate::config::get_project_daemon_config(state.paths.dir_key());
+                    let retention_hours =
+                        daemon_config.worktree_cleanup_retention_hours.unwrap_or(24);
+                    if retention_hours > 0 {
+                        let retention_period = chrono::Duration::hours(retention_hours as i64);
+                        effects.extend(super::health::check_for_stale_worktrees(
+                            &ps.worktree_registry,
+                            &ps.tick_active_session_names,
+                            retention_period,
+                        ));
+                        effects.push(super::effects::Effect::CleanupOrphanedWorktrees {
+                            retention_hours,
+                        });
+                    }
+
+                    let gc_retention = chrono::Duration::hours(retention_hours as i64);
+                    // Task metadata lives in TaskStore now; GC only removes dead sessions.
+                    let task_metadata_keys: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+                    let active_task_ids: std::collections::HashSet<String> =
+                        tasks.iter().map(|t| t.id.clone()).collect();
+                    effects.extend(super::health::check_for_state_gc(
+                        &ps.sessions,
+                        &ps.tick_active_session_ids,
+                        &task_metadata_keys,
+                        &active_task_ids,
+                        gc_retention,
+                    ));
+                }
+
+                // Reconcile orphaned PRs: nudge lead for reviewed + CI green PRs
+                effects.extend(super::pr::reconcile_orphaned_prs(&ps, &tasks));
+
+                // Auto-complete tasks whose subjects reference only merged PRs
+                effects.extend(super::dispatch::build_subject_based_completion_effects(
+                    &ps, &tasks,
+                ));
+
+                ps.tick_rate_limit.is_critical()
+                // ps lock dropped here
+            };
+
+            // Phase 2: Async functions that lock persistent_state internally.
+            // poll_prs_for_issues extracts tick state under its own lock.
+            if !rate_limit_critical {
+                match super::pr::poll_prs_for_issues(state).await {
                     Ok(pr_effects) => effects.extend(pr_effects),
                     Err(e) => {
                         tracing::warn!("PR poll error: {}", e);
@@ -147,81 +229,22 @@ pub async fn evaluate_tick(
                 }
             }
 
-            // Always run merged PR cleanup (pure function, no API calls)
-            effects.extend(super::pr::collect_merged_pr_cleanup_effects(snap));
-
-            // Nudge coworkers with open PRs to rebase after a merge
-            effects.extend(super::pr::collect_merge_rebase_nudge_effects(snap));
-
-            // Check for post-rebase regressions (coworker commits that touch files
-            // changed on main, potentially reverting merged changes)
-            effects.extend(super::pr::check_for_rebase_regressions(snap).await);
-
-            // Polling fallback for PR→task auto-link: repair missing SetTaskPr links
-            // that webhooks may have missed (no API calls, pure snapshot comparison)
-            effects.extend(super::pr::collect_pr_task_link_effects(snap));
-
-            // Clean up stale worktrees and daemon state (completed tasks older than retention period)
+            // Check for post-rebase regressions (reads tick state, spawns blocking git)
             {
-                let daemon_config = crate::config::get_project_daemon_config(state.paths.dir_key());
-                let retention_hours = daemon_config.worktree_cleanup_retention_hours.unwrap_or(24);
-                // Skip worktree directory cleanup if retention is set to 0
-                if retention_hours > 0 {
-                    let retention_period = chrono::Duration::hours(retention_hours as i64);
-                    effects.extend(super::health::check_for_stale_worktrees(
-                        &snap.worktree_registry,
-                        &snap.coworkers.active_names,
-                        retention_period,
-                    ));
-                    effects
-                        .push(super::effects::Effect::CleanupOrphanedWorktrees { retention_hours });
-                }
-
-                // State GC always runs: reviewer session pruning is immediate (no retention),
-                // and orphaned metadata cleanup is independent of worktree retention.
-                // Non-reviewer dead sessions use retention_hours (defaulting to 24h).
-                let gc_retention = chrono::Duration::hours(retention_hours as i64);
-                let task_metadata_keys: std::collections::HashSet<String> = snap
-                    .task_channel
-                    .keys()
-                    .chain(snap.task_model_map.keys())
-                    .chain(snap.task_plan_map.keys())
-                    .chain(snap.task_execution_skill_map.keys())
-                    .chain(snap.task_thread_id_map.keys())
-                    .chain(snap.task_message_id_map.keys())
-                    .cloned()
-                    .collect();
-                let active_task_ids: std::collections::HashSet<String> =
-                    snap.all_tasks.iter().map(|t| t.id.clone()).collect();
-                effects.extend(super::health::check_for_state_gc(
-                    &snap.sessions,
-                    &snap.coworkers.active_session_ids,
-                    &task_metadata_keys,
-                    &active_task_ids,
-                    gc_retention,
-                ));
+                let ps = state.persistent_state.lock().await;
+                effects.extend(super::pr::check_for_rebase_regressions(&ps).await);
             }
-
-            // Reconcile orphaned PRs: nudge lead for reviewed + CI green PRs with no active task
-            effects.extend(super::pr::reconcile_orphaned_prs(snap));
-
-            // Auto-complete tasks whose subjects reference only merged PRs
-            // (handles meta-tasks, sub-tasks, and fix-PR tasks)
-            effects.extend(super::dispatch::build_subject_based_completion_effects(
-                snap,
-            ));
 
             dedup_spawn_effects(effects)
         }
         DaemonEvent::RateLimitCheckTick => {
             // Evaluate freshly fetched GitHub API rate limits against previous state.
-            // The rate limit data was fetched before snapshot collection and passed in
-            // via snap.freshly_fetched_rate_limit.
             let mut effects = Vec::new();
-            if let Some(rate_limit) = &snap.pr.freshly_fetched_rate_limit {
+            let ps = state.persistent_state.lock().await;
+            if let Some(rate_limit) = &ps.tick_fresh_rate_limit {
                 // Check if state changed (low → critical, critical → recovered, etc.)
-                let was_critical = snap.pr.github_rate_limit.is_critical();
-                let was_low = snap.pr.github_rate_limit.is_low();
+                let was_critical = ps.tick_rate_limit.is_critical();
+                let was_low = ps.tick_rate_limit.is_low();
                 let now_critical = rate_limit.is_critical();
                 let now_low = rate_limit.is_low();
 
@@ -290,7 +313,10 @@ pub async fn evaluate_tick(
             }
             effects
         }
-        DaemonEvent::NoteReviewTick => super::health::check_for_stale_notes(snap),
+        DaemonEvent::NoteReviewTick => {
+            let ps = state.persistent_state.lock().await;
+            super::health::check_for_stale_notes(&ps)
+        }
     }
 }
 

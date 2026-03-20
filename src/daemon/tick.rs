@@ -17,7 +17,6 @@ use crate::task_store::Task;
 /// This is the replacement for `collect_world_snapshot()`. Decision functions
 /// read tick data from `DaemonPersistentState`'s `tick_*` fields instead of
 /// `WorldSnapshot` fields.
-#[allow(dead_code)] // Will be wired into the tick loop in a future step
 pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
     // Load tasks once from TaskStore
     let tasks = state.task_store.load_all();
@@ -50,6 +49,18 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         }
     }
 
+    // ── Active session IDs ──────────────────────────────────────────────
+    let mut active_session_ids: HashSet<String> = active_coworkers
+        .iter()
+        .filter(|cw| active_names.contains(&cw.name.to_lowercase()))
+        .filter_map(|cw| cw.session_id.clone())
+        .collect();
+    for name in &active_names {
+        if let Some(sid) = state.session_manager.get_session_id(name).await {
+            active_session_ids.insert(sid);
+        }
+    }
+
     // ── Process health (headless coworkers) ────────────────────────────
     let headless_process_health: HashMap<String, super::snapshot::ProcessHealth> = {
         let health = state.headless_health.read().unwrap();
@@ -75,7 +86,7 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         .filter_map(|pr| {
             let number = pr.get("number")?.as_u64()?;
             let title = pr.get("title")?.as_str()?;
-            let task_id = crate::tasks::extract_task_id_from_pr_title(title)?;
+            let task_id = crate::task_store::extract_task_id_from_pr_title(title)?;
             Some((task_id.to_string(), number))
         })
         .collect();
@@ -318,6 +329,12 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         )
     };
 
+    // ── Usage limit nudge state ──────────────────────────────────────
+    let (usage_limit_nudge_scheduled, usage_limit_nudge_at) = {
+        let nudge_at = state.usage_limit_nudge_at.lock().await;
+        (nudge_at.is_some(), *nudge_at)
+    };
+
     // ── Lock persistent state and populate ephemeral fields ────────────
     {
         let mut ps = state.persistent_state.lock().await;
@@ -329,6 +346,18 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         ps.tick_prs_needing_review = prs_needing_review;
         ps.tick_open_prs = open_prs_data;
         ps.tick_merged_pr_numbers = merged_pr_numbers;
+
+        // Merged PR → branch mapping (from worktree registry)
+        ps.tick_merged_pr_branches = ps
+            .worktree_registry
+            .all_assignments()
+            .iter()
+            .filter_map(|(_, assignment)| {
+                assignment
+                    .pr_number
+                    .map(|pr| (pr, assignment.branch_name.clone()))
+            })
+            .collect();
 
         // Rate limit (from persistent state's own github field)
         ps.tick_rate_limit = ps.github.rate_limit.clone();
@@ -409,11 +438,149 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         ps.tick_channel_messages = Vec::new();
         ps.tick_daemon_logs = Vec::new();
 
-        // Active session names and coworker data
+        // Active session names, IDs, and coworker data
         ps.tick_active_session_names = active_names;
+        ps.tick_active_session_ids = active_session_ids;
         ps.tick_active_coworkers = active_coworkers;
         ps.tick_running_coworkers = running_coworkers;
         ps.tick_session_name = session_name;
+
+        // Task limit check
+        let active_in_progress_count = tasks
+            .iter()
+            .filter(|t| {
+                t.status == crate::task_store::TaskStatus::InProgress
+                    && (t.agent_name.is_empty()
+                        || ps
+                            .tick_active_session_names
+                            .contains(t.agent_name.to_lowercase().as_str()))
+            })
+            .count();
+        ps.tick_is_at_task_limit = active_in_progress_count >= max_in_progress_tasks;
+
+        // Usage limit nudge state
+        ps.tick_usage_limit_nudge_scheduled = usage_limit_nudge_scheduled;
+        ps.tick_usage_limit_nudge_at = usage_limit_nudge_at;
+
+        // Reviewer PR assignments (from all reviewer sessions)
+        ps.tick_reviewer_pr_assignments =
+            super::snapshot::build_reviewer_pr_assignments_from_spans(&ps);
+
+        // PR → restart_count for stuck reviewer backoff (from TaskStore).
+        ps.tick_reviewer_restart_counts = tasks
+            .iter()
+            .filter(|t| t.pr.is_some() && t.restart_count > 0)
+            .filter_map(|t| t.pr.map(|pr| (pr, t.restart_count)))
+            .collect();
+
+        // Placeholder comment IDs for PRs with unupdated "Review in progress" comments.
+        ps.tick_reviewer_in_progress_comment_ids = tasks
+            .iter()
+            .filter_map(|t| {
+                let pr = t.pr?;
+                let comment_id = t.placeholder_comment_id?;
+                Some((pr, comment_id))
+            })
+            .collect();
+
+        // Name → session ID mapping (lowercase name → session_id)
+        ps.tick_name_session_map = ps
+            .sessions
+            .iter()
+            .filter(|(_, r)| !r.name.is_empty())
+            .map(|(sid, r)| (r.name.to_lowercase(), sid.clone()))
+            .collect();
+
+        // ── Dispatch tick fields ────────────────────────────────────────────
+
+        // Session task map: task_id → session_id
+        ps.tick_session_task_map = ps
+            .sessions
+            .iter()
+            .filter_map(|(sid, r)| r.task_id.as_ref().map(|tid| (tid.clone(), sid.clone())))
+            .collect();
+
+        // Stale working-dir sessions
+        ps.tick_stale_working_dir_sessions = ps
+            .sessions
+            .values()
+            .filter(|r| !r.working_dir.is_empty() && !std::path::Path::new(&r.working_dir).exists())
+            .map(|r| r.session_id.clone())
+            .collect();
+
+        // In-progress tasks
+        ps.tick_in_progress_tasks = tasks
+            .iter()
+            .filter(|t| t.status == crate::task_store::TaskStatus::InProgress)
+            .map(|t| (t.id.clone(), t.subject.clone(), t.agent_name.clone()))
+            .collect();
+
+        // Pending tasks with owners
+        ps.tick_pending_tasks_with_owners = tasks
+            .iter()
+            .filter(|t| {
+                t.status == crate::task_store::TaskStatus::Pending && !t.agent_name.is_empty()
+            })
+            .map(|t| (t.id.clone(), t.subject.clone(), t.agent_name.clone()))
+            .collect();
+
+        // Busy coworkers — inline computation to avoid borrow conflict with MutexGuard
+        {
+            let in_progress_ids: HashSet<&str> = ps
+                .tick_in_progress_tasks
+                .iter()
+                .map(|(id, _, _)| id.as_str())
+                .collect();
+            ps.tick_busy_coworkers = ps
+                .sessions
+                .values()
+                .filter(|s| {
+                    s.task_id
+                        .as_deref()
+                        .is_some_and(|tid| in_progress_ids.contains(tid))
+                })
+                .filter(|s| !s.name.is_empty())
+                .map(|s| s.name.to_lowercase())
+                .collect();
+        }
+
+        // Active reviewers
+        ps.tick_active_reviewers = ps
+            .sessions
+            .values()
+            .filter(|s| s.agent_type == "midtown-code-reviewer" && s.is_running)
+            .filter(|s| !s.name.is_empty())
+            .map(|s| s.name.to_lowercase())
+            .collect();
+
+        // PR-protected tasks
+        ps.tick_pr_protected_tasks = tasks
+            .iter()
+            .filter(|t| {
+                super::dispatch::is_task_pr_protected(
+                    t,
+                    &ps.tick_merged_pr_numbers,
+                    &ps.tick_pr_task_index,
+                    &ps.tick_active_session_names,
+                )
+            })
+            .map(|t| t.id.clone())
+            .collect();
+
+        // Blocks map
+        let mut blocks_map: HashMap<String, Vec<String>> = HashMap::new();
+        for task in &tasks {
+            for blocker_id in &task.blocked_by {
+                blocks_map
+                    .entry(blocker_id.clone())
+                    .or_default()
+                    .push(task.id.clone());
+            }
+        }
+        ps.tick_blocks_map = blocks_map;
+
+        // Task nudge cooldown IDs — already populated above as task_nudge_cooldown_ids
+        // (tick_task_nudge_cooldown_ids was set earlier in the cooldowns block)
     }
 
     tasks

@@ -140,7 +140,7 @@ pub(crate) struct CoworkerRecord {
     pub last_activity: Option<Instant>,
     /// Coworker-reported workflow phase (developing, testing, PR, etc.).
     /// Set via RPC when coworker calls `midtown state <phase>`.
-    pub workflow_phase: Option<crate::coworker_state::WorkflowPhase>,
+    pub workflow_phase: Option<crate::workflow_phase::WorkflowPhase>,
     /// Task number the coworker is working on (from RPC state report).
     pub task_id: Option<u32>,
     /// When the workflow phase was last updated via RPC.
@@ -237,8 +237,8 @@ impl CoworkerRecord {
 ///
 /// Returns `Some(pct)` for phases that represent meaningful milestones, or
 /// `None` for phases like Idle and Debugging that don't map to progress.
-fn phase_default_progress(phase: crate::coworker_state::WorkflowPhase) -> Option<u8> {
-    use crate::coworker_state::WorkflowPhase;
+fn phase_default_progress(phase: crate::workflow_phase::WorkflowPhase) -> Option<u8> {
+    use crate::workflow_phase::WorkflowPhase;
     match phase {
         WorkflowPhase::Claiming => Some(5),
         WorkflowPhase::Developing => Some(25),
@@ -260,7 +260,7 @@ fn phase_default_progress(phase: crate::coworker_state::WorkflowPhase) -> Option
 pub(crate) fn set_workflow(
     records: &mut HashMap<String, CoworkerRecord>,
     name: &str,
-    phase: crate::coworker_state::WorkflowPhase,
+    phase: crate::workflow_phase::WorkflowPhase,
     task_id: Option<u32>,
     progress: Option<u8>,
 ) {
@@ -794,8 +794,8 @@ pub fn decide_pr_action(
 /// may be cleaned up. Trying to spawn or resume the original coworker with stale
 /// session context is unreliable. Creating a new follow-up task lets the normal
 /// dispatch system assign it to an available coworker with full context.
-pub fn review_comment_creates_followup(task_status: &crate::tasks::TaskStatus) -> bool {
-    matches!(task_status, crate::tasks::TaskStatus::Completed)
+pub fn review_comment_creates_followup(task_status: &crate::task_store::TaskStatus) -> bool {
+    matches!(task_status, crate::task_store::TaskStatus::Completed)
 }
 
 // ---------------------------------------------------------------------------
@@ -927,81 +927,6 @@ pub(crate) fn decide_pending_task_action(
         task_id: task_id.to_string(),
         task_subject: task_subject.to_string(),
     }
-}
-
-/// Consolidated decision function for owned pending task dispatch.
-///
-/// Subsumes `decide_pending_task_action` by also incorporating the guards that
-/// were previously inline in `dispatch_owned_pending_tasks`: merged-PR auto-complete,
-/// lead-driven channel, in-flight spawn, and already-assigned checks.
-///
-/// Pure function: all inputs come from WorldSnapshot fields.
-pub(crate) fn decide_owned_pending_dispatch(
-    task_id: &str,
-    task_subject: &str,
-    owner: &str,
-    snap: &crate::daemon::snapshot::WorldSnapshot,
-) -> PendingTaskAction {
-    // Auto-complete tasks whose explicit PR field references a merged PR.
-    // IMPORTANT: This must run before the lead-driven check so merged-PR
-    // auto-complete works regardless of channel mode.
-    if let Some(pr_num) = crate::daemon::helpers::get_merged_task_pr(
-        task_id,
-        &snap.all_tasks,
-        &snap.pr.merged_pr_numbers,
-    ) {
-        return PendingTaskAction::AutoComplete {
-            task_id: task_id.to_string(),
-            pr_num,
-        };
-    }
-
-    // Skip tasks in lead-driven channels — the lead manages dispatch manually.
-    if snap
-        .task_channel
-        .get(task_id)
-        .is_some_and(|ch| snap.lead_driven_channels.contains(ch))
-    {
-        return PendingTaskAction::Skip(OwnedPendingSkipReason::LeadDrivenChannel);
-    }
-
-    // Skip tasks that already have an in-flight spawn from a previous tick.
-    if snap.in_flight_task_spawns.contains(task_id) {
-        return PendingTaskAction::Skip(OwnedPendingSkipReason::InFlightSpawn);
-    }
-
-    // Skip if this owner is already assigned to THIS SPECIFIC TASK.
-    // Prevents nudge loops where the same pending-with-owner task gets
-    // re-nudged every time the 300s cooldown expires.
-    if snap
-        .name_task_assignments
-        .get(&owner.to_lowercase())
-        .is_some_and(|assigned_task_id| assigned_task_id == task_id)
-    {
-        return PendingTaskAction::Skip(OwnedPendingSkipReason::AlreadyAssigned);
-    }
-
-    let on_nudge_cooldown = snap.task_nudge_cooldown_ids.contains(task_id);
-    let is_owner_reviewer = snap
-        .reviewer
-        .active_reviewers
-        .contains(&owner.to_lowercase());
-    let has_in_progress_task = snap.busy_coworkers.contains(&owner.to_lowercase());
-    let is_channel_lead = snap
-        .channel_lead_sessions
-        .contains_key(&owner.to_lowercase());
-
-    decide_pending_task_action(
-        task_id,
-        task_subject,
-        owner,
-        &snap.coworkers.active_names,
-        snap.is_at_task_limit,
-        on_nudge_cooldown,
-        is_owner_reviewer,
-        has_in_progress_task,
-        is_channel_lead,
-    )
 }
 
 /// Result of orphan recovery decision.
@@ -1152,105 +1077,6 @@ pub(crate) enum SessionRecoveryAction {
     },
     /// Skip — guard condition matched.
     Skip(SessionRecoverySkipReason),
-}
-
-/// Decide what action to take for a single in-progress task during session dispatch.
-///
-/// Pure function: checks all guard conditions using only snapshot data.
-/// Returns `Recover` when the task's session is stopped and ready for recovery,
-/// `FallbackToOrphan` when there's no session record, or `Skip` with a reason.
-pub(crate) fn decide_session_recovery(
-    task_id: &str,
-    task_subject: &str,
-    owner: &str,
-    snap: &crate::daemon::snapshot::WorldSnapshot,
-) -> SessionRecoveryAction {
-    // Skip empty owners, lead (repo-named or legacy "lead"), or channel leads —
-    // these are not managed by the coworker dispatch loop.
-    if owner.is_empty()
-        || crate::daemon::helpers::is_project_lead(owner, &snap.project_name)
-        || snap
-            .channel_lead_sessions
-            .contains_key(&owner.to_lowercase())
-    {
-        return SessionRecoveryAction::Skip(SessionRecoverySkipReason::LeadOrChannelLead);
-    }
-
-    // Skip tasks in lead-driven channels — the lead manages dispatch manually.
-    if snap
-        .task_channel
-        .get(task_id)
-        .is_some_and(|ch| snap.lead_driven_channels.contains(ch))
-    {
-        return SessionRecoveryAction::Skip(SessionRecoverySkipReason::LeadDrivenChannel);
-    }
-
-    // Check if this task has a session record.
-    let record = match snap.find_session_for_task(task_id) {
-        Some(r) => r,
-        None => {
-            if snap.session_task_map.contains_key(task_id) {
-                // session_task_map has the entry but sessions map is stale
-                return SessionRecoveryAction::Skip(SessionRecoverySkipReason::StaleSessionRef);
-            }
-            // No session record — collect for legacy fallback path.
-            return SessionRecoveryAction::FallbackToOrphan {
-                task_id: task_id.to_string(),
-                task_subject: task_subject.to_string(),
-                owner: owner.to_string(),
-            };
-        }
-    };
-
-    // If the session is running (either by persisted flag or live in active_session_ids),
-    // the task is handled — skip.
-    if record.is_running
-        || snap
-            .coworkers
-            .active_session_ids
-            .contains(&record.session_id)
-    {
-        return SessionRecoveryAction::Skip(SessionRecoverySkipReason::SessionRunning);
-    }
-
-    // Skip if a recovery was recently attempted for this session (per-session cooldown).
-    if snap
-        .recently_recovered_session_ids
-        .contains(&record.session_id)
-    {
-        return SessionRecoveryAction::Skip(SessionRecoverySkipReason::RecentlyRecovered);
-    }
-
-    // Resolve the coworker name for recovery.
-    let coworker_name = if !record.name.is_empty() {
-        record.name.clone()
-    } else {
-        owner.to_string()
-    };
-
-    // Skip if this coworker is currently serving as a reviewer.
-    if snap
-        .reviewer
-        .active_reviewers
-        .contains(&coworker_name.to_lowercase())
-    {
-        return SessionRecoveryAction::Skip(SessionRecoverySkipReason::ActiveReviewer);
-    }
-
-    // Check per-coworker spawn failure cooldown.
-    if snap
-        .spawn_failure_cooldown_names
-        .contains(&coworker_name.to_lowercase())
-    {
-        return SessionRecoveryAction::Skip(SessionRecoverySkipReason::SpawnFailureCooldown);
-    }
-
-    SessionRecoveryAction::Recover {
-        task_id: task_id.to_string(),
-        task_subject: task_subject.to_string(),
-        coworker_name,
-        session_id: record.session_id.clone(),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2076,7 +1902,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             Some(50),
         );
@@ -2086,7 +1912,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             None,
         );
@@ -2105,7 +1931,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             Some(75),
         );
@@ -2114,7 +1940,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Testing,
+            crate::workflow_phase::WorkflowPhase::Testing,
             Some(42),
             Some(0),
         );
@@ -2135,7 +1961,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             Some(80),
         );
@@ -2144,7 +1970,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::PullRequest,
+            crate::workflow_phase::WorkflowPhase::PullRequest,
             Some(42),
             None,
         );
@@ -2161,7 +1987,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Claiming,
+            crate::workflow_phase::WorkflowPhase::Claiming,
             Some(42),
             None,
         );
@@ -2174,7 +2000,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             None,
         );
@@ -2187,7 +2013,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Testing,
+            crate::workflow_phase::WorkflowPhase::Testing,
             Some(42),
             None,
         );
@@ -2200,7 +2026,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Reviewing,
+            crate::workflow_phase::WorkflowPhase::Reviewing,
             Some(42),
             None,
         );
@@ -2213,7 +2039,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Completed,
+            crate::workflow_phase::WorkflowPhase::Completed,
             Some(42),
             None,
         );
@@ -2227,7 +2053,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             Some(45),
         );
@@ -2247,14 +2073,14 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Claiming,
+            crate::workflow_phase::WorkflowPhase::Claiming,
             Some(42),
             None,
         );
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             None,
         );
@@ -2278,7 +2104,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             Some(40),
         );
@@ -2286,7 +2112,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Idle,
+            crate::workflow_phase::WorkflowPhase::Idle,
             None,
             None,
         );
@@ -2306,7 +2132,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::PullRequest,
+            crate::workflow_phase::WorkflowPhase::PullRequest,
             Some(42),
             Some(85),
         );
@@ -2316,7 +2142,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Reviewing,
+            crate::workflow_phase::WorkflowPhase::Reviewing,
             Some(42),
             None,
         );
@@ -2338,7 +2164,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Developing,
+            crate::workflow_phase::WorkflowPhase::Developing,
             Some(42),
             Some(30),
         );
@@ -2347,7 +2173,7 @@ mod tests {
         set_workflow(
             &mut records,
             "york",
-            crate::coworker_state::WorkflowPhase::Testing,
+            crate::workflow_phase::WorkflowPhase::Testing,
             Some(42),
             None,
         );

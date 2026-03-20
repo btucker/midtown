@@ -1,5 +1,5 @@
 use super::prioritize_pending_tasks;
-use crate::tasks::{Task, TaskStatus};
+use crate::task_store::{Task, TaskStatus};
 use std::collections::{HashMap, HashSet};
 
 fn make_task(id: &str, created_secs_ago: u64) -> Task {
@@ -7,14 +7,8 @@ fn make_task(id: &str, created_secs_ago: u64) -> Task {
         id: id.to_string(),
         subject: format!("Task {}", id),
         status: TaskStatus::Pending,
-        owner: None,
-        description: None,
-        blocked_by: vec![],
-        channel: None,
-        pr: None,
-        created_at: Some(
-            std::time::SystemTime::now() - std::time::Duration::from_secs(created_secs_ago),
-        ),
+        created_at: chrono::Utc::now() - chrono::Duration::seconds(created_secs_ago as i64),
+        ..Default::default()
     }
 }
 

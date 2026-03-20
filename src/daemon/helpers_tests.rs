@@ -1685,17 +1685,17 @@ fn pr_fields_author_login_and_review_decision() {
 // ---------------------------------------------------------------------------
 
 /// Helper to construct a minimal Task for testing.
-fn make_task(id: &str, pr: Option<u64>) -> crate::tasks::Task {
-    crate::tasks::Task {
+fn make_task(id: &str, pr: Option<u64>) -> crate::task_store::Task {
+    crate::task_store::Task {
         id: id.to_string(),
         subject: "Test task".to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: None,
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: String::new(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr,
-        created_at: None,
+        ..Default::default()
     }
 }
 
@@ -1722,7 +1722,7 @@ fn get_merged_task_pr_returns_none_for_task_without_pr() {
 
 #[test]
 fn get_merged_task_pr_returns_none_for_unknown_task() {
-    let tasks: Vec<crate::tasks::Task> = vec![];
+    let tasks: Vec<crate::task_store::Task> = vec![];
     let merged: std::collections::HashSet<u64> = [123].into_iter().collect();
     assert_eq!(get_merged_task_pr("42", &tasks, &merged), None);
 }

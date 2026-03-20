@@ -146,7 +146,7 @@ pub fn handle_chat() -> Result<(), String> {
 /// Sends state to the daemon which stores it in memory and updates web UI status.
 /// When `--pr` is provided, the daemon writes the PR number to `task.pr` for auto-completion on merge.
 pub fn handle_state(
-    phase: midtown::coworker_state::WorkflowPhase,
+    phase: midtown::workflow_phase::WorkflowPhase,
     task_id: Option<u32>,
     progress: Option<u8>,
     pr_number: Option<u64>,
@@ -162,14 +162,14 @@ pub fn handle_state(
 
     // Convert phase to the snake_case string the RPC endpoint expects
     let phase_str = match phase {
-        midtown::coworker_state::WorkflowPhase::Claiming => "claiming",
-        midtown::coworker_state::WorkflowPhase::Developing => "developing",
-        midtown::coworker_state::WorkflowPhase::Testing => "testing",
-        midtown::coworker_state::WorkflowPhase::PullRequest => "pull_request",
-        midtown::coworker_state::WorkflowPhase::Reviewing => "reviewing",
-        midtown::coworker_state::WorkflowPhase::Debugging => "debugging",
-        midtown::coworker_state::WorkflowPhase::Completed => "completed",
-        midtown::coworker_state::WorkflowPhase::Idle => "idle",
+        midtown::workflow_phase::WorkflowPhase::Claiming => "claiming",
+        midtown::workflow_phase::WorkflowPhase::Developing => "developing",
+        midtown::workflow_phase::WorkflowPhase::Testing => "testing",
+        midtown::workflow_phase::WorkflowPhase::PullRequest => "pull_request",
+        midtown::workflow_phase::WorkflowPhase::Reviewing => "reviewing",
+        midtown::workflow_phase::WorkflowPhase::Debugging => "debugging",
+        midtown::workflow_phase::WorkflowPhase::Completed => "completed",
+        midtown::workflow_phase::WorkflowPhase::Idle => "idle",
     };
 
     let client = crate::client::DaemonClient::connect()

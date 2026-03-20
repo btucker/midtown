@@ -1485,7 +1485,7 @@ fn tasks_referencing_merged_pr_are_skipped() {
     let mut dispatched_tasks = Vec::new();
 
     for (task_id, subject, _owner) in &pending_with_owners {
-        if let Some(pr_num_str) = midtown::tasks::extract_pr_number(subject)
+        if let Some(pr_num_str) = midtown::task_store::extract_pr_number(subject)
             && let Ok(pr_num) = pr_num_str.parse::<u64>()
             && merged_pr_numbers.contains(&pr_num)
         {
@@ -1545,7 +1545,7 @@ fn unowned_tasks_referencing_merged_pr_are_skipped() {
     let mut passed = Vec::new();
 
     for (task_id, subject) in &subjects {
-        if let Some(pr_num_str) = midtown::tasks::extract_pr_number(subject)
+        if let Some(pr_num_str) = midtown::task_store::extract_pr_number(subject)
             && let Ok(pr_num) = pr_num_str.parse::<u64>()
             && merged_pr_numbers.contains(&pr_num)
         {

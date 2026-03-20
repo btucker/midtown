@@ -858,13 +858,6 @@ pub(super) async fn handle_channel_rename(
         // A fresh lead will be spawned on-demand when the new channel gets activity.
         ps.channel_lead_sessions.remove(old);
 
-        // Update all task_channel entries that reference the old channel name.
-        for value in ps.task_channel.values_mut() {
-            if value == old {
-                *value = new.to_string();
-            }
-        }
-
         // Mark any SessionRecord for the old channel lead as no longer running.
         // Like channel_lead_sessions, we clear rather than migrate to avoid stale
         // references to the dead session.
@@ -883,6 +876,19 @@ pub(super) async fn handle_channel_rename(
                 "Failed to save daemon state after renaming channel '{}' to '{}': {}",
                 old, new, e
             );
+        }
+    }
+
+    // Update all tasks that reference the old channel name in TaskStore.
+    for mut task in state.task_store.load_all() {
+        if task.channel.as_deref() == Some(old) {
+            task.channel = Some(new.to_string());
+            if let Err(e) = state.task_store.save(&task) {
+                warn!(
+                    "Failed to update task {} channel after rename: {}",
+                    task.id, e
+                );
+            }
         }
     }
 

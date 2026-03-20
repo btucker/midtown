@@ -229,9 +229,16 @@ impl ReminderState {
 pub fn evaluate_trigger(trigger: &ReminderTrigger, open_pr_coworkers: &[String]) -> bool {
     match trigger {
         ReminderTrigger::AllWorkMerged => {
-            let pending = crate::tasks::get_pending_tasks();
-            let in_progress = crate::tasks::get_in_progress_tasks();
-            let has_work = !pending.is_empty() || !in_progress.is_empty();
+            // Check if any non-completed tasks exist using TaskStore via paths
+            let repo = crate::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+            let task_store = crate::task_store::TaskStore::new(
+                crate::paths::projects_dir_for_repo(&repo).join("tasks"),
+            );
+            let all_tasks = task_store.load_all();
+            let has_work = all_tasks.iter().any(|t| {
+                t.status == crate::task_store::TaskStatus::Pending
+                    || t.status == crate::task_store::TaskStatus::InProgress
+            });
             let has_prs = !open_pr_coworkers.is_empty();
             !has_work && !has_prs
         }

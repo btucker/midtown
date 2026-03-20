@@ -2,6 +2,20 @@ use super::*;
 use crate::daemon::trackers::PrIssueType;
 use std::process::Command;
 
+/// Helper: create a reviewer task in TaskStore so post_pr_comment can write to it.
+fn create_reviewer_task(state: &DaemonState, task_id: &str, pr_number: u64) {
+    let task = crate::task_store::Task {
+        id: task_id.to_string(),
+        subject: "Review PR".to_string(),
+        status: crate::task_store::TaskStatus::InProgress,
+        pr: Some(pr_number),
+        agent_type: "midtown-code-reviewer".to_string(),
+        agent_name: "park".to_string(),
+        ..Default::default()
+    };
+    let _ = state.task_store.save(&task);
+}
+
 fn mk_session_record(
     session_id: &str,
     task_id: Option<&str>,
@@ -487,123 +501,6 @@ async fn test_execute_effects_cleanup_stale_worktree_removes_registry_entry_and_
 // ── Session-centric effect tests ──────────────────────────────────────
 
 #[test]
-fn test_record_session_inserts_into_persistent_state() {
-    use crate::daemon::state::{DaemonPersistentState, SessionRecord};
-
-    let mut persistent_state = DaemonPersistentState::default();
-    let record = SessionRecord {
-        session_id: "sess-abc-123".to_string(),
-        task_id: Some("42".to_string()),
-        name: "lexington".to_string(),
-        working_dir: "/tmp/worktree".to_string(),
-        branch: Some("lexington/task-42".to_string()),
-        initial_prompt: Some("Work on task 42".to_string()),
-        is_running: true,
-        ..Default::default()
-    };
-
-    persistent_state
-        .sessions
-        .insert(record.session_id.clone(), record.clone());
-
-    assert!(persistent_state.sessions.contains_key("sess-abc-123"));
-    let stored = persistent_state.sessions.get("sess-abc-123").unwrap();
-    assert_eq!(stored.task_id.as_deref(), Some("42"));
-    assert_eq!(stored.name, "lexington");
-    assert!(stored.is_running);
-}
-
-#[test]
-fn test_record_session_updates_existing_record() {
-    use crate::daemon::state::{DaemonPersistentState, SessionRecord};
-
-    let mut persistent_state = DaemonPersistentState::default();
-    let record = SessionRecord {
-        session_id: "sess-abc-123".to_string(),
-        task_id: Some("42".to_string()),
-        name: "lexington".to_string(),
-        working_dir: "/tmp/worktree".to_string(),
-        is_running: true,
-        ..Default::default()
-    };
-    persistent_state
-        .sessions
-        .insert(record.session_id.clone(), record);
-
-    let mut updated = persistent_state
-        .sessions
-        .get("sess-abc-123")
-        .unwrap()
-        .clone();
-    updated.is_running = false;
-    persistent_state
-        .sessions
-        .insert("sess-abc-123".to_string(), updated);
-
-    let stored = persistent_state.sessions.get("sess-abc-123").unwrap();
-    assert!(!stored.is_running);
-    assert_eq!(stored.name, "lexington", "name should be stable");
-}
-
-#[test]
-fn test_shutdown_session_marks_not_running() {
-    use crate::daemon::state::{DaemonPersistentState, SessionRecord};
-
-    let mut persistent_state = DaemonPersistentState::default();
-    let record = SessionRecord {
-        session_id: "sess-abc-123".to_string(),
-        task_id: Some("42".to_string()),
-        name: "lexington".to_string(),
-        working_dir: "/tmp/worktree".to_string(),
-        is_running: true,
-        ..Default::default()
-    };
-    persistent_state
-        .sessions
-        .insert(record.session_id.clone(), record);
-
-    if let Some(record) = persistent_state.sessions.get_mut("sess-abc-123") {
-        record.is_running = false;
-    }
-
-    let stored = persistent_state.sessions.get("sess-abc-123").unwrap();
-    assert!(!stored.is_running);
-    assert_eq!(
-        stored.name, "lexington",
-        "name should be stable after shutdown"
-    );
-}
-
-#[test]
-fn test_reverse_maps_consistency() {
-    use std::collections::HashMap;
-
-    let mut name_to_session: HashMap<String, String> = HashMap::new();
-    let mut session_to_name: HashMap<String, String> = HashMap::new();
-    let mut task_to_session: HashMap<String, String> = HashMap::new();
-
-    let session_id = "sess-abc-123".to_string();
-    let name = "lexington".to_string();
-    let task_id = "42".to_string();
-    name_to_session.insert(name.clone(), session_id.clone());
-    session_to_name.insert(session_id.clone(), name.clone());
-    task_to_session.insert(task_id.clone(), session_id.clone());
-
-    assert_eq!(name_to_session.get("lexington"), Some(&session_id));
-    assert_eq!(session_to_name.get("sess-abc-123"), Some(&name));
-    assert_eq!(task_to_session.get("42"), Some(&session_id));
-
-    let removed_session = name_to_session.remove("lexington");
-    if let Some(ref sid) = removed_session {
-        session_to_name.remove(sid);
-    }
-
-    assert!(name_to_session.is_empty());
-    assert!(session_to_name.is_empty());
-    assert_eq!(task_to_session.get("42"), Some(&session_id));
-}
-
-#[test]
 fn test_coworker_break_updates_session_record() {
     use crate::daemon::state::{DaemonPersistentState, SessionRecord};
     use std::collections::HashMap;
@@ -1062,17 +959,17 @@ async fn plugin_actions_to_effects_channel_post_blank_message_skipped() {
 // effects in the batch still execute.
 // ---------------------------------------------------------------------------
 
-fn mk_task(pr: Option<u64>, status: crate::tasks::TaskStatus) -> crate::tasks::Task {
-    crate::tasks::Task {
+fn mk_task(pr: Option<u64>, status: crate::task_store::TaskStatus) -> crate::task_store::Task {
+    crate::task_store::Task {
         id: "1".to_string(),
         subject: "test task".to_string(),
         status,
-        owner: None,
+        agent_name: String::new(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr,
-        created_at: None,
+        ..Default::default()
     }
 }
 
@@ -1087,8 +984,8 @@ fn create_task_duplicate_exists_returns_false_for_empty_list() {
 #[test]
 fn create_task_duplicate_exists_returns_false_when_only_completed_tasks() {
     let tasks = vec![
-        mk_task(Some(42), crate::tasks::TaskStatus::Completed),
-        mk_task(Some(42), crate::tasks::TaskStatus::Completed),
+        mk_task(Some(42), crate::task_store::TaskStatus::Completed),
+        mk_task(Some(42), crate::task_store::TaskStatus::Completed),
     ];
     assert!(
         !super::create_task_duplicate_exists(&tasks, 42),
@@ -1098,7 +995,7 @@ fn create_task_duplicate_exists_returns_false_when_only_completed_tasks() {
 
 #[test]
 fn create_task_duplicate_exists_returns_true_for_pending_task() {
-    let tasks = vec![mk_task(Some(42), crate::tasks::TaskStatus::Pending)];
+    let tasks = vec![mk_task(Some(42), crate::task_store::TaskStatus::Pending)];
     assert!(
         super::create_task_duplicate_exists(&tasks, 42),
         "pending task for PR → skip creation"
@@ -1107,7 +1004,7 @@ fn create_task_duplicate_exists_returns_true_for_pending_task() {
 
 #[test]
 fn create_task_duplicate_exists_returns_true_for_in_progress_task() {
-    let tasks = vec![mk_task(Some(42), crate::tasks::TaskStatus::InProgress)];
+    let tasks = vec![mk_task(Some(42), crate::task_store::TaskStatus::InProgress)];
     assert!(
         super::create_task_duplicate_exists(&tasks, 42),
         "in-progress task for PR → skip creation"
@@ -1117,7 +1014,7 @@ fn create_task_duplicate_exists_returns_true_for_in_progress_task() {
 #[test]
 fn create_task_duplicate_exists_ignores_other_pr_numbers() {
     // Task exists for PR 99, not PR 42 — must not block PR 42.
-    let tasks = vec![mk_task(Some(99), crate::tasks::TaskStatus::Pending)];
+    let tasks = vec![mk_task(Some(99), crate::task_store::TaskStatus::Pending)];
     assert!(
         !super::create_task_duplicate_exists(&tasks, 42),
         "task for a different PR → not a duplicate"
@@ -1127,7 +1024,7 @@ fn create_task_duplicate_exists_ignores_other_pr_numbers() {
 #[test]
 fn create_task_duplicate_exists_ignores_tasks_without_pr() {
     // Task with no associated PR must not block a PR-specific CreateTask.
-    let tasks = vec![mk_task(None, crate::tasks::TaskStatus::Pending)];
+    let tasks = vec![mk_task(None, crate::task_store::TaskStatus::Pending)];
     assert!(
         !super::create_task_duplicate_exists(&tasks, 42),
         "task with no PR → not a duplicate"
@@ -1437,13 +1334,20 @@ async fn test_post_pr_comment_stores_comment_id_on_assignment() {
 
     let (state, _project_dir, _guard) = make_workflow_test_state("post-pr-test");
 
-    // Pre-create a reviewer span so post_pr_comment can store the comment ID
+    // Pre-create a reviewer task in TaskStore and a span so post_pr_comment can store the comment ID
     let pr_number = 42u64;
     let task_id = "42";
+    create_reviewer_task(&state, task_id, pr_number);
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task(task_id, "park", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert(task_id.to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some(task_id))
+        {
+            s.pr_number = Some(pr_number);
+        }
     }
 
     // Mock `gh` to output a comment URL (like real `gh pr comment` does)
@@ -1481,9 +1385,12 @@ async fn test_post_pr_comment_stores_comment_id_on_assignment() {
 
     // Verify the comment ID was parsed and stored in task_placeholder_comment_id
     {
-        let ps = state.persistent_state.lock().await;
         assert_eq!(
-            ps.task_placeholder_comment_id.get(task_id).copied(),
+            state
+                .task_store
+                .load(task_id)
+                .ok()
+                .and_then(|t| t.placeholder_comment_id),
             Some(98765),
             "Should parse comment ID 98765 from the issuecomment URL"
         );
@@ -1514,10 +1421,17 @@ async fn test_post_pr_comment_parses_bare_numeric_url() {
 
     let pr_number = 55u64;
     let task_id = "55";
+    create_reviewer_task(&state, task_id, pr_number);
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task(task_id, "madison", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert(task_id.to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some(task_id))
+        {
+            s.pr_number = Some(pr_number);
+        }
     }
 
     // Mock gh to output just a URL ending in a bare number
@@ -1553,9 +1467,12 @@ async fn test_post_pr_comment_parses_bare_numeric_url() {
     }
 
     {
-        let ps = state.persistent_state.lock().await;
         assert_eq!(
-            ps.task_placeholder_comment_id.get(task_id).copied(),
+            state
+                .task_store
+                .load(task_id)
+                .ok()
+                .and_then(|t| t.placeholder_comment_id),
             Some(11223),
             "Should parse comment ID 11223 from the bare numeric URL"
         );
@@ -1581,13 +1498,31 @@ async fn test_post_pr_comment_reuses_existing_placeholder() {
     let existing_comment_id = 55555u64;
     let task_id = "77";
     {
+        // Pre-create task with existing placeholder comment ID
+        let mut task = crate::task_store::Task {
+            id: task_id.to_string(),
+            subject: "Review PR".to_string(),
+            status: crate::task_store::TaskStatus::InProgress,
+            pr: Some(pr_number),
+            agent_type: "midtown-code-reviewer".to_string(),
+            agent_name: "riverside".to_string(),
+            ..Default::default()
+        };
+        task.placeholder_comment_id = Some(existing_comment_id);
+        let _ = state.task_store.save(&task);
+    }
+    {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task(task_id, "riverside", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert(task_id.to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some(task_id))
+        {
+            s.pr_number = Some(pr_number);
+        }
         // Pre-populate the placeholder_comment_id (as if a previous reviewer
         // cycle posted it before timing out). This is the tier 1 lookup path.
-        ps.task_placeholder_comment_id
-            .insert(task_id.to_string(), existing_comment_id);
     }
 
     // Mock `gh` to:
@@ -1657,9 +1592,12 @@ fi
 
     // Verify: the existing comment ID is still stored in task_placeholder_comment_id
     {
-        let ps = state.persistent_state.lock().await;
         assert_eq!(
-            ps.task_placeholder_comment_id.get(task_id).copied(),
+            state
+                .task_store
+                .load(task_id)
+                .ok()
+                .and_then(|t| t.placeholder_comment_id),
             Some(existing_comment_id),
             "Should preserve the existing comment ID in task_placeholder_comment_id"
         );
@@ -1695,10 +1633,17 @@ async fn test_post_pr_comment_reuses_placeholder_via_api_fallback() {
     let pr_number = 88u64;
     let existing_comment_id = 66666u64;
     let task_id = "88";
+    create_reviewer_task(&state, task_id, pr_number);
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task(task_id, "madison", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert(task_id.to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some(task_id))
+        {
+            s.pr_number = Some(pr_number);
+        }
         // Do NOT set task_placeholder_comment_id — simulates daemon restart
     }
 
@@ -1777,9 +1722,12 @@ fi
 
     // Verify: the placeholder ID was stored in task_placeholder_comment_id
     {
-        let ps = state.persistent_state.lock().await;
         assert_eq!(
-            ps.task_placeholder_comment_id.get(task_id).copied(),
+            state
+                .task_store
+                .load(task_id)
+                .ok()
+                .and_then(|t| t.placeholder_comment_id),
             Some(existing_comment_id),
         );
     }
@@ -2366,9 +2314,16 @@ async fn test_post_insight_threads_in_default_channel_when_task_channel_is_none(
             },
         );
         // Deliberately NOT setting task_channel — task lives in default channel
-        ps.task_thread_id
-            .insert("50".to_string(), thread_id.to_string());
     }
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "50".into(),
+            channel: None, // no channel — task lives in default channel
+            thread_id: Some(thread_id.into()),
+            ..Default::default()
+        })
+        .unwrap();
 
     super::post_insight(&state, "coworker1", "Default channel threaded insight").await;
 
@@ -2427,18 +2382,32 @@ async fn test_post_insight_prefers_running_session_over_stale_with_same_name() {
             },
         );
 
-        // Old task in a different channel
-        ps.task_channel
-            .insert("88".to_string(), "old-channel".to_string());
-        ps.task_thread_id
-            .insert("88".to_string(), "old-thread-id".to_string());
+        // Old task in a different channel (stale session — not checked, but add for completeness)
 
         // Current task in the correct channel
-        ps.task_channel
-            .insert("99".to_string(), "my-feature".to_string());
-        ps.task_thread_id
-            .insert("99".to_string(), thread_parent_id.to_string());
     }
+
+    // Old task in a different channel (stale, should not be used)
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "88".into(),
+            channel: Some("old-stale-channel".into()),
+            thread_id: Some("old-thread-id".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // Active task routes to "my-feature" channel with the expected thread
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "99".into(),
+            channel: Some("my-feature".into()),
+            thread_id: Some(thread_parent_id.into()),
+            ..Default::default()
+        })
+        .unwrap();
 
     super::post_insight(&state, "coworker1", "Insight from reused name session").await;
 
@@ -2480,11 +2449,16 @@ async fn test_post_insight_routes_to_task_thread() {
                 ..Default::default()
             },
         );
-        ps.task_channel
-            .insert("42".to_string(), "my-feature".to_string());
-        ps.task_thread_id
-            .insert("42".to_string(), thread_parent_id.to_string());
     }
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "42".into(),
+            channel: Some("my-feature".into()),
+            thread_id: Some(thread_parent_id.into()),
+            ..Default::default()
+        })
+        .unwrap();
 
     super::post_insight(&state, "coworker1", "A threaded insight").await;
 
@@ -2526,9 +2500,16 @@ async fn test_post_insight_threads_when_task_channel_is_none() {
             },
         );
         // Deliberately NOT setting task_channel — simulates task created without --channel
-        ps.task_thread_id
-            .insert("99".to_string(), thread_parent_id.to_string());
     }
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "99".into(),
+            channel: None, // no channel — task lives in default channel
+            thread_id: Some(thread_parent_id.into()),
+            ..Default::default()
+        })
+        .unwrap();
 
     super::post_insight(&state, "coworker1", "Insight with no task channel").await;
 
@@ -2568,10 +2549,17 @@ async fn test_post_insight_no_thread_when_no_thread_id() {
                 ..Default::default()
             },
         );
-        ps.task_channel
-            .insert("42".to_string(), "my-feature".to_string());
         // Deliberately NOT setting task_thread_id
     }
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "42".into(),
+            channel: Some("my-feature".into()),
+            thread_id: None, // no thread binding
+            ..Default::default()
+        })
+        .unwrap();
 
     super::post_insight(&state, "coworker1", "An unthreaded insight").await;
 
@@ -3016,17 +3004,27 @@ async fn test_record_task_assignment_fixes_insight_routing() {
                 ..Default::default()
             },
         );
-
-        // Old task routes to old channel
-        ps.task_channel
-            .insert("old-task".to_string(), "old-channel".to_string());
-
-        // New task routes to new channel
-        ps.task_channel
-            .insert("new-task".to_string(), "new-channel".to_string());
-        ps.task_thread_id
-            .insert("new-task".to_string(), "new-thread-id".to_string());
     }
+
+    // Old task routes to old channel
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "old-task".into(),
+            channel: Some("old-channel".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // New task routes to new channel
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "new-task".into(),
+            channel: Some("new-channel".into()),
+            ..Default::default()
+        })
+        .unwrap();
 
     // Reassign the session to the new task
     execute_effects(
@@ -3159,12 +3157,29 @@ async fn test_post_pr_comment_reuses_placeholder_from_task_placeholder_comment_i
     let existing_comment_id = 77777u64;
     let task_id = "review-task-66";
     {
+        // Pre-create task with placeholder comment ID
+        let mut task = crate::task_store::Task {
+            id: task_id.to_string(),
+            subject: "Review PR".to_string(),
+            status: crate::task_store::TaskStatus::InProgress,
+            pr: Some(pr_number),
+            agent_type: "midtown-code-reviewer".to_string(),
+            agent_name: "lexington".to_string(),
+            ..Default::default()
+        };
+        task.placeholder_comment_id = Some(existing_comment_id);
+        let _ = state.task_store.save(&task);
+    }
+    {
         let mut ps = state.persistent_state.lock().await;
-        // Create a reviewer span and populate task_placeholder_comment_id
         ps.insert_session_for_task(task_id, "lexington", "midtown-code-reviewer", "sess-lex-1");
-        ps.task_pr_number.insert(task_id.to_string(), pr_number);
-        ps.task_placeholder_comment_id
-            .insert(task_id.to_string(), existing_comment_id);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some(task_id))
+        {
+            s.pr_number = Some(pr_number);
+        }
     }
 
     // Mock `gh` to accept the PATCH and log all calls.

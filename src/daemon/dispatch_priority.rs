@@ -8,7 +8,7 @@
 //! 2. Tasks that block other tasks
 //! 3. Everything else (FIFO by creation time)
 
-use crate::tasks::Task;
+use crate::task_store::Task;
 use std::collections::{HashMap, HashSet};
 
 fn tier(

@@ -58,16 +58,11 @@ pub use dispatch::should_recover_task_test_helper;
 #[doc(hidden)]
 pub use effects::Effect;
 
-// Test helpers for E2E tests with captured snapshots
-// Note: Only exporting pure functions that take &WorldSnapshot and return Vec<Effect>.
-// Functions that take &DaemonState are not exported because:
-// 1. DaemonState is pub(crate) which causes privacy warnings
-// 2. Those functions often mutate state, making them harder to test in isolation
-// 3. Pure functions are the gold standard for testing
+// Test helpers for E2E tests.
+// Pure functions that take &DaemonPersistentState + &[Task] and return Vec<Effect>.
 #[doc(hidden)]
 pub use dispatch::{
-    build_subject_based_completion_effects, check_for_duplicate_task_workers,
-    dispatch_via_sessions_snapshot_only, reset_orphaned_tasks,
+    build_subject_based_completion_effects, check_for_duplicate_task_workers, reset_orphaned_tasks,
 };
 #[doc(hidden)]
 pub use events::DaemonEvent;
@@ -585,15 +580,16 @@ pub(crate) struct DaemonState {
     /// Process health state for headless coworkers, keyed by coworker name.
     ///
     /// Populated by the session management layer from `HeadlessSession` stream events
-    /// and process status. Read by `collect_world_snapshot()` for the health decision
-    /// functions in `rules.rs`.
+    /// and process status. Read by `prepare_tick()` for the health decision
+    /// functions.
     pub(crate) headless_health: std::sync::RwLock<HashMap<String, snapshot::ProcessHealth>>,
     /// Monotonically increasing counter, bumped each time `headless_health` is written.
-    /// `collect_world_snapshot()` compares this against the generation stored in
+    /// `prepare_tick()` compares this against the generation stored in
     /// `health_derived_cache` to decide whether to reuse cached sets or recompute.
     headless_health_generation: std::sync::atomic::AtomicU64,
     /// Cached health-derived sets (4 HashSets), valid for the generation in `.0`.
     /// Invalidated when `headless_health_generation` advances past the cached generation.
+    #[allow(dead_code)]
     health_derived_cache: std::sync::Mutex<Option<(u64, snapshot::CachedHealthSets)>>,
     /// Coworkers currently in "attached" state (interactive session).
     ///
@@ -618,13 +614,14 @@ pub(crate) struct DaemonState {
     /// Cached result of channel lead worktree freshness checks.
     ///
     /// The freshness check runs `git fetch` + `git rev-parse` which is expensive.
-    /// Since `collect_world_snapshot()` is called for both `SessionMonitorTick` (~30s)
+    /// Since `prepare_tick()` is called for both `SessionMonitorTick` (~30s)
     /// and `TaskDispatchTick` (~5s), we cache the result for 25s to avoid running
     /// git fetch on every tick.
     worktree_freshness_cache: std::sync::Mutex<Option<(std::time::Instant, HashSet<String>)>>,
     /// Cached set of coworkers whose completed tasks have unblocked pending follow-ups.
     /// Task dependency relationships change rarely; 30s staleness is acceptable
     /// because this set is only used for idle shutdown protection.
+    #[allow(dead_code)]
     coworkers_with_unblocked_deps_cache:
         std::sync::Mutex<Option<(std::time::Instant, HashSet<String>)>>,
     /// PR data cache with 60s TTL for the `prs.status` RPC.
@@ -1128,14 +1125,14 @@ impl DaemonState {
     /// Reads task status from disk. Used by RPC handlers (`rpc_coworker.rs`,
     /// `chat.rs`) that operate outside the snapshot pipeline and don't have
     /// access to a pre-computed snapshot. The snapshot pipeline uses
-    /// `snap.is_at_task_limit` (pre-computed in `collect_world_snapshot`)
+    /// `tick_is_at_task_limit` (pre-computed in `prepare_tick()`)
     /// for pure decision functions.
     ///
     /// Only counts tasks with active owners (registered in CoworkerManager).
     /// Tasks whose owners are dead (e.g., after a restart) don't consume
     /// coworker slots and should not block new spawns.
     fn is_at_task_limit(&self) -> bool {
-        let tasks = crate::tasks::read_tasks_for_repo(Some(self.paths.dir_key()));
+        let tasks = self.task_store.load_all();
         let registered: std::collections::HashSet<String> = self
             .coworkers
             .list()
@@ -1144,10 +1141,13 @@ impl DaemonState {
             .collect();
         let active_in_progress_count = tasks
             .iter()
-            .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
-            .filter(|t| match &t.owner {
-                Some(owner) => registered.contains(&owner.to_lowercase()),
-                None => true, // ownerless tasks count (freshly dispatched)
+            .filter(|t| t.status == crate::task_store::TaskStatus::InProgress)
+            .filter(|t| {
+                if t.agent_name.is_empty() {
+                    true // ownerless tasks count (freshly dispatched)
+                } else {
+                    registered.contains(&t.agent_name.to_lowercase())
+                }
             })
             .count();
         active_in_progress_count >= self.max_in_progress_tasks
@@ -1507,14 +1507,15 @@ impl DaemonState {
         // Build headless config from the unified launch config
         let mut headless_config = launch_config.to_headless_config(&self.paths);
 
-        // Override agent_name from task_agent_type if the task has a custom agent type.
+        // Override agent_name from TaskStore if the task has a custom agent type.
         // This supports task handoff: when `midtown task handoff --agent <type>` changes
         // the agent type, subsequent resumes pick up the new agent definition via --agent.
-        if let Some(ref task_id) = config.task_id {
-            let ps = self.persistent_state.lock().await;
-            if let Some(agent_type) = ps.task_agent_type.get(task_id) {
-                headless_config.agent_name = Some(agent_type.clone());
-            }
+        if let Some(ref task_id) = config.task_id
+            && let Ok(store_task) = self.task_store.load(task_id)
+            && !store_task.agent_type.is_empty()
+            && store_task.agent_type != "midtown-code-author"
+        {
+            headless_config.agent_name = Some(store_task.agent_type.clone());
         }
 
         // Apply cwd_subdir: if a subdirectory is configured (e.g., channel_directory),
@@ -1665,9 +1666,13 @@ impl DaemonState {
             let mut ps = self.persistent_state.lock().await;
             let agent_type_str = config.agent_type.clone();
             let is_reviewer = config.agent_type == "midtown-code-reviewer";
-            // Look up bound thread from task_thread_id — mirrors SpawnForTask path
+            // Look up bound thread from TaskStore — mirrors SpawnForTask path
             // in effects.rs so reviewers get thread-bound like dispatched dev tasks.
-            let bound_thread_id = ps.resolve_bound_thread_id(config.task_id.as_deref());
+            let bound_thread_id = config
+                .task_id
+                .as_deref()
+                .and_then(|tid| self.task_store.load(tid).ok())
+                .and_then(|t| t.thread_id.clone());
             ps.upsert_session_running(
                 session_id_for_record.clone(),
                 crate::daemon::state::SessionRecord {
@@ -1798,10 +1803,10 @@ impl DaemonState {
     /// of reading task file owners.
     pub(crate) async fn get_busy_session_names(&self) -> HashSet<String> {
         let ps = self.persistent_state.lock().await;
-        let all_tasks = crate::tasks::read_tasks_for_repo(Some(self.paths.dir_key()));
+        let all_tasks = self.task_store.load_all();
         let in_progress_ids: HashSet<String> = all_tasks
             .iter()
-            .filter(|t| t.status == crate::tasks::TaskStatus::InProgress)
+            .filter(|t| t.status == crate::task_store::TaskStatus::InProgress)
             .map(|t| t.id.clone())
             .collect();
         ps.sessions
@@ -1843,7 +1848,12 @@ impl DaemonState {
     /// 1. Clears stale task_id values (task no longer in_progress)
     /// 2. Backfills missing task_id from in_progress tasks with owners
     pub(crate) async fn restore_task_assignments_from_disk(&self) {
-        let in_progress_tasks = crate::tasks::get_in_progress_tasks_with_subjects();
+        let all_tasks = self.task_store.load_all();
+        let in_progress_tasks: Vec<(String, String, String)> = all_tasks
+            .iter()
+            .filter(|t| t.status == crate::task_store::TaskStatus::InProgress)
+            .map(|t| (t.id.clone(), t.subject.clone(), t.agent_name.clone()))
+            .collect();
         let in_progress_task_ids: std::collections::HashSet<&str> = in_progress_tasks
             .iter()
             .map(|(id, _, _)| id.as_str())
@@ -2433,9 +2443,8 @@ impl DaemonState {
         // Extract task ID from the message content
         let task_id = helpers::extract_task_id(message)?;
 
-        // Look up the task's assigned channel
-        let ps = self.persistent_state.lock().await;
-        ps.task_channel.get(&task_id).cloned()
+        // Look up the task's assigned channel from TaskStore
+        self.task_store.load(&task_id).ok().and_then(|t| t.channel)
     }
 }
 
@@ -2680,10 +2689,14 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
                     .map(|s| (s.task_id.clone(),));
                 if let Some((task_id,)) = reviewer_span {
                     info.coworker_type = Some("reviewer".to_string());
-                    if let Some(&pr_num) = task_id
-                        .as_ref()
-                        .and_then(|tid| persistent.task_pr_number.get(tid))
-                    {
+                    let pr_num = task_id.as_ref().and_then(|tid| {
+                        persistent
+                            .sessions
+                            .values()
+                            .find(|s| s.task_id.as_deref() == Some(tid))
+                            .and_then(|s| s.pr_number)
+                    });
+                    if let Some(pr_num) = pr_num {
                         info.pr_number = Some(pr_num);
                         info.purpose = format!("reviewer for PR #{}", pr_num);
                     } else {
@@ -2774,25 +2787,27 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
     Ok(())
 }
 
-/// Run the full snapshot→evaluate→execute pipeline for a daemon event.
+/// Run the full prepare→evaluate→execute pipeline for a daemon event.
 async fn run_tick(event: &events::DaemonEvent, state: &DaemonState) {
-    let mut snap = snapshot::collect_world_snapshot(state).await;
+    let tasks = tick::prepare_tick(state).await;
 
     // For RateLimitCheckTick, fetch fresh rate limit data before evaluation
     if matches!(event, events::DaemonEvent::RateLimitCheckTick) {
-        snap.pr.freshly_fetched_rate_limit =
-            crate::github_rate_limit::GitHubRateLimit::fetch().await;
+        let fresh = crate::github_rate_limit::GitHubRateLimit::fetch().await;
+        let mut ps = state.persistent_state.lock().await;
+        ps.tick_fresh_rate_limit = fresh;
     }
 
     // For NoteReviewTick, populate stale channel notes (hourly, not on hot path)
     if matches!(event, events::DaemonEvent::NoteReviewTick) {
-        let base_dir = crate::paths::projects_dir_for_repo(&snap.dir_key);
+        let mut ps = state.persistent_state.lock().await;
+        let base_dir = crate::paths::projects_dir_for_repo(&ps.tick_dir_key);
         let threshold = chrono::Duration::hours(crate::channel::NOTE_STALENESS_THRESHOLD_HOURS);
-        snap.stale_channel_notes =
-            crate::channel::find_stale_notes(&base_dir, snap.now_utc, threshold);
+        ps.tick_stale_channel_notes =
+            crate::channel::find_stale_notes(&base_dir, ps.tick_now, threshold);
     }
 
-    let tick_effects = events::evaluate_tick(event, &snap, state).await;
+    let tick_effects = events::evaluate_tick(event, &tasks, state).await;
     effects::execute_effects(tick_effects, state).await;
 }
 
@@ -3519,7 +3534,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
                     // Auto-set task PR association when PR title contains [Midtown !XX]
                     if let Some(task_id) =
-                        crate::tasks::extract_task_id_from_pr_title(&pr_opened.title)
+                        crate::task_store::extract_task_id_from_pr_title(&pr_opened.title)
                     {
                         pr_effects.push(effects::Effect::SetTaskPr {
                             task_id: task_id.to_string(),
@@ -3533,10 +3548,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
                         // Emit PrOpened workflow event if we know the task's channel.
                         if let Some(author) = &pr_opened.author_coworker {
-                            let task_channel = {
-                                let ps = state.persistent_state.lock().await;
-                                ps.task_channel.get(&task_id.to_string()).cloned()
-                            };
+                            let task_channel = state
+                                .task_store
+                                .load(&task_id.to_string())
+                                .ok()
+                                .and_then(|t| t.channel);
                             if let Some(ch) = task_channel {
                                 pr_effects.push(effects::Effect::EmitWorkflowEvent(
                                     crate::workflow::WorkflowEvent::PrOpened {
@@ -3587,20 +3603,16 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         // File I/O (read_task_for_repo) happens before acquiring the
                         // async mutex to avoid blocking other tasks that need the lock.
                         let (task_channel, task_event_ctx) = if let Some(task_id) =
-                            crate::tasks::extract_task_id_from_pr_title(&pr_merged_info.title)
+                            crate::task_store::extract_task_id_from_pr_title(&pr_merged_info.title)
                         {
                             let task_id_str = task_id.to_string();
-                            let task = crate::tasks::read_task_for_repo(
-                                &task_id_str,
-                                state.paths.dir_key(),
-                            );
-                            let ps = state.persistent_state.lock().await;
-                            let channel = ps.task_channel.get(&task_id_str).cloned();
+                            let task = state.task_store.load(&task_id_str).ok();
+                            let channel = task.as_ref().and_then(|t| t.channel.clone());
                             let ctx = dispatch::TaskEventContext {
                                 subject: task.as_ref().map(|t| t.subject.clone()),
-                                description: task.and_then(|t| t.description),
-                                thread_id: ps.task_thread_id.get(&task_id_str).cloned(),
-                                message_id: ps.task_message_id.get(&task_id_str).cloned(),
+                                description: task.as_ref().and_then(|t| t.description.clone()),
+                                thread_id: task.as_ref().and_then(|t| t.thread_id.clone()),
+                                message_id: task.and_then(|t| t.message_id),
                             };
                             (channel, Some(ctx))
                         } else {
@@ -4222,8 +4234,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
             // Periodic task dispatch: orphan recovery, duplicate detection, spawning, cleanup
             _ = orphan_check_interval.tick() => {
-                let snap = snapshot::collect_world_snapshot(&state).await;
-                let tick_effects = events::evaluate_tick(&events::DaemonEvent::TaskDispatchTick, &snap, &state).await;
+                let tasks = tick::prepare_tick(&state).await;
+                let tick_effects = events::evaluate_tick(&events::DaemonEvent::TaskDispatchTick, &tasks, &state).await;
                 // Mark in-flight tasks BEFORE executing effects to prevent race conditions.
                 // If the next tick fires while effects are executing, it will skip these tasks.
                 state.mark_in_flight_spawns_from_effects(&tick_effects);
@@ -4233,11 +4245,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 // the actual git operations in a background task. Recording the cooldown
                 // here prevents double-dispatch if the next tick fires before the
                 // background task starts.
-                let task_owners: Vec<String> = snap
-                    .in_progress_tasks
-                    .iter()
-                    .map(|(_, _, owner)| owner.clone())
-                    .collect();
+                let task_owners: Vec<String> = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.tick_in_progress_tasks
+                        .iter()
+                        .map(|(_, _, owner)| owner.clone())
+                        .collect()
+                };
                 if let Some(cleanup_data) =
                     dispatch::gather_stale_branch_cleanup_data(&state, &task_owners).await
                 {

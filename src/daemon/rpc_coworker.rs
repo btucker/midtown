@@ -94,15 +94,15 @@ pub(super) async fn handle_coworker_spawn(
 
     // Validate and load the task if --task was provided
     let task = if let Some(ref tid) = task_id {
-        match crate::tasks::read_task_for_repo(tid, state.paths.dir_key()) {
+        match state.task_store.load(tid).ok() {
             Some(t) => {
-                if t.status == crate::tasks::TaskStatus::Completed {
+                if t.status == crate::task_store::TaskStatus::Completed {
                     return Response::error(
                         id,
                         RpcError::new(-32602, format!("Task !{} is already completed", tid)),
                     );
                 }
-                if t.status == crate::tasks::TaskStatus::InProgress {
+                if t.status == crate::task_store::TaskStatus::InProgress {
                     return Response::error(
                         id,
                         RpcError::new(
@@ -110,7 +110,11 @@ pub(super) async fn handle_coworker_spawn(
                             format!(
                                 "Task !{} is already in progress (owner: {})",
                                 tid,
-                                t.owner.as_deref().unwrap_or("unknown")
+                                if t.agent_name.is_empty() {
+                                    "unknown"
+                                } else {
+                                    &t.agent_name
+                                }
                             ),
                         ),
                     );
@@ -134,12 +138,11 @@ pub(super) async fn handle_coworker_spawn(
     let task_prompt = if let Some(ref t) = task {
         // Read plan/execution-skill data. Try TaskStore first, then persistent state.
         let plan_section = {
-            let plan_path = if let Ok(store_task) = state.task_store.load(&t.id) {
-                store_task.plan.clone()
-            } else {
-                let ps = state.persistent_state.lock().await;
-                ps.task_plan.get(&t.id).cloned()
-            };
+            let plan_path = state
+                .task_store
+                .load(&t.id)
+                .ok()
+                .and_then(|st| st.plan.clone());
             super::dispatch::build_plan_prompt_section_from_parts(
                 &t.id,
                 plan_path.as_deref(),
@@ -254,15 +257,13 @@ pub(super) async fn handle_coworker_spawn(
             // the task file on disk (same as dispatch + SpawnForTask do)
             if let (Some(tid), Some((worktree_id, _))) = (&task_id, &task_worktree) {
                 // Update task file on disk: set owner and transition to in_progress
-                if let Err(e) = crate::tasks::update_task_owner(tid, &config.name) {
+                if let Err(e) = state.task_store.set_agent_name(tid, &config.name) {
                     warn!(
                         "Failed to set task !{} owner to {} after spawn: {}",
                         tid, config.name, e
                     );
                 }
-                if let Err(e) =
-                    crate::tasks::set_task_in_progress_for_repo(tid, state.paths.dir_key())
-                {
+                if let Err(e) = state.task_store.set_task_in_progress(tid) {
                     warn!(
                         "Failed to set task !{} to in_progress after spawn: {}",
                         tid, e
@@ -458,18 +459,18 @@ pub(super) async fn handle_coworker_break(
 pub(super) async fn handle_coworker_list(id: RequestId, state: &DaemonState) -> Response {
     // Build a map of coworker name -> task display string from in_progress tasks
     // Format: "!1234 Task subject" (task ID + subject) — matches handle_status()
-    let coworker_tasks: std::collections::HashMap<String, String> =
-        crate::tasks::get_in_progress_tasks_with_subjects()
-            .into_iter()
-            .filter_map(|(task_id, subject, owner)| {
-                if owner.is_empty() {
-                    None
-                } else {
-                    let task_display = format!("!{} {}", task_id, subject);
-                    Some((owner.to_lowercase(), task_display))
-                }
-            })
-            .collect();
+    let coworker_tasks: std::collections::HashMap<String, String> = state
+        .task_store
+        .load_all()
+        .into_iter()
+        .filter(|t| {
+            t.status == crate::task_store::TaskStatus::InProgress && !t.agent_name.is_empty()
+        })
+        .map(|t| {
+            let task_display = format!("!{} {}", t.id, t.subject);
+            (t.agent_name.to_lowercase(), task_display)
+        })
+        .collect();
 
     let channel_lead_names = {
         let ps = state.persistent_state.lock().await;
@@ -549,8 +550,8 @@ pub(super) async fn handle_coworker_report_state(
     pr_number: Option<u64>,
     state: &DaemonState,
 ) -> Response {
-    // Parse the phase string via FromStr (implemented in coworker_state.rs)
-    let phase: crate::coworker_state::WorkflowPhase = match phase_str.parse() {
+    // Parse the phase string via FromStr (implemented in workflow_phase.rs)
+    let phase: crate::workflow_phase::WorkflowPhase = match phase_str.parse() {
         Ok(p) => p,
         Err(e) => return Response::error(id, RpcError::new(-32602, e)),
     };
@@ -564,16 +565,11 @@ pub(super) async fn handle_coworker_report_state(
         };
 
         if let Some(ref tid) = effective_task_id {
-            if let Err(e) = crate::tasks::update_task_fields_for_repo(
-                tid,
-                state.paths.dir_key(),
-                None,
-                None,
-                None,
-                None,
-                None,
-                Some(pr_num),
-            ) {
+            if let Err(e) =
+                state
+                    .task_store
+                    .update_task_fields(tid, None, None, None, None, None, Some(pr_num))
+            {
                 warn!(
                     "Failed to write pr_number {} to task {}: {}",
                     pr_num, tid, e
@@ -590,7 +586,7 @@ pub(super) async fn handle_coworker_report_state(
     }
 
     // For Idle phase, immediately send the coworker on break.
-    if phase == crate::coworker_state::WorkflowPhase::Idle && state.coworkers.get(name).is_some() {
+    if phase == crate::workflow_phase::WorkflowPhase::Idle && state.coworkers.get(name).is_some() {
         // Project lead must remain available for user interaction; ignore idle
         // self-reports instead of sending it on break.
         if super::helpers::is_project_lead(name, &state.project_name) {
@@ -625,8 +621,13 @@ pub(super) async fn handle_coworker_report_state(
         // cache only populates during poll ticks, and the common nudge-loop scenario
         // (reviewer posts then immediately idles) happens before any poll tick runs,
         // so the negative cache is empty. (Bug fix for !1990)
-        let pre_snap = snapshot::collect_world_snapshot(state).await;
-        if let Some(&pr_number) = pre_snap.reviewer.reviewer_pr_assignments.get(name)
+        let reviewer_pr = {
+            let ps = state.persistent_state.lock().await;
+            snapshot::build_reviewer_pr_assignments_from_spans(&ps)
+                .get(name)
+                .copied()
+        };
+        if let Some(pr_number) = reviewer_pr
             && !state.is_pr_reviewed(pr_number).await
         {
             warn!(
@@ -670,8 +671,10 @@ pub(super) async fn handle_coworker_report_state(
         effects::execute_effects(shutdown_effects, state).await;
 
         // Immediately trigger task dispatch so pending tasks get picked up
-        let snap = snapshot::collect_world_snapshot(state).await;
-        let pending_effects = super::dispatch::spawn_for_pending_tasks(&snap, state);
+        let ps = state.persistent_state.lock().await;
+        let tasks = state.task_store.load_all();
+        let pending_effects = super::dispatch::spawn_for_pending_tasks(&ps, &tasks, state);
+        drop(ps);
         if !pending_effects.is_empty() {
             info!(
                 "Immediate dispatch after {} idle: {} effect(s)",
@@ -693,7 +696,7 @@ pub(super) async fn handle_coworker_report_state(
     }
 
     // For Completed phase, handle task cleanup.
-    if phase == crate::coworker_state::WorkflowPhase::Completed {
+    if phase == crate::workflow_phase::WorkflowPhase::Completed {
         let effective_task_id: Option<String> = match task_id {
             Some(id) => Some(id.to_string()),
             None => state.get_task_id_for_coworker(name).await,
@@ -718,7 +721,7 @@ pub(super) async fn handle_coworker_report_state(
                     "Task !{} reported completed by {} with no PR — completing directly",
                     tid, name
                 );
-                match crate::tasks::complete_task_for_repo(tid, state.paths.dir_key()) {
+                match state.task_store.complete_task(tid) {
                     Err(e) => {
                         warn!("Failed to complete task !{}: {}", tid, e);
                         // Don't proceed with downstream cleanup (blocked_by,
@@ -726,9 +729,7 @@ pub(super) async fn handle_coworker_report_state(
                         // on disk and the coworker will be respawned to retry.
                     }
                     Ok(()) => {
-                        if let Err(e) =
-                            crate::tasks::clear_blocked_by_for_repo(tid, state.paths.dir_key())
-                        {
+                        if let Err(e) = state.task_store.clear_blocked_by(tid) {
                             warn!("Failed to clear blockedBy for task !{}: {}", tid, e);
                         }
                         // Mark worktree as completed (for time-based cleanup)
@@ -979,7 +980,7 @@ async fn task_has_open_pr(task_id: &str, state: &DaemonState) -> bool {
 
     // Source 2: task.pr field on disk (survives daemon restarts)
     // Must verify via GitHub API since task.pr is never cleared on PR close.
-    if let Some(task) = crate::tasks::read_task_for_repo(task_id, state.paths.dir_key())
+    if let Some(task) = state.task_store.load(task_id).ok()
         && let Some(pr_num) = task.pr
     {
         let repo_path = state.all_repo_paths.first().cloned();
@@ -1108,11 +1109,7 @@ async fn build_coworkers_data(
             let rev_map: HashMap<String, u64> = ps
                 .active_reviewer_sessions()
                 .into_iter()
-                .filter_map(|s| {
-                    ps.task_pr_number
-                        .get(s.task_id.as_deref().unwrap_or(""))
-                        .map(|&pr| (s.name.clone(), pr))
-                })
+                .filter_map(|s| s.pr_number.map(|pr| (s.name.clone(), pr)))
                 .collect();
             // Build coworker -> PR map from worktree registry (for reviewers)
             let wt_map: HashMap<String, u64> = ps
@@ -1134,7 +1131,7 @@ async fn build_coworkers_data(
     let coworker_records = state.coworker_records.read().await;
 
     // Read tasks to get explicit PR associations (task !1151)
-    let all_tasks = crate::tasks::read_tasks();
+    let all_tasks = state.task_store.load_all();
     let task_pr_map: HashMap<u32, u64> = all_tasks
         .iter()
         .filter_map(|task| {
@@ -1171,8 +1168,8 @@ async fn build_coworkers_data(
             // Skip idle coworkers (phase = Idle or Completed)
             if matches!(
                 workflow_phase,
-                Some(crate::coworker_state::WorkflowPhase::Idle)
-                    | Some(crate::coworker_state::WorkflowPhase::Completed)
+                Some(crate::workflow_phase::WorkflowPhase::Idle)
+                    | Some(crate::workflow_phase::WorkflowPhase::Completed)
             ) {
                 return None;
             }

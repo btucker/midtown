@@ -213,24 +213,32 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
 /// isolated coworkers. This is intentional: `midtown task list` shows the daemon's
 /// coordinated task list (assignments, ownership), not Claude Code's private tasks.
 fn handle_list(show_all: bool) -> Result<Response, String> {
-    let tasks = midtown::tasks::read_tasks();
+    let repo = midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+    let tasks = midtown::task_store::TaskStore::new(
+        midtown::paths::projects_dir_for_repo(&repo).join("tasks"),
+    )
+    .load_all();
 
     let task_infos: Vec<TaskInfo> = tasks
         .into_iter()
         .filter(|t| {
             show_all
-                || t.status == midtown::tasks::TaskStatus::Pending
-                || t.status == midtown::tasks::TaskStatus::InProgress
+                || t.status == midtown::task_store::TaskStatus::Pending
+                || t.status == midtown::task_store::TaskStatus::InProgress
         })
         .map(|t| TaskInfo {
             id: format!("!{}", t.id),
             subject: t.subject,
             status: match t.status {
-                midtown::tasks::TaskStatus::Pending => "pending".to_string(),
-                midtown::tasks::TaskStatus::InProgress => "in_progress".to_string(),
-                midtown::tasks::TaskStatus::Completed => "completed".to_string(),
+                midtown::task_store::TaskStatus::Pending => "pending".to_string(),
+                midtown::task_store::TaskStatus::InProgress => "in_progress".to_string(),
+                midtown::task_store::TaskStatus::Completed => "completed".to_string(),
             },
-            assignee: t.owner,
+            assignee: if t.agent_name.is_empty() {
+                None
+            } else {
+                Some(t.agent_name)
+            },
         })
         .collect();
 
@@ -249,24 +257,28 @@ fn handle_view(id: &str) -> Result<Response, String> {
         .strip_prefix('#')
         .or_else(|| id.strip_prefix('!'))
         .unwrap_or(id);
-    let tasks = midtown::tasks::read_tasks();
+    let repo = midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
+    let tasks = midtown::task_store::TaskStore::new(
+        midtown::paths::projects_dir_for_repo(&repo).join("tasks"),
+    )
+    .load_all();
     let task = tasks
         .iter()
         .find(|t| t.id == id)
         .ok_or_else(|| format!("Task !{} not found", id))?;
 
     let status_str = match task.status {
-        midtown::tasks::TaskStatus::Pending => "pending",
-        midtown::tasks::TaskStatus::InProgress => "in_progress",
-        midtown::tasks::TaskStatus::Completed => "completed",
+        midtown::task_store::TaskStatus::Pending => "pending",
+        midtown::task_store::TaskStatus::InProgress => "in_progress",
+        midtown::task_store::TaskStatus::Completed => "completed",
     };
 
     let mut output = format!("Task !{}\n", task.id);
     output.push_str("─────────────────────────────\n");
     output.push_str(&format!("Subject:  {}\n", task.subject));
     output.push_str(&format!("Status:   {}\n", status_str));
-    if let Some(ref owner) = task.owner {
-        output.push_str(&format!("Owner:    {}\n", owner));
+    if !task.agent_name.is_empty() {
+        output.push_str(&format!("Owner:    {}\n", task.agent_name));
     }
 
     // Query daemon for metadata (channel and model)

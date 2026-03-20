@@ -179,91 +179,6 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub worktree_registry: WorktreeRegistry,
 
-    /// Task-to-channel assignment mapping for message routing.
-    /// Maps task ID → channel name. Used by the daemon to route coworker messages
-    /// to the appropriate topic channel based on the task they're working on.
-    /// Persists across daemon restarts so channel routing survives.
-    #[serde(default)]
-    pub task_channel: HashMap<String, String>,
-
-    /// Task-to-model assignment mapping for coworker spawn.
-    /// Maps task ID → model specification (e.g., "claude/opus", "claude/sonnet").
-    /// Used by the daemon to launch coworkers with the requested model when spawning
-    /// for a task. Stored separately from Claude Code's native task storage for
-    /// compatibility. Persists across daemon restarts.
-    #[serde(default)]
-    pub task_model: HashMap<String, String>,
-
-    /// Task-to-plan mapping for plan-driven execution.
-    /// Maps task ID → absolute path to a plan file (e.g., "docs/plans/2026-02-13-feature.md").
-    /// When a coworker is spawned for a task with a plan, the daemon reads the file
-    /// and includes its content in the coworker's initial prompt. Stored separately
-    /// from Claude Code's native task storage for compatibility.
-    #[serde(default)]
-    pub task_plan: HashMap<String, String>,
-
-    /// Task-to-execution-skill mapping for plan-driven execution.
-    /// Maps task ID → skill name (e.g., "subagent-driven-development", "executing-plans").
-    /// When a coworker is spawned for a task with an execution skill, the daemon includes
-    /// an explicit instruction to use that skill. Stored separately from Claude Code's
-    /// native task storage for compatibility.
-    #[serde(default)]
-    pub task_execution_skill: HashMap<String, String>,
-
-    /// Task-to-thread-ID mapping for thread routing.
-    ///
-    /// Maps task ID → thread_parent_id. Populated in two ways:
-    /// 1. Explicitly via `--thread-id` on `midtown task create` (e.g., from fork sessions).
-    /// 2. Auto-defaulted to the task's announcement message ID when no explicit
-    ///    thread ID is provided, ensuring coworker posts route to the task thread.
-    ///
-    /// The daemon sets `bound_thread_id` on the spawned coworker's `SessionRecord`
-    /// using this mapping, wiring the coworker's channel output into the correct thread.
-    #[serde(default)]
-    pub task_thread_id: HashMap<String, String>,
-
-    /// Task-to-creation-message mapping for opening tasks as threads.
-    ///
-    /// Maps task ID → message ID (UUID of the "created task:" channel message).
-    /// When a task is created, the daemon posts a notification message and stores
-    /// its ID here. The TUI and web app use this to open a task as a thread,
-    /// showing the task metadata as the header and allowing discussion replies.
-    #[serde(default)]
-    pub task_message_id: HashMap<String, String>,
-
-    /// Task-to-parent mapping for UI grouping of related tasks.
-    ///
-    /// Maps child task ID → parent task ID. Parent-child is a UI grouping
-    /// relationship for showing related tasks (e.g., a review task as a child
-    /// of its implementation task). Child tasks can start while the parent is
-    /// open — this is purely organizational, not a blocking dependency.
-    #[serde(default)]
-    pub task_parent: HashMap<String, String>,
-
-    /// Task-to-agent-type mapping for specialized task dispatch.
-    ///
-    /// Maps task ID → agent type name (e.g., "midtown-code-reviewer").
-    /// When set, the task dispatch system uses the specified agent definition
-    /// instead of the default coworker agent. Used to route review tasks
-    /// through the task dispatch system with the correct agent behavior.
-    #[serde(default)]
-    pub task_agent_type: HashMap<String, String>,
-
-    /// Task-to-placeholder-comment-ID mapping for reviewer status comments.
-    ///
-    /// Maps task ID → GitHub comment ID. When a reviewer is spawned for a PR,
-    /// a "Review in progress..." placeholder comment is posted. The comment ID
-    /// is stored here so the reviewer can update it with the final review.
-    #[serde(default)]
-    pub task_placeholder_comment_id: HashMap<String, u64>,
-
-    /// Task-to-restart-count mapping for reviewer backoff.
-    ///
-    /// Maps task ID → number of times the reviewer session has been restarted.
-    /// Used to implement exponential backoff for stuck reviewers.
-    #[serde(default)]
-    pub task_restart_count: HashMap<String, u32>,
-
     /// Channel lead session IDs for resume-on-demand.
     ///
     /// Maps channel name → Claude Code session ID. One channel lead session
@@ -325,12 +240,6 @@ pub struct DaemonPersistentState {
     /// Legacy field — kept for deserialization compat, not used.
     #[serde(default, rename = "task_session_spans", skip_serializing)]
     pub _task_session_spans: serde_json::Value,
-
-    /// Task-to-PR-number mapping for reviewer tasks.
-    /// Set at review task creation so PR lookups work before the reviewer session
-    /// populates SessionRecord.pr_number.
-    #[serde(default)]
-    pub task_pr_number: HashMap<String, u64>,
 
     /// Write-through task index for fast lookups without directory scanning.
     ///
@@ -463,6 +372,14 @@ pub struct DaemonPersistentState {
     #[serde(skip)]
     pub tick_stale_channel_notes: HashMap<String, Vec<String>>,
 
+    /// Active session IDs — running coworkers + alive headless sessions.
+    #[serde(skip)]
+    pub tick_active_session_ids: HashSet<String>,
+
+    /// Whether the in-progress task count has reached the configured limit.
+    #[serde(skip)]
+    pub tick_is_at_task_limit: bool,
+
     /// Active session names (lowercase) — running coworkers + alive headless sessions.
     #[serde(skip)]
     pub tick_active_session_names: HashSet<String>,
@@ -478,6 +395,70 @@ pub struct DaemonPersistentState {
     /// Session name string (e.g., "midtown-projectname").
     #[serde(skip)]
     pub tick_session_name: String,
+
+    // ── Health-check tick fields ──────────────────────────────────────────
+    // Populated by `prepare_tick()` for health.rs decision functions.
+    /// Whether a usage-limit nudge is already scheduled.
+    #[serde(skip)]
+    pub tick_usage_limit_nudge_scheduled: bool,
+
+    /// The scheduled usage-limit nudge time (if any).
+    #[serde(skip)]
+    pub tick_usage_limit_nudge_at: Option<tokio::time::Instant>,
+
+    /// Reviewer name → assigned PR number (from all reviewer sessions + task_pr_number).
+    #[serde(skip)]
+    pub tick_reviewer_pr_assignments: HashMap<String, u64>,
+
+    /// PR number → restart count for reviewer backoff.
+    #[serde(skip)]
+    pub tick_reviewer_restart_counts: HashMap<u64, u32>,
+
+    /// Placeholder comment IDs for PRs with an unupdated "Review in progress" comment.
+    #[serde(skip)]
+    pub tick_reviewer_in_progress_comment_ids: HashMap<u64, u64>,
+
+    /// Name → session ID mapping (lowercase name → session_id).
+    #[serde(skip)]
+    pub tick_name_session_map: HashMap<String, String>,
+
+    // ── Dispatch tick fields ────────────────────────────────────────────
+    // Populated by `prepare_tick()` for dispatch.rs decision functions.
+    /// Stale working-dir sessions (worktree path no longer exists on disk).
+    #[serde(skip)]
+    pub tick_stale_working_dir_sessions: HashSet<String>,
+
+    /// PR-protected task IDs (tasks that should not be orphan-recovered).
+    #[serde(skip)]
+    pub tick_pr_protected_tasks: HashSet<String>,
+
+    /// Busy coworker names (lowercase) — coworkers with in-progress tasks.
+    #[serde(skip)]
+    pub tick_busy_coworkers: HashSet<String>,
+
+    /// Active reviewer names (lowercase).
+    #[serde(skip)]
+    pub tick_active_reviewers: HashSet<String>,
+
+    /// Pending tasks with owners — (task_id, subject, owner).
+    #[serde(skip)]
+    pub tick_pending_tasks_with_owners: Vec<(String, String, String)>,
+
+    /// In-progress tasks — (task_id, subject, owner).
+    #[serde(skip)]
+    pub tick_in_progress_tasks: Vec<(String, String, String)>,
+
+    /// Blocks map: task_id → list of task IDs that it blocks.
+    #[serde(skip)]
+    pub tick_blocks_map: HashMap<String, Vec<String>>,
+
+    /// Session task map: task_id → session_id.
+    #[serde(skip)]
+    pub tick_session_task_map: HashMap<String, String>,
+
+    /// PR number → branch name for merged PRs (from worktree registry).
+    #[serde(skip)]
+    pub tick_merged_pr_branches: HashMap<u64, String>,
 }
 
 impl DaemonPersistentState {
@@ -523,17 +504,10 @@ impl DaemonPersistentState {
                 }
 
                 debug!(
-                    "Loaded daemon state: {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-thread-id mappings, {} task-message-id mappings, {} task-parent mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
+                    "Loaded daemon state: {} reminders, CI stats: {}, {} worktree assignments, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
                     state.reminders.reminders.len(),
                     state.ci_stats.summary(),
                     state.worktree_registry.len(),
-                    state.task_channel.len(),
-                    state.task_model.len(),
-                    state.task_plan.len(),
-                    state.task_execution_skill.len(),
-                    state.task_thread_id.len(),
-                    state.task_message_id.len(),
-                    state.task_parent.len(),
                     state.channel_lead_sessions.len(),
                     state.profile_pool_state.len(),
                     state.channel_workflows.len(),
@@ -561,15 +535,10 @@ impl DaemonPersistentState {
         fs::write(&tmp_path, &contents)?;
         crate::paths::atomic_rename(&tmp_path, &path)?;
         debug!(
-            "Saved daemon state: {} reminders, CI stats: {}, {} worktree assignments, {} task-channel mappings, {} task-model mappings, {} task-plan mappings, {} task-execution-skill mappings, {} task-parent mappings, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
+            "Saved daemon state: {} reminders, CI stats: {}, {} worktree assignments, {} channel-lead sessions, {} profile-pool entries, {} channel-workflow assignments, {} workflow-state channels, {} lead-driven channels",
             self.reminders.reminders.len(),
             self.ci_stats.summary(),
             self.worktree_registry.len(),
-            self.task_channel.len(),
-            self.task_model.len(),
-            self.task_plan.len(),
-            self.task_execution_skill.len(),
-            self.task_parent.len(),
             self.channel_lead_sessions.len(),
             self.profile_pool_state.len(),
             self.channel_workflows.len(),
@@ -600,40 +569,18 @@ impl DaemonPersistentState {
             }
         }
 
-        // 2. Prune orphaned task metadata maps
-        for task_id in orphaned_task_ids {
-            self.task_channel.remove(task_id);
-            self.task_model.remove(task_id);
-            self.task_plan.remove(task_id);
-            self.task_execution_skill.remove(task_id);
-            self.task_thread_id.remove(task_id);
-            self.task_message_id.remove(task_id);
-            self.task_parent.remove(task_id);
-            self.task_agent_type.remove(task_id);
-            self.task_placeholder_comment_id.remove(task_id);
-            self.task_restart_count.remove(task_id);
-            self.task_pr_number.remove(task_id);
-            result.orphaned_tasks_pruned += 1;
-        }
+        // 2. Count orphaned tasks (metadata lives in TaskStore now, no maps to prune)
+        result.orphaned_tasks_pruned = orphaned_task_ids.len();
 
         result
     }
 
     /// Returns the active reviewer session for a PR, if any.
-    ///
-    /// Checks both `task_pr_number` (set at task creation) and
-    /// `SessionRecord.pr_number` (set when the session opens the PR).
     pub fn active_reviewer_for_pr(&self, pr_number: u64) -> Option<&SessionRecord> {
         self.sessions
             .values()
             .filter(|s| s.agent_type == "midtown-code-reviewer" && s.is_running)
-            .find(|s| {
-                s.pr_number == Some(pr_number)
-                    || s.task_id
-                        .as_ref()
-                        .and_then(|tid| self.task_pr_number.get(tid))
-                        == Some(&pr_number)
-            })
+            .find(|s| s.pr_number == Some(pr_number))
     }
 
     /// Returns true if PR has an active reviewer session that is currently running.
@@ -658,19 +605,11 @@ impl DaemonPersistentState {
             .collect()
     }
 
-    /// Look up the bound thread ID for a task from `task_thread_id`.
-    ///
-    /// Used by both the `SpawnForTask` effect path and `spawn_coworker()` to
-    /// resolve a task's announcement thread so channel posts are auto-tagged.
-    pub fn resolve_bound_thread_id(&self, task_id: Option<&str>) -> Option<String> {
-        task_id.and_then(|tid| self.task_thread_id.get(tid).cloned())
-    }
-
-    /// Insert a reviewer session record — replacement for the removed `create_span()`.
+    /// Insert a session record for a task.
     ///
     /// Creates a `SessionRecord` with the given parameters and inserts it into
-    /// `self.sessions`. Also populates `task_pr_number` if a PR number is provided
-    /// via the task_id lookup.
+    /// `self.sessions`. The caller should set `pr_number` on the returned record
+    /// if needed (loaded from TaskStore).
     pub fn insert_session_for_task(
         &mut self,
         task_id: &str,
@@ -690,7 +629,6 @@ impl DaemonPersistentState {
                 name: agent_name.to_string(),
                 agent_type: agent_type.to_string(),
                 task_id: Some(task_id.to_string()),
-                pr_number: self.task_pr_number.get(task_id).copied(),
                 is_running: true,
                 ..Default::default()
             },
@@ -732,16 +670,6 @@ impl DaemonPersistentState {
             reminders,
             ci_stats: CiCheckStats::default(),
             worktree_registry: WorktreeRegistry::default(),
-            task_channel: HashMap::new(),
-            task_model: HashMap::new(),
-            task_plan: HashMap::new(),
-            task_execution_skill: HashMap::new(),
-            task_thread_id: HashMap::new(),
-            task_message_id: HashMap::new(),
-            task_parent: HashMap::new(),
-            task_agent_type: HashMap::new(),
-            task_placeholder_comment_id: HashMap::new(),
-            task_restart_count: HashMap::new(),
             channel_lead_sessions: HashMap::new(),
             sessions: HashMap::new(),
             profile_pool_state: HashMap::new(),
@@ -750,7 +678,6 @@ impl DaemonPersistentState {
             workflow_state,
             permanent_pr_nudges: Vec::new(),
             _task_session_spans: serde_json::Value::Null,
-            task_pr_number: HashMap::new(),
             task_index: HashMap::new(),
             ..Default::default()
         };
@@ -854,6 +781,86 @@ impl DaemonPersistentState {
             .find(|s| s.task_id.as_deref() == Some(task_id))
     }
 
+    /// Look up the topic channel for a PR via tick_pr_task_index and a tasks slice.
+    pub fn channel_for_pr(
+        &self,
+        pr_number: u64,
+        tasks: &[crate::task_store::Task],
+    ) -> Option<String> {
+        let task_id = self.tick_pr_task_index.task_for_pr(pr_number)?;
+        tasks
+            .iter()
+            .find(|t| t.id == task_id)
+            .and_then(|t| t.channel.clone())
+    }
+
+    /// Look up the topic channel for a PR, falling back to project name.
+    pub fn channel_for_pr_or_default(
+        &self,
+        pr_number: u64,
+        tasks: &[crate::task_store::Task],
+    ) -> String {
+        self.channel_for_pr(pr_number, tasks)
+            .unwrap_or_else(|| self.tick_project_name.clone())
+    }
+
+    /// Derive usage-limited coworkers from tick_process_health.
+    pub fn usage_limited_coworkers(&self) -> std::collections::HashSet<String> {
+        self.tick_process_health
+            .iter()
+            .filter(|(_, h)| h.has_usage_limit)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Derive auth-error coworkers from tick_process_health.
+    pub fn auth_error_coworkers(&self) -> std::collections::HashSet<String> {
+        self.tick_process_health
+            .iter()
+            .filter(|(_, h)| h.has_auth_error)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Derive API-error coworkers from tick_process_health.
+    pub fn api_error_coworkers(&self) -> std::collections::HashSet<String> {
+        self.tick_process_health
+            .iter()
+            .filter(|(_, h)| h.has_api_error)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Derive tool-name-conflict coworkers from tick_process_health.
+    pub fn tool_name_conflict_coworkers(&self) -> std::collections::HashSet<String> {
+        self.tick_process_health
+            .iter()
+            .filter(|(_, h)| h.has_tool_name_conflict)
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Get coworker names that have sessions with open PRs.
+    pub fn sessions_with_open_prs(&self) -> std::collections::HashSet<String> {
+        let open_pr_numbers: std::collections::HashSet<u64> = self
+            .tick_open_prs
+            .iter()
+            .filter_map(|pr| pr["number"].as_u64())
+            .collect();
+
+        self.sessions
+            .values()
+            .filter(|s| s.pr_number.is_some_and(|pr| open_pr_numbers.contains(&pr)))
+            .filter_map(|s| {
+                if s.name.is_empty() {
+                    None
+                } else {
+                    Some(s.name.clone())
+                }
+            })
+            .collect()
+    }
+
     /// All running reviewer sessions.
     pub fn running_reviewer_sessions(&self) -> Vec<&SessionRecord> {
         self.sessions
@@ -873,6 +880,29 @@ impl DaemonPersistentState {
                     .map(|tid| (s.name.to_lowercase(), tid.clone()))
             })
             .collect()
+    }
+
+    /// Find a session record by task ID using the pre-built tick_session_task_map.
+    pub fn find_session_for_task(&self, task_id: &str) -> Option<&SessionRecord> {
+        let session_id = self.tick_session_task_map.get(task_id)?;
+        self.sessions.get(session_id)
+    }
+
+    /// Check whether a worktree is bound to a different ACTIVE coworker.
+    pub fn worktree_collision(&self, worktree_id: &str, intended_coworker: &str) -> Option<String> {
+        let assignment = self.worktree_registry.get(worktree_id)?;
+        let bound_coworker = assignment.current_coworker.as_deref()?;
+
+        if bound_coworker.eq_ignore_ascii_case(intended_coworker) {
+            return None;
+        }
+
+        let bound_lower = bound_coworker.to_lowercase();
+        if self.tick_active_session_names.contains(&bound_lower) {
+            return Some(bound_coworker.to_string());
+        }
+
+        None
     }
 
     /// Migrate per-channel `workflow-state.json` files into in-memory state.

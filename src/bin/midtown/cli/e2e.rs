@@ -17,9 +17,9 @@ pub enum E2eCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Capture daemon WorldSnapshot for test fixtures
+    /// Capture daemon state for test fixtures
     ///
-    /// Saves the full daemon WorldSnapshot (including all pane contents, coworker
+    /// Saves the full daemon persistent state (including session records, worktree
     /// state, task state, etc.) to a JSON fixture file. Use this during normal
     /// operation to capture real daemon states for use in unit tests.
     Capture {
@@ -145,7 +145,7 @@ fn handle_run(mode: &E2eMode, extra_args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Capture the full daemon WorldSnapshot and save to a JSON fixture file.
+/// Capture the full daemon state and save to a JSON fixture file.
 fn handle_capture(label: Option<&str>) -> Result<(), String> {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
@@ -215,40 +215,23 @@ fn handle_capture(label: Option<&str>) -> Result<(), String> {
         .map_err(|e| format!("Failed to write fixture '{}': {}", path.display(), e))?;
 
     // Show summary
-    let coworker_count = snapshot
-        .get("active_coworkers")
-        .and_then(|v| v.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-    let health_count = snapshot
-        .get("headless_process_health")
+    let session_count = snapshot
+        .get("sessions")
         .and_then(|v| v.as_object())
         .map(|o| o.len())
         .unwrap_or(0);
-    let task_count = snapshot
-        .get("all_tasks")
-        .and_then(|v| v.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-    let channel_message_count = snapshot
-        .get("channel_messages")
-        .and_then(|v| v.as_array())
-        .map(|a| a.len())
-        .unwrap_or(0);
-    let daemon_log_count = snapshot
-        .get("daemon_logs")
-        .and_then(|v| v.as_array())
-        .map(|a| a.len())
+    let worktree_count = snapshot
+        .get("worktree_registry")
+        .and_then(|v| v.get("assignments"))
+        .and_then(|v| v.as_object())
+        .map(|o| o.len())
         .unwrap_or(0);
 
-    println!("Captured WorldSnapshot to: {}", path.display());
+    println!("Captured daemon state to: {}", path.display());
     println!();
     println!("Snapshot summary:");
-    println!("  Active coworkers: {}", coworker_count);
-    println!("  Process health: {}", health_count);
-    println!("  Tasks: {}", task_count);
-    println!("  Channel messages: {}", channel_message_count);
-    println!("  Daemon log lines: {}", daemon_log_count);
+    println!("  Sessions: {}", session_count);
+    println!("  Worktree assignments: {}", worktree_count);
     println!("  File size: {} bytes", content.len());
     println!();
     println!("To use in a test, move it to the fixtures directory:");

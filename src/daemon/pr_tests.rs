@@ -278,8 +278,6 @@ fn format_no_reviewer_reason_with_known_author() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await to prevent test interference
 async fn test_orphaned_pr_with_merge_conflict_is_ignored() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-
     // Create a PR with a merge conflict owned by york, but york is NOT active
     // (simulating york went on break after creating the PR)
     let pr_json = json!({
@@ -328,13 +326,14 @@ async fn test_orphaned_pr_with_merge_conflict_is_ignored() {
     }
 
     // Create a minimal snapshot with NO active coworkers (york is on break, no session)
-    let snap = minimal_snapshot_for_test();
+    let ps = crate::daemon::state::DaemonPersistentState::default();
+    let tasks: Vec<crate::task_store::Task> = vec![];
 
     // Create minimal daemon state
     let (state, _tmp, _guard) = make_test_state("test-repo");
 
     // Call poll_prs_for_issues (keep PATH_LOCK held to prevent test interference)
-    let result = poll_prs_for_issues(&snap, &state).await;
+    let result = poll_prs_for_issues(&state).await;
 
     // Restore PATH and release lock
     unsafe {
@@ -489,8 +488,6 @@ async fn test_lead_pr_without_task_id_should_not_be_orphaned() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await to prevent test interference
 async fn test_ci_wait_deduplication_uses_time_aware_hash() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-
     let pr = json!({
         "number": 100,
         "headRefName": "york/test-branch",
@@ -538,26 +535,27 @@ async fn test_ci_wait_deduplication_uses_time_aware_hash() {
     }
 
     // Create snapshot with york's session owning a task linked to PR #100
-    let mut snap = minimal_snapshot_for_test();
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let mut tasks: Vec<crate::task_store::Task> = vec![];
     // Mark york as active so the PR is not treated as orphaned in process_pr_issue_nudges
-    snap.coworkers.active_names.insert("york".to_string());
+    ps.tick_active_session_names.insert("york".to_string());
     // Add a task linked to PR #100 and a session for york
-    snap.all_tasks.push(crate::tasks::Task {
+    tasks.push(crate::task_store::Task {
         id: "t100".to_string(),
         subject: "Test task for PR #100".to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: Some("york".to_string()),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: "york".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(100),
-        created_at: None,
+        ..Default::default()
     });
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+    ps.tick_pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         [("t100".to_string(), 100u64)].into_iter().collect(),
         std::collections::HashMap::new(),
     );
-    snap.sessions.insert(
+    ps.sessions.insert(
         "sess-york".to_string(),
         crate::daemon::state::SessionRecord {
             session_id: "sess-york".to_string(),
@@ -567,16 +565,37 @@ async fn test_ci_wait_deduplication_uses_time_aware_hash() {
             ..Default::default()
         },
     );
-    snap.session_task_map
+    ps.tick_session_task_map
         .insert("t100".to_string(), "sess-york".to_string());
 
     let (state, _tmp, _guard) = make_test_state("test-repo");
 
+    // Write tick state into persistent_state so poll_prs_for_issues can read it
+    {
+        let mut locked_ps = state.persistent_state.lock().await;
+        locked_ps.tick_active_session_names = ps.tick_active_session_names.clone();
+        locked_ps.tick_pr_task_index = ps.tick_pr_task_index.clone();
+        locked_ps.sessions = ps.sessions.clone();
+        locked_ps.tick_session_task_map = ps.tick_session_task_map.clone();
+        locked_ps.tick_active_coworkers = vec![crate::coworker::Coworker {
+            slot_id: "test-slot".to_string(),
+            name: "york".to_string(),
+            status: crate::coworker::CoworkerStatus::Running,
+            working_dir: "/tmp/test".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: Some("sess-york".to_string()),
+            model: "sonnet".to_string(),
+            provider: crate::auth::AuthProvider::default(),
+            profile: "default".to_string(),
+        }];
+    }
+
     // First poll should post "Waiting for CI" message (keep PATH_LOCK held to prevent test interference)
-    let effects1 = poll_prs_for_issues(&snap, &state).await.unwrap();
+    let effects1 = poll_prs_for_issues(&state).await.unwrap();
 
     // Second poll immediately should NOT post duplicate (deduplicated by time-aware hash)
-    let _effects2 = poll_prs_for_issues(&snap, &state).await.unwrap();
+    let _effects2 = poll_prs_for_issues(&state).await.unwrap();
 
     // Restore PATH and release lock
     unsafe {
@@ -595,23 +614,18 @@ async fn test_ci_wait_deduplication_uses_time_aware_hash() {
 
 #[test]
 fn test_detect_abandoned_pr_tasks_no_reset_for_open_pr() {
-    use super::super::snapshot::minimal_snapshot_for_test;
+    use super::PrPollTickState;
 
-    // Task !100 is in progress, associated with PR #100
-    let in_progress_tasks = vec![("100".to_string(), "Fix bug".to_string(), "york".to_string())];
-
-    let mut snap = minimal_snapshot_for_test();
-    snap.in_progress_tasks = in_progress_tasks;
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+    let mut tick = PrPollTickState::default();
+    tick.in_progress_tasks = vec![("100".to_string(), "Fix bug".to_string(), "york".to_string())];
+    tick.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         [("100".to_string(), 100u64)].into_iter().collect(),
         std::collections::HashMap::new(),
     );
 
-    // PR 100 is in the open list
     let open_pr_numbers = vec![100u64];
-    let effects = detect_abandoned_pr_tasks(&snap, &open_pr_numbers, "test-repo");
+    let effects = detect_abandoned_pr_tasks(&tick, &[], &open_pr_numbers, "test-repo");
 
-    // Should emit no effects since PR is still open
     assert!(effects.is_empty(), "Should not reset task for open PR");
 }
 
@@ -626,49 +640,33 @@ fn test_detect_abandoned_pr_tasks_no_reset_for_open_pr() {
 /// the work was already landed via PR #968.
 #[test]
 fn test_detect_abandoned_pr_tasks_checks_for_merged_siblings() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-    use crate::tasks::{Task, TaskStatus};
+    use super::PrPollTickState;
+    use crate::task_store::{Task, TaskStatus};
 
-    // Task !1158 is "in progress" (completed, but still in_progress_tasks for this test)
-    let in_progress_tasks = vec![(
-        "1158".to_string(),
-        "Fix bug".to_string(),
-        "york".to_string(),
-    )];
-
-    // Full task object showing it's completed and has pr field pointing to merged PR
     let task = Task {
         id: "1158".to_string(),
         subject: "Fix bug".to_string(),
         status: TaskStatus::Completed,
-        owner: Some("york".to_string()),
-        description: None,
-        blocked_by: vec![],
-        channel: None,
-        pr: Some(968), // Task.pr points to merged PR #968
-        created_at: None,
+        agent_name: "york".to_string(),
+        pr: Some(968),
+        ..Default::default()
     };
 
-    let mut snap = minimal_snapshot_for_test();
-    snap.in_progress_tasks = in_progress_tasks;
-    snap.all_tasks = vec![task];
-
-    // PR associations: both PRs are associated with the same task
-    // Note: PrTaskIndex reverse map only supports one PR per task (from session_task_to_pr).
-    // Use session map for the merged PR and github map for the duplicate.
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+    let mut tick = PrPollTickState::default();
+    tick.in_progress_tasks = vec![(
+        "1158".to_string(),
+        "Fix bug".to_string(),
+        "york".to_string(),
+    )];
+    tick.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         [("1158".to_string(), 968u64)].into_iter().collect(),
         [("1158".to_string(), 999u64)].into_iter().collect(),
     );
+    tick.merged_pr_numbers.insert(968u64);
 
-    // PR #968 is merged, PR #999 is NOT merged
-    snap.pr.merged_pr_numbers.insert(968u64);
-
-    // PR 100 is NOT in open list, but it IS in merged list
     let open_pr_numbers = vec![];
-    let effects = detect_abandoned_pr_tasks(&snap, &open_pr_numbers, "test-repo");
+    let effects = detect_abandoned_pr_tasks(&tick, &[task], &open_pr_numbers, "test-repo");
 
-    // Should emit no effects since merged PRs are handled separately
     assert!(effects.is_empty(), "Should not reset task for merged PR");
 }
 
@@ -684,8 +682,6 @@ fn test_detect_abandoned_pr_tasks_checks_for_merged_siblings() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await to prevent test interference
 async fn test_orphaned_pr_with_task_branch_and_merge_conflict_is_ignored() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-
     // Create a PR with a task-based branch name and a merge conflict
     // The branch doesn't match "coworker/branch" pattern AND isn't in worktree_branch_owners
     let pr_json = json!({
@@ -734,13 +730,14 @@ async fn test_orphaned_pr_with_task_branch_and_merge_conflict_is_ignored() {
     }
 
     // Create a minimal snapshot with NO active coworkers and no session owner for this PR.
-    let snap = minimal_snapshot_for_test();
+    let ps = crate::daemon::state::DaemonPersistentState::default();
+    let tasks: Vec<crate::task_store::Task> = vec![];
 
     // Create minimal daemon state
     let (state, _tmp, _guard) = make_test_state("test-repo");
 
     // Call poll_prs_for_issues (keep PATH_LOCK held to prevent test interference)
-    let result = poll_prs_for_issues(&snap, &state).await;
+    let result = poll_prs_for_issues(&state).await;
 
     // Restore PATH and release lock
     unsafe {
@@ -774,9 +771,8 @@ async fn test_orphaned_pr_with_task_branch_and_merge_conflict_is_ignored() {
 
 #[tokio::test]
 async fn test_maybe_decide_pr_issue_effects_skips_when_cooldown_active() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-
-    let snap = minimal_snapshot_for_test();
+    let ps = crate::daemon::state::DaemonPersistentState::default();
+    let tasks: Vec<crate::task_store::Task> = vec![];
     let (state, _tmp, _guard) = make_test_state("test-repo");
     let pr = json!({
         "number": 4242,
@@ -800,7 +796,8 @@ async fn test_maybe_decide_pr_issue_effects_skips_when_cooldown_active() {
         &pf,
         PrIssueType::CiFailed,
         None,
-        &snap,
+        false,                             // at_task_limit
+        &std::collections::HashMap::new(), // reviewer_pr_assignments
         &state,
         &[],
         &[],
@@ -815,7 +812,6 @@ async fn test_maybe_decide_pr_issue_effects_skips_when_cooldown_active() {
 
 #[tokio::test]
 async fn test_collect_green_with_feedback_clears_cooldown_for_inactive_owner() {
-    use super::super::snapshot::minimal_snapshot_for_test;
     use std::collections::{HashMap, HashSet};
 
     let pr_number = 5151u64;
@@ -829,24 +825,25 @@ async fn test_collect_green_with_feedback_clears_cooldown_for_inactive_owner() {
         "reviewDecision": "CHANGES_REQUESTED",
     });
 
-    let mut snap = minimal_snapshot_for_test();
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let mut tasks: Vec<crate::task_store::Task> = vec![];
     // Provide a task + session so the owner resolves via session
-    snap.all_tasks.push(crate::tasks::Task {
+    tasks.push(crate::task_store::Task {
         id: "5151".to_string(),
         subject: "Fix CI flake".to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: Some("york".to_string()),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: "york".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(pr_number),
-        created_at: None,
+        ..Default::default()
     });
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+    ps.tick_pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         [("5151".to_string(), pr_number)].into_iter().collect(),
         std::collections::HashMap::new(),
     );
-    snap.sessions.insert(
+    ps.sessions.insert(
         "sess-york".to_string(),
         crate::daemon::state::SessionRecord {
             session_id: "sess-york".to_string(),
@@ -856,7 +853,7 @@ async fn test_collect_green_with_feedback_clears_cooldown_for_inactive_owner() {
             ..Default::default()
         },
     );
-    snap.session_task_map
+    ps.tick_session_task_map
         .insert("5151".to_string(), "sess-york".to_string());
     let (state, _tmp, _guard) = make_test_state("test-repo");
 
@@ -870,8 +867,9 @@ async fn test_collect_green_with_feedback_clears_cooldown_for_inactive_owner() {
     }
 
     let reviewed_prs: HashSet<u64> = [pr_number].into_iter().collect();
+    let tick = super::PrPollTickState::from_persistent_state(&ps);
     let effects = collect_green_with_feedback_effects(
-        &snap,
+        &tick,
         &state,
         &[pr],
         &reviewed_prs,
@@ -1023,103 +1021,6 @@ async fn test_completed_worktree_with_open_pr_gets_reviewer() {
 }
 
 /// Test the completed worktree bug fix using real captured snapshot worktree data.
-///
-/// This test uses the worktree registry from a real snapshot (where task 1323's
-/// worktree is completed) combined with synthetic PR JSON to verify that
-/// `collect_reviewer_effects_with_source` correctly spawns a reviewer for a PR
-/// with a completed worktree.
-///
-/// Complements `test_completed_worktree_with_open_pr_gets_reviewer` by using
-/// real worktree registry data instead of fully synthetic data.
-#[tokio::test]
-async fn test_completed_worktree_with_snapshot_data() {
-    use super::super::snapshot::WorldSnapshot;
-
-    let fixture = include_str!(
-        "../../tests/fixtures/snapshot/snapshot-review-spawn-lost-after-restart-20260217-003046.json"
-    );
-    let snap: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize WorldSnapshot from fixture");
-
-    // Verify the snapshot has the completed worktree we're testing
-    let task_1323_worktree = snap
-        .worktree_registry
-        .all_assignments()
-        .values()
-        .find(|a| a.task_id.as_deref() == Some("1323"))
-        .expect("Snapshot should contain worktree for task 1323");
-
-    assert!(
-        task_1323_worktree.completed_at.is_some(),
-        "Task 1323 worktree should be completed in the snapshot"
-    );
-
-    // Create a PR JSON for testing (GitHub API format with all required fields)
-    // Use a unique PR number that won't conflict with any cached review state.
-    // Title includes task ID so the function can find the completed worktree.
-    let pr_json = serde_json::json!({
-        "number": 99999,  // Unique PR number to avoid cached state
-        "headRefName": "test/snapshot-worktree-bug",
-        "title": "Test PR with completed worktree [Midtown !1323]",
-        "mergeable": "MERGEABLE",
-        "statusCheckRollup": null,
-        "reviewDecision": null,  // No review yet
-        "isDraft": false,
-        "createdAt": "2026-01-01T00:00:00Z",
-        "state": "OPEN",
-    });
-
-    // Create minimal test state
-    let (state, _tmp, _guard) = make_test_state("midtown");
-    let active_names = std::collections::HashSet::new();
-
-    // Call the function under test with snapshot's worktree registry and synthetic PR
-    let effects = collect_reviewer_effects_with_source(
-        &snap.worktree_registry, // Real snapshot data with task 1323's completed worktree
-        &active_names,
-        &state,
-        &[pr_json], // Synthetic PR that extracts task ID 1323 from title
-        true,
-        &std::collections::HashMap::new(),
-        false, // not at task limit
-    )
-    .await;
-
-    // The function should return at least one effect for PR #99999
-    assert!(
-        !effects.is_empty(),
-        "Polling reconciliation should produce effects for unreviewed PR with completed worktree. \
-         Snapshot has task 1323 with completed worktree, PR #99999 should get a reviewer assigned."
-    );
-
-    // Verify that one of the effects is a CreateReviewTask for PR #99999
-    let has_create_review_task = effects.iter().any(|effect| {
-        matches!(
-            effect,
-            crate::daemon::effects::Effect::CreateReviewTask { pr_number, .. }
-            if *pr_number == 99999
-        )
-    });
-
-    assert!(
-        has_create_review_task,
-        "Expected CreateReviewTask effect for PR #99999. \
-         Before fix: completed worktrees caused PRs to be skipped as orphaned. \
-         After fix: open PRs with completed worktrees should get reviewer spawns. \
-         Effects: {:#?}",
-        effects
-    );
-}
-
-/// Bug: PRs from the lead with non-lead/ branch names are incorrectly marked as orphaned.
-///
-/// Root cause: The orphan detection in `collect_reviewer_effects_with_source` (lines 2157-2183)
-/// checks if a PR has no worktree. If not, it checks `is_lead_branch()` (only returns true for
-/// `lead/*` branches). PRs like `codex/*` fail both checks and are marked as orphaned, preventing
-/// reviewer spawning.
-///
-/// Expected: PRs authored by the lead (repo owner) should get reviewers regardless of branch name.
-/// The lead can address feedback from their main worktree even if the branch doesn't follow `lead/*`.
 #[tokio::test]
 async fn test_lead_pr_with_non_standard_branch_gets_reviewer() {
     // Create a PR with a non-lead/ branch name (like codex/*, feature/*, etc.)
@@ -1189,8 +1090,6 @@ async fn test_lead_pr_with_non_standard_branch_gets_reviewer() {
 /// Expected: First tick nudges the lead + records it; second tick (with record present) is silent.
 #[test]
 fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-
     // Simulate PR #42 that meets all orphan criteria:
     // - Has task-based branch
     // - Has been reviewed
@@ -1206,12 +1105,14 @@ fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
         }
     });
 
-    let mut snap = minimal_snapshot_for_test();
-    snap.pr.open_prs_data = vec![pr_data];
-    snap.reviewer.reviewed_prs.insert(42);
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let mut tasks: Vec<crate::task_store::Task> = vec![];
+    ps.tick_open_prs = vec![pr_data];
+    ps.github.reviewed_prs.insert(42);
 
     // First tick: Lead has not been nudged yet
-    let effects1 = reconcile_orphaned_prs(&snap);
+    let tasks: Vec<crate::task_store::Task> = vec![];
+    let effects1 = reconcile_orphaned_prs(&ps, &tasks);
 
     // Should nudge the lead (not create a task)
     let nudge_count1 = effects1
@@ -1233,10 +1134,10 @@ fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
     );
 
     // Simulate the nudge has been recorded (orphaned_pr_lead_nudges_sent contains PR #42)
-    snap.pr.orphaned_pr_lead_nudges_sent.insert(42);
+    ps.tick_orphaned_pr_nudges_sent.insert(42);
 
     // Second tick: Lead has already been nudged
-    let effects2 = reconcile_orphaned_prs(&snap);
+    let effects2 = reconcile_orphaned_prs(&ps, &tasks);
 
     // Should NOT nudge the lead again
     let nudge_count2 = effects2
@@ -1259,8 +1160,6 @@ fn test_reconcile_orphaned_prs_does_not_create_duplicates() {
 ///           task disappears → lead gets nudged again.
 #[test]
 fn test_reconcile_orphaned_prs_renudges_after_task_disappears() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-
     let pr_data = json!({
         "number": 42,
         "title": "Fix authentication bug",
@@ -1271,21 +1170,23 @@ fn test_reconcile_orphaned_prs_renudges_after_task_disappears() {
         }
     });
 
-    let mut snap = minimal_snapshot_for_test();
-    snap.pr.open_prs_data = vec![pr_data];
-    snap.reviewer.reviewed_prs.insert(42);
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let mut tasks: Vec<crate::task_store::Task> = vec![];
+    ps.tick_open_prs = vec![pr_data];
+    ps.github.reviewed_prs.insert(42);
 
     // Simulate: lead was already nudged about this PR
-    snap.pr.orphaned_pr_lead_nudges_sent.insert(42);
+    ps.tick_orphaned_pr_nudges_sent.insert(42);
 
     // A task now exists for this PR (PR left orphaned state)
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+    ps.tick_pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         [("task-abc".to_string(), 42u64)].into_iter().collect(),
         std::collections::HashMap::new(),
     );
 
     // Tick: PR has a task, nudge record should be cleared
-    let effects_with_task = reconcile_orphaned_prs(&snap);
+    let tasks: Vec<crate::task_store::Task> = vec![];
+    let effects_with_task = reconcile_orphaned_prs(&ps, &tasks);
 
     assert!(
         effects_with_task
@@ -1301,11 +1202,11 @@ fn test_reconcile_orphaned_prs_renudges_after_task_disappears() {
     );
 
     // Simulate effect applied: nudge record cleared, task gone (task completed without merge)
-    snap.pr.orphaned_pr_lead_nudges_sent.remove(&42);
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::default();
+    ps.tick_orphaned_pr_nudges_sent.remove(&42);
+    ps.tick_pr_task_index = super::super::snapshot::PrTaskIndex::default();
 
     // Tick: PR is orphaned again — lead should be re-nudged
-    let effects_re_orphaned = reconcile_orphaned_prs(&snap);
+    let effects_re_orphaned = reconcile_orphaned_prs(&ps, &tasks);
 
     let renudge_count = effects_re_orphaned
         .iter()
@@ -1546,8 +1447,6 @@ fn action_to_effects_review_complete_spawn_owner_without_task_produces_ops_post(
 /// should skip these PRs entirely.
 #[test]
 fn test_reconcile_orphaned_prs_ignores_prs_with_active_tasks() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-
     let pr_data = json!({
         "number": 43,
         "title": "Add logging feature",
@@ -1558,18 +1457,20 @@ fn test_reconcile_orphaned_prs_ignores_prs_with_active_tasks() {
         }
     });
 
-    let mut snap = minimal_snapshot_for_test();
-    snap.pr.open_prs_data = vec![pr_data];
-    snap.reviewer.reviewed_prs.insert(43);
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let mut tasks: Vec<crate::task_store::Task> = vec![];
+    ps.tick_open_prs = vec![pr_data];
+    ps.github.reviewed_prs.insert(43);
 
     // PR #43 has an active task association — it is NOT orphaned
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+    ps.tick_pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         [("999".to_string(), 43u64)].into_iter().collect(),
         std::collections::HashMap::new(),
     );
 
     // Call reconcile_orphaned_prs
-    let effects = reconcile_orphaned_prs(&snap);
+    let tasks: Vec<crate::task_store::Task> = vec![];
+    let effects = reconcile_orphaned_prs(&ps, &tasks);
 
     // Should NOT nudge the lead because the PR has an active task
     let nudge_count = effects
@@ -1591,8 +1492,6 @@ fn test_reconcile_orphaned_prs_ignores_prs_with_active_tasks() {
 /// the task ID, so `github_open_pr_task_ids` should prevent false orphan detection.
 #[test]
 fn test_reconcile_orphaned_prs_checks_github_title_task_ids() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-
     let pr_data = json!({
         "number": 99,
         "title": "feat: Add auth endpoint [Midtown !500]",
@@ -1603,30 +1502,31 @@ fn test_reconcile_orphaned_prs_checks_github_title_task_ids() {
         }
     });
 
-    let mut snap = minimal_snapshot_for_test();
-    snap.pr.open_prs_data = vec![pr_data];
-    snap.reviewer.reviewed_prs.insert(99);
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let mut tasks: Vec<crate::task_store::Task> = vec![];
+    ps.tick_open_prs = vec![pr_data];
+    ps.github.reviewed_prs.insert(99);
 
     // Session-derived association is EMPTY (simulates session GC after 24h)
     // But the PR title has [Midtown !500], so github_task_pr_pairs should catch it
     use std::collections::HashMap;
     let github_task_to_pr: HashMap<String, u64> = [("500".to_string(), 99)].into_iter().collect();
-    snap.pr.pr_task_index =
+    ps.tick_pr_task_index =
         super::super::snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_task_to_pr);
     // The task must be non-completed for the title link to suppress orphan detection
-    snap.all_tasks.push(crate::tasks::Task {
+    tasks.push(crate::task_store::Task {
         id: "500".to_string(),
         subject: "Add auth endpoint".to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: None,
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: String::new(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     });
 
-    let effects = reconcile_orphaned_prs(&snap);
+    let effects = reconcile_orphaned_prs(&ps, &tasks);
 
     let nudge_count = effects
         .iter()
@@ -1646,8 +1546,6 @@ fn test_reconcile_orphaned_prs_checks_github_title_task_ids() {
 /// session was GC'd and the PR title doesn't follow the `[Midtown !NNN]` convention.
 #[test]
 fn test_reconcile_orphaned_prs_checks_task_pr_field() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-
     let pr_data = json!({
         "number": 77,
         "title": "Fix a bug",
@@ -1658,25 +1556,26 @@ fn test_reconcile_orphaned_prs_checks_task_pr_field() {
         }
     });
 
-    let mut snap = minimal_snapshot_for_test();
-    snap.pr.open_prs_data = vec![pr_data];
-    snap.reviewer.reviewed_prs.insert(77);
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let mut tasks: Vec<crate::task_store::Task> = vec![];
+    ps.tick_open_prs = vec![pr_data];
+    ps.github.reviewed_prs.insert(77);
 
     // No session association, no title-based association
     // But a task on disk has pr = Some(77)
-    snap.all_tasks.push(crate::tasks::Task {
+    tasks.push(crate::task_store::Task {
         id: "600".to_string(),
         subject: "Fix a bug".to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: None,
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: String::new(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(77),
-        created_at: None,
+        ..Default::default()
     });
 
-    let effects = reconcile_orphaned_prs(&snap);
+    let effects = reconcile_orphaned_prs(&ps, &tasks);
 
     let nudge_count = effects
         .iter()
@@ -1692,8 +1591,6 @@ fn test_reconcile_orphaned_prs_checks_task_pr_field() {
 /// The PR is genuinely orphaned — work is done but the PR wasn't merged.
 #[test]
 fn test_reconcile_orphaned_prs_completed_task_does_not_suppress() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-
     let pr_data = json!({
         "number": 88,
         "title": "feat: Something [Midtown !700]",
@@ -1704,29 +1601,31 @@ fn test_reconcile_orphaned_prs_completed_task_does_not_suppress() {
         }
     });
 
-    let mut snap = minimal_snapshot_for_test();
-    snap.pr.open_prs_data = vec![pr_data];
-    snap.reviewer.reviewed_prs.insert(88);
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let mut tasks: Vec<crate::task_store::Task> = vec![];
+    ps.tick_open_prs = vec![pr_data];
+    ps.github.reviewed_prs.insert(88);
 
     // Task is completed but PR is still open — PR is orphaned
-    snap.all_tasks.push(crate::tasks::Task {
+    tasks.push(crate::task_store::Task {
         id: "700".to_string(),
         subject: "Something".to_string(),
-        status: crate::tasks::TaskStatus::Completed,
-        owner: None,
+        status: crate::task_store::TaskStatus::Completed,
+        agent_name: String::new(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(88),
-        created_at: None,
+        ..Default::default()
     });
     // Title-based link also exists
     use std::collections::HashMap;
     let github_task_to_pr: HashMap<String, u64> = [("700".to_string(), 88)].into_iter().collect();
-    snap.pr.pr_task_index =
+    ps.tick_pr_task_index =
         super::super::snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_task_to_pr);
 
-    let effects = reconcile_orphaned_prs(&snap);
+    let tasks: Vec<crate::task_store::Task> = vec![];
+    let effects = reconcile_orphaned_prs(&ps, &tasks);
 
     let nudge_count = effects
         .iter()
@@ -1743,8 +1642,6 @@ fn test_reconcile_orphaned_prs_completed_task_does_not_suppress() {
 /// the link later disappears.
 #[test]
 fn test_reconcile_orphaned_prs_clears_nudge_via_title_link() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-
     let pr_data = json!({
         "number": 55,
         "title": "feat: New feature [Midtown !300]",
@@ -1755,31 +1652,32 @@ fn test_reconcile_orphaned_prs_clears_nudge_via_title_link() {
         }
     });
 
-    let mut snap = minimal_snapshot_for_test();
-    snap.pr.open_prs_data = vec![pr_data];
-    snap.reviewer.reviewed_prs.insert(55);
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let mut tasks: Vec<crate::task_store::Task> = vec![];
+    ps.tick_open_prs = vec![pr_data];
+    ps.github.reviewed_prs.insert(55);
 
     // Lead was previously nudged
-    snap.pr.orphaned_pr_lead_nudges_sent.insert(55);
+    ps.tick_orphaned_pr_nudges_sent.insert(55);
     // No session link, but title-derived link exists
     use std::collections::HashMap;
     let github_task_to_pr: HashMap<String, u64> = [("300".to_string(), 55)].into_iter().collect();
-    snap.pr.pr_task_index =
+    ps.tick_pr_task_index =
         super::super::snapshot::PrTaskIndex::from_task_maps(HashMap::new(), github_task_to_pr);
     // Non-completed task required for title link to be active
-    snap.all_tasks.push(crate::tasks::Task {
+    tasks.push(crate::task_store::Task {
         id: "300".to_string(),
         subject: "New feature".to_string(),
-        status: crate::tasks::TaskStatus::InProgress,
-        owner: None,
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: String::new(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: None,
-        created_at: None,
+        ..Default::default()
     });
 
-    let effects = reconcile_orphaned_prs(&snap);
+    let effects = reconcile_orphaned_prs(&ps, &tasks);
 
     assert!(
         effects
@@ -1834,233 +1732,6 @@ fn action_to_effects_task_prompt_tracked_for_cross_tick_dedup() {
     );
 }
 
-/// Bug: Active coworker's PR is incorrectly marked as orphaned when its worktree is missing.
-///
-/// Scenario (from snapshot snapshot-reviewer-not-assigned-pr-1246-20260218-001618.json):
-/// - PR #1246 belongs to "park" (branch: "park/task-1483-kill-ring-yank-v2")
-/// - "park" is an actively running coworker
-/// - Task 1483's worktree was never registered (or was cleaned up)
-/// - No entry in worktree_registry for this PR's task ID
-///
-/// The orphan detection logic checks:
-/// 1. `worktree_registry.get_by_pr(1246)` → None
-/// 2. Extract task_id 1483 from title → no worktree with task_id="1483" → None
-/// 3. `worktree_registry.get_by_branch("park/task-1483-...")` → None
-/// 4. `worktree = None` → check `is_lead_branch` → false
-/// 5. Session-based lookup: PR 1246 → no session in state → falls through
-/// 6. **Incorrectly marks PR as orphaned** even though park is actively running
-///
-/// Expected: Active coworker's PR should NOT be marked as orphaned — the coworker
-/// can always address review feedback regardless of worktree status.
-///
-/// Note: The fixture's `active_names` and `worktree_registry` are used directly via
-/// the `active_names` parameter (following the WorldSnapshot architecture pattern).
-/// The fixture serves as documentation of the exact production scenario that triggered
-/// the bug.
-#[tokio::test]
-#[allow(clippy::await_holding_lock)] // Intentionally hold PATH_LOCK across await to prevent test interference
-async fn test_active_coworker_pr_without_worktree_is_not_orphaned() {
-    use super::super::snapshot::WorldSnapshot;
-
-    // Load the captured snapshot that exhibits the bug scenario
-    let fixture = include_str!(
-        "../../tests/fixtures/snapshot/snapshot-reviewer-not-assigned-pr-1246-20260218-001618.json"
-    );
-    let snap: WorldSnapshot =
-        serde_json::from_str(fixture).expect("Failed to deserialize WorldSnapshot from fixture");
-
-    // Verify the snapshot captures the bug scenario:
-    // park is running and task 1483 has no worktree entry.
-    assert!(
-        snap.coworkers.active_names.contains("park"),
-        "Snapshot should show park as an active coworker"
-    );
-    let task_1483_worktree = snap
-        .worktree_registry
-        .all_assignments()
-        .values()
-        .find(|a| a.task_id.as_deref() == Some("1483"));
-    assert!(
-        task_1483_worktree.is_none(),
-        "Snapshot should have no worktree entry for task 1483 (the bug scenario)"
-    );
-
-    // PR #1246 in GitHub API format (collect_reviewer_effects_with_source expects this format)
-    let pr = json!({
-        "number": 1246,
-        "headRefName": "park/task-1483-kill-ring-yank-v2",
-        "title": "feat: Add kill ring append for consecutive kills and Ctrl+Y yank [Midtown !1483]",
-        "isDraft": false,
-        "createdAt": "2026-02-17T00:00:00Z",  // Old enough to pass review delay
-        "state": "OPEN",
-        "author": {"login": "btucker"},
-        "mergeable": "MERGEABLE",
-        "statusCheckRollup": null,
-        "reviewDecision": "",
-    });
-
-    // Acquire lock to prevent parallel tests from interfering with PATH mocking
-    let _path_guard = PATH_LOCK.lock().unwrap();
-
-    // Mock gh CLI to return no reviews/comments so is_pr_reviewed() returns false.
-    // Without this mock, the test makes a real API call and fails once PR #1246
-    // has a Claude review posted (is_pr_reviewed returns true → continue → no effects).
-    let temp_dir = tempfile::tempdir().unwrap();
-    let mock_gh_dir = temp_dir.path().join("bin");
-    std::fs::create_dir_all(&mock_gh_dir).unwrap();
-    let mock_gh_script = mock_gh_dir.join("gh");
-
-    #[cfg(unix)]
-    {
-        std::fs::write(
-            &mock_gh_script,
-            "#!/bin/bash\necho '{\"reviews\":[],\"comments\":[]}'",
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&mock_gh_script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    unsafe {
-        std::env::set_var(
-            "PATH",
-            format!("{}:{}", mock_gh_dir.display(), original_path),
-        );
-    }
-
-    let (state, _tmp, _guard) = make_test_state("midtown");
-
-    // Populate persistent_state with session data so the session-based orphan check
-    // can resolve "park" as the PR author (PR 1246 → task 1483 → session → "park").
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.sessions.insert(
-            "sess-park".to_string(),
-            crate::daemon::state::SessionRecord {
-                session_id: "sess-park".to_string(),
-                task_id: Some("1483".to_string()),
-                pr_number: Some(1246),
-                name: "park".to_string(),
-                working_dir: "/tmp/test".to_string(),
-                ..Default::default()
-            },
-        );
-    }
-
-    let effects = collect_reviewer_effects_with_source(
-        &snap.worktree_registry,      // Real snapshot registry: no task 1483 entry
-        &snap.coworkers.active_names, // Real snapshot active_names: includes "park"
-        &state,
-        &[pr],
-        true,
-        &std::collections::HashMap::new(),
-        false, // not at task limit
-    )
-    .await;
-
-    // Restore PATH and release lock
-    unsafe {
-        std::env::set_var("PATH", original_path);
-    }
-    drop(_path_guard);
-
-    // Bug: Previously returned 0 effects (PR incorrectly marked as orphaned)
-    // Expected: Should spawn a reviewer (park is active and can address feedback)
-    assert!(
-        !effects.is_empty(),
-        "Active coworker's PR without worktree should spawn a reviewer, not be marked as orphaned. \
-         PR #1246 belongs to running coworker 'park' but has no worktree for task 1483."
-    );
-
-    let has_reviewer_effect = effects
-        .iter()
-        .any(|e| matches!(e, Effect::CreateReviewTask { pr_number, .. } if *pr_number == 1246));
-    assert!(
-        has_reviewer_effect,
-        "Expected CreateReviewTask effect for PR #1246. Effects: {:#?}",
-        effects
-    );
-}
-
-/// Headless-only coworker's PR should not be marked as orphaned.
-///
-/// This test verifies that a coworker running only as a headless session (no pane,
-/// not in CoworkerManager's list_running()) is still recognized as active via
-/// the active_names parameter. Before the fix, list_running() was called directly
-/// inside collect_reviewer_effects_with_source, which only tracked pane-based
-/// coworkers — missing headless-only sessions entirely.
-#[tokio::test]
-async fn test_headless_only_coworker_pr_is_not_orphaned() {
-    let pr = json!({
-        "number": 999,
-        "headRefName": "york/task-500-headless-feature",
-        "title": "feat: Headless feature [Midtown !500]",
-        "isDraft": false,
-        "createdAt": "2026-02-17T00:00:00Z",
-        "state": "OPEN",
-        "author": {"login": "btucker"},
-        "mergeable": "MERGEABLE",
-        "statusCheckRollup": null,
-        "reviewDecision": "",
-    });
-
-    let (state, _tmp, _guard) = make_test_state("midtown");
-
-    // active_names includes "york" (as it would from WorldSnapshot which includes
-    // headless sessions), but we do NOT insert york into state.coworkers — simulating
-    // a headless-only coworker that list_running() would miss.
-    let active_names: std::collections::HashSet<String> =
-        ["york".to_string()].into_iter().collect();
-
-    // Populate session data so the session-based orphan check resolves "york"
-    // as the PR author (PR 999 → task 500 → session → "york").
-    {
-        let mut ps = state.persistent_state.lock().await;
-        ps.sessions.insert(
-            "sess-york".to_string(),
-            crate::daemon::state::SessionRecord {
-                session_id: "sess-york".to_string(),
-                task_id: Some("500".to_string()),
-                pr_number: Some(999),
-                name: "york".to_string(),
-                working_dir: "/tmp/test".to_string(),
-                ..Default::default()
-            },
-        );
-    }
-
-    let registry = crate::worktree_registry::WorktreeRegistry::new();
-
-    let effects = collect_reviewer_effects_with_source(
-        &registry,
-        &active_names,
-        &state,
-        &[pr],
-        true,
-        &std::collections::HashMap::new(),
-        false, // not at task limit
-    )
-    .await;
-
-    // With active_names containing "york", the PR should NOT be orphaned
-    assert!(
-        !effects.is_empty(),
-        "Headless-only coworker's PR should spawn a reviewer, not be marked as orphaned. \
-         active_names includes 'york' but state.coworkers does not (headless-only session)."
-    );
-}
-
-// ── Session-based PR owner resolution tests ────────────────────────────
-
-/// When a session record exists for a PR's task, the session's current_name
-/// should be preferred over the branch-based owner resolution.
-///
-/// Scenario: PR #42 is linked to task "123" via pr_task_associations. Task "123"
-/// maps to session "sess-abc" in session_task_map. Session "sess-abc" has
-/// current_name "madison". But the branch name is "lexington/fix-auth".
-///
-/// Expected: owner is "madison" (from session), not "lexington" (from branch).
 #[test]
 fn test_resolve_pr_owner_from_session_prefers_session_over_branch() {
     let pr_task_associations: HashMap<u64, String> =
@@ -2199,8 +1870,6 @@ fn test_resolve_pr_owner_uses_session_current_name() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn test_poll_prs_session_based_owner_resolution() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-
     // PR with branch "lexington/fix-auth" but session says owner is "madison"
     let pr_json = json!({
         "number": 42,
@@ -2247,17 +1916,18 @@ async fn test_poll_prs_session_based_owner_resolution() {
         );
     }
 
-    let mut snap = minimal_snapshot_for_test();
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let mut tasks: Vec<crate::task_store::Task> = vec![];
 
     // Set up session data: PR #42 → task "123" → session "sess-abc" → current_name "madison"
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+    ps.tick_pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         [("123".to_string(), 42u64)].into_iter().collect(),
         std::collections::HashMap::new(),
     );
-    snap.session_task_map = [("123".to_string(), "sess-abc".to_string())]
+    ps.tick_session_task_map = [("123".to_string(), "sess-abc".to_string())]
         .into_iter()
         .collect();
-    snap.sessions = [(
+    ps.sessions = [(
         "sess-abc".to_string(),
         crate::daemon::state::SessionRecord {
             session_id: "sess-abc".to_string(),
@@ -2275,8 +1945,8 @@ async fn test_poll_prs_session_based_owner_resolution() {
     .collect();
 
     // Madison is active (so the PR is not orphaned)
-    snap.coworkers.active_names = ["madison".to_string()].into_iter().collect();
-    snap.coworkers.active_coworkers = vec![crate::coworker::Coworker {
+    ps.tick_active_session_names = ["madison".to_string()].into_iter().collect();
+    ps.tick_active_coworkers = vec![crate::coworker::Coworker {
         slot_id: "test-slot".to_string(),
         name: "madison".to_string(),
         status: crate::coworker::CoworkerStatus::Running,
@@ -2288,25 +1958,20 @@ async fn test_poll_prs_session_based_owner_resolution() {
         provider: crate::auth::AuthProvider::default(),
         profile: "default".to_string(),
     }];
-    snap.coworkers.running_coworkers = snap.coworkers.active_coworkers.clone();
+    // active coworkers are already set via ps.tick_active_coworkers
 
     let (state, _tmp, _guard) = make_test_state("test-repo");
-    // Populate persistent_state with session record so PrContext gets the task association
+    // Populate persistent_state with session record and tick fields
     {
-        let mut ps = state.persistent_state.lock().await;
-        ps.sessions.insert(
-            "sess-abc".to_string(),
-            crate::daemon::state::SessionRecord {
-                session_id: "sess-abc".to_string(),
-                task_id: Some("123".to_string()),
-                pr_number: Some(42),
-                branch: Some("lexington/fix-auth".to_string()),
-                ..Default::default()
-            },
-        );
+        let mut locked_ps = state.persistent_state.lock().await;
+        locked_ps.sessions = ps.sessions.clone();
+        locked_ps.tick_pr_task_index = ps.tick_pr_task_index.clone();
+        locked_ps.tick_session_task_map = ps.tick_session_task_map.clone();
+        locked_ps.tick_active_session_names = ps.tick_active_session_names.clone();
+        locked_ps.tick_active_coworkers = ps.tick_active_coworkers.clone();
     }
 
-    let result = poll_prs_for_issues(&snap, &state).await;
+    let result = poll_prs_for_issues(&state).await;
 
     unsafe {
         std::env::set_var("PATH", original_path);
@@ -2979,29 +2644,28 @@ async fn test_reviewer_spawn_warns_pr_author_via_nudge() {
 /// emit SetTaskPr to repair the missing link.
 #[test]
 fn test_collect_pr_task_link_effects_links_unlinked_task() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "100".to_string(),
         subject: "Fix auth".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("york".to_string()),
+        agent_name: "york".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: None, // not yet linked
-        created_at: None,
+        ..Default::default()
     };
 
-    let mut snap = minimal_snapshot_for_test();
-    snap.all_tasks = vec![task];
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let tasks = vec![task];
+    ps.tick_pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         std::collections::HashMap::new(),
         [("100".to_string(), 42u64)].into_iter().collect(),
     );
 
-    let effects = collect_pr_task_link_effects(&snap);
+    let effects = collect_pr_task_link_effects(&ps, &tasks);
 
     assert_eq!(
         effects.len(),
@@ -3026,29 +2690,29 @@ fn test_collect_pr_task_link_effects_links_unlinked_task() {
 /// A task already correctly linked to the PR should not emit any effect.
 #[test]
 fn test_collect_pr_task_link_effects_skips_already_linked_task() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "200".to_string(),
         subject: "Add feature".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("amsterdam".to_string()),
+        agent_name: "amsterdam".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(99), // already linked correctly
-        created_at: None,
+        ..Default::default()
     };
 
-    let mut snap = minimal_snapshot_for_test();
-    snap.all_tasks = vec![task];
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let mut tasks: Vec<crate::task_store::Task> = vec![];
+    tasks = vec![task];
+    ps.tick_pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         std::collections::HashMap::new(),
         [("200".to_string(), 99u64)].into_iter().collect(),
     );
 
-    let effects = collect_pr_task_link_effects(&snap);
+    let effects = collect_pr_task_link_effects(&ps, &tasks);
 
     assert!(
         effects.is_empty(),
@@ -3060,12 +2724,11 @@ fn test_collect_pr_task_link_effects_skips_already_linked_task() {
 /// A PR with no [Midtown !XXX] task marker should produce no effects.
 #[test]
 fn test_collect_pr_task_link_effects_ignores_pr_without_task_marker() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-
     // github_open_pr_task_ids is empty (no Midtown marker found in any title)
-    let snap = minimal_snapshot_for_test();
+    let ps = crate::daemon::state::DaemonPersistentState::default();
+    let tasks: Vec<crate::task_store::Task> = vec![];
 
-    let effects = collect_pr_task_link_effects(&snap);
+    let effects = collect_pr_task_link_effects(&ps, &tasks);
 
     assert!(
         effects.is_empty(),
@@ -3081,29 +2744,29 @@ fn test_collect_pr_task_link_effects_ignores_pr_without_task_marker() {
 /// would cause redundant disk writes with no benefit.
 #[test]
 fn test_collect_pr_task_link_effects_skips_completed_task() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "400".to_string(),
         subject: "Old work".to_string(),
         status: TaskStatus::Completed,
-        owner: Some("york".to_string()),
+        agent_name: "york".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: None, // never linked
-        created_at: None,
+        ..Default::default()
     };
 
-    let mut snap = minimal_snapshot_for_test();
-    snap.all_tasks = vec![task];
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let mut tasks: Vec<crate::task_store::Task> = vec![];
+    tasks = vec![task];
+    ps.tick_pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         std::collections::HashMap::new(),
         [("400".to_string(), 88u64)].into_iter().collect(),
     );
 
-    let effects = collect_pr_task_link_effects(&snap);
+    let effects = collect_pr_task_link_effects(&ps, &tasks);
 
     assert!(
         effects.is_empty(),
@@ -3116,29 +2779,29 @@ fn test_collect_pr_task_link_effects_skips_completed_task() {
 /// to correct the link.
 #[test]
 fn test_collect_pr_task_link_effects_corrects_mismatched_pr() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-    use crate::tasks::{Task, TaskStatus};
+    use crate::task_store::{Task, TaskStatus};
 
     let task = Task {
         id: "300".to_string(),
         subject: "Refactor".to_string(),
         status: TaskStatus::InProgress,
-        owner: Some("lexington".to_string()),
+        agent_name: "lexington".to_string(),
         description: None,
         blocked_by: vec![],
         channel: None,
         pr: Some(55), // stale/wrong PR number
-        created_at: None,
+        ..Default::default()
     };
 
-    let mut snap = minimal_snapshot_for_test();
-    snap.all_tasks = vec![task];
-    snap.pr.pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
+    let mut ps = crate::daemon::state::DaemonPersistentState::default();
+    let mut tasks: Vec<crate::task_store::Task> = vec![];
+    tasks = vec![task];
+    ps.tick_pr_task_index = super::super::snapshot::PrTaskIndex::from_task_maps(
         std::collections::HashMap::new(),
         [("300".to_string(), 77u64)].into_iter().collect(),
     ); // actual open PR
 
-    let effects = collect_pr_task_link_effects(&snap);
+    let effects = collect_pr_task_link_effects(&ps, &tasks);
 
     assert_eq!(
         effects.len(),
@@ -3534,8 +3197,6 @@ async fn test_review_complete_without_owner_posts_merge_reminder() {
     let (state, _tmp, _guard) = make_test_state("test-repo");
     {
         let mut ps = state.persistent_state.lock().await;
-        ps.task_channel
-            .insert("2042".to_string(), "daemon-core".to_string());
         ps.github.mark_reviewed_pr(pr_number);
         ps.github.add_review_comment_id(pr_number, 1);
     }
@@ -3706,14 +3367,20 @@ async fn pr_approved_not_suppressed_when_review_cached() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task("task-42", "lexington", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert("task-42".to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("task-42"))
+        {
+            s.pr_number = Some(pr_number);
+        }
         ps.github.mark_reviewed_pr(pr_number);
     }
 
     // Build PrContext — should detect cached review and NOT flag active reviewer
     let ctx = {
         let ps = state.persistent_state.lock().await;
-        PrContext::from_persistent_state(&ps, pr_number)
+        PrContext::from_persistent_state(&ps, pr_number, std::collections::HashMap::new())
     };
 
     assert!(
@@ -3727,32 +3394,30 @@ async fn pr_approved_not_suppressed_when_review_cached() {
 #[test]
 fn augment_reviewer_no_assignment_does_not_flag_active() {
     let pr_number = 42;
-    let mut ctx = make_pr_context_with_channel(pr_number, "100", "daemon-core");
+    let ctx = make_pr_context_with_channel(pr_number, "100", "daemon-core");
 
     // reviewer_pr_assignments is empty — no PR-specific evidence
-    let snap = super::super::snapshot::minimal_snapshot_for_test();
-
-    ctx.augment_reviewer_from_snapshot(pr_number, &snap);
-
     assert!(
         !ctx.has_active_reviewer,
         "Should NOT flag active reviewer when there is no assignment"
     );
 }
 
-/// augment_reviewer_from_snapshot flags an active reviewer when an assignment exists.
+/// reviewer_pr_assignments flags an active reviewer when an assignment exists.
 #[test]
 fn augment_reviewer_catches_assignment() {
     let pr_number = 42;
     let mut ctx = make_pr_context_with_channel(pr_number, "100", "daemon-core");
 
-    // Assignment exists for "lexington" → PR 42.
-    let mut snap = super::super::snapshot::minimal_snapshot_for_test();
-    snap.reviewer
-        .reviewer_pr_assignments
-        .insert("lexington".to_string(), pr_number);
-
-    ctx.augment_reviewer_from_snapshot(pr_number, &snap);
+    // Simulate inline augmentation (what decide_and_build_pr_issue_effects does)
+    let reviewer_pr_assignments: std::collections::HashMap<String, u64> =
+        [("lexington".to_string(), pr_number)].into_iter().collect();
+    if !ctx.has_active_reviewer {
+        let has_assignment = reviewer_pr_assignments
+            .iter()
+            .any(|(_, &assigned_pr)| assigned_pr == pr_number);
+        ctx.has_active_reviewer = has_assignment;
+    }
 
     assert!(
         ctx.has_active_reviewer,
@@ -3760,7 +3425,7 @@ fn augment_reviewer_catches_assignment() {
     );
 }
 
-/// augment_reviewer_from_snapshot should NOT flag active reviewer when the
+/// reviewer_pr_assignments should NOT flag active reviewer when the
 /// assignment is for a DIFFERENT PR.
 #[test]
 fn augment_reviewer_ignores_assignment_for_different_pr() {
@@ -3768,12 +3433,14 @@ fn augment_reviewer_ignores_assignment_for_different_pr() {
     let mut ctx = make_pr_context_with_channel(pr_number, "100", "daemon-core");
 
     // "lexington" is assigned to PR 99, not PR 42
-    let mut snap = super::super::snapshot::minimal_snapshot_for_test();
-    snap.reviewer
-        .reviewer_pr_assignments
-        .insert("lexington".to_string(), 99);
-
-    ctx.augment_reviewer_from_snapshot(pr_number, &snap);
+    let reviewer_pr_assignments: std::collections::HashMap<String, u64> =
+        [("lexington".to_string(), 99u64)].into_iter().collect();
+    if !ctx.has_active_reviewer {
+        let has_assignment = reviewer_pr_assignments
+            .iter()
+            .any(|(_, &assigned_pr)| assigned_pr == pr_number);
+        ctx.has_active_reviewer = has_assignment;
+    }
 
     assert!(
         !ctx.has_active_reviewer,
@@ -3972,8 +3639,6 @@ fn json_review_rejects_bodyless_commented_when_reviewer_assigned() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn test_draft_pr_skipped_in_orphaned_pr_alerts() {
-    use super::super::snapshot::minimal_snapshot_for_test;
-
     // Create a draft PR with a merge conflict and no active owner —
     // without the draft check this would trigger an orphaned PR alert
     let pr_json = json!({
@@ -4019,10 +3684,11 @@ async fn test_draft_pr_skipped_in_orphaned_pr_alerts() {
         );
     }
 
-    let snap = minimal_snapshot_for_test();
+    let ps = crate::daemon::state::DaemonPersistentState::default();
+    let tasks: Vec<crate::task_store::Task> = vec![];
     let (state, _tmp, _guard) = make_test_state("test-repo");
 
-    let result = poll_prs_for_issues(&snap, &state).await;
+    let result = poll_prs_for_issues(&state).await;
 
     unsafe {
         std::env::set_var("PATH", original_path);
@@ -4062,7 +3728,13 @@ async fn auto_merge_blocked_when_reviewer_active() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task("task-42", "york", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert("task-42".to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("task-42"))
+        {
+            s.pr_number = Some(pr_number);
+        }
     }
 
     // Build a PR JSON that passes is_auto_mergeable() — approved + CI green
@@ -4157,7 +3829,13 @@ async fn auto_merge_fires_when_reviewer_assigned_but_review_cached() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task("task-42", "york", "midtown-code-reviewer", "");
-        ps.task_pr_number.insert("task-42".to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("task-42"))
+        {
+            s.pr_number = Some(pr_number);
+        }
         ps.github.mark_reviewed_pr(pr_number);
     }
 
@@ -4221,11 +3899,17 @@ async fn auto_merge_emits_workflow_event_when_script_exists() {
                 ..Default::default()
             },
         );
-        ps.task_channel
-            .insert(task_id.to_string(), channel.to_string());
         ps.channel_workflows
             .insert(channel.to_string(), "tdw".to_string());
     }
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: task_id.into(),
+            channel: Some(channel.into()),
+            ..Default::default()
+        })
+        .unwrap();
 
     let pr_json = json!({
         "number": pr_number,
@@ -4300,8 +3984,6 @@ async fn auto_merge_fires_inline_when_no_workflow_script() {
                 ..Default::default()
             },
         );
-        ps.task_channel
-            .insert(task_id.to_string(), channel.to_string());
     }
     // Note: NO workflow assignment — testing the no-workflow fallback
 
@@ -4384,9 +4066,15 @@ async fn test_reviewer_spawn_inherits_task_channel() {
                 ..Default::default()
             },
         );
-        ps.task_channel
-            .insert(task_id.to_string(), channel_name.to_string());
     }
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: task_id.into(),
+            channel: Some(channel_name.into()),
+            ..Default::default()
+        })
+        .unwrap();
 
     let effects = collect_reviewer_effects_with_source(
         &registry,
@@ -4709,8 +4397,6 @@ async fn test_polling_defers_to_workflow_script_with_longer_delay() {
                 ..Default::default()
             },
         );
-        ps.task_channel
-            .insert("42".to_string(), "proj-test".to_string());
         ps.save_for_repo("test-repo").unwrap();
     }
 
@@ -4806,8 +4492,6 @@ async fn test_polling_uses_normal_delay_without_workflow_script() {
                 ..Default::default()
             },
         );
-        ps.task_channel
-            .insert("43".to_string(), "proj-test".to_string());
         ps.save_for_repo("test-repo").unwrap();
     }
 

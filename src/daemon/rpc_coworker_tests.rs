@@ -555,24 +555,16 @@ async fn test_report_idle_still_breaks_non_lead_coworker() {
 async fn test_report_state_pr_number_writes_task_pr() {
     let (state, _tmp, _guard) = make_test_state();
 
-    // Create the task file on disk so update_task_fields_for_repo can write to it.
-    let home = dirs::home_dir().expect("home dir");
-    let task_list_id = crate::paths::task_list_id_for_repo(state.paths.dir_key());
-    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
-    std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
+    // Create the task in TaskStore
     let task_id = "9901"; // unique ID unlikely to conflict with real tasks
-    let task_file = tasks_dir.join(format!("{}.json", task_id));
-    std::fs::write(
-        &task_file,
-        serde_json::to_string(&serde_json::json!({
-            "id": task_id,
-            "subject": "Test PR wiring",
-            "status": "in_progress",
-            "owner": "park"
-        }))
-        .unwrap(),
-    )
-    .expect("write task file");
+    let task = crate::task_store::Task {
+        id: task_id.to_string(),
+        subject: "Test PR wiring".to_string(),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: "park".to_string(),
+        ..Default::default()
+    };
+    state.task_store.save(&task).expect("save task to store");
 
     // Call with task_id and pr_number
     let response = handle_coworker_report_state(
@@ -588,17 +580,13 @@ async fn test_report_state_pr_number_writes_task_pr() {
 
     assert!(!response.is_error(), "report state should succeed");
 
-    // Verify task.pr was written to the file
-    let content = std::fs::read_to_string(&task_file).expect("read task file");
-    let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse task json");
+    // Verify task.pr was written to TaskStore
+    let updated = state.task_store.load(task_id).expect("load task");
     assert_eq!(
-        parsed["pr"],
-        serde_json::json!(456u64),
+        updated.pr,
+        Some(456u64),
         "task.pr should be set to the reported PR number"
     );
-
-    // Cleanup
-    let _ = std::fs::remove_file(&task_file);
 }
 
 #[tokio::test]
@@ -657,24 +645,16 @@ async fn test_completed_without_pr_marks_task_done() {
     // open a PR (which caused a respawn loop).
     let (state, _tmp, _guard) = make_test_state();
 
-    // Create a task file on disk in in_progress status
-    let home = dirs::home_dir().expect("home dir");
-    let task_list_id = crate::paths::task_list_id_for_repo(state.paths.dir_key());
-    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
-    std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
+    // Create a task in TaskStore in in_progress status
     let task_id = "9950";
-    let task_file = tasks_dir.join(format!("{}.json", task_id));
-    std::fs::write(
-        &task_file,
-        serde_json::to_string(&serde_json::json!({
-            "id": task_id,
-            "subject": "Merge PR and tag release",
-            "status": "in_progress",
-            "owner": "riverside"
-        }))
-        .unwrap(),
-    )
-    .expect("write task file");
+    let task = crate::task_store::Task {
+        id: task_id.to_string(),
+        subject: "Merge PR and tag release".to_string(),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: "riverside".to_string(),
+        ..Default::default()
+    };
+    state.task_store.save(&task).expect("save task to store");
 
     // Set up session-based task assignment so the Completed handler can resolve it
     state.set_test_task_assignment("riverside", task_id).await;
@@ -693,12 +673,11 @@ async fn test_completed_without_pr_marks_task_done() {
 
     assert!(!response.is_error(), "completed report should succeed");
 
-    // Verify task is marked as completed on disk
-    let content = std::fs::read_to_string(&task_file).expect("read task file");
-    let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse task json");
+    // Verify task is marked as completed in TaskStore
+    let updated = state.task_store.load(task_id).expect("load task");
     assert_eq!(
-        parsed["status"].as_str().unwrap(),
-        "completed",
+        updated.status,
+        crate::task_store::TaskStatus::Completed,
         "task should be marked completed on disk (not left in_progress)"
     );
 
@@ -707,9 +686,6 @@ async fn test_completed_without_pr_marks_task_done() {
         state.get_task_id_for_coworker("riverside").await.is_none(),
         "coworker assignment should be cleared after completion"
     );
-
-    // Cleanup
-    let _ = std::fs::remove_file(&task_file);
 }
 
 #[tokio::test]
@@ -721,25 +697,17 @@ async fn test_completed_with_unverifiable_disk_pr_completes_directly() {
     // PRs) from blocking task completion.
     let (state, _tmp, _guard) = make_test_state();
 
-    // Create a task file on disk WITH a pr field set
-    let home = dirs::home_dir().expect("home dir");
-    let task_list_id = crate::paths::task_list_id_for_repo(state.paths.dir_key());
-    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
-    std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
+    // Create a task in TaskStore WITH a pr field set
     let task_id = "9952";
-    let task_file = tasks_dir.join(format!("{}.json", task_id));
-    std::fs::write(
-        &task_file,
-        serde_json::to_string(&serde_json::json!({
-            "id": task_id,
-            "subject": "Add new endpoint",
-            "status": "in_progress",
-            "owner": "riverside",
-            "pr": 99
-        }))
-        .unwrap(),
-    )
-    .expect("write task file");
+    let task = crate::task_store::Task {
+        id: task_id.to_string(),
+        subject: "Add new endpoint".to_string(),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: "riverside".to_string(),
+        pr: Some(99),
+        ..Default::default()
+    };
+    state.task_store.save(&task).expect("save task to store");
 
     // Set up in-memory task assignment
     state.set_test_task_assignment("riverside", task_id).await;
@@ -764,16 +732,12 @@ async fn test_completed_with_unverifiable_disk_pr_completes_directly() {
 
     // Task should be completed directly — the disk pr field alone is not
     // sufficient without GitHub API verification that the PR is actually open.
-    let content = std::fs::read_to_string(&task_file).expect("read task file");
-    let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse task json");
+    let updated = state.task_store.load(task_id).expect("load task");
     assert_eq!(
-        parsed["status"].as_str().unwrap(),
-        "completed",
+        updated.status,
+        crate::task_store::TaskStatus::Completed,
         "task with unverifiable disk PR should be completed directly"
     );
-
-    // Cleanup
-    let _ = std::fs::remove_file(&task_file);
 }
 
 #[tokio::test]
@@ -928,7 +892,13 @@ async fn test_reviewer_idle_not_nudged_when_review_cached() {
             "midtown-code-reviewer",
             "sess-rev-42",
         );
-        ps.task_pr_number.insert("review-42".to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("review-42"))
+        {
+            s.pr_number = Some(pr_number);
+        }
         // Mark the review as completed (simulates webhook having arrived)
         ps.github.mark_reviewed_pr(pr_number);
     }
@@ -1025,7 +995,13 @@ async fn test_reviewer_idle_nudged_when_review_not_posted() {
     {
         let mut ps = state.persistent_state.lock().await;
         ps.insert_session_for_task("task-43", reviewer_name, "midtown-code-reviewer", "");
-        ps.task_pr_number.insert("task-43".to_string(), pr_number);
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some("task-43"))
+        {
+            s.pr_number = Some(pr_number);
+        }
         // Deliberately NOT calling mark_reviewed_pr — review hasn't been posted
     }
 
@@ -1543,36 +1519,26 @@ async fn test_thread_binding_populates_fork_bound_threads_and_session_record() {
 async fn test_spawn_rejects_completed_task() {
     let (state, _tmp, _guard) = make_test_state();
 
-    // Create a completed task file on disk
-    let home = dirs::home_dir().expect("home dir");
-    let task_list_id = crate::paths::task_list_id_for_repo(state.paths.dir_key());
-    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
-    std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
+    // Create a completed task via TaskStore
     let task_id = "9960";
-    let task_file = tasks_dir.join(format!("{}.json", task_id));
-    std::fs::write(
-        &task_file,
-        serde_json::to_string(&serde_json::json!({
-            "id": task_id,
-            "subject": "Already done",
-            "status": "completed",
-        }))
-        .unwrap(),
-    )
-    .expect("write task file");
+    let task = crate::task_store::Task {
+        id: task_id.to_string(),
+        subject: "Already done".to_string(),
+        status: crate::task_store::TaskStatus::Completed,
+        ..Default::default()
+    };
+    state.task_store.save(&task).expect("save task");
 
     // Replicate the validation from handle_coworker_spawn
-    let task = crate::tasks::read_task_for_repo(task_id, state.paths.dir_key());
-    assert!(task.is_some(), "task should be readable");
-    let t = task.unwrap();
+    let loaded = state.task_store.load(task_id).ok();
+    assert!(loaded.is_some(), "task should be readable");
+    let t = loaded.unwrap();
     assert_eq!(
         t.status,
-        crate::tasks::TaskStatus::Completed,
+        crate::task_store::TaskStatus::Completed,
         "task should be completed"
     );
     // The handler would return an error here
-
-    let _ = std::fs::remove_file(&task_file);
 }
 
 /// Tests that an in-progress task is rejected by the validation logic.
@@ -1580,36 +1546,26 @@ async fn test_spawn_rejects_completed_task() {
 async fn test_spawn_rejects_in_progress_task() {
     let (state, _tmp, _guard) = make_test_state();
 
-    let home = dirs::home_dir().expect("home dir");
-    let task_list_id = crate::paths::task_list_id_for_repo(state.paths.dir_key());
-    let tasks_dir = home.join(".claude").join("tasks").join(&task_list_id);
-    std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
     let task_id = "9961";
-    let task_file = tasks_dir.join(format!("{}.json", task_id));
-    std::fs::write(
-        &task_file,
-        serde_json::to_string(&serde_json::json!({
-            "id": task_id,
-            "subject": "Work in progress",
-            "status": "in_progress",
-            "owner": "broadway"
-        }))
-        .unwrap(),
-    )
-    .expect("write task file");
+    let task = crate::task_store::Task {
+        id: task_id.to_string(),
+        subject: "Work in progress".to_string(),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: "broadway".to_string(),
+        ..Default::default()
+    };
+    state.task_store.save(&task).expect("save task");
 
-    let task = crate::tasks::read_task_for_repo(task_id, state.paths.dir_key());
-    assert!(task.is_some(), "task should be readable");
-    let t = task.unwrap();
+    let loaded = state.task_store.load(task_id).ok();
+    assert!(loaded.is_some(), "task should be readable");
+    let t = loaded.unwrap();
     assert_eq!(
         t.status,
-        crate::tasks::TaskStatus::InProgress,
+        crate::task_store::TaskStatus::InProgress,
         "task should be in_progress"
     );
-    assert_eq!(t.owner.as_deref(), Some("broadway"));
+    assert_eq!(t.agent_name.as_str(), "broadway");
     // The handler would return an error here
-
-    let _ = std::fs::remove_file(&task_file);
 }
 
 /// Tests that a nonexistent task returns None from read_task_for_repo.
@@ -1617,7 +1573,7 @@ async fn test_spawn_rejects_in_progress_task() {
 async fn test_spawn_rejects_nonexistent_task() {
     let (state, _tmp, _guard) = make_test_state();
 
-    let task = crate::tasks::read_task_for_repo("99999", state.paths.dir_key());
+    let task = state.task_store.load("99999").ok();
     assert!(task.is_none(), "nonexistent task should return None");
 }
 

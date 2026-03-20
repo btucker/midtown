@@ -186,7 +186,7 @@ enum Commands {
     State {
         /// Workflow phase
         #[arg(value_enum)]
-        phase: midtown::coworker_state::WorkflowPhase,
+        phase: midtown::workflow_phase::WorkflowPhase,
 
         /// Task number being worked on
         #[arg(long)]

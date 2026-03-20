@@ -1,6 +1,5 @@
 use super::*;
 use std::collections::HashSet;
-use std::time::SystemTime;
 
 fn make_test_state() -> (
     DaemonState,
@@ -62,74 +61,49 @@ fn make_test_state() -> (
 
 /// Regression test: dispatch must not allocate a name that is in active_names
 /// even if it's not registered in CoworkerManager.
-///
-/// Scenario: "park" finished its task and was cleaned up from CoworkerManager,
-/// but still has an active session (appears in snap.coworkers.active_names).
-/// A new task dispatch should NOT allocate "park" because the session is still running.
-///
-/// Before fix: next_available_name_excluding only checked CoworkerManager's internal
-/// HashMap, so "park" appeared free and got allocated, causing a name collision.
 #[test]
 fn test_dispatch_excludes_active_session_names() {
-    let snap = snapshot::WorldSnapshot {
-        pending_tasks_without_owners: vec![crate::tasks::Task {
-            id: "300".to_string(),
-            subject: "New feature".to_string(),
-            status: crate::tasks::TaskStatus::Pending,
-            owner: None,
-            blocked_by: vec![],
-            description: None,
-            channel: None,
-            pr: None,
-            created_at: Some(SystemTime::now()),
-        }],
-        coworkers: snapshot::SnapshotCoworkerState {
-            // "park" has an active session but is NOT in CoworkerManager
-            active_names: HashSet::from(["park".to_string()]),
-            ..Default::default()
-        },
-        ..snapshot::minimal_snapshot_for_test()
+    #[allow(clippy::field_reassign_with_default)]
+    let ps = {
+        let mut ps = DaemonPersistentState::default();
+        ps.tick_dir_key = "test-repo".to_string();
+        ps.tick_project_name = "test-repo".to_string();
+        ps.tick_default_channel = "test-repo".to_string();
+        ps.tick_max_in_progress_tasks = 10;
+        ps.tick_now = chrono::Utc::now();
+        // "park" has an active session but is NOT in CoworkerManager
+        ps.tick_active_session_names = HashSet::from(["park".to_string()]);
+        ps
     };
+
+    let tasks = vec![crate::task_store::Task {
+        id: "300".to_string(),
+        subject: "New feature".to_string(),
+        status: crate::task_store::TaskStatus::Pending,
+        agent_name: String::new(),
+        blocked_by: vec![],
+        description: None,
+        channel: None,
+        pr: None,
+        ..Default::default()
+    }];
 
     let (state, _tmp, _guard) = make_test_state();
 
-    // Register some workers in CoworkerManager.
-    for (i, name) in ["worker-1", "worker-2", "worker-3"].iter().enumerate() {
-        state
-            .coworkers
-            .register(
-                &format!("slot-{i}"),
-                name,
-                "/tmp".to_string(),
-                None,
-                "claude-sonnet".to_string(),
-                crate::auth::AuthProvider::Claude,
-                "default".to_string(),
-            )
-            .unwrap();
-    }
+    let effects = spawn_for_pending_tasks(&ps, &tasks, &state);
 
-    let effects = spawn_for_pending_tasks(&snap, &state);
-
-    // The task should still be dispatched (overflow names are available).
-    // Check both SpawnForTask and NudgeSessionWithCallbacks — before the fix,
-    // "park" would be allocated and since it's in active_names, dispatch would
-    // try to nudge it (wrong session).
+    // The task should still be dispatched (generated names are available).
     let has_spawn = effects
         .iter()
         .any(|e| matches!(e, effects::Effect::SpawnForTask { .. }));
 
-    // Check no nudge was emitted (which would mean "park" was incorrectly allocated
-    // as a running coworker and nudged)
     let has_nudge = effects
         .iter()
         .any(|e| matches!(e, effects::Effect::NudgeSessionWithCallbacks { .. }));
 
     assert!(
         has_spawn || !has_nudge,
-        "Expected task to be dispatched via SpawnForTask (overflow names available), \
-         not via a nudge to a wrong session. Before fix: 'park' was allocated from \
-         CoworkerManager (appeared free) then nudged because it was in active_names."
+        "Expected task to be dispatched via SpawnForTask, not via a nudge to a wrong session."
     );
 
     // Verify the preferred_name on the SpawnForTask is not "park"
@@ -140,14 +114,12 @@ fn test_dispatch_excludes_active_session_names() {
         assert_ne!(
             preferred_name.as_deref().unwrap_or(""),
             "park",
-            "Dispatch should NOT allocate 'park' — it has an active session (in active_names) \
-             even though it's not in CoworkerManager."
+            "Dispatch should NOT allocate 'park' — it has an active session."
         );
     }
 
     assert!(
         !has_nudge,
-        "No nudge should be emitted — the only name that could trigger a nudge is 'park' \
-         (in active_names), which should be excluded from allocation by the fix."
+        "No nudge should be emitted — 'park' should be excluded from allocation."
     );
 }

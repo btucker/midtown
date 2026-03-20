@@ -882,7 +882,7 @@ impl LaunchConfig {
         }
     }
 
-    /// Apply task model from WorldSnapshot to this LaunchConfig.
+    /// Apply task model from a task model map to this LaunchConfig.
     ///
     /// Extracts provider and model from "provider/model" format (e.g., "claude/opus")
     /// and sets both `config.auth_provider` and `config.model`.
