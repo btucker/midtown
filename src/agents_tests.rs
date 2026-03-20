@@ -205,6 +205,22 @@ fn test_reviewer_system_prompt_merges_all_sources() {
 }
 
 #[test]
+fn test_reviewer_system_prompt_contains_type_review_frontmatter() {
+    let prompt = reviewer_system_prompt(
+        "lexington",
+        "midtown",
+        "midtown",
+        AuthProvider::Claude,
+        Some(42),
+    );
+
+    assert!(
+        prompt.contains("<!-- midtown session:$MIDTOWN_SESSION_ID type:review -->"),
+        "Reviewer system prompt should contain type:review in frontmatter example"
+    );
+}
+
+#[test]
 fn test_reviewer_prompts_use_daemon_review_post() {
     let system_prompt =
         reviewer_system_prompt("park", "midtown", "midtown", AuthProvider::Claude, Some(42));
