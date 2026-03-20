@@ -604,7 +604,7 @@ fn test_issue_comment_review_sets_review_comment_id() {
             "comment": {
                 "id": 98765,
                 "user": {"login": "btucker"},
-                "body": "<!-- midtown: columbus -->\n\n## Code Review by columbus\n\nFound 2 issues:\n1. Bug here\n2. Bug there"
+                "body": "<!-- midtown session:columbus type:review -->\n\n## Code Review by columbus\n\nFound 2 issues:\n1. Bug here\n2. Bug there"
             },
             "repository": {"full_name": "org/repo"}
         }"#;
@@ -747,7 +747,7 @@ fn test_handle_issue_comment_edited_no_changes_field() {
         "comment": {
             "id": 99999,
             "user": {"login": "btucker"},
-            "body": "<!-- midtown: park -->\n\n## Code Review by park\n\nLooks good!"
+            "body": "<!-- midtown session:park type:review -->\n\n## Code Review by park\n\nLooks good!"
         },
         "repository": {"full_name": "org/repo"}
     });
@@ -1053,9 +1053,13 @@ fn test_pull_request_opened_no_review_state_change() {
 
 #[test]
 fn test_is_review_comment_detects_midtown_marker_with_review_header() {
-    // Frontmatter alone is not sufficient; review signature/header is required.
-    assert!(is_review_comment(
+    // Only structured type:review frontmatter is accepted — text patterns are not enough.
+    assert!(!is_review_comment(
         "<!-- midtown: park -->\n\n## Code Review"
+    ));
+    // With type:review frontmatter it should match.
+    assert!(is_review_comment(
+        "<!-- midtown session:park type:review -->\n\n## Code Review"
     ));
 }
 
@@ -1068,21 +1072,36 @@ fn test_is_review_comment_rejects_midtown_marker_only() {
 
 #[test]
 fn test_is_review_comment_detects_emoji_signature() {
-    assert!(is_review_comment(
+    // Text-based emoji signatures no longer match — type:review frontmatter is required.
+    assert!(!is_review_comment(
         "## Summary\n\nLGTM!\n\n🤖 Reviewed by amsterdam"
+    ));
+    // With type:review frontmatter it should match.
+    assert!(is_review_comment(
+        "<!-- midtown session:amsterdam type:review -->\n\n## Summary\n\nLGTM!\n\n🤖 Reviewed by amsterdam"
     ));
 }
 
 #[test]
 fn test_is_review_comment_detects_code_review_header() {
-    assert!(is_review_comment(
+    // Text-based headers no longer match — type:review frontmatter is required.
+    assert!(!is_review_comment(
         "## Code Review by columbus\n\nLooks good!"
+    ));
+    // With type:review frontmatter it should match.
+    assert!(is_review_comment(
+        "<!-- midtown session:columbus type:review -->\n\n## Code Review by columbus\n\nLooks good!"
     ));
 }
 
 #[test]
 fn test_is_review_comment_detects_exact_code_review_header() {
-    assert!(is_review_comment("### Code review\n\nNo issues found."));
+    // Text-based headers no longer match — type:review frontmatter is required.
+    assert!(!is_review_comment("### Code review\n\nNo issues found."));
+    // With type:review frontmatter it should match.
+    assert!(is_review_comment(
+        "<!-- midtown session:reviewer type:review -->\n\n### Code review\n\nNo issues found."
+    ));
 }
 
 #[test]
@@ -1348,7 +1367,7 @@ fn test_handle_review_comment_edited_no_changes_field() {
         "comment": {
             "id": 303,
             "user": {"login": "btucker"},
-            "body": "<!-- midtown: park -->\n\n## Code Review by park\n\nLooks good!"
+            "body": "<!-- midtown session:park type:review -->\n\n## Code Review by park\n\nLooks good!"
         },
         "repository": {"full_name": "org/repo"}
     });
@@ -1373,7 +1392,7 @@ fn test_handle_review_comment_created_with_review_signature() {
         "comment": {
             "id": 400,
             "user": {"login": "btucker"},
-            "body": "<!-- midtown: park -->\n\n## Code Review by park\n\nLGTM - ship it!"
+            "body": "<!-- midtown session:park type:review -->\n\n## Code Review by park\n\nLGTM - ship it!"
         },
         "repository": {"full_name": "org/repo"}
     });
