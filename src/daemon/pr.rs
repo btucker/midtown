@@ -3019,29 +3019,21 @@ pub(super) fn json_has_completed_review(
                 .and_then(|s| s.as_str())
                 .map(|s| s.to_ascii_uppercase());
 
-            let has_review_state = state_upper.as_deref().is_some_and(|s| {
-                matches!(
-                    s,
-                    "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED"
-                )
-            });
+            // Only strong review states count as completed reviews.
+            // COMMENTED and DISMISSED are too weak — Codex and other tools
+            // submit COMMENTED reviews automatically, causing false positives
+            // that prevent midtown reviewer spawning.
+            let is_strong_state = state_upper
+                .as_deref()
+                .is_some_and(|s| matches!(s, "APPROVED" | "CHANGES_REQUESTED"));
 
             let has_review_body = review
                 .get("body")
                 .and_then(|b| b.as_str())
                 .is_some_and(text_contains_review_signature);
 
-            if has_review_state || has_review_body {
+            if is_strong_state || has_review_body {
                 let body = review.get("body").and_then(|b| b.as_str()).unwrap_or("");
-
-                // For formal reviews with strong states (APPROVED / CHANGES_REQUESTED),
-                // accept even without body attribution. These are intentional review
-                // actions unlikely from bots, and the assigned reviewer may submit
-                // them with an empty body. Weak states (COMMENTED / DISMISSED) still
-                // require author verification to avoid bot false positives.
-                let is_strong_state = state_upper
-                    .as_deref()
-                    .is_some_and(|s| matches!(s, "APPROVED" | "CHANGES_REQUESTED"));
 
                 if review_author_matches(body, assigned_reviewer, assigned_session_id)
                     || (is_strong_state && assigned_reviewer.is_some())
