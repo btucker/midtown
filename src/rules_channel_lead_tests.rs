@@ -55,6 +55,7 @@ fn channel_lead_owned_task_not_orphan_recovered() {
         recently_stopped: &empty,
         attached_coworkers: &empty_map,
         channel_lead_names: &leads,
+        spawn_failure_cooldown_names: &empty,
     };
     let result = decide_orphan_recovery(&ctx);
     assert!(

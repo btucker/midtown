@@ -478,23 +478,13 @@ fn check_and_recover_orphans_impl(
         recently_stopped: &recently_stopped,
         attached_coworkers: &ps.tick_attached_coworkers,
         channel_lead_names: &channel_lead_names,
+        spawn_failure_cooldown_names: &ps.tick_spawn_failure_cooldown_names,
     };
     let recovery = crate::rules::decide_orphan_recovery(&orphan_ctx);
 
     let Some(recovery) = recovery else {
         return vec![];
     };
-
-    if ps
-        .tick_spawn_failure_cooldown_names
-        .contains(&recovery.owner.to_lowercase())
-    {
-        debug!(
-            "Spawn failure cooldown active for {} — skipping orphan recovery for task !{}",
-            recovery.owner, recovery.task_id
-        );
-        return vec![];
-    }
 
     info!(
         "Detected orphaned task !{} owned by {} - attempting recovery",
