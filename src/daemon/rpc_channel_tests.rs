@@ -3313,3 +3313,88 @@ async fn test_channel_read_message_with_context_at_edges() {
     assert!(messages[1]["message"].as_str().unwrap().contains("Msg 2"));
     assert!(messages[2]["message"].as_str().unwrap().contains("Msg 3"));
 }
+
+#[tokio::test]
+async fn test_channel_read_includes_reply_count_for_top_level_messages() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-reply-count");
+
+    // Post a top-level message
+    let parent_id = post_and_get_id(&state, "alice", "Thread starter", None, None).await;
+    // Post another top-level message (no replies)
+    let _no_replies_id = post_and_get_id(&state, "bob", "No replies here", None, None).await;
+
+    // Post 3 thread replies to alice's message
+    for i in 1..=3 {
+        let _reply_id = post_and_get_id(
+            &state,
+            "carol",
+            &format!("Reply {}", i),
+            None,
+            Some(&parent_id),
+        )
+        .await;
+    }
+
+    // Read all channel messages (not in a thread)
+    let response =
+        handle_channel_read(999.into(), true, None, None, None, None, None, None, &state).await;
+
+    assert!(response.error.is_none(), "channel.read should succeed");
+    let result = response.result.unwrap();
+    let messages = result["messages"].as_array().unwrap();
+
+    // Find the parent message and check reply_count
+    let parent_msg = messages
+        .iter()
+        .find(|m| m["id"].as_str() == Some(&parent_id))
+        .expect("Parent message should be in results");
+    assert_eq!(
+        parent_msg["reply_count"].as_u64(),
+        Some(3),
+        "Parent message should have reply_count=3"
+    );
+
+    // The no-replies message should not have reply_count
+    let no_replies_msg = messages
+        .iter()
+        .find(|m| m["message"].as_str() == Some("No replies here"))
+        .expect("No-replies message should be in results");
+    assert!(
+        no_replies_msg.get("reply_count").is_none() || no_replies_msg["reply_count"].is_null(),
+        "Message without replies should not have reply_count"
+    );
+}
+
+#[tokio::test]
+async fn test_channel_read_thread_omits_reply_count() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-reply-count-thread");
+
+    let parent_id = post_and_get_id(&state, "alice", "Thread parent", None, None).await;
+    let _reply_id = post_and_get_id(&state, "bob", "A reply", None, Some(&parent_id)).await;
+
+    // Read the thread — reply_count should not be present since we're reading a thread
+    let response = handle_channel_read(
+        999.into(),
+        true,
+        None,
+        None,
+        None,
+        Some(&parent_id),
+        None,
+        None,
+        &state,
+    )
+    .await;
+
+    assert!(response.error.is_none(), "channel.read should succeed");
+    let result = response.result.unwrap();
+    let messages = result["messages"].as_array().unwrap();
+
+    // Thread reads should not include reply_count
+    for msg in messages {
+        assert!(
+            msg.get("reply_count").is_none() || msg["reply_count"].is_null(),
+            "Thread read should not include reply_count"
+        );
+    }
+}

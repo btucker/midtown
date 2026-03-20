@@ -211,7 +211,13 @@ impl Response {
     }
 
     pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e))
+        // For Json passthrough, serialize just the inner value to avoid
+        // wrapping it in {"value": ...} due to the untagged enum.
+        match self {
+            Response::Json { value } => serde_json::to_string_pretty(value),
+            other => serde_json::to_string_pretty(other),
+        }
+        .unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e))
     }
 
     pub fn to_pretty(&self) -> String {

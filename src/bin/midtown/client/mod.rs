@@ -300,6 +300,7 @@ impl DaemonClient {
     #[allow(clippy::too_many_arguments)]
     pub fn channel_read(
         &self,
+        text: bool,
         all: bool,
         last: Option<&usize>,
         since: Option<&str>,
@@ -331,7 +332,12 @@ impl DaemonClient {
         if let Some(n) = context {
             params["context"] = serde_json::json!(n);
         }
-        self.send("channel.read", Some(params))
+        if text {
+            self.send("channel.read", Some(params))
+        } else {
+            let value = self.send_raw("channel.read", Some(params))?;
+            Ok(Response::Json { value })
+        }
     }
 
     pub fn channel_create(&self, name: &str) -> Result<Response, String> {

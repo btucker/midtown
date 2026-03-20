@@ -89,3 +89,88 @@ fn test_for_channel_sets_channel_explicitly() {
     assert_eq!(msg.channel, Some("my-project".to_string()));
     assert_eq!(msg.channel_name(), "my-project");
 }
+
+#[test]
+fn test_to_json_includes_core_fields() {
+    let msg = Message::for_channel("test-channel", "alice", "Hello world", MessageType::Text);
+    let json = msg.to_json();
+    assert_eq!(json["id"].as_str().unwrap(), msg.id);
+    assert_eq!(json["from"], "alice");
+    assert_eq!(json["message"], "Hello world");
+    assert_eq!(json["msg_type"], "text");
+    assert_eq!(json["channel"], "test-channel");
+    // thread_parent_id should be absent for top-level messages
+    assert!(json.get("thread_parent_id").is_none());
+}
+
+#[test]
+fn test_to_json_includes_optional_fields() {
+    let mut msg = Message::thread_reply(
+        "test-channel",
+        "bob",
+        "Reply",
+        "parent-123",
+        MessageType::Text,
+    );
+    msg.nudge_type = Some("mention".to_string());
+    msg.provider = Some("claude".to_string());
+    msg.tool_use_id = Some("tool-456".to_string());
+    msg.auto_output = true;
+
+    let json = msg.to_json();
+    assert_eq!(json["thread_parent_id"], "parent-123");
+    assert_eq!(json["nudge_type"], "mention");
+    assert_eq!(json["provider"], "claude");
+    assert_eq!(json["tool_use_id"], "tool-456");
+    assert_eq!(json["auto_output"], true);
+}
+
+#[test]
+fn test_to_json_omits_false_auto_output() {
+    let msg = Message::text("alice", "Regular");
+    let json = msg.to_json();
+    assert!(
+        json.get("auto_output").is_none(),
+        "auto_output should be omitted when false"
+    );
+}
+
+#[test]
+fn test_compute_reply_meta_basic() {
+    let parent = Message::for_channel("ch", "alice", "Thread start", MessageType::Text);
+    let parent_id = parent.id.clone();
+
+    let reply1 = Message::thread_reply("ch", "bob", "Reply 1", &parent_id, MessageType::Text);
+    let reply2 = Message::thread_reply("ch", "carol", "Reply 2", &parent_id, MessageType::Text);
+    let reply3 = Message::thread_reply("ch", "bob", "Reply 3", &parent_id, MessageType::Text);
+
+    let meta = compute_reply_meta(&[parent, reply1, reply2, reply3]);
+    let rm = meta.get(&parent_id).expect("should have reply meta");
+    assert_eq!(rm.count, 3);
+    assert_eq!(rm.last_from, "bob");
+    assert_eq!(rm.participants.len(), 2);
+    assert!(rm.participants.contains(&"bob".to_string()));
+    assert!(rm.participants.contains(&"carol".to_string()));
+}
+
+#[test]
+fn test_compute_reply_meta_excludes_tool_only() {
+    let parent = Message::for_channel("ch", "alice", "Start", MessageType::Text);
+    let parent_id = parent.id.clone();
+
+    let text_reply =
+        Message::thread_reply("ch", "bob", "Visible reply", &parent_id, MessageType::Text);
+    let mut tool_only = Message::thread_reply("ch", "bob", "", &parent_id, MessageType::Text);
+    tool_only.tool_data = Some(vec![ToolBlock {
+        tool_name: "Bash".to_string(),
+        input: serde_json::json!({"command": "ls"}),
+        output: None,
+        error: false,
+        call_id: None,
+        parent_tool_use_id: None,
+    }]);
+
+    let meta = compute_reply_meta(&[parent, text_reply, tool_only]);
+    let rm = meta.get(&parent_id).expect("should have reply meta");
+    assert_eq!(rm.count, 1, "tool-only reply should be excluded");
+}

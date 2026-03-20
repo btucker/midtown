@@ -50,6 +50,9 @@ pub enum ChannelCommand {
     },
     /// Read messages from the channel
     Read {
+        /// Output as human-readable text instead of JSON
+        #[arg(long)]
+        text: bool,
         /// Show all messages (not just recent)
         #[arg(long)]
         all: bool,
@@ -140,6 +143,7 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
             }
         }
         ChannelCommand::Read {
+            text,
             all,
             last,
             since,
@@ -148,6 +152,7 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
             message,
             context,
         } => client.channel_read(
+            *text,
             *all,
             last.as_ref(),
             since.as_deref(),
