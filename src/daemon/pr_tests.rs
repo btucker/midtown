@@ -5427,3 +5427,93 @@ fn test_resolve_pr_owner_skips_fork_sessions() {
         "Fork sessions should not resolve as PR owners"
     );
 }
+
+/// Bug (task !2447): When a review task completes (reviewer crashes or finishes
+/// without posting a proper review), the dedup guard only checks non-completed
+/// tasks. On the next poll tick, the PR still needs review, no active review
+/// task exists, so a new reviewer is spawned — creating an infinite loop.
+///
+/// Fix: Also count Completed review tasks for the same PR in the dedup check.
+#[tokio::test]
+async fn test_review_task_dedup_includes_completed_tasks() {
+    let pr = json!({
+        "number": 7777,
+        "headRefName": "worker-1/some-feature",
+        "title": "feat: something [Midtown !200]",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let (state, _tmp, _guard) = make_test_state("midtown");
+
+    // Register the PR author as an active coworker so the PR isn't orphaned.
+    state
+        .coworkers
+        .register(
+            "slot-1",
+            "worker-1",
+            "/tmp".to_string(),
+            None,
+            "claude-sonnet".to_string(),
+            crate::auth::AuthProvider::Claude,
+            "default".to_string(),
+        )
+        .unwrap();
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "sess-worker-1".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-worker-1".to_string(),
+                task_id: Some("200".to_string()),
+                pr_number: Some(7777),
+                name: "worker-1".to_string(),
+                working_dir: "/tmp/test".to_string(),
+                ..Default::default()
+            },
+        );
+    }
+
+    // Create a COMPLETED review task for this PR — simulates a reviewer that
+    // already ran and finished (possibly without posting a proper review).
+    let completed_review_task = crate::task_store::Task {
+        id: "300".to_string(),
+        subject: "Review PR #7777".to_string(),
+        status: crate::task_store::TaskStatus::Completed,
+        pr: Some(7777),
+        agent_name: "old-reviewer".to_string(),
+        agent_type: "midtown-code-reviewer".to_string(),
+        ..Default::default()
+    };
+    state.task_store.save(&completed_review_task).unwrap();
+
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names: std::collections::HashSet<String> =
+        ["worker-1".to_string()].into_iter().collect();
+
+    let effects = collect_reviewer_effects_with_source(
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        true,
+        &std::collections::HashMap::new(),
+        false,
+    )
+    .await;
+
+    // The completed review task should prevent spawning a new reviewer.
+    let has_create_review_task = effects
+        .iter()
+        .any(|e| matches!(e, Effect::CreateReviewTask { pr_number, .. } if *pr_number == 7777));
+
+    assert!(
+        !has_create_review_task,
+        "Should NOT spawn a new reviewer when a completed review task already exists for PR #7777. \
+         Bug: dedup only checked non-completed tasks, causing infinite review-spawn loop. \
+         Effects: {:#?}",
+        effects
+    );
+}

@@ -1773,3 +1773,30 @@ fn test_unexpected_exit_message_lead_role() {
     let msg = format_unexpected_exit_message("Lead", "midtown", None);
     assert_eq!(msg, "⚠️ Lead midtown session exited unexpectedly");
 }
+
+// ── unexpanded env var rejection in review_author_matches ──────────────
+
+#[test]
+fn review_author_matches_rejects_unexpanded_env_var() {
+    // When $MIDTOWN_SESSION_ID isn't expanded by the shell, the frontmatter
+    // contains the literal string "$MIDTOWN_SESSION_ID". This should never
+    // match any reviewer name, and should be treated as a match failure.
+    let body =
+        "<!-- midtown session:$MIDTOWN_SESSION_ID task:42 type:review -->\n## Code Review\nLGTM";
+    assert!(
+        !review_author_matches(body, Some("pleasant"), Some("sess-42")),
+        "Literal '$MIDTOWN_SESSION_ID' should not match any reviewer"
+    );
+}
+
+#[test]
+fn review_author_matches_rejects_any_unexpanded_env_var() {
+    // When extract_review_author_from_body returns a literal starting with '$',
+    // it should be rejected regardless of what the assigned reviewer/session is.
+    // This catches the case where the assigned_session_id also wasn't expanded.
+    let body = "<!-- midtown session:$SOME_VAR task:42 type:review -->\n## Code Review\nLGTM";
+    assert!(
+        !review_author_matches(body, Some("$SOME_VAR"), Some("$SOME_VAR")),
+        "Literal env var starting with '$' should be treated as match failure even if both sides match"
+    );
+}

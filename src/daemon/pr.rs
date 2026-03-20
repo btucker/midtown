@@ -2794,15 +2794,16 @@ pub(crate) async fn collect_reviewer_effects_with_source(
         }
 
         // Check if a review task already exists for this PR (task-based dedup).
+        // Include completed tasks: once a reviewer has been spawned for a PR,
+        // don't auto-spawn another. Without this, completed review tasks are
+        // invisible to the guard, causing an infinite spawn loop on each tick.
         {
-            let has_review_task = all_tasks.iter().any(|t| {
-                t.pr == Some(pr_number)
-                    && t.status != crate::task_store::TaskStatus::Completed
-                    && t.subject.starts_with("Review PR #")
-            });
+            let has_review_task = all_tasks
+                .iter()
+                .any(|t| t.pr == Some(pr_number) && t.subject.starts_with("Review PR #"));
             if has_review_task {
                 debug!(
-                    "PR #{} already has a pending/in-progress review task",
+                    "PR #{} already has a review task (pending, in-progress, or completed)",
                     pr_number
                 );
                 continue;

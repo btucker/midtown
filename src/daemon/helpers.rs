@@ -8,6 +8,7 @@
 
 use super::constants::{COWORKER_NAMES, SYSTEM_SENDERS};
 pub use super::trackers::PrIssueType;
+use tracing::warn;
 
 // ---------------------------------------------------------------------------
 // Text / parsing helpers
@@ -744,6 +745,16 @@ pub fn review_author_matches(
     };
 
     match extract_review_author_from_body(body) {
+        Some(author) if author.starts_with('$') => {
+            // Unexpanded env var (e.g., literal "$MIDTOWN_SESSION_ID") — the
+            // shell didn't expand it, so this is never a valid author. Treat
+            // as match failure to avoid false positives.
+            warn!(
+                "review_author_matches: extracted author is a literal env var '{}' — treating as no match",
+                author
+            );
+            false
+        }
         Some(author) => {
             // Match by name (legacy) or by session ID (new format)
             author.eq_ignore_ascii_case(reviewer)
