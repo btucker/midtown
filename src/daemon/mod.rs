@@ -3712,8 +3712,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             is_strong_formal_review
                         }
                         (_, None) => {
-                            // No assigned reviewer — accept any review (backward compat)
-                            true
+                            // No assigned reviewer — don't cache from webhook alone.
+                            // Without an assigned reviewer, we can't verify the review
+                            // is from a midtown coworker. Let the polling path handle it
+                            // (which checks for midtown type:review frontmatter).
+                            false
                         }
                     };
 
