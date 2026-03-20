@@ -420,7 +420,7 @@ pub(crate) fn is_task_pr_protected(
     }
 
     if let Some(open_pr) = pr_task_index.github_pr_for_task(&task.id) {
-        info!(
+        debug!(
             "Skipping recovery for task !{}: found open PR #{} via GitHub PR title pattern",
             task.id, open_pr
         );
