@@ -107,11 +107,11 @@ fn draft_pr_does_not_spawn_reviewer() {
 /// to prevent spawning multiple reviewers.
 #[test]
 fn pr_with_claude_review_does_not_spawn_reviewer() {
-    // Test various Claude review signature formats
+    // Only type:review frontmatter is recognized as a review
     let signatures = [
-        "## Code Review by lexington\n\nLooks good!",
-        "<!-- midtown: park -->\n\n## Code Review\n\nApproved.",
-        "<!-- midtown: broadway -->\n\n### Code review\n\nNo issues found.",
+        "<!-- midtown session:lexington type:review -->\n\n## Code Review\n\nLooks good!",
+        "<!-- midtown session:park type:review -->\n\n## Code Review\n\nApproved.",
+        "<!-- midtown session:broadway type:review -->\n\n### Code review\n\nNo issues found.",
     ];
 
     for signature in signatures {

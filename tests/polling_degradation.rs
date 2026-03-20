@@ -471,18 +471,16 @@ fn polling_only_stuck_detection() {
 /// spawn another reviewer).
 #[test]
 fn polling_detects_existing_claude_review() {
-    // Standard review signature
+    // Structured frontmatter with type:review
     assert!(text_contains_review_signature(
+        "<!-- midtown session:sess-1 type:review -->\n\n## Code Review\n\nLGTM!"
+    ));
+
+    // Text-only patterns should NOT match (Codex false positives)
+    assert!(!text_contains_review_signature(
         "## Summary\n\nLGTM!\n\n🤖 Reviewed by lexington"
     ));
-
-    // Frontmatter signature (comment-based reviews)
-    assert!(text_contains_review_signature(
-        "<!-- midtown:reviewer=amsterdam -->\n\n## Code Review"
-    ));
-
-    // Header signature
-    assert!(text_contains_review_signature(
+    assert!(!text_contains_review_signature(
         "## Code Review by york\n\nThis looks good!"
     ));
 
@@ -500,25 +498,22 @@ fn polling_detects_existing_claude_review() {
 /// these as reviews.
 #[test]
 fn polling_recognizes_comment_based_review_with_space() {
-    // Comment-based review with space after colon (actual format used by coworkers)
-    // This is the format mentioned in the task description: <!-- midtown: park -->
-    assert!(
-        text_contains_review_signature("<!-- midtown: park -->\n\n## Code Review\n\nLGTM!"),
-        "should recognize comment-based review with space after colon"
-    );
-
-    // Without space (also valid)
-    assert!(
-        text_contains_review_signature("<!-- midtown:park -->\n\n## Code Review"),
-        "should recognize comment-based review without space"
-    );
-
-    // With additional metadata (and review header)
+    // Only type:review frontmatter is recognized
     assert!(
         text_contains_review_signature(
-            "<!-- midtown: broadway reviewer=true -->\n\n## Code Review\n\nLooks good"
+            "<!-- midtown session:park type:review -->\n\n## Code Review\n\nLGTM!"
         ),
-        "should recognize comment-based review with additional metadata"
+        "should recognize review with type:review frontmatter"
+    );
+
+    // Legacy frontmatter without type:review should NOT match
+    assert!(
+        !text_contains_review_signature("<!-- midtown: park -->\n\n## Code Review\n\nLGTM!"),
+        "legacy frontmatter without type:review should not match"
+    );
+    assert!(
+        !text_contains_review_signature("<!-- midtown:park -->\n\n## Code Review"),
+        "legacy frontmatter without type:review should not match"
     );
 }
 
@@ -546,12 +541,12 @@ fn review_in_progress_not_detected_as_complete() {
         "placeholder-tagged review in progress comment should NOT be detected as completed review"
     );
 
-    // Same comment but with frontmatter and "Code Review" heading (final review) - should be detected
+    // Final review with type:review frontmatter - should be detected
     assert!(
         text_contains_review_signature(
-            "<!-- midtown: madison -->\n\n## Code Review\n\n### Issues Found\n\n1. Missing error handling...\n\n🌃 Co-built with [Midtown](https://github.com/btucker/midtown)"
+            "<!-- midtown session:madison type:review -->\n\n## Code Review\n\n### Issues Found\n\n1. Missing error handling...\n\n🌃 Co-built with [Midtown](https://github.com/btucker/midtown)"
         ),
-        "final review comment with frontmatter should be detected as completed review"
+        "final review comment with type:review frontmatter should be detected as completed review"
     );
 
     // Another variant with just "Review Status" - should NOT be detected

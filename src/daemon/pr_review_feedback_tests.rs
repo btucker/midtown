@@ -240,13 +240,13 @@ mod tests {
     }
 
     /// Test that format_review_content includes Midtown coworker issue comments
-    /// (posted with <!-- midtown: --> frontmatter and a Code Review header).
+    /// (posted with <!-- midtown session:X type:review --> frontmatter).
     /// These are the reviews that were being silently missed before the fix.
     #[test]
     fn test_format_review_content_coworker_issue_comment() {
         use crate::daemon::helpers::format_review_content;
 
-        let review_body = "<!-- midtown: park -->\n## Code Review by park\n\nFound a potential null dereference on line 42.\n\n🌃 Co-built with Midtown";
+        let review_body = "<!-- midtown session:park type:review -->\n## Code Review by park\n\nFound a potential null dereference on line 42.\n\n🌃 Co-built with Midtown";
         let data = serde_json::json!({
             "reviews": [],
             "comments": [
@@ -301,7 +301,7 @@ mod tests {
             "comments": [
                 {
                     "author": {"login": "btucker"},
-                    "body": "<!-- midtown: park -->\n## Code Review by park\n\nAlso check the null case in parser.rs.\n\n🌃 Co-built with Midtown"
+                    "body": "<!-- midtown session:park type:review -->\n## Code Review by park\n\nAlso check the null case in parser.rs.\n\n🌃 Co-built with Midtown"
                 }
             ]
         });

@@ -2867,9 +2867,9 @@ async fn test_negative_cache_does_not_suppress_cached_review_backfill() {
 #[test]
 fn extract_review_comment_ids_filters_review_comments() {
     let comments: Vec<serde_json::Value> = serde_json::from_value(json!([
-        {"id": 1001, "body": "## Code Review by madison\n\nLooks good!"},
+        {"id": 1001, "body": "<!-- midtown session:madison type:review -->\n## Code Review by madison\n\nLooks good!"},
         {"id": 1002, "body": "Just a regular comment"},
-        {"id": 1003, "body": "🤖 Reviewed by park\n\nAll checks pass."},
+        {"id": 1003, "body": "<!-- midtown session:park type:review -->\n🤖 Reviewed by park\n\nAll checks pass."},
     ]))
     .unwrap();
 
@@ -2914,8 +2914,8 @@ fn concatenated_json_pages_fail_without_slurp() {
 
     // With --slurp, gh merges into a single array that parses correctly
     let slurped = json!([
-        {"id": 1001, "body": "## Code Review by madison\n\nPage 1 review"},
-        {"id": 1002, "body": "## Code Review by park\n\nPage 2 review"},
+        {"id": 1001, "body": "<!-- midtown session:madison type:review -->\n## Code Review by madison\n\nPage 1 review"},
+        {"id": 1002, "body": "<!-- midtown session:park type:review -->\n## Code Review by park\n\nPage 2 review"},
     ]);
     let comments: Vec<serde_json::Value> = serde_json::from_value(slurped).unwrap();
     let ids = extract_review_comment_ids_from_json(&comments);
@@ -3479,7 +3479,7 @@ fn json_review_accepts_assigned_reviewer_comment() {
         "reviews": [],
         "comments": [
             {
-                "body": "<!-- midtown: pleasant -->\n## Code Review by pleasant\n\nLGTM, no issues found.",
+                "body": "<!-- midtown session:pleasant type:review -->\n## Code Review by pleasant\n\nLGTM, no issues found.",
                 "author": {"login": "btucker"}
             }
         ]
@@ -3495,7 +3495,7 @@ fn json_review_rejects_wrong_coworker_comment() {
         "reviews": [],
         "comments": [
             {
-                "body": "<!-- midtown: broadway -->\n## Code Review by broadway\n\nLGTM!",
+                "body": "<!-- midtown session:broadway type:review -->\n## Code Review by broadway\n\nLGTM!",
                 "author": {"login": "btucker"}
             }
         ]
@@ -3514,7 +3514,7 @@ fn json_review_accepts_any_review_when_no_reviewer_assigned() {
         "reviews": [],
         "comments": [
             {
-                "body": "<!-- midtown: broadway -->\n## Code Review by broadway\n\nLooks good.",
+                "body": "<!-- midtown session:broadway type:review -->\n## Code Review by broadway\n\nLooks good.",
                 "author": {"login": "btucker"}
             }
         ]
