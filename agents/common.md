@@ -77,25 +77,22 @@ Use `midtown agent show` to check on what a coworker is doing. This captures and
 
 ## GitHub Etiquette
 
-**IMPORTANT**: Always include session frontmatter in GitHub content so events are attributed to you. Use `$MIDTOWN_SESSION_ID` from your environment:
+**IMPORTANT**: Always include session frontmatter in GitHub content so events are attributed to you. Your session ID is embedded in these examples — copy them directly:
 
-1. **PR bodies** - add frontmatter:
+1. **PR bodies and comments** - add frontmatter:
 ```
 <!-- midtown session:$MIDTOWN_SESSION_ID -->
 ```
 
-2. **PR comments** - include frontmatter in the comment:
-```
-<!-- midtown session:$MIDTOWN_SESSION_ID -->
-```
-
-3. **PR reviews** - include `type:review` so the daemon detects the review:
+2. **PR reviews** - include `type:review` so the daemon detects the review:
 ```
 <!-- midtown session:$MIDTOWN_SESSION_ID type:review -->
 
-## Code Review by {name}
+## Code Review by {your name}
 ...
 ```
+
+**CRITICAL**: Copy the frontmatter exactly as shown above. The session ID is already embedded — do NOT type `$MIDTOWN_SESSION_ID` literally.
 
 **Review styles vary by provider.** Claude reviewers typically post comment-based reviews (with `## Code Review...`), while Codex can submit formal GitHub reviews. Treat either as valid review input, but do not merge until feedback is addressed.
 
