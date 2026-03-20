@@ -3443,15 +3443,22 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             Effect::RecordSession { record } => {
                 let session_id = record.session_id.clone();
 
-                // Persist session record
-                {
-                    let mut ps = state.persistent_state.lock().await;
-                    ps.sessions.insert(session_id.clone(), *record);
-                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                        warn!("Failed to save persistent state after RecordSession: {}", e);
+                if session_id.is_empty() {
+                    warn!(
+                        "RecordSession: skipping record with empty session_id (name: {})",
+                        record.name
+                    );
+                } else {
+                    // Persist session record
+                    {
+                        let mut ps = state.persistent_state.lock().await;
+                        ps.sessions.insert(session_id.clone(), *record);
+                        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                            warn!("Failed to save persistent state after RecordSession: {}", e);
+                        }
                     }
+                    info!("RecordSession: saved session {}", session_id);
                 }
-                info!("RecordSession: saved session {}", session_id);
             }
 
             Effect::AutoDetachCoworker { name } => {

@@ -715,6 +715,13 @@ impl DaemonPersistentState {
     /// mark existing sessions as running and refresh `name` before falling back
     /// to insert for new sessions.
     pub fn upsert_session_running(&mut self, session_id: String, new_record: SessionRecord) {
+        if session_id.is_empty() {
+            tracing::warn!(
+                "upsert_session_running: refusing to insert record with empty session_id (name: {})",
+                new_record.name
+            );
+            return;
+        }
         let name = new_record.name.clone();
         self.sessions
             .entry(session_id)
