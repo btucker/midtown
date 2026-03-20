@@ -627,19 +627,16 @@ pub fn format_session_frontmatter(session_id: &str) -> String {
 
 /// Check if text contains a coworker review signature.
 ///
-/// Detection priority:
-/// 1. Structured frontmatter `type:review` (new format)
-/// 2. "Reviewed by" signature (legacy)
-/// 3. "# Code Review" header (legacy)
+/// Returns true only if the text contains structured frontmatter with `type:review`
+/// (i.e., `<!-- midtown ... type:review -->`). Text-based patterns are not matched.
 pub fn text_contains_review_signature(text: &str) -> bool {
-    if let Some(fm) = parse_frontmatter(text)
-        && fm.is_review()
-    {
-        return true;
+    // Only match structured frontmatter with type:review.
+    // Text-based patterns (headers, "Reviewed by" signatures) cause false
+    // positives with Codex and other tools that use similar formats.
+    if let Some(fm) = parse_frontmatter(text) {
+        return fm.is_review();
     }
-    text.contains("🤖 Reviewed by")
-        || text.contains("Reviewed by")
-        || text_has_code_review_header(text)
+    false
 }
 
 /// Extract the review session ID from a review body's frontmatter.
@@ -771,25 +768,6 @@ pub fn review_author_matches(
 /// Rationale: The code-review skill template uses "### Code review" without
 /// the "by {name}" part. Coworkers are supposed to add <!-- midtown: name -->
 /// frontmatter, but if they forget, we should still detect it as a review.
-/// We require either an exact "code review" match OR "code review by" to avoid
-/// false positives from headings like "Code Review Checklist".
-fn text_has_code_review_header(text: &str) -> bool {
-    let text_lower = text.to_lowercase();
-    // Look for markdown heading followed by "code review" (exact) or "code review by"
-    for line in text_lower.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') {
-            // Strip heading markers and check content
-            let content = trimmed.trim_start_matches('#').trim();
-            // Exact match OR attributed form
-            if content == "code review" || content.starts_with("code review by") {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 /// Format review content from a PR's `reviews` and `comments` JSON fields.
 ///
 /// Extracts all feedback the PR author needs to address:

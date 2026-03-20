@@ -1373,7 +1373,7 @@ fn test_handle_review_comment_created_with_review_signature() {
         "comment": {
             "id": 400,
             "user": {"login": "btucker"},
-            "body": "<!-- midtown: park -->\n\n## Code Review by park\n\nLGTM - ship it!"
+            "body": "<!-- midtown session:park type:review -->\n\n## Code Review by park\n\nLGTM - ship it!"
         },
         "repository": {"full_name": "org/repo"}
     });

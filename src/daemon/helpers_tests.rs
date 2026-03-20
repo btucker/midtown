@@ -599,22 +599,28 @@ fn ci_not_passed_with_commit_status_error() {
 
 #[test]
 fn review_signature_detects_emoji_signature() {
-    assert!(text_contains_review_signature(
+    // Text-based emoji signatures no longer match — only type:review frontmatter does.
+    assert!(!text_contains_review_signature(
         "## Summary\n\nLGTM!\n\n🤖 Reviewed by lexington"
     ));
 }
 
 #[test]
 fn review_signature_detects_frontmatter_with_review_header() {
-    // Frontmatter + review header = valid review
-    assert!(text_contains_review_signature(
+    // Only type:review frontmatter matches; old-style frontmatter does not.
+    assert!(!text_contains_review_signature(
         "<!-- midtown:reviewer=lexington -->\n\n## Code Review"
+    ));
+    // New structured frontmatter with type:review does match.
+    assert!(text_contains_review_signature(
+        "<!-- midtown session:abc type:review -->\n\n## Code Review"
     ));
 }
 
 #[test]
 fn review_signature_detects_header() {
-    assert!(text_contains_review_signature(
+    // Text-based headers no longer match without type:review frontmatter.
+    assert!(!text_contains_review_signature(
         "## Code Review by amsterdam\n\nLooks good!"
     ));
 }
@@ -628,21 +634,20 @@ fn review_signature_returns_false_for_normal_comment() {
 
 #[test]
 fn review_signature_detects_h3_lowercase_header() {
-    // Bug: pleasant's review used "### Code review by" (h3, lowercase "review")
-    // but the pattern only matched "## Code Review by" (h2, capital R)
-    assert!(text_contains_review_signature(
+    // Text-based headers (even h3 lowercase) no longer match without type:review frontmatter.
+    assert!(!text_contains_review_signature(
         "### Code review by pleasant\n\nFound 4 issues:\n\n1. First issue..."
     ));
 }
 
 #[test]
 fn review_signature_case_insensitive() {
-    // Various case combinations should all match
-    assert!(text_contains_review_signature("## code review by york"));
-    assert!(text_contains_review_signature(
+    // Text-based case variations no longer match — only type:review frontmatter does.
+    assert!(!text_contains_review_signature("## code review by york"));
+    assert!(!text_contains_review_signature(
         "### CODE REVIEW BY amsterdam"
     ));
-    assert!(text_contains_review_signature("# Code review by pleasant"));
+    assert!(!text_contains_review_signature("# Code review by pleasant"));
 }
 
 #[test]
@@ -661,11 +666,10 @@ fn review_signature_rejects_checklist_heading() {
 
 #[test]
 fn review_signature_detects_exact_code_review() {
-    // Should match exact "code review" (from code-review skill default output)
-    assert!(text_contains_review_signature(
+    // Text-based "code review" headings no longer match without type:review frontmatter.
+    assert!(!text_contains_review_signature(
         "### Code review\n\nNo issues found."
     ));
-    // But not with trailing text
     assert!(!text_contains_review_signature(
         "### Code review checklist\n\nItems..."
     ));
@@ -673,28 +677,25 @@ fn review_signature_detects_exact_code_review() {
 
 #[test]
 fn review_signature_requires_review_header_with_frontmatter() {
-    // Bug fix: frontmatter alone should NOT be detected as a review.
-    // ALL coworker GitHub comments have frontmatter, so we need to also check
-    // for an actual review heading or signature.
+    // Only structured type:review frontmatter is detected — text headings are not enough.
 
-    // This is a CI fix explanation, NOT a review:
+    // Old-style frontmatter without type:review is NOT a review, regardless of heading:
     assert!(!text_contains_review_signature(
         "<!-- midtown: columbus -->\n\n## Fix for zellij_e2e CI failure\n\nThe test was failing because..."
     ));
-
-    // This is a status update, NOT a review:
     assert!(!text_contains_review_signature(
         "<!-- midtown: broadway -->\n\n## Update\n\nCompleted task 1269, all tests passing."
     ));
-
-    // But frontmatter + review heading SHOULD be detected:
-    assert!(text_contains_review_signature(
+    assert!(!text_contains_review_signature(
         "<!-- midtown: columbus -->\n\n## Code Review by columbus\n\nFound 2 issues..."
     ));
-
-    // And frontmatter + exact "code review" heading SHOULD be detected:
-    assert!(text_contains_review_signature(
+    assert!(!text_contains_review_signature(
         "<!-- midtown: york -->\n\n### Code review\n\nNo issues found."
+    ));
+
+    // Only new structured frontmatter with type:review matches:
+    assert!(text_contains_review_signature(
+        "<!-- midtown session:abc type:review -->\n\n## Code Review\n\nFound 2 issues..."
     ));
 }
 
@@ -712,13 +713,12 @@ fn review_signature_rejects_lowercase_reviewed_by() {
 
 #[test]
 fn review_signature_matches_capital_reviewed_by_anywhere() {
-    // "Reviewed by" with capital R is a deliberate signature and should match
-    // regardless of position in the text (start of line, mid-line after "!", etc.)
-    assert!(text_contains_review_signature(
+    // "Reviewed by" text signatures no longer match — only type:review frontmatter does.
+    assert!(!text_contains_review_signature(
         "Some intro text\nReviewed by lexington\nFooter"
     ));
-    assert!(text_contains_review_signature("  Reviewed by madison"));
-    assert!(text_contains_review_signature("LGTM! Reviewed by york"));
+    assert!(!text_contains_review_signature("  Reviewed by madison"));
+    assert!(!text_contains_review_signature("LGTM! Reviewed by york"));
 }
 
 // -------------------------------------------------------------------------

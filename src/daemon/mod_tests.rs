@@ -925,23 +925,23 @@ fn test_user_mention_routing_skips_lead() {
 // Review signature detection tests
 #[test]
 fn test_text_contains_review_signature_emoji() {
-    // Legacy formal review signature
-    assert!(text_contains_review_signature("🤖 Reviewed by lexington"));
-    assert!(text_contains_review_signature(
+    // Text-based emoji signatures no longer match — only type:review frontmatter does.
+    assert!(!text_contains_review_signature("🤖 Reviewed by lexington"));
+    assert!(!text_contains_review_signature(
         "Some preamble\n🤖 Reviewed by park\nMore text"
     ));
 }
 
 #[test]
 fn test_text_contains_review_signature_plain() {
-    // Plain "Reviewed by" without emoji
-    assert!(text_contains_review_signature("Reviewed by columbus"));
-    assert!(text_contains_review_signature("LGTM! Reviewed by york"));
+    // Plain text "Reviewed by" no longer matches — only type:review frontmatter does.
+    assert!(!text_contains_review_signature("Reviewed by columbus"));
+    assert!(!text_contains_review_signature("LGTM! Reviewed by york"));
 }
 
 #[test]
 fn test_text_contains_review_signature_frontmatter() {
-    // Frontmatter ALONE should NOT match (all coworker comments have frontmatter)
+    // Old-style frontmatter never matches, even with review headers.
     assert!(!text_contains_review_signature(
         "<!-- midtown: lexington -->"
     ));
@@ -951,26 +951,33 @@ fn test_text_contains_review_signature_frontmatter() {
     assert!(!text_contains_review_signature(
         "Some text\n<!-- midtown: york -->\nMore text"
     ));
-
-    // But frontmatter + review header SHOULD match
-    assert!(text_contains_review_signature(
+    assert!(!text_contains_review_signature(
         "<!-- midtown: lexington -->\n\n## Code Review by lexington\n\nFound issues..."
+    ));
+
+    // Only new structured type:review frontmatter matches.
+    assert!(text_contains_review_signature(
+        "<!-- midtown session:abc type:review -->\n\n## Code Review\n\nFound issues..."
     ));
 }
 
 #[test]
 fn test_text_contains_review_signature_code_review_header() {
-    // Code review header used by review agent
-    assert!(text_contains_review_signature("## Code Review by madison"));
-    assert!(text_contains_review_signature(
+    // Text-based headers no longer match — only type:review frontmatter does.
+    assert!(!text_contains_review_signature("## Code Review by madison"));
+    // Old-style frontmatter + header also does not match.
+    assert!(!text_contains_review_signature(
         "<!-- midtown: madison -->\n\n## Code Review by madison\n\nNice work!"
+    ));
+    // New structured frontmatter with type:review matches.
+    assert!(text_contains_review_signature(
+        "<!-- midtown session:madison type:review -->\n\n## Code Review by madison\n\nNice work!"
     ));
 }
 
 #[test]
 fn test_text_contains_review_signature_code_review_skill_output() {
-    // The code-review skill posts comments in this exact format.
-    // The <!-- midtown: name --> frontmatter is the primary signature.
+    // Old-style frontmatter (<!-- midtown: name -->) no longer matches — type:review required.
     let skill_output_clean = r#"<!-- midtown: pleasant -->
 
 ### Code review
@@ -980,7 +987,7 @@ No issues found. Checked for bugs and CLAUDE.md compliance.
 🤖 Generated with [Claude Code](https://claude.ai/code)
 
 <sub>- If this code review was useful, please react with 👍. Otherwise, react with 👎.</sub>"#;
-    assert!(text_contains_review_signature(skill_output_clean));
+    assert!(!text_contains_review_signature(skill_output_clean));
 
     let skill_output_issues = r#"<!-- midtown: vernon -->
 
@@ -999,16 +1006,24 @@ https://github.com/org/repo/blob/abc123/CLAUDE.md#L5-L7
 🤖 Generated with [Claude Code](https://claude.ai/code)
 
 <sub>- If this code review was useful, please react with 👍. Otherwise, react with 👎.</sub>"#;
-    assert!(text_contains_review_signature(skill_output_issues));
+    assert!(!text_contains_review_signature(skill_output_issues));
+
+    // New structured frontmatter with type:review does match.
+    let skill_output_new = r#"<!-- midtown session:pleasant task:42 type:review -->
+
+### Code review
+
+No issues found. Checked for bugs and CLAUDE.md compliance.
+
+🤖 Generated with [Claude Code](https://claude.ai/code)
+
+<sub>- If this code review was useful, please react with 👍. Otherwise, react with 👎.</sub>"#;
+    assert!(text_contains_review_signature(skill_output_new));
 }
 
 #[test]
 fn test_text_contains_review_signature_code_review_without_frontmatter() {
-    // Regression test for PR #869: code-review skill sometimes posts reviews
-    // without the <!-- midtown: --> frontmatter. The "### Code review" heading
-    // alone should still be detected as a review.
-    //
-    // Real comment from PR #869 that failed detection:
+    // Without type:review frontmatter, no text-based heading matches.
     let review_without_frontmatter = r#"### Code review
 
 No issues found. Checked for bugs and CLAUDE.md compliance.
@@ -1017,13 +1032,11 @@ No issues found. Checked for bugs and CLAUDE.md compliance.
 
 <sub>- If this code review was useful, please react with 👍. Otherwise, react with 👎.</sub>"#;
 
-    // This should be detected as a review, but currently fails:
     assert!(
-        text_contains_review_signature(review_without_frontmatter),
-        "Code review heading without frontmatter should still be detected"
+        !text_contains_review_signature(review_without_frontmatter),
+        "Code review heading without type:review frontmatter should NOT match"
     );
 
-    // Case insensitive variant:
     let review_lowercase = r#"### code review
 
 Found 1 issue:
@@ -1033,8 +1046,8 @@ Found 1 issue:
 🤖 Generated with [Claude Code](https://claude.ai/code)"#;
 
     assert!(
-        text_contains_review_signature(review_lowercase),
-        "Lowercase 'code review' heading should be detected"
+        !text_contains_review_signature(review_lowercase),
+        "Lowercase 'code review' heading without type:review frontmatter should NOT match"
     );
 }
 
