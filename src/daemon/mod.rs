@@ -2209,8 +2209,14 @@ impl DaemonState {
     ///
     /// First tries the headless session_manager path (lead running headless).
     /// Falls back to the headed intercom queue (lead attached interactively).
+    ///
+    /// Uses `is_alive` (not `is_nudgeable`) so that sessions still in
+    /// `Starting` state receive queued messages — the Codex backend can
+    /// buffer them until init completes. `is_nudgeable` would reject
+    /// Starting sessions and route to the headed intercom, where there
+    /// is usually no attached wrapper during startup.
     pub(crate) async fn nudge_lead(&self, message: &str) {
-        if self.session_manager.is_nudgeable(&self.project_name).await {
+        if self.session_manager.is_alive(&self.project_name).await {
             if let Err(e) = self
                 .session_manager
                 .send_message(&self.project_name, message)

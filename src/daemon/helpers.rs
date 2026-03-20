@@ -184,12 +184,10 @@ pub fn default_model_for_provider_role(
 ) -> &'static str {
     match provider {
         crate::auth::AuthProvider::Codex => "gpt-5.4",
-        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {
-            match agent_type {
-                "midtown-project-lead" | "midtown-code-reviewer" => "opus",
-                _ => "sonnet",
-            }
-        }
+        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => match agent_type {
+            "midtown-project-lead" | "midtown-code-reviewer" => "opus",
+            _ => "sonnet",
+        },
     }
 }
 
