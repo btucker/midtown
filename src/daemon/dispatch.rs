@@ -1014,6 +1014,461 @@ fn resolve_grouped_name(
     None
 }
 
+// ── Pending task precondition result ──────────────────────────────────────────
+
+/// Result of evaluating whether a pending unowned task is ready for dispatch.
+enum PendingTaskCheck {
+    /// Skip — do not dispatch (already excluded, in-flight, lead-driven, etc.)
+    Skip,
+    /// Auto-complete because the task's PR was merged.
+    AutoComplete,
+    /// Resume a stopped session rather than spawning fresh.
+    ResumeSession {
+        session_id: String,
+        preferred_name: Option<String>,
+    },
+    /// Proceed to coworker name resolution and dispatch.
+    ReadyToDispatch,
+}
+
+/// Stage 1: Evaluate whether a pending unowned task should be dispatched,
+/// skipped, auto-completed, or resumed from a stopped session.
+///
+/// These checks don't consume task slots and run regardless of capacity.
+fn check_pending_task_preconditions(
+    task: &Task,
+    ps: &DaemonPersistentState,
+    state: &DaemonState,
+    excluded_task_ids: &std::collections::HashSet<String>,
+) -> PendingTaskCheck {
+    // Skip tasks already claimed by orphan recovery in this tick.
+    if excluded_task_ids.contains(&task.id) {
+        debug!(
+            "Task !{} already claimed by orphan recovery this tick, skipping pending dispatch",
+            task.id
+        );
+        return PendingTaskCheck::Skip;
+    }
+
+    // Skip tasks that already have an in-flight spawn effect.
+    if state.is_task_spawn_in_flight(&task.id) {
+        debug!(
+            "Task !{} already has in-flight spawn, skipping duplicate",
+            task.id
+        );
+        return PendingTaskCheck::Skip;
+    }
+
+    // Skip tasks whose explicit PR field references a merged PR.
+    // IMPORTANT: This must run before the lead-driven check so merged-PR
+    // auto-complete works regardless of channel mode.
+    // We have the full Task struct here, so check task.pr directly (O(1))
+    // instead of scanning all_tasks by ID like dispatch_owned_pending_tasks does.
+    if task
+        .pr
+        .filter(|pr| ps.tick_merged_pr_numbers.contains(pr))
+        .is_some()
+    {
+        info!(
+            "Auto-completing stale task !{}: PR #{} has been merged",
+            task.id,
+            task.pr.unwrap()
+        );
+        return PendingTaskCheck::AutoComplete;
+    }
+
+    // NOTE: We intentionally do NOT check pr_protected_tasks here.
+    // PR-protection only applies to in_progress tasks during orphan recovery
+    // (see dispatch_orphaned_in_progress_tasks). Pending unowned tasks must
+    // remain dispatchable even if they have an associated open PR — e.g., a
+    // task created as "rebase and land PR #X" needs to be assigned to someone.
+
+    // Skip tasks in lead-driven channels — the lead manages dispatch manually.
+    if task
+        .channel
+        .as_ref()
+        .is_some_and(|ch| ps.lead_driven_channels.contains(ch))
+    {
+        debug!(
+            "Task !{}: skipping unowned pending dispatch — channel is lead-driven",
+            task.id
+        );
+        return PendingTaskCheck::Skip;
+    }
+
+    // Session-aware dispatch: if this pending task has a stopped session
+    // from a previous attempt, resume it instead of spawning fresh.
+    if let Some(record) = ps.find_session_for_task(&task.id) {
+        if !record.is_running {
+            if ps
+                .tick_recently_recovered_session_ids
+                .contains(&record.session_id)
+            {
+                debug!(
+                    "Pending task !{} has recently-recovered session {} — skipping (cooldown)",
+                    task.id, record.session_id
+                );
+                return PendingTaskCheck::Skip;
+            }
+
+            info!(
+                "Pending task !{} has stopped session {} — resuming instead of spawning fresh",
+                task.id, record.session_id
+            );
+
+            let preferred_name = if record.name.is_empty() {
+                None
+            } else {
+                Some(record.name.clone())
+            };
+            return PendingTaskCheck::ResumeSession {
+                session_id: record.session_id.clone(),
+                preferred_name,
+            };
+        }
+        // Session is running — task is already being worked on. Skip.
+        if record.is_running {
+            debug!(
+                "Pending task !{} has running session {} — skipping dispatch",
+                task.id, record.session_id
+            );
+            return PendingTaskCheck::Skip;
+        }
+    }
+
+    PendingTaskCheck::ReadyToDispatch
+}
+
+// ── Coworker name selection ──────────────────────────────────────────────────
+
+/// Mutable state tracked across the dispatch loop for same-tick deduplication.
+struct DispatchLoopState {
+    /// PR# → coworker name assignments made during this loop.
+    pr_coworker_map: HashMap<String, String>,
+    /// task_id → coworker name assignments made during this loop.
+    task_coworker_map: HashMap<String, String>,
+    /// Coworker names assigned within this phase to prevent duplicate assignments.
+    names_assigned_this_tick: HashSet<String>,
+    /// NEW spawns queued (for task limit enforcement). Nudges to already-running
+    /// coworkers (grouped tasks) don't count — only fresh spawns.
+    spawns_queued_this_tick: usize,
+}
+
+/// Select a coworker name for a pending unowned task.
+///
+/// Tries grouping strategies first (PR, blockedBy), then falls back to fresh
+/// name allocation. At task limit, defers the task.
+///
+/// Returns `Some((name, was_grouped))` or `None` if the task should be deferred.
+fn select_coworker_name(
+    task: &Task,
+    ps: &DaemonPersistentState,
+    tasks: &[Task],
+    loop_state: &DispatchLoopState,
+) -> Option<(String, bool)> {
+    let is_reviewer_task = task.agent_type == "midtown-code-reviewer";
+
+    // Step 1: Determine the coworker name by checking grouping strategies.
+    // Reviewer tasks skip grouping entirely — they share a PR number with the
+    // implementation task, so grouping would route them to the author's session.
+    let grouped_name = if is_reviewer_task {
+        None
+    } else {
+        resolve_grouped_name(
+            task,
+            ps,
+            tasks,
+            &loop_state.pr_coworker_map,
+            &loop_state.task_coworker_map,
+        )
+    };
+
+    // Use grouped name if found, otherwise allocate a fresh coworker.
+    let was_grouped = grouped_name.is_some();
+    let in_progress_count = ps.tick_in_progress_tasks.len();
+    let task_cap = ps.tick_max_in_progress_tasks;
+    let effective_count = in_progress_count + loop_state.spawns_queued_this_tick;
+    let at_task_limit = effective_count >= task_cap;
+
+    let name = if let Some(name) = grouped_name {
+        name
+    } else if at_task_limit {
+        debug!(
+            "Task limit reached ({}+{} >= {}), deferring task !{}",
+            in_progress_count, loop_state.spawns_queued_this_tick, task_cap, task.id
+        );
+        return None;
+    } else {
+        let name = allocate_fresh_coworker_name(task, ps, tasks, is_reviewer_task);
+        debug!("Task !{}: allocated coworker name {}", task.id, name);
+        name
+    };
+
+    Some((name, was_grouped))
+}
+
+/// Allocate a fresh coworker name, excluding channel leads, active sessions,
+/// and (for reviewer tasks) the PR author to prevent self-review.
+fn allocate_fresh_coworker_name(
+    task: &Task,
+    ps: &DaemonPersistentState,
+    tasks: &[Task],
+    is_reviewer_task: bool,
+) -> String {
+    let mut excluded_names = ps.channel_lead_names();
+    for name in &ps.tick_active_session_names {
+        excluded_names.insert(name.clone());
+    }
+    // For reviewer tasks, exclude the PR author to prevent self-review.
+    if is_reviewer_task
+        && let Some(parent_id) = task.parent.as_ref()
+        && let Some(parent_task) = task_by_id(tasks, parent_id)
+        && !parent_task.agent_name.is_empty()
+    {
+        excluded_names.insert(parent_task.agent_name.to_lowercase());
+    }
+    if !task.agent_name.is_empty() {
+        task.agent_name.clone()
+    } else {
+        generate_task_session_name(&task.id, &task.subject, &excluded_names)
+    }
+}
+
+// ── Coworker assignment validation ───────────────────────────────────────────
+
+/// Validate that a coworker can be assigned to a task. Checks spawn failure
+/// cooldowns, owned-task dispatch conflicts, duplicate assignments, and
+/// busy/reviewer status.
+///
+/// Returns `true` if the assignment is valid, `false` if it should be skipped.
+fn validate_coworker_assignment(
+    coworker_name: &str,
+    was_grouped: bool,
+    task: &Task,
+    ps: &DaemonPersistentState,
+    loop_state: &DispatchLoopState,
+    owned_dispatched: &HashSet<String>,
+    name_task_assignments: &HashMap<String, String>,
+) -> bool {
+    let name_lower = coworker_name.to_lowercase();
+
+    // Check per-coworker spawn failure cooldown (pre-evaluated in snapshot)
+    if ps.tick_spawn_failure_cooldown_names.contains(&name_lower) {
+        debug!(
+            "Task !{}: skipping {} (spawn failure cooldown active)",
+            task.id, coworker_name
+        );
+        return false;
+    }
+
+    // Skip if owned-task dispatch already dispatched this coworker.
+    if owned_dispatched.contains(&name_lower) {
+        debug!(
+            "Task !{}: skipping {} (already dispatched by owned pending tasks)",
+            task.id, coworker_name
+        );
+        return false;
+    }
+
+    // Skip if this coworker is already assigned to THIS SPECIFIC TASK.
+    if name_task_assignments
+        .get(&name_lower)
+        .is_some_and(|assigned_task_id| assigned_task_id == &task.id)
+    {
+        debug!(
+            "Task !{}: skipping {} (already assigned to this task)",
+            task.id, coworker_name
+        );
+        return false;
+    }
+
+    let already_running = ps.tick_active_session_names.contains(&name_lower);
+    let is_coworker_reviewer = ps.tick_active_reviewers.contains(&name_lower);
+    let is_busy_from_snapshot = ps.tick_busy_coworkers.contains(&name_lower);
+    let assigned_this_tick = loop_state.names_assigned_this_tick.contains(&name_lower);
+
+    // Skip running coworkers that are busy or reviewing.
+    if already_running
+        && (is_coworker_reviewer || assigned_this_tick || (is_busy_from_snapshot && !was_grouped))
+    {
+        debug!(
+            "Task !{}: skipping coworker {} (busy_snapshot={}, assigned_tick={}, reviewer={}, grouped={})",
+            task.id,
+            coworker_name,
+            is_busy_from_snapshot,
+            assigned_this_tick,
+            is_coworker_reviewer,
+            was_grouped
+        );
+        return false;
+    }
+
+    if !already_running && (assigned_this_tick || is_busy_from_snapshot) {
+        debug!(
+            "Task !{}: skipping {} (not running, already assigned this tick or busy)",
+            task.id, coworker_name
+        );
+        return false;
+    }
+
+    true
+}
+
+// ── Effect builders for dispatch branches ────────────────────────────────────
+
+/// Build effects to nudge an already-running coworker to claim a grouped task.
+fn build_grouped_nudge_effects(
+    task: &Task,
+    coworker_name: &str,
+    ps: &DaemonPersistentState,
+    tasks: &[Task],
+) -> Vec<Effect> {
+    let channel_msg = daemon_messages::called_in_assigned_task(
+        coworker_name,
+        &task.id.to_string(),
+        &task.subject,
+    );
+    let session_id = ps
+        .tick_name_session_map
+        .get(&coworker_name.to_lowercase())
+        .cloned()
+        .unwrap_or_default();
+    let mut assign_callbacks = vec![
+        Effect::RecordTaskAssignment {
+            coworker: coworker_name.to_string(),
+            task_id: task.id.clone(),
+        },
+        Effect::post_to_ops(channel_msg),
+    ];
+    if let Some(ref ch) = task.channel {
+        assign_callbacks.push(Effect::EmitWorkflowEvent(
+            crate::workflow::WorkflowEvent::TaskAssigned {
+                channel: ch.clone(),
+                task_id: task.id.clone(),
+                coworker: coworker_name.to_string(),
+                subject: task.subject.clone(),
+                description: task.description.clone(),
+                thread_id: task.thread_id.clone(),
+                message_id: task.message_id.clone(),
+            },
+        ));
+    }
+    let plan_section = build_plan_prompt_section(&task.id, tasks);
+    vec![Effect::NudgeSessionWithCallbacks {
+        session_id,
+        reason: super::wake_reason::WakeReason::TaskClaimed {
+            task_id: task.id.clone(),
+            subject: task.subject.clone(),
+            plan_section,
+        },
+        on_success: assign_callbacks,
+    }]
+}
+
+/// Build effects to spawn a reviewer on an isolated worktree for a PR review task.
+///
+/// Returns `None` if the task has no PR number or the worktree is already bound
+/// to another active coworker.
+fn build_reviewer_spawn_effects(
+    task: &Task,
+    coworker_name: &str,
+    ps: &DaemonPersistentState,
+) -> Option<Vec<Effect>> {
+    let pr_number = task.pr.unwrap_or(0);
+    if pr_number == 0 {
+        warn!("Reviewer task !{} has no PR number, skipping", task.id);
+        return None;
+    }
+
+    let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
+    let wt_path = crate::paths::worktrees_dir_for_repo(&ps.tick_dir_key).join(&worktree_id);
+
+    if let Some(bound_coworker) = ps.worktree_collision(&worktree_id, coworker_name) {
+        debug!(
+            "Review task !{}: skipping {} because worktree {} is bound to active coworker {}",
+            task.id, coworker_name, worktree_id, bound_coworker
+        );
+        return None;
+    }
+
+    let auth_provider = crate::config::get_execution_provider_for_role(
+        &ps.tick_dir_key,
+        crate::config::ExecutionRole::Reviewer,
+    );
+    let mut config = crate::launch::LaunchConfig::reviewer(
+        coworker_name.to_string(),
+        &ps.tick_dir_key,
+        pr_number,
+        0,
+        auth_provider,
+    );
+    config.model = super::helpers::normalize_model_for_provider_role(
+        &config.model,
+        config.auth_provider,
+        &config.agent_type,
+    );
+    config.working_dir = Some(wt_path.clone());
+    config.channel = task.channel.clone();
+    config.task_id = Some(task.id.clone());
+
+    // Route escalation to channel lead if available
+    let channel_lead_names = ps.channel_lead_names();
+    if let Some(ref channel_name) = config.channel
+        && channel_lead_names.contains(channel_name)
+    {
+        config.escalation_target = Some(channel_name.clone());
+        config.initial_prompt = Some(crate::agents::reviewer_launch_prompt(
+            pr_number,
+            0,
+            auth_provider,
+            Some(channel_name),
+        ));
+    }
+
+    let mut effects = vec![effects::Effect::EnsureWorktree {
+        worktree_id: worktree_id.clone(),
+        path: wt_path.clone(),
+    }];
+
+    effects.push(effects::Effect::SpawnForTask {
+        task_id: task.id.clone(),
+        dir_key: ps.tick_dir_key.clone(),
+        preferred_name: Some(coworker_name.to_string()),
+        config: Box::new(config),
+        worktree_id: worktree_id.clone(),
+        success_message: daemon_messages::called_in_reviewer(coworker_name, pr_number),
+        failure_message: format!(
+            "⚠️ Spawn failed for review task !{} (reviewer {}) — backing off for {}s",
+            task.id,
+            coworker_name,
+            SPAWN_FAILURE_COOLDOWN.as_secs()
+        ),
+        cooldown_category: "task_dispatch".to_string(),
+        extra_success_cooldowns: vec![],
+        reviewer: Some(effects::ReviewerSpawnInfo {
+            pr_number,
+            pr_comment_body: format!(
+                "{}\n## Review Status\n\n\
+                 🔍 Review in progress...\n\n---\n\
+                 > [!NOTE]\n> This comment will be updated with the review results when complete.\n\n\
+                 🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
+                crate::daemon::helpers::format_placeholder_frontmatter(&task.id)
+            ),
+            restart_count: 0,
+            agent_type: "midtown-code-reviewer".to_string(),
+        }),
+    });
+
+    Some(effects)
+}
+
+// ── Main orchestrator ────────────────────────────────────────────────────────
+
+/// Handle pending tasks that have no owner. Resolves a coworker name (via PR/blockedBy
+/// grouping or fresh allocation), assigns ownership atomically, and spawns.
+///
+/// `owned_dispatched`: Coworker names already dispatched by `dispatch_owned_pending_tasks`,
+/// used to prevent the same coworker from being targeted by both phases in a single tick.
 fn dispatch_unowned_pending_tasks(
     ps: &DaemonPersistentState,
     tasks: &[Task],
@@ -1023,6 +1478,7 @@ fn dispatch_unowned_pending_tasks(
 ) -> Vec<effects::Effect> {
     let mut effects = Vec::new();
 
+    // Log PR review priority state for diagnostics, but never block task dispatch.
     let active_review_count = ps.tick_active_reviewers.len();
     let prs_with_reviewers = ps
         .tick_reviewer_pr_assignments
@@ -1039,13 +1495,12 @@ fn dispatch_unowned_pending_tasks(
         );
     }
 
-    let mut pr_coworker_map: HashMap<String, String> = HashMap::new();
-    let mut task_coworker_map: HashMap<String, String> = HashMap::new();
-    let mut names_assigned_this_tick: HashSet<String> = HashSet::new();
-    let mut spawns_queued_this_tick: usize = 0;
-    let in_progress_count = ps.tick_in_progress_tasks.len();
-    let task_cap = ps.tick_max_in_progress_tasks;
-
+    let mut loop_state = DispatchLoopState {
+        pr_coworker_map: HashMap::new(),
+        task_coworker_map: HashMap::new(),
+        names_assigned_this_tick: HashSet::new(),
+        spawns_queued_this_tick: 0,
+    };
     let pending_tasks_without_owners =
         crate::task_store::filter_pending_tasks_without_owners(tasks, 45);
 
@@ -1077,74 +1532,24 @@ fn dispatch_unowned_pending_tasks(
             continue;
         };
 
-        if excluded_task_ids.contains(&task.id) {
-            debug!(
-                "Task !{} already claimed by orphan recovery this tick, skipping pending dispatch",
-                task.id
-            );
-            continue;
-        }
-
-        if state.is_task_spawn_in_flight(&task.id) {
-            debug!(
-                "Task !{} already has in-flight spawn, skipping duplicate",
-                task.id
-            );
-            continue;
-        }
-
-        if let Some(pr_num) = task.pr.filter(|pr| ps.tick_merged_pr_numbers.contains(pr)) {
-            info!(
-                "Auto-completing stale task !{}: PR #{} has been merged",
-                task.id, pr_num
-            );
-            effects.push(Effect::CompleteTask {
-                task_id: task.id.clone(),
-                dir_key: ps.tick_dir_key.clone(),
-            });
-            effects.push(Effect::ClearBlockedBy {
-                completed_task_id: task.id.clone(),
-                dir_key: ps.tick_dir_key.clone(),
-            });
-            continue;
-        }
-
-        if task
-            .channel
-            .as_ref()
-            .is_some_and(|ch| ps.lead_driven_channels.contains(ch))
-        {
-            debug!(
-                "Task !{}: skipping unowned pending dispatch — channel is lead-driven",
-                task.id
-            );
-            continue;
-        }
-
-        if let Some(record) = ps.find_session_for_task(&task.id) {
-            if !record.is_running {
-                if ps
-                    .tick_recently_recovered_session_ids
-                    .contains(&record.session_id)
-                {
-                    debug!(
-                        "Pending task !{} has recently-recovered session {} — skipping (cooldown)",
-                        task.id, record.session_id
-                    );
-                    continue;
-                }
-
-                info!(
-                    "Pending task !{} has stopped session {} — resuming instead of spawning fresh",
-                    task.id, record.session_id
-                );
-
-                let preferred_name = if record.name.is_empty() {
-                    None
-                } else {
-                    Some(record.name.clone())
-                };
-                let session_id = record.session_id.clone();
+        // Stage 1: Precondition checks (skip, auto-complete, or resume).
+        match check_pending_task_preconditions(task, ps, state, excluded_task_ids) {
+            PendingTaskCheck::Skip => continue,
+            PendingTaskCheck::AutoComplete => {
+                effects.push(Effect::CompleteTask {
+                    task_id: task.id.clone(),
+                    dir_key: ps.tick_dir_key.clone(),
+                });
+                effects.push(Effect::ClearBlockedBy {
+                    completed_task_id: task.id.clone(),
+                    dir_key: ps.tick_dir_key.clone(),
+                });
+                continue;
+            }
+            PendingTaskCheck::ResumeSession {
+                session_id,
+                preferred_name,
+            } => {
                 let decision = SpawnDecision {
                     task_id: task.id.clone(),
                     session_mode: crate::launch::SessionMode::ResumeSession(session_id),
@@ -1152,269 +1557,75 @@ fn dispatch_unowned_pending_tasks(
                     cooldown_category: "session_dispatch".to_string(),
                 };
                 effects.extend(build_spawn_effects(&decision, ps, tasks));
-                spawns_queued_this_tick += 1;
+                loop_state.spawns_queued_this_tick += 1;
                 continue;
             }
-            if record.is_running {
-                debug!(
-                    "Pending task !{} has running session {} — skipping dispatch",
-                    task.id, record.session_id
-                );
-                continue;
-            }
+            PendingTaskCheck::ReadyToDispatch => {}
+        }
+
+        // Stage 2: Coworker name resolution.
+        let Some((coworker_name, was_grouped)) = select_coworker_name(task, ps, tasks, &loop_state)
+        else {
+            continue;
+        };
+
+        // Stage 3: Validate the coworker assignment.
+        if !validate_coworker_assignment(
+            &coworker_name,
+            was_grouped,
+            task,
+            ps,
+            &loop_state,
+            owned_dispatched,
+            &name_task_assignments,
+        ) {
+            continue;
         }
 
         let is_reviewer_task = task.agent_type == "midtown-code-reviewer";
 
-        let grouped_name = if is_reviewer_task {
-            None
-        } else {
-            resolve_grouped_name(task, ps, tasks, &pr_coworker_map, &task_coworker_map)
-        };
+        info!(
+            "Proposing task !{} for {} (already_running={})",
+            task.id,
+            coworker_name,
+            ps.tick_active_session_names
+                .contains(&coworker_name.to_lowercase())
+        );
 
-        let was_grouped = grouped_name.is_some();
-        let effective_count = in_progress_count + spawns_queued_this_tick;
-        let at_task_limit = effective_count >= task_cap;
-
-        let coworker_name = if let Some(name) = grouped_name {
-            name
-        } else if at_task_limit {
-            debug!(
-                "Task limit reached ({}+{} >= {}), deferring task !{}",
-                in_progress_count, spawns_queued_this_tick, task_cap, task.id
-            );
-            continue;
-        } else {
-            let mut excluded_names = ps.channel_lead_names();
-            for name in &ps.tick_active_session_names {
-                excluded_names.insert(name.clone());
-            }
-            if is_reviewer_task
-                && let Some(parent_id) = task.parent.as_ref()
-                && let Some(parent_task) = task_by_id(tasks, parent_id)
-                && !parent_task.agent_name.is_empty()
-            {
-                excluded_names.insert(parent_task.agent_name.to_lowercase());
-            }
-            let name = if !task.agent_name.is_empty() {
-                task.agent_name.clone()
-            } else {
-                generate_task_session_name(&task.id, &task.subject, &excluded_names)
-            };
-            debug!("Task !{}: allocated coworker name {}", task.id, name);
-            name
-        };
-
-        if ps
-            .tick_spawn_failure_cooldown_names
-            .contains(&coworker_name.to_lowercase())
-        {
-            debug!(
-                "Task !{}: skipping {} (spawn failure cooldown active)",
-                task.id, coworker_name
-            );
-            continue;
+        // Record this assignment in loop state for same-tick grouping.
+        loop_state
+            .task_coworker_map
+            .insert(task.id.clone(), coworker_name.clone());
+        if let Some(pr_num) = crate::task_store::extract_pr_number_from_task(task) {
+            loop_state
+                .pr_coworker_map
+                .insert(pr_num, coworker_name.clone());
         }
+        loop_state
+            .names_assigned_this_tick
+            .insert(coworker_name.to_lowercase());
 
+        // Stage 4: Build dispatch effects based on task type and coworker state.
         let already_running = ps
             .tick_active_session_names
             .contains(&coworker_name.to_lowercase());
-        let is_coworker_reviewer = ps
-            .tick_active_reviewers
-            .contains(&coworker_name.to_lowercase());
-        let is_busy_from_snapshot = ps
-            .tick_busy_coworkers
-            .contains(&coworker_name.to_lowercase());
-        let assigned_this_tick = names_assigned_this_tick.contains(&coworker_name.to_lowercase());
-
-        if owned_dispatched.contains(&coworker_name.to_lowercase()) {
-            debug!(
-                "Task !{}: skipping {} (already dispatched by owned pending tasks)",
-                task.id, coworker_name
-            );
-            continue;
-        }
-
-        if name_task_assignments
-            .get(&coworker_name.to_lowercase())
-            .is_some_and(|assigned_task_id| assigned_task_id == &task.id)
-        {
-            debug!(
-                "Task !{}: skipping {} (already assigned to this task)",
-                task.id, coworker_name
-            );
-            continue;
-        }
-
-        if already_running
-            && (is_coworker_reviewer
-                || assigned_this_tick
-                || (is_busy_from_snapshot && !was_grouped))
-        {
-            debug!(
-                "Task !{}: skipping coworker {} (busy_snapshot={}, assigned_tick={}, reviewer={}, grouped={})",
-                task.id,
-                coworker_name,
-                is_busy_from_snapshot,
-                assigned_this_tick,
-                is_coworker_reviewer,
-                was_grouped
-            );
-            continue;
-        }
-
-        if !already_running && (assigned_this_tick || is_busy_from_snapshot) {
-            debug!(
-                "Task !{}: skipping {} (not running, already assigned this tick or busy)",
-                task.id, coworker_name
-            );
-            continue;
-        }
-
-        info!(
-            "Proposing task !{} for {} (already_running={})",
-            task.id, coworker_name, already_running
-        );
-
-        task_coworker_map.insert(task.id.clone(), coworker_name.clone());
-        if let Some(pr_num) = crate::task_store::extract_pr_number_from_task(task) {
-            pr_coworker_map.insert(pr_num, coworker_name.clone());
-        }
-        names_assigned_this_tick.insert(coworker_name.to_lowercase());
-
-        let plan_section = build_plan_prompt_section(&task.id, tasks);
 
         if already_running {
+            // Grouped task → nudge the already-running coworker to claim it.
             debug_assert!(
                 !is_reviewer_task,
                 "reviewer task !{} reached already_running path",
                 task.id
             );
-            let channel_msg = daemon_messages::called_in_assigned_task(
-                &coworker_name,
-                &task.id.to_string(),
-                &task.subject,
-            );
-            let session_id = ps
-                .tick_name_session_map
-                .get(&coworker_name.to_lowercase())
-                .cloned()
-                .unwrap_or_default();
-            let mut assign_callbacks = vec![
-                Effect::RecordTaskAssignment {
-                    coworker: coworker_name.clone(),
-                    task_id: task.id.clone(),
-                },
-                Effect::post_to_ops(channel_msg),
-            ];
-            if let Some(ch) = &task.channel {
-                assign_callbacks.push(Effect::EmitWorkflowEvent(
-                    crate::workflow::WorkflowEvent::TaskAssigned {
-                        channel: ch.clone(),
-                        task_id: task.id.clone(),
-                        coworker: coworker_name.clone(),
-                        subject: task.subject.clone(),
-                        description: task.description.clone(),
-                        thread_id: task.thread_id.clone(),
-                        message_id: task.message_id.clone(),
-                    },
-                ));
-            }
-            effects.push(Effect::NudgeSessionWithCallbacks {
-                session_id,
-                reason: super::wake_reason::WakeReason::TaskClaimed {
-                    task_id: task.id.clone(),
-                    subject: task.subject.clone(),
-                    plan_section: plan_section.clone(),
-                },
-                on_success: assign_callbacks,
-            });
+            effects.extend(build_grouped_nudge_effects(task, &coworker_name, ps, tasks));
         } else if is_reviewer_task {
-            let pr_number = task.pr.unwrap_or(0);
-            if pr_number == 0 {
-                warn!("Reviewer task !{} has no PR number, skipping", task.id);
-                continue;
+            // Reviewer task → spawn on isolated review worktree.
+            if let Some(reviewer_effects) = build_reviewer_spawn_effects(task, &coworker_name, ps) {
+                effects.extend(reviewer_effects);
+                loop_state.spawns_queued_this_tick += 1;
             }
-
-            let worktree_id = crate::worktree_registry::review_slug_for_pr(pr_number);
-            let wt_path = crate::paths::worktrees_dir_for_repo(&ps.tick_dir_key).join(&worktree_id);
-
-            if let Some(bound_coworker) = ps.worktree_collision(&worktree_id, &coworker_name) {
-                debug!(
-                    "Review task !{}: skipping {} because worktree {} is bound to active coworker {}",
-                    task.id, coworker_name, worktree_id, bound_coworker
-                );
-                continue;
-            }
-
-            let auth_provider = crate::config::get_execution_provider_for_role(
-                &ps.tick_dir_key,
-                crate::config::ExecutionRole::Reviewer,
-            );
-            let mut config = crate::launch::LaunchConfig::reviewer(
-                coworker_name.clone(),
-                &ps.tick_dir_key,
-                pr_number,
-                0,
-                auth_provider,
-            );
-            config.model = super::helpers::normalize_model_for_provider_role(
-                &config.model,
-                config.auth_provider,
-                &config.agent_type,
-            );
-            config.working_dir = Some(wt_path.clone());
-            config.channel = task.channel.clone();
-            config.task_id = Some(task.id.clone());
-
-            let channel_lead_names = ps.channel_lead_names();
-            if let Some(ref channel_name) = config.channel
-                && channel_lead_names.contains(channel_name)
-            {
-                config.escalation_target = Some(channel_name.clone());
-                config.initial_prompt = Some(crate::agents::reviewer_launch_prompt(
-                    pr_number,
-                    0,
-                    auth_provider,
-                    Some(channel_name),
-                ));
-            }
-
-            effects.push(effects::Effect::EnsureWorktree {
-                worktree_id: worktree_id.clone(),
-                path: wt_path.clone(),
-            });
-
-            effects.push(effects::Effect::SpawnForTask {
-                task_id: task.id.clone(),
-                dir_key: ps.tick_dir_key.clone(),
-                preferred_name: Some(coworker_name.clone()),
-                config: Box::new(config),
-                worktree_id: worktree_id.clone(),
-                success_message: daemon_messages::called_in_reviewer(&coworker_name, pr_number),
-                failure_message: format!(
-                    "⚠️ Spawn failed for review task !{} (reviewer {}) — backing off for {}s",
-                    task.id,
-                    coworker_name,
-                    SPAWN_FAILURE_COOLDOWN.as_secs()
-                ),
-                cooldown_category: "task_dispatch".to_string(),
-                extra_success_cooldowns: vec![],
-                reviewer: Some(effects::ReviewerSpawnInfo {
-                    pr_number,
-                    pr_comment_body: format!(
-                        "{}\n## Review Status\n\n\
-                         🔍 Review in progress...\n\n---\n\
-                         > [!NOTE]\n> This comment will be updated with the review results when complete.\n\n\
-                         🌃 Co-built with [Midtown](https://github.com/btucker/midtown)",
-                        crate::daemon::helpers::format_placeholder_frontmatter(&task.id)
-                    ),
-                    restart_count: 0,
-                    agent_type: "midtown-code-reviewer".to_string(),
-                }),
-            });
-            spawns_queued_this_tick += 1;
         } else {
+            // Regular coworker task → fresh spawn via SpawnDecision.
             let decision = SpawnDecision {
                 task_id: task.id.clone(),
                 session_mode: crate::launch::SessionMode::Fresh,
@@ -1422,7 +1633,7 @@ fn dispatch_unowned_pending_tasks(
                 cooldown_category: "task_dispatch".to_string(),
             };
             effects.extend(build_spawn_effects(&decision, ps, tasks));
-            spawns_queued_this_tick += 1;
+            loop_state.spawns_queued_this_tick += 1;
         }
     }
 
