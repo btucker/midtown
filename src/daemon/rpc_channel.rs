@@ -1071,8 +1071,18 @@ pub(super) async fn handle_channel_read(
             }
         };
 
-        let messages_json: Vec<serde_json::Value> =
-            result_messages.iter().map(|m| message_to_json(m)).collect();
+        // Compute reply counts from the full message set (already loaded as all_msgs).
+        let reply_meta = crate::message::compute_reply_meta(&all_msgs);
+        let messages_json: Vec<serde_json::Value> = result_messages
+            .iter()
+            .map(|m| {
+                let mut obj = m.to_json();
+                if let Some(meta) = reply_meta.get(&m.id) {
+                    obj["reply_count"] = serde_json::json!(meta.count);
+                }
+                obj
+            })
+            .collect();
 
         return Response::success(
             id,
@@ -1210,7 +1220,32 @@ pub(super) async fn handle_channel_read(
         }
     };
 
-    let messages_json: Vec<serde_json::Value> = messages.iter().map(message_to_json).collect();
+    // When reading a channel (not a thread), compute reply counts for top-level messages.
+    let reply_meta = if thread.is_none() {
+        // We need all messages to count replies. Some code paths above already
+        // read all messages, but --last without --thread does not. Read all
+        // messages here for counting; the cost is acceptable since channel logs
+        // are small.
+        match target_channel.read_all_async().await {
+            Ok(all_msgs) => crate::message::compute_reply_meta(&all_msgs),
+            Err(_) => std::collections::HashMap::new(),
+        }
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    let messages_json: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|m| {
+            let mut obj = m.to_json();
+            if thread.is_none()
+                && let Some(meta) = reply_meta.get(&m.id)
+            {
+                obj["reply_count"] = serde_json::json!(meta.count);
+            }
+            obj
+        })
+        .collect();
 
     Response::success(
         id,
@@ -1218,33 +1253,6 @@ pub(super) async fn handle_channel_read(
             "messages": messages_json,
         }),
     )
-}
-
-fn message_to_json(m: &crate::message::Message) -> serde_json::Value {
-    let mut obj = serde_json::json!({
-        "id": m.id,
-        "from": m.from,
-        "message": m.content,
-        "timestamp": m.timestamp.to_rfc3339(),
-        "msg_type": m.message_type.wire_name(),
-    });
-    if let Some(ref parent_id) = m.thread_parent_id {
-        obj["thread_parent_id"] = serde_json::Value::String(parent_id.clone());
-    }
-    if let Some(ref nudge_type) = m.nudge_type {
-        obj["nudge_type"] = serde_json::Value::String(nudge_type.clone());
-    }
-    if let Some(ref tool_data) = m.tool_data {
-        obj["tool_data"] =
-            serde_json::to_value(tool_data).expect("ToolBlock serialization is infallible");
-    }
-    if let Some(ref provider) = m.provider {
-        obj["provider"] = serde_json::Value::String(provider.clone());
-    }
-    if let Some(ref tool_use_id) = m.tool_use_id {
-        obj["tool_use_id"] = serde_json::Value::String(tool_use_id.clone());
-    }
-    obj
 }
 
 pub(crate) fn build_topic_thread_nudge_effect(

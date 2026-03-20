@@ -313,6 +313,28 @@ pub struct ChannelMessageData {
     pub tool_use_id: Option<String>,
 }
 
+impl From<&crate::message::Message> for ChannelMessageData {
+    fn from(m: &crate::message::Message) -> Self {
+        Self {
+            id: m.id.clone(),
+            from: m.from.clone(),
+            content: m.content.clone(),
+            timestamp: m.timestamp.to_rfc3339(),
+            msg_type: m.message_type.wire_name().to_string(),
+            channel: m.channel_name().to_string(),
+            thread_parent_id: m.thread_parent_id.clone(),
+            reply_count: None,
+            last_reply: None,
+            reply_participants: None,
+            auto_output: m.auto_output,
+            nudge_type: m.nudge_type.clone(),
+            tool_data: m.tool_data.clone(),
+            provider: m.provider.clone(),
+            tool_use_id: m.tool_use_id.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CoworkerStatusData {
     pub name: String,
@@ -773,28 +795,9 @@ async fn api_channel_history(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
             messages
-                .into_iter()
+                .iter()
                 .filter(|m| is_in_thread(m, &parent_id))
-                .map(|m| {
-                    let channel = m.channel_name().to_string();
-                    ChannelMessageData {
-                        id: m.id.clone(),
-                        from: m.from.clone(),
-                        content: m.content.clone(),
-                        timestamp: m.timestamp.to_rfc3339(),
-                        msg_type: format!("{:?}", m.message_type).to_lowercase(),
-                        channel,
-                        thread_parent_id: m.thread_parent_id.clone(),
-                        reply_count: None,
-                        last_reply: None,
-                        reply_participants: None,
-                        auto_output: m.auto_output,
-                        nudge_type: m.nudge_type.clone(),
-                        tool_data: m.tool_data.clone(),
-                        provider: m.provider.clone(),
-                        tool_use_id: m.tool_use_id.clone(),
-                    }
-                })
+                .map(ChannelMessageData::from)
                 .collect()
         }
         // Default history query: load only the most recent N messages, then
@@ -810,37 +813,22 @@ async fn api_channel_history(
                         StatusCode::INTERNAL_SERVER_ERROR
                     })?;
 
-            let mut reply_meta = compute_reply_meta(&messages);
+            let mut reply_meta = crate::message::compute_reply_meta(&messages);
 
             messages
-                .into_iter()
+                .iter()
                 .filter(|m| m.thread_parent_id.is_none())
                 .map(|m| {
-                    let channel = m.channel_name().to_string();
-                    let (reply_count, last_reply, reply_participants) =
-                        match reply_meta.remove(&m.id) {
-                            Some((count, last, participants)) => {
-                                (Some(count), Some(last), Some(participants))
-                            }
-                            None => (None, None, None),
-                        };
-                    ChannelMessageData {
-                        id: m.id.clone(),
-                        from: m.from,
-                        content: m.content,
-                        timestamp: m.timestamp.to_rfc3339(),
-                        msg_type: format!("{:?}", m.message_type).to_lowercase(),
-                        channel,
-                        thread_parent_id: m.thread_parent_id,
-                        reply_count,
-                        last_reply,
-                        reply_participants,
-                        auto_output: m.auto_output,
-                        nudge_type: m.nudge_type,
-                        tool_data: m.tool_data.clone(),
-                        provider: m.provider.clone(),
-                        tool_use_id: m.tool_use_id.clone(),
+                    let mut data = ChannelMessageData::from(m);
+                    if let Some(meta) = reply_meta.remove(&m.id) {
+                        data.reply_count = Some(meta.count);
+                        data.last_reply = Some(ThreadReplySummary {
+                            from: meta.last_from,
+                            timestamp: meta.last_timestamp,
+                        });
+                        data.reply_participants = Some(meta.participants);
                     }
+                    data
                 })
                 .collect()
         }
@@ -2908,23 +2896,7 @@ pub fn broadcast_coworker_status(
 
 /// Build a `WebUpdate` for a channel message.
 pub fn channel_message_update(message: &Message) -> WebUpdate {
-    WebUpdate::ChannelMessage(ChannelMessageData {
-        id: message.id.clone(),
-        from: message.from.clone(),
-        content: message.content.clone(),
-        timestamp: message.timestamp.to_rfc3339(),
-        msg_type: format!("{:?}", message.message_type).to_lowercase(),
-        channel: message.channel_name().to_string(),
-        thread_parent_id: message.thread_parent_id.clone(),
-        reply_count: None,
-        last_reply: None,
-        reply_participants: None,
-        auto_output: message.auto_output,
-        nudge_type: message.nudge_type.clone(),
-        tool_data: message.tool_data.clone(),
-        provider: message.provider.clone(),
-        tool_use_id: message.tool_use_id.clone(),
-    })
+    WebUpdate::ChannelMessage(ChannelMessageData::from(message))
 }
 
 /// Broadcast a new channel message to all WebSocket clients
@@ -3269,41 +3241,6 @@ async fn api_list_directories(State(state): State<Arc<WebState>>) -> Json<serde_
 
     let list: Vec<&str> = dirs.iter().map(|s| s.as_str()).collect();
     Json(serde_json::json!({ "directories": list }))
-}
-
-/// Compute thread reply metadata from a list of messages, excluding tool-only
-/// messages (empty content + non-empty tool_data) from the count.
-///
-/// Returns a map from parent message ID to (reply_count, last_reply_summary, participant_names).
-fn compute_reply_meta(
-    messages: &[crate::message::Message],
-) -> std::collections::HashMap<String, (usize, ThreadReplySummary, Vec<String>)> {
-    let mut meta: std::collections::HashMap<String, (usize, ThreadReplySummary, Vec<String>)> =
-        std::collections::HashMap::new();
-    for msg in messages {
-        if let Some(parent_id) = msg.thread_parent_id.as_ref() {
-            if msg.is_tool_only() {
-                continue;
-            }
-            let entry = meta.entry(parent_id.clone()).or_insert((
-                0,
-                ThreadReplySummary {
-                    from: msg.from.clone(),
-                    timestamp: msg.timestamp.to_rfc3339(),
-                },
-                Vec::new(),
-            ));
-            entry.0 += 1;
-            entry.1 = ThreadReplySummary {
-                from: msg.from.clone(),
-                timestamp: msg.timestamp.to_rfc3339(),
-            };
-            if !entry.2.contains(&msg.from) {
-                entry.2.push(msg.from.clone());
-            }
-        }
-    }
-    meta
 }
 
 #[path = "web_tests.rs"]

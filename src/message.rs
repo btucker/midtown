@@ -381,6 +381,83 @@ impl Message {
     pub fn action(from: impl Into<String>, content: impl Into<String>) -> Self {
         Self::new(from, content, MessageType::Action)
     }
+
+    /// Convert this message to the wire-format JSON used by both the RPC layer
+    /// and the web API. Callers can enrich the returned object with computed
+    /// metadata (e.g. `reply_count`) before sending it.
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut obj = serde_json::json!({
+            "id": self.id,
+            "from": self.from,
+            "message": self.content,
+            "timestamp": self.timestamp.to_rfc3339(),
+            "msg_type": self.message_type.wire_name(),
+        });
+        if let Some(ref parent_id) = self.thread_parent_id {
+            obj["thread_parent_id"] = serde_json::Value::String(parent_id.clone());
+        }
+        if let Some(ref nudge_type) = self.nudge_type {
+            obj["nudge_type"] = serde_json::Value::String(nudge_type.clone());
+        }
+        if let Some(ref tool_data) = self.tool_data {
+            obj["tool_data"] =
+                serde_json::to_value(tool_data).expect("ToolBlock serialization is infallible");
+        }
+        if let Some(ref provider) = self.provider {
+            obj["provider"] = serde_json::Value::String(provider.clone());
+        }
+        if let Some(ref tool_use_id) = self.tool_use_id {
+            obj["tool_use_id"] = serde_json::Value::String(tool_use_id.clone());
+        }
+        if self.auto_output {
+            obj["auto_output"] = serde_json::Value::Bool(true);
+        }
+        if let Some(ref channel) = self.channel {
+            obj["channel"] = serde_json::Value::String(channel.clone());
+        }
+        obj
+    }
+}
+
+/// Thread reply metadata for a parent message.
+#[derive(Debug, Clone)]
+pub struct ReplyMeta {
+    /// Number of non-tool-only replies.
+    pub count: usize,
+    /// Sender and timestamp of the most recent reply.
+    pub last_from: String,
+    pub last_timestamp: String,
+    /// Unique participants who replied in this thread.
+    pub participants: Vec<String>,
+}
+
+/// Compute thread reply metadata from a list of messages.
+///
+/// Returns a map from parent message ID to [`ReplyMeta`]. Tool-only messages
+/// (empty content + non-empty tool_data) are excluded from the count, matching
+/// the web UI behavior.
+pub fn compute_reply_meta(messages: &[Message]) -> std::collections::HashMap<String, ReplyMeta> {
+    let mut meta: std::collections::HashMap<String, ReplyMeta> = std::collections::HashMap::new();
+    for msg in messages {
+        if let Some(parent_id) = msg.thread_parent_id.as_ref() {
+            if msg.is_tool_only() {
+                continue;
+            }
+            let entry = meta.entry(parent_id.clone()).or_insert(ReplyMeta {
+                count: 0,
+                last_from: msg.from.clone(),
+                last_timestamp: msg.timestamp.to_rfc3339(),
+                participants: Vec::new(),
+            });
+            entry.count += 1;
+            entry.last_from = msg.from.clone();
+            entry.last_timestamp = msg.timestamp.to_rfc3339();
+            if !entry.participants.contains(&msg.from) {
+                entry.participants.push(msg.from.clone());
+            }
+        }
+    }
+    meta
 }
 
 #[path = "message_tests.rs"]

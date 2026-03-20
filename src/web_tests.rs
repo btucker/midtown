@@ -1848,24 +1848,24 @@ fn test_reply_count_excludes_tool_only_messages() {
         ws_tool_reply,
         mixed_reply,
     ];
-    let meta = compute_reply_meta(&messages);
+    let meta = crate::message::compute_reply_meta(&messages);
 
-    let (count, last_reply, participants) = meta.get(parent_id).expect("should have reply meta");
+    let reply = meta.get(parent_id).expect("should have reply meta");
 
     // Only text_reply and mixed_reply should be counted (2), not tool_only or ws_tool
     assert_eq!(
-        *count, 2,
+        reply.count, 2,
         "tool-only messages should be excluded from reply count"
     );
     assert_eq!(
-        last_reply.from, "charlie",
+        reply.last_from, "charlie",
         "last reply should be the mixed reply"
     );
     assert_eq!(
-        participants.len(),
+        reply.participants.len(),
         2,
         "both bob and charlie participated with visible replies"
     );
-    assert!(participants.contains(&"bob".to_string()));
-    assert!(participants.contains(&"charlie".to_string()));
+    assert!(reply.participants.contains(&"bob".to_string()));
+    assert!(reply.participants.contains(&"charlie".to_string()));
 }
