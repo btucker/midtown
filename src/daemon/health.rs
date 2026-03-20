@@ -843,14 +843,13 @@ pub fn detect_stale_attached_sessions(ps: &DaemonPersistentState) -> Vec<Effect>
 
 pub(super) async fn check_and_fire_reminders(
     ps: &DaemonPersistentState,
-    state: &DaemonState,
+    _state: &DaemonState,
 ) -> Vec<Effect> {
     let open_pr_coworkers: Vec<String> = ps.sessions_with_open_prs().into_iter().collect();
-    let ps_locked = state.persistent_state.lock().await;
     let now = chrono::Utc::now();
 
     let mut effects = build_reminder_effects_at(
-        &ps_locked.reminders.reminders,
+        &ps.reminders.reminders,
         &open_pr_coworkers,
         &ps.tick_dir_key,
         &ps.tick_default_channel,
@@ -858,7 +857,7 @@ pub(super) async fn check_and_fire_reminders(
     );
 
     // Emit an effect to advance last_evaluated_at for all cron reminders
-    let has_cron = ps_locked.reminders.reminders.iter().any(|r| {
+    let has_cron = ps.reminders.reminders.iter().any(|r| {
         r.is_active() && matches!(r.trigger, crate::reminders::ReminderTrigger::CronUtc { .. })
     });
     if has_cron {
