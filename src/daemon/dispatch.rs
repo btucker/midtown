@@ -1229,6 +1229,18 @@ fn allocate_fresh_coworker_name(
     }
     if !task.agent_name.is_empty() {
         task.agent_name.clone()
+    } else if is_reviewer_task
+        && let Some(parent_id) = task.parent.as_ref()
+        && let Some(parent_task) = task_by_id(tasks, parent_id)
+        && !parent_task.agent_name.is_empty()
+    {
+        let candidate = format!("{}-reviewer", parent_task.agent_name).to_lowercase();
+        if excluded_names.contains(&candidate) {
+            let suffix = fastrand::u32(1000..9999);
+            format!("{}-{}", candidate, suffix)
+        } else {
+            candidate
+        }
     } else {
         generate_task_session_name(&task.id, &task.subject, &excluded_names)
     }
