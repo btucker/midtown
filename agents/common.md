@@ -84,9 +84,14 @@ Use `midtown agent show` to check on what a coworker is doing. This captures and
 <!-- midtown session:$MIDTOWN_SESSION_ID -->
 ```
 
-2. **PR comments and reviews** - include frontmatter in the comment:
+2. **PR comments** - include frontmatter in the comment:
 ```
 <!-- midtown session:$MIDTOWN_SESSION_ID -->
+```
+
+3. **PR reviews** - include `type:review` so the daemon detects the review:
+```
+<!-- midtown session:$MIDTOWN_SESSION_ID type:review -->
 
 ## Code Review by {name}
 ...
