@@ -3561,10 +3561,11 @@ fn json_review_rejects_formal_review_without_attribution() {
         "Formal review from bot without frontmatter should be rejected when reviewer assigned"
     );
 
-    // Without assigned reviewer: accept (backward compat)
+    // Without assigned reviewer: also reject — COMMENTED state is too weak
+    // (Codex and other tools submit COMMENTED reviews automatically)
     assert!(
-        json_has_completed_review(&json, None, None),
-        "Formal review should be accepted when no reviewer is assigned"
+        !json_has_completed_review(&json, None, None),
+        "COMMENTED review without midtown frontmatter should be rejected"
     );
 }
 
