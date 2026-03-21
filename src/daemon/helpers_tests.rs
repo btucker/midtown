@@ -1076,6 +1076,12 @@ fn provider_for_model_alias_codex_models() {
         provider_for_model_alias("gpt-5.3-codex-spark"),
         Some(AuthProvider::Codex)
     );
+    // oN-prefix models (e.g. o3, o4-mini) match the is_openai_model_alias branch
+    assert_eq!(provider_for_model_alias("o3"), Some(AuthProvider::Codex));
+    assert_eq!(
+        provider_for_model_alias("o4-mini"),
+        Some(AuthProvider::Codex)
+    );
 }
 
 #[test]

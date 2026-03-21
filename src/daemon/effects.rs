@@ -3146,6 +3146,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     let msg = reason.to_nudge_message();
                     let channel_lead_nudgeable =
                         state.session_manager.is_nudgeable(&session_name).await;
+                    if !channel_lead_nudgeable {
+                        info!(
+                            "Channel lead '{}' is not nudgeable — skipping nudge, will attempt resume/respawn",
+                            session_name
+                        );
+                    }
                     let session_id = {
                         let ps = state.persistent_state.lock().await;
                         ps.channel_lead_sessions.get(&channel_name).cloned()

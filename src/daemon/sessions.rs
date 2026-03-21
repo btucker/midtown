@@ -1063,6 +1063,11 @@ impl SessionManager {
     }
 
     /// Check if a coworker has a running session (by name).
+    ///
+    /// Unlike [`is_nudgeable`](Self::is_nudgeable), this only checks whether the
+    /// process is live — it does not consider error flags (usage limits, auth
+    /// errors, tool-name conflicts) that would make the session unable to
+    /// accept new input.
     pub async fn is_alive(&self, name: &str) -> bool {
         #[cfg(test)]
         {
@@ -1099,6 +1104,11 @@ impl SessionManager {
                     return false;
                 }
                 let sessions = self.sessions.read().await;
+                // When the alive hook returns true but no session slot exists,
+                // return true for backward compatibility with tests that only
+                // set up the is_alive hook without populating session slots.
+                // This matches the is_alive hook pattern where hook(name)==true
+                // means "treat as alive" regardless of session state.
                 let Some(slot_id) = Self::select_slot_for_name(&sessions, name, false) else {
                     return true;
                 };
