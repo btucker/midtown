@@ -6,7 +6,6 @@ import ChevronRight from "@lucide/svelte/icons/chevron-right";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "$lib/components/ui/collapsible";
 import AuthSwitcher from "./AuthSwitcher.svelte";
 import ChannelList from "./ChannelList.svelte";
-import CoworkerStatus from "./CoworkerStatus.svelte";
 import OpsChannel from "./OpsChannel.svelte";
 import { pushPermission, pushSubscribed, pushSupported, subscribePush, unsubscribePush } from "./push.ts";
 import { connected } from "./store.ts";
@@ -41,10 +40,9 @@ async function togglePush() {
     </CollapsibleContent>
   </Collapsible>
 
-  <!-- Footer section with ops channel, coworker status, usage bars, and controls -->
+  <!-- Footer section with ops channel, usage bars, and controls -->
   <div class="mt-auto flex flex-col gap-2 border-t-2 border-sidebar-border bg-sidebar p-2 pb-safe-offset-2">
     <OpsChannel />
-    <CoworkerStatus />
     <UsageBars />
     <div class="flex items-center justify-end gap-2.5">
       <AuthSwitcher />

@@ -28,14 +28,7 @@ test.describe('Navigation', () => {
     await expect(page.locator('main textarea[placeholder*="Message to"]')).toBeVisible()
   })
 
-  test('coworker status is visible in sidebar footer', async ({ page }) => {
-    // SidebarFooter contains CoworkerStatus - look for coworker names in the footer
-    const coworkerFooter = page.locator('[data-slot="sidebar-footer"], aside footer, .sidebar-footer').first()
-    // Check if any coworker-related content is visible (park or amsterdam from mock data)
-    await expect(page.locator('text=/park|amsterdam/i').first()).toBeVisible()
-  })
-
-  test('push toggle is visible when supported', async ({ page }) => {
+test('push toggle is visible when supported', async ({ page }) => {
     // Push toggle is in SidebarHeader
     await expect(page.locator('.push-toggle')).toBeVisible()
   })
