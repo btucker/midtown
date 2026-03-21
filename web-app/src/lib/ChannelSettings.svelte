@@ -154,12 +154,13 @@ const sourceLabels = {
 
 // Sync showFullLeadOutput from daemon on channel load
 async function syncChannelSettings() {
-	const remote = await fetchChannelSettings($activeChannel);
+	const channel = $activeChannel;
+	const remote = await fetchChannelSettings(channel);
 	if (remote && typeof remote.show_full_lead_output === "boolean") {
 		channelSettings.update((s) => ({
 			...s,
-			[$activeChannel]: {
-				...s[$activeChannel],
+			[channel]: {
+				...s[channel],
 				showFullLeadOutput: remote.show_full_lead_output,
 			},
 		}));
