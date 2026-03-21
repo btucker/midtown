@@ -388,111 +388,6 @@ pub(crate) fn decide_dead_process_respawns(
 // ---------------------------------------------------------------------------
 // Dead fork detection (test-only pure function)
 // ---------------------------------------------------------------------------
-//
-// In production, fork crash recovery is handled in the session_drain handler
-// (mod.rs) which captures fork bindings before cleanup_coworker_state removes
-// them. This pure function is kept for unit testing the detection logic.
-
-/// A fork session whose process has died and should be respawned.
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DeadForkRespawn {
-    /// Name of the dead fork process.
-    pub name: String,
-    /// Thread parent ID the fork was bound to.
-    pub thread_parent_id: String,
-    /// Session ID of the dead fork.
-    pub session_id: String,
-    /// Exit code of the dead process.
-    pub exit_code: i32,
-    /// Channel the fork was in.
-    pub channel: Option<String>,
-    /// Working directory of the fork.
-    pub working_dir: Option<String>,
-    /// Auth provider for the fork.
-    pub auth_provider: crate::auth::AuthProvider,
-    /// Whether the fork was a channel lead.
-    pub is_channel_lead: bool,
-}
-
-/// Detect fork sessions whose headless process has exited unexpectedly.
-///
-/// A fork is considered dead if:
-/// - It appears in `topic_sessions` (thread_parent_id → session_id)
-/// - Its corresponding session record has a `current_name`
-/// - That name's process has `is_alive == false`
-///
-/// Unlike task-bound coworkers, forks are thread-bound — they don't appear in
-/// `in_progress_tasks`, so `decide_dead_process_respawns()` misses them.
-///
-/// Pure function: takes snapshot data and returns respawn decisions.
-/// Only used by tests — production detection is in session_drain handler.
-#[cfg(test)]
-pub(crate) fn decide_dead_fork_respawns(
-    topic_sessions: &HashMap<String, String>,
-    sessions: &HashMap<String, crate::daemon::state::SessionRecord>,
-    process_health: &HashMap<String, crate::daemon::snapshot::ProcessHealth>,
-) -> Vec<DeadForkRespawn> {
-    let mut respawns = Vec::new();
-
-    for (thread_parent_id, session_id) in topic_sessions {
-        // Look up the session record for this fork
-        let Some(record) = sessions.get(session_id) else {
-            continue;
-        };
-
-        // Get the fork's process name
-        if record.name.is_empty() {
-            continue;
-        }
-        let name = &record.name;
-
-        // Check if the process is dead.
-        // Note: `exit_code` is not reliably populated by `collect_health()` (always None
-        // for running sessions). Use `is_alive` as the primary dead-process indicator.
-        let Some(health) = process_health.get(name) else {
-            continue;
-        };
-        if health.is_alive {
-            continue;
-        }
-
-        let working_dir = if record.working_dir.is_empty() {
-            None
-        } else {
-            Some(record.working_dir.clone())
-        };
-
-        respawns.push(DeadForkRespawn {
-            name: name.clone(),
-            thread_parent_id: thread_parent_id.clone(),
-            session_id: session_id.clone(),
-            exit_code: health.exit_code.unwrap_or(-1),
-            channel: record.channel.clone(),
-            working_dir,
-            auth_provider: record.provider.unwrap_or(crate::auth::AuthProvider::Claude),
-            is_channel_lead: record.agent_type == "midtown-channel-lead",
-        });
-    }
-
-    respawns
-}
-
-/// Maximum number of times a fork session will be respawned for the same thread.
-/// After this many attempts, the daemon stops respawning and cleans up the
-/// topic_session entry so thread replies fall back to the channel lead.
-pub(crate) const MAX_FORK_RESPAWN_ATTEMPTS: u32 = 3;
-
-/// Check whether a fork respawn is allowed given the current attempt count.
-/// Returns `true` if the count is below [`MAX_FORK_RESPAWN_ATTEMPTS`].
-///
-/// Pure function — the caller is responsible for looking up and incrementing
-/// the count in `DaemonState::fork_respawn_counts`.
-pub(crate) fn is_fork_respawn_allowed(current_count: u32) -> bool {
-    current_count < MAX_FORK_RESPAWN_ATTEMPTS
-}
-
-// ---------------------------------------------------------------------------
 // Dead reviewer detection
 // ---------------------------------------------------------------------------
 
@@ -1147,10 +1042,6 @@ pub(crate) fn decide_mention_action(
 #[path = "rules_session_tests.rs"]
 #[cfg(test)]
 mod rules_session_tests;
-
-#[path = "rules_fork_tests.rs"]
-#[cfg(test)]
-mod rules_fork_tests;
 
 #[path = "rules_channel_lead_tests.rs"]
 #[cfg(test)]

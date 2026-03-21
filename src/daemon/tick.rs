@@ -109,12 +109,19 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         .into_iter()
         .collect();
 
-    // ── Fork / topic sessions ───────────────────────────────────────────
+    // ── Fork / topic sessions (derived from SessionRecord) ──────────────
+    // Build topic_sessions from SessionRecord.bound_thread_id for fork sessions.
     let topic_sessions: HashMap<String, String> = {
-        let ts = state.topic_sessions.lock().unwrap();
-        ts.iter()
-            .filter(|(_, sid)| sid.as_str() != "pending")
-            .map(|(k, v)| (k.clone(), v.clone()))
+        let ps_guard = state.persistent_state.lock().await;
+        ps_guard
+            .sessions
+            .values()
+            .filter(|s| s.is_fork_session() && s.is_running)
+            .filter_map(|s| {
+                s.bound_thread_id
+                    .as_ref()
+                    .map(|tid| (tid.clone(), s.session_id.clone()))
+            })
             .collect()
     };
 

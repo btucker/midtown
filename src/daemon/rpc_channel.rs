@@ -241,18 +241,18 @@ pub(super) async fn handle_channel_post(
         );
     }
 
-    // Output binding — if the sender is a forked topic session with a bound
-    // thread, auto-apply the bound thread_parent_id so their posts appear in the
-    // correct thread without the session needing to pass it explicitly.
-    // Uses the in-memory fork_bound_threads cache (sync Mutex) instead of the async
-    // persistent_state lock — avoids contention on the channel post hot path.
+    // Output binding — if the sender has a bound_thread_id in their SessionRecord,
+    // auto-apply it so their posts appear in the correct thread without the session
+    // needing to pass it explicitly.
     //
     // Skip for DM channels: the bound thread belongs to the topic channel, not
     // the DM channel. Applying it would fail validation ("thread_parent_id does
     // not match any existing message").
     let is_dm_channel = channel_name.starts_with("dm-");
     let bound_thread: Option<String> = if thread_parent_id.is_none() && !is_dm_channel {
-        state.fork_bound_threads.lock().unwrap().get(from).cloned()
+        let ps = state.persistent_state.lock().await;
+        ps.session_by_name(from)
+            .and_then(|s| s.bound_thread_id.clone())
     } else {
         None
     };
@@ -364,37 +364,32 @@ pub(super) async fn handle_channel_post(
         let is_topic = channel_name != default_channel && !channel_name.starts_with("dm-");
         if is_topic {
             if let Some(parent_id) = thread_parent_id {
-                let mut fork_session_id = state
-                    .topic_sessions
-                    .lock()
-                    .unwrap()
-                    .get(parent_id)
-                    .filter(|s| s.as_str() != "pending")
-                    .cloned();
+                // Look up running fork session for this thread from SessionRecord.
+                let fork_session = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.session_by_thread(parent_id)
+                        .filter(|s| s.is_running)
+                        .map(|s| (s.session_id.clone(), s.name.clone()))
+                };
 
-                // Lazy fork restoration: if the fork session is dead, attempt
-                // respawn so non-user thread replies don't go to dead sessions.
-                if let Some(ref fork_sid) = fork_session_id {
-                    fork_session_id = try_lazy_fork_respawn(state, fork_sid, parent_id).await;
-                }
-
-                if let Some(ref fork_sid) = fork_session_id {
+                if let Some((fork_sid, fork_name)) = fork_session {
                     // Avoid self-nudge: don't nudge the fork if it's the sender.
-                    let fork_name = {
-                        let ps = state.persistent_state.lock().await;
-                        ps.sessions.get(fork_sid).map(|s| s.name.clone())
-                    };
-                    let is_self = fork_name.as_deref() == Some(from);
+                    let is_self = fork_name.as_str() == from;
                     if !is_self {
-                        let wake_msg_id = msg.thread_anchor_id().to_string();
-                        let nudge_effect = build_topic_thread_nudge_effect(
-                            channel_name,
-                            &content,
-                            wake_msg_id,
-                            fork_session_id.clone(),
-                            Some(parent_id),
-                        );
-                        crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
+                        // Check if the fork process is actually alive
+                        if state.session_manager.is_alive(&fork_name).await {
+                            let wake_msg_id = msg.thread_anchor_id().to_string();
+                            let nudge_effect = build_topic_thread_nudge_effect(
+                                channel_name,
+                                &content,
+                                wake_msg_id,
+                                Some(fork_sid),
+                                Some(parent_id),
+                            );
+                            crate::daemon::effects::execute_effects(vec![nudge_effect], state)
+                                .await;
+                        }
+                        // Dead fork — message falls through to channel lead (no respawn).
                     }
                 }
             }
@@ -465,31 +460,34 @@ pub(super) async fn handle_channel_post(
             // - For thread replies: route to the existing dedicated session bound to that thread.
             // - For new top-level messages: no auto-fork. The channel lead handles directly.
             //   Users can manually dedicate a session via the web UI.
-            let mut topic_session_id = if let Some(parent_id) = thread_parent_id {
-                // Thread reply: route to existing fork session (if any).
-                // Filter out "pending" — a concurrent fork is in progress but not yet
-                // ready. Treating "pending" as None falls back to NudgeChannelLead rather
-                // than producing a NudgeSession with an invalid "pending" session_id.
-                state
-                    .topic_sessions
-                    .lock()
-                    .unwrap()
-                    .get(parent_id)
-                    .filter(|s| s.as_str() != "pending")
-                    .cloned()
+            let topic_session_id = if let Some(parent_id) = thread_parent_id {
+                // Thread reply: route to existing running fork session.
+                // Skip pending forks (concurrent creation in progress).
+                let is_pending = state.pending_forks.lock().unwrap().contains(parent_id);
+                if is_pending {
+                    None
+                } else {
+                    let (sid, fork_name) = {
+                        let ps = state.persistent_state.lock().await;
+                        match ps.session_by_thread(parent_id).filter(|s| s.is_running) {
+                            Some(s) => (Some(s.session_id.clone()), Some(s.name.clone())),
+                            None => (None, None),
+                        }
+                    };
+                    // Verify the process is actually alive. Dead forks stay dead.
+                    match (sid, fork_name) {
+                        (Some(sid), Some(name)) if state.session_manager.is_alive(&name).await => {
+                            Some(sid)
+                        }
+                        _ => None,
+                    }
+                }
             } else {
                 // New top-level message: channel lead handles directly.
                 None
             };
 
-            // Lazy fork restoration: if the fork session exists in topic_sessions
-            // but the process is dead (e.g., after daemon restart), attempt to
-            // respawn it so thread messages aren't silently dropped.
-            if let (Some(fork_sid), Some(parent_id)) = (&topic_session_id, thread_parent_id) {
-                topic_session_id = try_lazy_fork_respawn(state, fork_sid, parent_id).await;
-            }
-
-            if let Some(fork_session_id) = topic_session_id.as_deref() {
+            if let Some(ref fork_session_id) = topic_session_id {
                 debug!(
                     "channel.post: routing to fork session {} (thread anchor {})",
                     fork_session_id, wake_msg_id,
@@ -1281,149 +1279,6 @@ pub(crate) fn build_topic_thread_nudge_effect(
             reason,
         }
     }
-}
-
-/// Lazy fork restoration: check if a fork session is alive and respawn if dead.
-///
-/// After a daemon restart, `topic_sessions` is rebuilt from persisted state but
-/// the actual headless processes are not running. When a thread reply arrives for
-/// a dead fork, this function attempts to respawn it so the message can be
-/// delivered to a live session.
-///
-/// Returns `Some(new_session_id)` if the fork is alive or was successfully
-/// respawned, or `None` if respawn failed (caller should fall back to channel lead).
-async fn try_lazy_fork_respawn(
-    state: &DaemonState,
-    fork_sid: &str,
-    thread_parent_id: &str,
-) -> Option<String> {
-    // Look up the fork's process name
-    let fork_name = {
-        let ps = state.persistent_state.lock().await;
-        ps.sessions.get(fork_sid).map(|s| s.name.clone())
-    };
-
-    let Some(ref name) = fork_name else {
-        // No name mapping — stale topic_sessions entry, clean it up
-        warn!(
-            "channel.post: no name mapping for fork session {} — removing stale topic_sessions entry",
-            fork_sid
-        );
-        state
-            .topic_sessions
-            .lock()
-            .unwrap()
-            .remove(thread_parent_id);
-        return None;
-    };
-
-    // Check if the fork process is alive
-    if state.session_manager.is_alive(name).await {
-        // Fork is alive, use the existing session
-        return Some(fork_sid.to_string());
-    }
-
-    // Check max retry limit before attempting lazy respawn
-    let respawn_allowed = {
-        let mut counts = state.fork_respawn_counts.lock().unwrap();
-        let count = counts.entry(thread_parent_id.to_string()).or_insert(0);
-        if crate::rules::is_fork_respawn_allowed(*count) {
-            *count += 1;
-            true
-        } else {
-            false
-        }
-    };
-    if !respawn_allowed {
-        warn!(
-            "channel.post: fork respawn limit reached for thread {} — falling back to channel lead",
-            thread_parent_id
-        );
-        state
-            .topic_sessions
-            .lock()
-            .unwrap()
-            .remove(thread_parent_id);
-        state
-            .fork_respawn_counts
-            .lock()
-            .unwrap()
-            .remove(thread_parent_id);
-        return None;
-    }
-
-    info!(
-        "channel.post: fork session {} ({}) is dead — attempting lazy respawn for thread {}",
-        fork_sid, name, thread_parent_id
-    );
-
-    // Get fork metadata from persisted state
-    let respawn_meta = {
-        let ps = state.persistent_state.lock().await;
-        ps.sessions.get(fork_sid).map(|record| {
-            (
-                if record.working_dir.is_empty() {
-                    None
-                } else {
-                    Some(record.working_dir.clone())
-                },
-                record.provider.unwrap_or(crate::auth::AuthProvider::Claude),
-                record.agent_type == "midtown-channel-lead",
-                record.initial_prompt.clone(),
-                record.channel.clone(),
-            )
-        })
-    };
-
-    let Some((working_dir, auth_provider, is_channel_lead, initial_prompt, channel)) = respawn_meta
-    else {
-        warn!(
-            "channel.post: no persisted record for dead fork {} — removing stale topic_sessions entry",
-            fork_sid
-        );
-        state
-            .topic_sessions
-            .lock()
-            .unwrap()
-            .remove(thread_parent_id);
-        return None;
-    };
-
-    // Execute respawn
-    let respawn_effect = crate::daemon::effects::Effect::RespawnFork {
-        fork_name: name.clone(),
-        thread_parent_id: thread_parent_id.to_string(),
-        channel,
-        working_dir,
-        auth_provider,
-        is_channel_lead,
-        initial_prompt,
-        old_session_id: Some(fork_sid.to_string()),
-    };
-    crate::daemon::effects::execute_effects(vec![respawn_effect], state).await;
-
-    // Re-read topic_sessions — respawn_fork updates it with the session_id on
-    // success, or removes the entry on failure. When resuming an old session, the
-    // ID may be the same as fork_sid (successful resume keeps the original ID),
-    // so we check for existence rather than ID change.
-    let new_session_id = state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .get(thread_parent_id)
-        .filter(|s| s.as_str() != "pending")
-        .cloned();
-
-    if new_session_id.is_none() {
-        // Respawn failed (respawn_fork already removed the stale entry) —
-        // future messages will fall back to channel lead.
-        warn!(
-            "channel.post: fork respawn failed for thread {} — falling back to channel lead",
-            thread_parent_id
-        );
-    }
-
-    new_session_id
 }
 
 #[path = "rpc_channel_tests.rs"]

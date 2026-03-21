@@ -736,7 +736,7 @@ pub async fn recover_channel_lead_session_mappings(
         }
 
         // Only root channel leads (not forked topic sessions) are tracked in
-        // `channel_lead_sessions`. Forked leads use `fork_bound_channels`.
+        // `channel_lead_sessions`. Forked leads have bound_thread_id set.
         if record.bound_thread_id.is_some() {
             continue;
         }

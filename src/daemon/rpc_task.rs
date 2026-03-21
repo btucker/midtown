@@ -961,7 +961,11 @@ pub(crate) async fn deliver_task_prompt(
         match state.session_manager.send_message(name, message).await {
             Ok(()) => {
                 // Post to DM channel for observability (skip fork sessions)
-                let is_fork = state.fork_bound_threads.lock().unwrap().contains_key(name);
+                let is_fork = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.session_by_name(name)
+                        .is_some_and(|s| s.is_fork_session())
+                };
                 if !is_fork {
                     let dm_effect = super::effects::Effect::PostToChannel {
                         sender: from.to_string(),
@@ -1051,7 +1055,11 @@ pub(crate) async fn deliver_task_prompt(
                 );
 
                 // Post to DM channel for observability (skip fork sessions)
-                let is_fork = state.fork_bound_threads.lock().unwrap().contains_key(name);
+                let is_fork = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.session_by_name(name)
+                        .is_some_and(|s| s.is_fork_session())
+                };
                 if !is_fork {
                     let dm_effect = super::effects::Effect::PostToChannel {
                         sender: from.to_string(),
