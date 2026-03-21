@@ -1125,6 +1125,19 @@ async fn build_coworkers_data(
         })
         .unwrap_or_default();
 
+    // Extract avatar color/icon overrides from session records
+    let session_avatars: HashMap<String, (Option<String>, Option<String>)> = state
+        .persistent_state
+        .try_lock()
+        .map(|ps| {
+            ps.sessions
+                .values()
+                .filter(|s| s.color.is_some() || s.icon.is_some())
+                .map(|s| (s.name.clone(), (s.color.clone(), s.icon.clone())))
+                .collect()
+        })
+        .unwrap_or_default();
+
     let active_coworkers = state.coworkers.list();
     let coworker_records = state.coworker_records.read().await;
 
@@ -1195,6 +1208,8 @@ async fn build_coworkers_data(
                 .or_else(|| reviewer_pr_map.get(&cw.name).copied())
                 .or_else(|| worktree_pr_map.get(&cw.name).copied());
 
+            let avatar = session_avatars.get(&cw.name);
+
             Some(serde_json::json!({
                 "name": cw.name,
                 "task_id": task_id,
@@ -1206,6 +1221,8 @@ async fn build_coworkers_data(
                 "profile": cw.profile,
                 "progress": record.and_then(|r| r.progress),
                 "time_estimate": record.and_then(|r| r.format_time_remaining()),
+                "color": avatar.and_then(|(c, _)| c.as_deref()),
+                "icon": avatar.and_then(|(_, i)| i.as_deref()),
             }))
         })
         .collect::<Vec<_>>();

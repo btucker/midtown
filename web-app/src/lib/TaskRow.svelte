@@ -121,7 +121,7 @@ function handleDescriptionClick(e) {
             title="{task.owner}{effectiveCw?.phase ? ` · ${effectiveCw.phase}` : ''}"
             onclick={(e) => { e.stopPropagation(); selectDm(task.owner) }}
             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(task.owner) } }}
-          >{#if ownerIcon}<DynamicIcon name={ownerIcon} size={10} />{:else}{task.owner[0].toUpperCase()}{/if}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="hsl(var(--sidebar-background))" /></span></span>
+          >{#if ownerIcon}<DynamicIcon name={ownerIcon} size={10}>{#snippet fallback()}{task.owner[0].toUpperCase()}{/snippet}</DynamicIcon>{:else}{task.owner[0].toUpperCase()}{/if}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="hsl(var(--sidebar-background))" /></span></span>
         {/if}
         {#if effectiveReviewer}
           {@const reviewerGlow = isActive && !effectiveReviewPosted}
@@ -181,7 +181,7 @@ function handleDescriptionClick(e) {
             title="{task.owner}{effectiveCw?.phase ? ` · ${effectiveCw.phase}` : ''}"
             onclick={(e) => { e.stopPropagation(); selectDm(task.owner) }}
             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(task.owner) } }}
-          >{#if ownerIcon}<DynamicIcon name={ownerIcon} size={10} />{:else}{task.owner[0].toUpperCase()}{/if}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="hsl(var(--sidebar-background))" /></span></span>
+          >{#if ownerIcon}<DynamicIcon name={ownerIcon} size={10}>{#snippet fallback()}{task.owner[0].toUpperCase()}{/snippet}</DynamicIcon>{:else}{task.owner[0].toUpperCase()}{/if}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="hsl(var(--sidebar-background))" /></span></span>
         {/if}
         {#if effectiveReviewer}
           {@const reviewerGlow = isActive && !effectiveReviewPosted}

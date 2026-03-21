@@ -149,7 +149,7 @@ let hidden = $derived(!showToolData && isToolOnly(msg));
       <div
         class="rounded-md flex items-center justify-center text-white font-bold text-[1rem] select-none mt-[0.15rem]"
         style="width: {AVATAR_SIZE}; height: {AVATAR_SIZE}; background-color: {displayColor}"
-      >{#if senderIcon}<DynamicIcon name={senderIcon} size={18} />{:else}{avatarLetter(displayName)}{/if}</div>
+      >{#if senderIcon}<DynamicIcon name={senderIcon} size={18}>{#snippet fallback()}{avatarLetter(displayName)}{/snippet}</DynamicIcon>{:else}{avatarLetter(displayName)}{/if}</div>
       {#if isDedicatedSession}
         <div
           class="absolute -bottom-1 -right-1 flex items-center justify-center w-4 h-4 rounded-full bg-background border border-border"

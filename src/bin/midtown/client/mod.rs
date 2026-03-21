@@ -507,7 +507,6 @@ impl DaemonClient {
     // Task commands
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn task_create(
         &self,
         subject: &str,

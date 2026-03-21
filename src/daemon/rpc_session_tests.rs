@@ -1217,14 +1217,27 @@ async fn test_handle_session_fork_accepts_valid_uuid() {
 
     let valid_uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 
-    // Pre-populate topic_sessions with an alive session so the fork returns
+    // Pre-populate a SessionRecord bound to this thread so the fork returns
     // "already exists" without needing to spawn a real process.
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "existing-session".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "existing-session".to_string(),
+                name: "fork-existing".to_string(),
+                bound_thread_id: Some(valid_uuid.to_string()),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
+    // Hook is_alive to return true for our fake fork session
     state
-        .topic_sessions
-        .lock()
-        .unwrap()
-        .insert(valid_uuid.to_string(), "existing-session".to_string());
-    setup_alive_fork(&state, "existing-session", "fork-existing").await;
+        .session_manager
+        .set_test_is_alive_hook(Some(std::sync::Arc::new(|name: &str| {
+            name == "fork-existing"
+        })));
 
     let resp = handle_session_fork(
         RequestId::Number(101),

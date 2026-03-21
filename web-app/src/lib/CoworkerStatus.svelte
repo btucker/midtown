@@ -121,7 +121,7 @@ function openPrDetail(prNumber) {
                   <span
                     class="flex items-center justify-center w-5 h-5 rounded text-[0.6rem] font-bold text-white select-none"
                     style="background-color: {cw.color || getSenderColor(cw.name)}"
-                  >{#if cw.icon}<DynamicIcon name={cw.icon} size={12} />{:else}{avatarLetter(cw.name)}{/if}</span>
+                  >{#if cw.icon}<DynamicIcon name={cw.icon} size={12}>{#snippet fallback()}{avatarLetter(cw.name)}{/snippet}</DynamicIcon>{:else}{avatarLetter(cw.name)}{/if}</span>
                   {#if isOffline(cw)}
                     <span class="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border-2 border-sidebar bg-muted-foreground/40"></span>
                   {:else}
