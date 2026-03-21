@@ -702,15 +702,6 @@ pub struct WorldSnapshot {
     #[serde(default)]
     pub recently_recovered_session_ids: HashSet<String>,
 
-    // ── Fork / topic session state ─────────────────────────────────────
-    /// Thread-bound fork sessions: maps `thread_parent_id → session_id`.
-    ///
-    /// Populated from `DaemonState::topic_sessions` during snapshot collection.
-    /// Used by `decide_dead_fork_respawns()` to detect fork sessions whose
-    /// processes have died and need respawning.
-    #[serde(default)]
-    pub topic_sessions: HashMap<String, String>,
-
     // ── Session-centric fields (new model) ──────────────────────────────
     /// All session records, keyed by session_id.
     ///
@@ -1636,25 +1627,6 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
             .collect()
     };
 
-    // ── Fork / topic sessions ───────────────────────────────────────────
-    // Thread→session routing now derived from SessionRecord.bound_thread_id.
-    let topic_sessions: HashMap<String, String> = {
-        let ps = state.persistent_state.lock().await;
-        ps.sessions
-            .values()
-            .filter(|s| {
-                s.bound_thread_id.is_some()
-                    && s.agent_type == "midtown-channel-lead"
-                    && s.is_running
-            })
-            .filter_map(|s| {
-                s.bound_thread_id
-                    .as_ref()
-                    .map(|tid| (tid.clone(), s.session_id.clone()))
-            })
-            .collect()
-    };
-
     // ── Session-centric fields ───────────────────────────────────────────
     let (sessions, session_task_map, session_name_map, name_session_map) = {
         let persistent = state.persistent_state.lock().await;
@@ -1860,7 +1832,6 @@ pub(crate) async fn collect_world_snapshot(state: &DaemonState) -> WorldSnapshot
         default_channel,
         default_branch: state.default_branch.clone(),
         repo_owner,
-        topic_sessions,
         sessions,
         session_task_map,
         session_name_map,
@@ -1944,7 +1915,6 @@ pub(super) fn minimal_snapshot_for_test() -> WorldSnapshot {
         default_channel: "test-repo".to_string(),
         default_branch: "main".to_string(),
         repo_owner: None,
-        topic_sessions: HashMap::new(),
         sessions: HashMap::new(),
         session_task_map: HashMap::new(),
         session_name_map: HashMap::new(),

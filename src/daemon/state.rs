@@ -444,10 +444,6 @@ pub struct DaemonPersistentState {
     #[serde(skip)]
     pub tick_stale_lead_worktrees: HashSet<String>,
 
-    /// Topic/fork sessions: thread_parent_id → session_id.
-    #[serde(skip)]
-    pub tick_topic_sessions: HashMap<String, String>,
-
     /// Session profile mapping: coworker name → auth profile email.
     #[serde(skip)]
     pub tick_session_profile_map: HashMap<String, String>,

@@ -98,26 +98,6 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         .into_iter()
         .collect();
 
-    // ── Fork / topic sessions ───────────────────────────────────────────
-    // Thread→session routing now derived from SessionRecord.bound_thread_id.
-    // Build tick_topic_sessions from persistent state for snapshot consumers.
-    let topic_sessions: HashMap<String, String> = {
-        let ps = state.persistent_state.lock().await;
-        ps.sessions
-            .values()
-            .filter(|s| {
-                s.bound_thread_id.is_some()
-                    && s.agent_type == "midtown-channel-lead"
-                    && s.is_running
-            })
-            .filter_map(|s| {
-                s.bound_thread_id
-                    .as_ref()
-                    .map(|tid| (tid.clone(), s.session_id.clone()))
-            })
-            .collect()
-    };
-
     // ── Session profile map ────────────────────────────────────────────
     let session_profile_map: HashMap<String, String> = {
         let map = state.session_profile_map.lock().unwrap();
@@ -387,9 +367,6 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
 
         // Stale lead worktrees
         ps.tick_stale_lead_worktrees = stale_lead_worktrees;
-
-        // Topic sessions
-        ps.tick_topic_sessions = topic_sessions;
 
         // Session profile map
         ps.tick_session_profile_map = session_profile_map;

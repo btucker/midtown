@@ -1268,8 +1268,8 @@ fn test_auto_detach_suffix_channel_lead_gets_channel_message() {
 
 // ── PostToChannel thread resolution tests ─────────────────────────────────────
 
-/// When PostToChannel has `channel: None` and the sender has a fork_bound_threads
-/// entry, the message should be posted to the default channel with thread_parent_id —
+/// When PostToChannel has `channel: None` and the sender has a bound_thread_id,
+/// the message should be posted to the default channel with thread_parent_id —
 /// not dropped due to an empty channel name.
 ///
 /// Regression test for PR #1591 review feedback: the original code used
