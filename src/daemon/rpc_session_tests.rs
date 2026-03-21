@@ -1276,11 +1276,9 @@ fn test_fork_channel_lead_disallows_edit() {
 }
 
 /// Demonstrates that `build_fork_config` re-derives a *different* name when
-/// given an existing fork name as a hint. This is why `respawn_fork` must
-/// use the original fork name directly rather than relying on the generated name —
-/// cooldowns are keyed by name, and name mutation would bypass rate limiting.
-///
-/// Regression guard for the Codex-identified crash-respawn name stability issue.
+/// given an existing fork name as a hint. Callers that need name stability
+/// (e.g., for cooldown key consistency) should use `name_override` instead
+/// of `fork_name_hint`.
 #[test]
 fn test_build_fork_config_mutates_name_when_given_existing_fork_name_as_hint() {
     let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");

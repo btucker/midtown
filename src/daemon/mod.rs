@@ -572,16 +572,6 @@ pub(crate) struct DaemonState {
     /// fresh for each review session — a restart mid-review would re-spawn the
     /// reviewer, who would post new notes from scratch.
     review_note_tracker: std::sync::Mutex<HashMap<(String, u64), std::time::Instant>>,
-    /// Fork respawn attempt counts, keyed by `thread_parent_id`.
-    ///
-    /// Tracks how many times a fork session has been respawned for a given thread.
-    /// After [`crate::rules::MAX_FORK_RESPAWN_ATTEMPTS`] attempts, the daemon stops
-    /// respawning and cleans up the topic_session entry so thread replies fall back
-    /// to the channel lead.
-    ///
-    /// Ephemeral — resets on daemon restart, which is acceptable because a restart
-    /// gives forks a fresh chance (the transient error may have resolved).
-    fork_respawn_counts: std::sync::Mutex<HashMap<String, u32>>,
     /// Process health state for headless coworkers, keyed by coworker name.
     ///
     /// Populated by the session management layer from `HeadlessSession` stream events
@@ -1336,7 +1326,6 @@ impl DaemonState {
             reviewer_escalations_posted: std::sync::Mutex::new(HashSet::new()),
             orphaned_pr_lead_nudges_sent: std::sync::Mutex::new(HashSet::new()),
             review_note_tracker: std::sync::Mutex::new(HashMap::new()),
-            fork_respawn_counts: std::sync::Mutex::new(HashMap::new()),
             worktree_freshness_cache: std::sync::Mutex::new(None),
             coworkers_with_unblocked_deps_cache: std::sync::Mutex::new(None),
             headless_health: std::sync::RwLock::new(HashMap::new()),
@@ -3844,7 +3833,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 }
 
                 // Handle stopped sessions: deregister, record stop time, post to channel
-                let mut fork_respawn_effects: Vec<effects::Effect> = Vec::new();
                 for name in all_stopped {
                     warn!("Headless session '{}' exited unexpectedly", name);
 
@@ -3855,21 +3843,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     // handling is single-threaded, so no concurrent remove() is possible.
                     let failed_resume = state.session_manager.was_failed_resume(&name).await;
 
-                    // Capture session_id and fork bindings BEFORE cleanup
-                    // (cleanup marks SessionRecord as non-running). Fork crash
-                    // recovery must detect dead forks here — not in the
-                    // snapshot-based TaskDispatchTick — because
-                    // cleanup_coworker_state marks SessionRecord as non-running,
-                    // making dead forks invisible to session_by_thread().
-                    let (session_id_for_cleanup, fork_thread_id, fork_channel) = {
+                    // Capture session_id BEFORE cleanup (cleanup marks
+                    // SessionRecord as non-running).
+                    let session_id_for_cleanup = {
                         let ps = state.persistent_state.lock().await;
-                        let record = ps.session_by_name(&name);
-                        let sid = record.map(|r| r.session_id.clone());
-                        let tid = record.and_then(|r| r.bound_thread_id.clone());
-                        let ch = record
-                            .filter(|r| r.is_fork_session())
-                            .and_then(|r| r.channel.clone());
-                        (sid, tid, ch)
+                        ps.session_by_name(&name).map(|r| r.session_id.clone())
                     };
 
                     // Remove from session manager tracking (session-death-specific:
@@ -3934,164 +3912,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         }
                     }
 
-                    // Fork crash recovery: if this was a fork session, queue respawn effects.
-                    // We captured fork bindings above (before cleanup removed them).
-                    let mut fork_respawning = false;
-                    if let Some(thread_parent_id) = fork_thread_id {
-                        // Check cooldown to prevent respawn loops
-                        let should_respawn = {
-                            let cooldowns = state.cooldowns.lock().unwrap();
-                            cooldowns.check(
-                                "process_respawn",
-                                &name,
-                                constants::ZOMBIE_RESPAWN_COOLDOWN,
-                            )
-                        };
-                        if should_respawn {
-                        // Check max retry limit (prevents infinite respawn loops
-                        // when the underlying cause is persistent, e.g. context too large).
-                        let respawn_allowed = {
-                            let mut counts = state.fork_respawn_counts.lock().unwrap();
-                            let count = counts.entry(thread_parent_id.to_string()).or_insert(0);
-                            if crate::rules::is_fork_respawn_allowed(*count) {
-                                *count += 1;
-                                true
-                            } else {
-                                false
-                            }
-                        };
-                        if respawn_allowed {
-                            // Get fork metadata from persistent state (record persists after cleanup)
-                            let (working_dir, auth_provider, is_channel_lead, initial_prompt) =
-                                if let Some(ref sid) = session_id_for_cleanup {
-                                    let ps = state.persistent_state.lock().await;
-                                    if let Some(record) = ps.sessions.get(sid) {
-                                        (
-                                            if record.working_dir.is_empty() {
-                                                None
-                                            } else {
-                                                Some(record.working_dir.clone())
-                                            },
-                                            record
-                                                .provider
-                                                .unwrap_or(crate::auth::AuthProvider::Claude),
-                                            record.agent_type == "midtown-channel-lead",
-                                            record.initial_prompt.clone(),
-                                        )
-                                    } else {
-                                        (None, crate::auth::AuthProvider::Claude, false, None)
-                                    }
-                                } else {
-                                    (None, crate::auth::AuthProvider::Claude, false, None)
-                                };
-
-                            warn!(
-                                "Fork {} process died — queuing respawn for thread {}",
-                                name, thread_parent_id
-                            );
-                            fork_respawning = true;
-
-                            fork_respawn_effects.push(effects::Effect::RespawnFork {
-                                fork_name: name.clone(),
-                                thread_parent_id: thread_parent_id.clone(),
-                                channel: fork_channel.clone(),
-                                working_dir,
-                                auth_provider,
-                                is_channel_lead,
-                                initial_prompt,
-                                old_session_id: session_id_for_cleanup.clone(),
-                            });
-                            fork_respawn_effects.push(effects::Effect::RecordCooldown {
-                                category: "process_respawn".to_string(),
-                                key: name.clone(),
-                            });
-                            // Include stderr in the respawn message so crash
-                            // context is preserved even if respawn fails.
-                            let respawn_message = {
-                                let base = format!(
-                                    "💀 Fork {} process died — respawning for thread {}",
-                                    name, thread_parent_id
-                                );
-                                if let Some(stderr_lines) = stderr_by_name.get(&name) {
-                                    if !stderr_lines.is_empty() {
-                                        let last_n: Vec<&str> = stderr_lines
-                                            .iter()
-                                            .rev()
-                                            .take(10)
-                                            .rev()
-                                            .map(|s| s.as_str())
-                                            .collect();
-                                        format!(
-                                            "{}\n\nStderr ({} lines):\n{}",
-                                            base,
-                                            stderr_lines.len(),
-                                            last_n.join("\n")
-                                        )
-                                    } else {
-                                        base
-                                    }
-                                } else {
-                                    base
-                                }
-                            };
-                            fork_respawn_effects
-                                .push(effects::Effect::post_to_ops(respawn_message));
-                        } else {
-                            // Max retry limit reached — stop respawning and clean up.
-                            warn!(
-                                "Fork {} exceeded max respawn attempts ({}) for thread {} — giving up",
-                                name, crate::rules::MAX_FORK_RESPAWN_ATTEMPTS, thread_parent_id
-                            );
-                            // No topic_sessions cleanup needed — thread routing now
-                            // uses SessionRecord.bound_thread_id directly via
-                            // session_by_thread(), which skips non-running sessions.
-                            // Clean up the respawn counter (no longer needed).
-                            state.fork_respawn_counts.lock().unwrap().remove(&thread_parent_id);
-                            let giving_up_message = {
-                                let base = format!(
-                                    "Fork for thread {} failed {} times and will not be retried. \
-                                     Thread replies will be handled by the channel lead.",
-                                    thread_parent_id, crate::rules::MAX_FORK_RESPAWN_ATTEMPTS
-                                );
-                                if let Some(stderr_lines) = stderr_by_name.get(&name) {
-                                    if !stderr_lines.is_empty() {
-                                        let last_n: Vec<&str> = stderr_lines
-                                            .iter()
-                                            .rev()
-                                            .take(10)
-                                            .rev()
-                                            .map(|s| s.as_str())
-                                            .collect();
-                                        format!(
-                                            "{}\n\nLast stderr ({} lines):\n{}",
-                                            base,
-                                            stderr_lines.len(),
-                                            last_n.join("\n")
-                                        )
-                                    } else {
-                                        base
-                                    }
-                                } else {
-                                    base
-                                }
-                            };
-                            fork_respawn_effects
-                                .push(effects::Effect::post_to_ops(giving_up_message));
-                        }
-                        } else {
-                            debug!("Fork respawn cooldown active for {}", name);
-                        }
-                    }
-
-                    // Skip the generic "exited unexpectedly" message for forks being
-                    // respawned — the RespawnFork effect already posts a specific
-                    // "💀 Fork died — respawning" message to #ops.
-                    if fork_respawning {
-                        debug!(
-                            "Skipping generic exit message for fork {} (respawn already queued)",
-                            name
-                        );
-                    } else {
+                    // Dead forks are not auto-respawned. When a thread reply
+                    // arrives for a dead fork, the message routes to the channel
+                    // lead instead. The fork's SessionRecord is already marked
+                    // is_running=false by cleanup_dead_coworker_state above.
+                    {
                         // Determine session role for the exit message
                         let is_lead = helpers::is_project_lead(&name, &state.project_name);
                         let session_role = if is_lead {
@@ -4128,10 +3953,6 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     }
                 }
 
-                // Execute fork respawn effects (after all cleanups are complete).
-                if !fork_respawn_effects.is_empty() {
-                    effects::execute_effects(fork_respawn_effects, &state).await;
-                }
             }
 
             // Periodically monitor coworker sessions: idle shutdown, nudges, stuck detection

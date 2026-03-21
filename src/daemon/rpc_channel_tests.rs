@@ -2188,13 +2188,13 @@ async fn test_thread_reply_during_pending_fork_does_not_route_to_pending_session
     );
 }
 
-// ── Lazy fork restoration tests ───────────────────────────────────────────────
+// ── Dead fork routing tests ──────────────────────────────────────────────────
 
 /// When a thread reply targets a fork session that is dead (e.g., after daemon
-/// restart), the stale `topic_sessions` entry should be cleaned up and the
-/// message should fall back to the channel lead instead of being silently dropped.
+/// restart), the message should fall through to the channel lead instead of
+/// being sent to the dead fork. Dead forks are not auto-respawned.
 #[tokio::test]
-async fn test_thread_reply_to_dead_fork_cleans_up_stale_entry() {
+async fn test_thread_reply_to_dead_fork_falls_through_to_lead() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-dead-fork-cleanup");
 
     // Post a parent message to get a valid thread_parent_id
@@ -2236,7 +2236,7 @@ async fn test_thread_reply_to_dead_fork_cleans_up_stale_entry() {
     // is_alive returns false by default (no process in session_manager),
     // so the fork will be detected as dead.
 
-    // Post a thread reply — should detect dead fork and clean up
+    // Post a thread reply — should detect dead fork and fall through to channel lead
     let response = handle_channel_post(
         1_i64.into(),
         "user",
@@ -2251,16 +2251,14 @@ async fn test_thread_reply_to_dead_fork_cleans_up_stale_entry() {
         "channel.post should succeed even with dead fork"
     );
 
-    // The stale topic_sessions entry should be cleaned up since respawn
-    // fails in test env (no actual headless process can be spawned).
+    // The SessionRecord still exists (dead forks are not cleaned up),
+    // but the message was routed to the channel lead, not the dead fork.
+    // We verify the record is still there — it's harmless because
+    // session_by_thread is only used for routing, and we check is_alive.
     let ps = state.persistent_state.lock().await;
     assert!(
-        ps.session_by_thread(&thread_parent_id).is_none()
-            || ps
-                .session_by_thread(&thread_parent_id)
-                .map(|s| s.session_id.as_str())
-                != Some(dead_fork_sid),
-        "stale topic_sessions entry for dead fork should be cleaned up"
+        ps.session_by_thread(&thread_parent_id).is_some(),
+        "dead fork SessionRecord should still exist (not cleaned up)"
     );
 }
 
@@ -2545,20 +2543,14 @@ async fn test_bound_thread_skipped_for_dm_channels() {
     );
 }
 
-// ── Non-user thread reply fork respawn tests ──────────────────────────────────
+// ── Non-user thread reply to dead fork tests ─────────────────────────────────
 
 /// When a non-user sender (coworker) posts a thread reply to a topic channel
-/// where the fork session is dead, `try_lazy_fork_respawn()` should be called
-/// to attempt respawn — just like it is for user messages.
-///
-/// Bug: The non-user sender nudge path at lines 299-327 sent a NudgeSession
-/// effect without checking if the fork was alive. Dead forks never got respawned
-/// for non-user thread replies.
-///
-/// This test verifies that a coworker's thread reply to a dead fork triggers
-/// cleanup of the stale topic_sessions entry (since respawn fails in test env).
+/// where the fork session is dead, the message should not be sent to the dead
+/// fork. Dead forks are not auto-respawned; the message is effectively dropped
+/// for the fork path (coworker-to-coworker thread replies are non-critical).
 #[tokio::test]
-async fn test_non_user_thread_reply_to_dead_fork_triggers_respawn() {
+async fn test_non_user_thread_reply_to_dead_fork_skips_dead_session() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-non-user-dead-fork-respawn");
 
     // Post a parent message in the topic channel to get a valid thread_parent_id
@@ -2603,17 +2595,12 @@ async fn test_non_user_thread_reply_to_dead_fork_triggers_respawn() {
         "channel.post should succeed even with dead fork"
     );
 
-    // The stale topic_sessions entry should be cleaned up because respawn
-    // fails in test env (no actual headless process). This proves that
-    // try_lazy_fork_respawn() was called for the non-user sender path.
+    // The SessionRecord still exists — dead forks are not cleaned up or
+    // respawned. The is_alive check prevents routing to the dead session.
     let ps = state.persistent_state.lock().await;
     assert!(
-        ps.session_by_thread(&thread_parent_id).is_none()
-            || ps
-                .session_by_thread(&thread_parent_id)
-                .map(|s| s.session_id.as_str())
-                != Some(dead_fork_sid),
-        "Non-user thread reply to dead fork should trigger respawn attempt and clean up stale entry"
+        ps.session_by_thread(&thread_parent_id).is_some(),
+        "dead fork SessionRecord should still exist"
     );
 }
 

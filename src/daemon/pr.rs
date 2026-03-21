@@ -4314,7 +4314,6 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::AutoMergePr { .. } => "AutoMergePr",
         Effect::PostPrComment { .. } => "PostPrComment",
         Effect::EmitWorkflowEvent(_) => "EmitWorkflowEvent",
-        Effect::RespawnFork { .. } => "RespawnFork",
         Effect::PostInsight { .. } => "PostInsight",
         Effect::RespawnChannelLead { .. } => "RespawnChannelLead",
         Effect::TaskPrompt { .. } => "TaskPrompt",
