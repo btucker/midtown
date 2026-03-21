@@ -79,9 +79,14 @@ let activeChannelMeta = $derived($channelsStore.find((ch) => ch.name === $active
 let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith("dm-"));
 let dmPeerName = $derived($activeChannel.startsWith("dm-") ? $activeChannel.slice(3) : $activeChannel);
 let showInlineToolData = $derived(isDm || ($channelSettings[$activeChannel]?.inlineToolCalls ?? true));
+let showFullLeadOutput = $derived($channelSettings[$activeChannel]?.showFullLeadOutput ?? true);
 
-// Filter messages by active channel
-let channelMessages = $derived($messagesByChannel[$activeChannel] || []);
+// Filter messages by active channel, optionally hiding auto-output from lead
+let channelMessages = $derived.by(() => {
+	const all = $messagesByChannel[$activeChannel] || [];
+	if (showFullLeadOutput) return all;
+	return all.filter((msg) => !msg.auto_output);
+});
 
 // Visible slice of messages for the DOM. Only these get rendered.
 let visibleMessages = $derived(channelMessages.slice(renderStartIndex));

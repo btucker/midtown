@@ -1538,6 +1538,45 @@ export async function saveChannelDirectory(
 	}
 }
 
+// Channel settings API
+export async function putChannelSettings(
+	channel: string,
+	settings: Record<string, unknown>,
+): Promise<{ ok: boolean; error?: string }> {
+	try {
+		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/settings`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(settings),
+		});
+		if (res.ok || res.status === 204) {
+			return { ok: true };
+		}
+		const body = await res.text();
+		console.error("Failed to save channel settings:", res.status, body);
+		return { ok: false, error: body || `HTTP ${res.status}` };
+	} catch (err: unknown) {
+		console.error("Failed to save channel settings:", err);
+		return { ok: false, error: (err as Error).message };
+	}
+}
+
+export async function fetchChannelSettings(channel: string): Promise<{ show_full_lead_output?: boolean } | null> {
+	try {
+		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/settings`);
+		if (res.ok) {
+			return await res.json();
+		}
+		// 404 is fine — no settings saved yet
+		if (res.status !== 404) {
+			console.warn("Failed to fetch channel settings:", res.status);
+		}
+	} catch (err) {
+		console.warn("Failed to fetch channel settings:", err);
+	}
+	return null;
+}
+
 // Fetch available directories across all project repos
 export async function fetchDirectories() {
 	try {

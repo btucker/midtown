@@ -174,6 +174,7 @@ export interface PendingQuestion {
 
 export interface ChannelSettings {
 	inlineToolCalls?: boolean;
+	showFullLeadOutput?: boolean;
 }
 
 export type ChannelTab = "messages" | "prs" | "notes" | "settings";
