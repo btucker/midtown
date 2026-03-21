@@ -93,7 +93,7 @@ let dmSectionExpanded = false;
 let showAllDms = false;
 let visitedDms = new SvelteSet();
 
-// Auto-expand DM section when navigating to a DM (e.g., via CoworkerStatus click)
+// Auto-expand DM section when navigating to a DM (e.g., via sidebar DM selection)
 // and track the DM as visited so it remains visible after collapse/re-expand
 $: if ($activeChannel && dmChannels.some((ch) => ch.name === $activeChannel)) {
 	dmSectionExpanded = true;
