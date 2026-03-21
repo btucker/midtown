@@ -217,7 +217,7 @@ fn test_fork_channel_lead_model_is_provider_aware_for_codex() {
         super::fork_channel_lead_model("test-repo", crate::auth::AuthProvider::Codex, Some("web"));
     // Must be a Codex-compatible model, never a Claude alias.
     // The exact value depends on global config (e.g., default_model = "large" →
-    // "gpt-5.3-codex"); the hardcoded default is "gpt-5-codex".
+    // "gpt-5.4"); the hardcoded default is "gpt-5.4".
     // Exact default_model_for_provider_role assertions live in helpers_tests.rs.
     assert!(
         !model.contains("sonnet") && !model.contains("opus") && !model.contains("haiku"),

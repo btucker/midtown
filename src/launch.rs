@@ -527,8 +527,10 @@ impl LaunchConfig {
 
         self.initial_prompt.clone()
     }
-
-    /// Create a config for a standard coworker (convenience wrapper).
+    /// Create a config for a standard coworker.
+    ///
+    /// Coworkers each have isolated task lists. The daemon bakes the task
+    /// description into the initial prompt and tracks assignment internally.
     pub fn coworker(
         name: impl Into<String>,
         dir_key: impl Into<String>,
@@ -915,7 +917,7 @@ impl LaunchConfig {
 
 /// Extract (auth_provider, model_alias) from "provider/model" format.
 ///
-/// Valid examples: "claude/opus" → (Claude, "opus"), "codex/o3" → (Codex, "o3")
+/// Valid examples: "claude/opus" → (Claude, "opus"), "codex/gpt-5.4" → (Codex, "gpt-5.4")
 /// Invalid: "claude-opus" (no slash), "claude/" (empty model), "/opus" (empty provider)
 ///
 /// Returns None if the format is invalid or the provider is unsupported.
@@ -1221,8 +1223,8 @@ mod tests {
 
     #[test]
     fn test_parse_task_model_valid_codex() {
-        let result = parse_task_model("codex/o3");
-        assert_eq!(result, Some((crate::auth::AuthProvider::Codex, "o3")));
+        let result = parse_task_model("codex/gpt-5.4");
+        assert_eq!(result, Some((crate::auth::AuthProvider::Codex, "gpt-5.4")));
     }
 
     #[test]
@@ -1262,11 +1264,11 @@ mod tests {
     fn test_apply_task_model_sets_both_model_and_provider() {
         let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
         let mut map = std::collections::HashMap::new();
-        map.insert("42".to_string(), "codex/o3".to_string());
+        map.insert("42".to_string(), "codex/gpt-5.4".to_string());
 
         config.apply_task_model(&map, "42");
 
-        assert_eq!(config.model, "o3", "Model alias should be extracted");
+        assert_eq!(config.model, "gpt-5.4", "Model alias should be extracted");
         assert_eq!(
             config.auth_provider,
             crate::auth::AuthProvider::Codex,

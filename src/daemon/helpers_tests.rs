@@ -6,11 +6,11 @@ fn default_model_for_provider_role_uses_codex_model_for_all_roles() {
     let provider = crate::auth::AuthProvider::Codex;
     assert_eq!(
         default_model_for_provider_role(provider, "midtown-project-lead"),
-        "gpt-5-codex"
+        "gpt-5.4"
     );
     assert_eq!(
         default_model_for_provider_role(provider, "midtown-code-author"),
-        "gpt-5-codex"
+        "gpt-5.4"
     );
 }
 
@@ -34,23 +34,23 @@ fn normalize_model_for_provider_role_rewrites_claude_alias_for_codex() {
         crate::auth::AuthProvider::Codex,
         "midtown-channel-lead",
     );
-    assert_eq!(normalized, "gpt-5-codex");
+    assert_eq!(normalized, "gpt-5.4");
 }
 
 #[test]
 fn normalize_model_for_provider_role_keeps_codex_alias_for_codex() {
     let normalized = normalize_model_for_provider_role(
-        "o3",
+        "gpt-5.4",
         crate::auth::AuthProvider::Codex,
         "midtown-code-author",
     );
-    assert_eq!(normalized, "o3");
+    assert_eq!(normalized, "gpt-5.4");
 }
 
 #[test]
 fn normalize_model_for_provider_role_rewrites_codex_alias_for_claude() {
     let normalized = normalize_model_for_provider_role(
-        "gpt-5.3-codex",
+        "gpt-5.4",
         crate::auth::AuthProvider::Claude,
         "midtown-project-lead",
     );
@@ -114,7 +114,7 @@ fn normalize_model_for_provider_role_maps_size_aliases_for_codex() {
     );
     assert_eq!(small, "gpt-5.1-codex-mini");
     assert_eq!(medium, "gpt-5.3-codex-spark");
-    assert_eq!(large, "gpt-5.3-codex");
+    assert_eq!(large, "gpt-5.4");
 }
 
 // -------------------------------------------------------------------------
@@ -1065,16 +1065,15 @@ fn provider_for_model_alias_claude_models() {
 fn provider_for_model_alias_codex_models() {
     use crate::auth::AuthProvider;
     assert_eq!(
-        provider_for_model_alias("gpt-5-codex"),
+        provider_for_model_alias("gpt-5.4"),
         Some(AuthProvider::Codex)
     );
     assert_eq!(
         provider_for_model_alias("gpt-5.1-codex-mini"),
         Some(AuthProvider::Codex)
     );
-    assert_eq!(provider_for_model_alias("o3"), Some(AuthProvider::Codex));
     assert_eq!(
-        provider_for_model_alias("o4-mini"),
+        provider_for_model_alias("gpt-5.3-codex-spark"),
         Some(AuthProvider::Codex)
     );
 }

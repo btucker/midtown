@@ -80,6 +80,11 @@ You're now in the chat TUI with the Project Lead. Work with it as you would with
 | [Architecture](docs/architecture.md) | Daemon internals, effect system, session lifecycle, GitHub integration |
 | [Docker](docs/docker.md) | Docker images, running in containers |
 
+### Codex Notes
+
+- Codex model aliases are normalized at launch: `small` -> `gpt-5.1-codex-mini`, `medium` -> `gpt-5.3-codex-spark`, `large` -> `gpt-5.4`.
+- Midtown launches Codex sessions with profile-scoped `CODEX_HOME` and mirrors `~/.codex/skills` into the launched profile's `CODEX_HOME/skills` directory. Attach and resume flows reuse the persisted session profile instead of the ambient local one.
+
 ## License
 
 MIT

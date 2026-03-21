@@ -3144,6 +3144,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 } else {
                     let session_name = crate::launch::channel_lead_session_name(&channel_name);
                     let msg = reason.to_nudge_message();
+                    let channel_lead_nudgeable =
+                        state.session_manager.is_nudgeable(&session_name).await;
                     let session_id = {
                         let ps = state.persistent_state.lock().await;
                         ps.channel_lead_sessions.get(&channel_name).cloned()
@@ -3153,8 +3155,9 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     // First, try to nudge the stored session_id for this channel lead.
                     // This avoids name collision bugs where a coworker shares the same
                     // name as the channel lead and would steal nudges.
-                    if let Some(stored_session_id) =
-                        session_id.as_deref().filter(|id| !id.is_empty())
+                    if channel_lead_nudgeable
+                        && let Some(stored_session_id) =
+                            session_id.as_deref().filter(|id| !id.is_empty())
                     {
                         if let Err(e) = state
                             .session_manager
@@ -3175,7 +3178,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     // sync the mapping from that. This keeps mappings fresh after
                     // Codex app-server reuse.
                     #[allow(clippy::collapsible_if)]
-                    if !nudge_delivered {
+                    if channel_lead_nudgeable && !nudge_delivered {
                         if let Some(active_session_id) =
                             state.session_manager.get_session_id(&session_name).await
                         {

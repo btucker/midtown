@@ -36,7 +36,7 @@ fn test_codex_state() -> CodexProtocolState {
         resume_thread_id: None,
         fork_session: false,
         allow_tools: true,
-        model: "gpt-5-codex".to_string(),
+        model: "gpt-5.4".to_string(),
         cwd: None,
         system_prompt: String::new(),
         output_schema: None,
@@ -157,7 +157,7 @@ fn test_codex_launch_plan_rejects_unsupported_fields() {
 fn test_codex_launch_plan_accepts_supported_fields() {
     let config = HeadlessConfig {
         auth_provider: crate::auth::AuthProvider::Codex,
-        model: "gpt-5.3-codex".to_string(),
+        model: "gpt-5.4".to_string(),
         system_prompt: "System".to_string(),
         json_schema: Some(serde_json::json!({"type":"object"})),
         cwd: Some("/tmp/project".to_string()),
@@ -168,7 +168,7 @@ fn test_codex_launch_plan_accepts_supported_fields() {
     };
 
     let plan = codex_launch_plan_from_config(&config).unwrap();
-    assert_eq!(plan.model, "gpt-5.3-codex");
+    assert_eq!(plan.model, "gpt-5.4");
     assert_eq!(plan.system_prompt, "System");
     assert_eq!(plan.cwd, Some("/tmp/project".to_string()));
     assert_eq!(plan.resume_thread_id, Some("thread-parent".to_string()));
@@ -419,7 +419,7 @@ fn test_codex_translate_start_response_emits_init_and_dispatches() {
         }) => {
             assert_eq!(subtype, "init");
             assert_eq!(session_id, Some("thread_123".to_string()));
-            assert_eq!(model, Some("gpt-5-codex".to_string()));
+            assert_eq!(model, Some("gpt-5.4".to_string()));
         }
         _ => panic!("Expected codex start response to emit init system event"),
     }
@@ -736,14 +736,14 @@ fn test_codex_thread_init_request_selects_fork_for_resume_fork() {
         true,
         true,
         Some("/tmp/project"),
-        "gpt-5.3-codex",
+        "gpt-5.4",
         "system prompt",
     );
 
     assert_eq!(method, "thread/fork");
     assert_eq!(params["threadId"], "thread_parent");
     assert_eq!(params["cwd"], "/tmp/project");
-    assert_eq!(params["model"], "gpt-5.3-codex");
+    assert_eq!(params["model"], "gpt-5.4");
     assert_eq!(params["approvalPolicy"], "never");
     assert_eq!(params["sandbox"], "danger-full-access");
     assert_eq!(params["developerInstructions"], "system prompt");
@@ -756,7 +756,7 @@ fn test_codex_thread_init_request_selects_resume_without_fork() {
         false,
         true,
         Some("/tmp/project"),
-        "gpt-5.3-codex",
+        "gpt-5.4",
         "",
     );
 
@@ -768,12 +768,12 @@ fn test_codex_thread_init_request_selects_resume_without_fork() {
 #[test]
 fn test_codex_thread_init_request_selects_start_when_not_resuming() {
     let (method, params) =
-        codex_thread_init_request(None, true, true, None, "gpt-5.3-codex", "system prompt");
+        codex_thread_init_request(None, true, true, None, "gpt-5.4", "system prompt");
 
     assert_eq!(method, "thread/start");
     assert_eq!(params.get("threadId"), None);
     assert_eq!(params["cwd"], serde_json::Value::Null);
-    assert_eq!(params["model"], "gpt-5.3-codex");
+    assert_eq!(params["model"], "gpt-5.4");
 }
 
 #[test]
@@ -783,7 +783,7 @@ fn test_codex_thread_init_request_disables_tools_when_allow_tools_false() {
         false,
         false,
         Some("/tmp/project"),
-        "gpt-5.3-codex",
+        "gpt-5.4",
         "system prompt",
     );
 
@@ -978,4 +978,43 @@ fn test_codex_translate_stale_fork_only_retries_once() {
     // Second time: should NOT retry — emit the error normally.
     assert!(event.is_some());
     assert_ne!(post_action, CodexPostAction::RetryThreadStart);
+}
+
+#[test]
+fn test_codex_thread_id_reads_flat_thread_id() {
+    let parsed = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "item/agentMessage/delta",
+        "params": {
+            "threadId": "thread-flat-123",
+            "turnId": "turn-1",
+            "delta": "hello"
+        }
+    });
+
+    assert_eq!(
+        codex_thread_id(&parsed),
+        Some("thread-flat-123".to_string())
+    );
+}
+
+#[test]
+fn test_codex_thread_id_reads_conversation_id_for_codex_event() {
+    let parsed = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "codex/event/task_complete",
+        "params": {
+            "id": "turn-1",
+            "conversationId": "thread-conversation-123",
+            "msg": {
+                "type": "task_complete",
+                "turn_id": "turn-1"
+            }
+        }
+    });
+
+    assert_eq!(
+        codex_thread_id(&parsed),
+        Some("thread-conversation-123".to_string())
+    );
 }

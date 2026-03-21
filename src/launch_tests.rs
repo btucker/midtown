@@ -130,7 +130,7 @@ fn test_shell_command_codex_fresh_uses_codex_binary() {
         None,
     );
     config.auth_provider = crate::auth::AuthProvider::Codex;
-    config.model = "gpt-5.3-codex".to_string();
+    config.model = "gpt-5.4".to_string();
     let result = config.to_shell_command(
         std::path::Path::new("/tmp/settings.json"),
         std::path::Path::new("/tmp/prompt.md"),
@@ -146,7 +146,7 @@ fn test_shell_command_codex_fresh_uses_codex_binary() {
             .contains("--dangerously-bypass-approvals-and-sandbox")
     );
     assert!(result.shell_command.contains("--model"));
-    assert!(result.shell_command.contains("gpt-5.3-codex"));
+    assert!(result.shell_command.contains("gpt-5.4"));
     assert!(result.shell_command.contains("Investigate failing tests"));
     assert!(result.session_id.is_none());
 }
@@ -159,7 +159,7 @@ fn test_shell_command_codex_fresh_reads_initial_prompt_file() {
 
     let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
     config.auth_provider = crate::auth::AuthProvider::Codex;
-    config.model = "gpt-5.3-codex".to_string();
+    config.model = "gpt-5.4".to_string();
 
     let result = config.to_shell_command(
         std::path::Path::new("/tmp/settings.json"),
@@ -180,7 +180,7 @@ fn test_shell_command_codex_fresh_reads_initial_prompt_file() {
 fn test_shell_command_codex_resume_uses_resume_subcommand() {
     let mut config = LaunchConfig::lead("myrepo", None);
     config.auth_provider = crate::auth::AuthProvider::Codex;
-    config.model = "gpt-5.3-codex".to_string();
+    config.model = "gpt-5.4".to_string();
     config.session_mode = SessionMode::ResumeSession("thread-123".to_string());
     let result = config.to_shell_command(
         std::path::Path::new("/tmp/settings.json"),

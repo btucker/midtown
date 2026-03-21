@@ -22,9 +22,9 @@ fn test_model_extraction_for_launch_config() {
     let model_alias = full_model.split('/').nth(1);
     assert_eq!(model_alias, Some("sonnet"));
 
-    let full_model = "codex/o3";
+    let full_model = "codex/gpt-5.4";
     let model_alias = full_model.split('/').nth(1);
-    assert_eq!(model_alias, Some("o3"));
+    assert_eq!(model_alias, Some("gpt-5.4"));
 }
 
 /// Test that invalid formats (no slash) return None for the model alias.

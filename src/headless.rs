@@ -482,6 +482,25 @@ impl CodexSharedRuntime {
         Ok(request_id)
     }
 
+    async fn send_notification(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> std::io::Result<()> {
+        let payload = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        });
+        let mut payload = serde_json::to_string(&payload)?;
+        payload.push('\n');
+
+        let mut proc = self.process.lock().await;
+        proc.stdin.write_all(payload.as_bytes()).await?;
+        proc.stdin.flush().await?;
+        Ok(())
+    }
+
     fn route_token_for_thread(&self, thread_id: &str) -> Option<String> {
         self.thread_to_session
             .read()
@@ -719,6 +738,18 @@ fn codex_thread_id(parsed: &serde_json::Value) -> Option<String> {
             params
                 .get("thread")
                 .and_then(parse_thread)
+                .or_else(|| {
+                    params
+                        .get("threadId")
+                        .and_then(|id| id.as_str())
+                        .map(str::to_string)
+                })
+                .or_else(|| {
+                    params
+                        .get("conversationId")
+                        .and_then(|id| id.as_str())
+                        .map(str::to_string)
+                })
                 .or_else(|| {
                     params
                         .get("turn")
@@ -1842,6 +1873,14 @@ impl HeadlessSession {
             }),
         )
         .await?;
+
+        self.codex_session()
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing codex runtime")
+            })?
+            .runtime
+            .send_notification("initialized", serde_json::json!({}))
+            .await?;
 
         let (start_method, start_params) = codex_thread_init_request(
             resume_thread_id.as_deref(),
