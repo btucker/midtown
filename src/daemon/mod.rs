@@ -2335,7 +2335,14 @@ impl DaemonState {
     }
 
     /// Broadcast a coworker status change to WebSocket clients.
-    fn broadcast_coworker_update(&self, name: &str, status: &str, current_task: Option<&str>) {
+    fn broadcast_coworker_update(
+        &self,
+        name: &str,
+        status: &str,
+        current_task: Option<&str>,
+        color: Option<&str>,
+        icon: Option<&str>,
+    ) {
         // Look up the model from the coworker manager, defaulting to "sonnet" if not found
         let model = self
             .coworkers
@@ -2347,6 +2354,8 @@ impl DaemonState {
             status,
             current_task,
             &model,
+            color,
+            icon,
         ));
     }
 

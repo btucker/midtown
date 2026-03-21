@@ -537,6 +537,8 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let thread_id = params.str_param("thread_id");
             let parent = params.str_param("parent");
             let agent_type = params.str_param("agent_type");
+            let color = params.str_param("color");
+            let icon = params.str_param("icon");
             super::rpc_task::handle_task_create(
                 request.id,
                 subject,
@@ -550,6 +552,8 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 thread_id,
                 parent,
                 agent_type,
+                color,
+                icon,
                 state,
             )
             .await
@@ -819,12 +823,16 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let calling_session_id = require_str!(params, "calling_session_id", request.id);
             let name_hint = params.str_param("name");
             let initial_message = params.str_param("initial_message");
+            let color = params.str_param("color");
+            let icon = params.str_param("icon");
             super::rpc_session::handle_session_fork(
                 request.id,
                 thread_parent_id,
                 calling_session_id,
                 name_hint,
                 initial_message,
+                color,
+                icon,
                 state,
             )
             .await

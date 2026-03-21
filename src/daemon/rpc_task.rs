@@ -291,6 +291,8 @@ pub(super) async fn handle_task_create(
     thread_id: Option<&str>,
     parent: Option<&str>,
     agent_type: Option<&str>,
+    color: Option<&str>,
+    icon: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     // Require agent_name
@@ -388,6 +390,8 @@ pub(super) async fn handle_task_create(
         model: model.map(|m| m.to_string()),
         plan: plan.map(|p| p.to_string()),
         placeholder_comment_id: None,
+        color: color.map(|c| c.to_string()),
+        icon: icon.map(|i| i.to_string()),
         restart_count: 0,
         execution_skill: None,
         created_at: chrono::Utc::now(),
@@ -1150,7 +1154,7 @@ pub(super) async fn handle_task_handoff(
             "Stopping session {} (coworker {}) for task !{} handoff to agent {}",
             session_id, name, task_id, agent
         );
-        state.broadcast_coworker_update(name, "stopped", None);
+        state.broadcast_coworker_update(name, "stopped", None, None, None);
         if let Err(e) = state.session_manager.shutdown(name).await {
             warn!("Failed to shut down session for handoff: {}", e);
         }

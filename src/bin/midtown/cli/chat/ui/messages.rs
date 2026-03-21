@@ -45,7 +45,7 @@ impl MessageRenderContext {
             msg.from.clone()
         };
 
-        let color = get_sender_color_with_leads(&display_from, channel_lead_names);
+        let color = get_sender_color_with_leads(&display_from, channel_lead_names, None);
         let show_sender = prev_sender.is_none_or(|prev| prev != msg.from);
 
         let content_style = match msg.message_type {

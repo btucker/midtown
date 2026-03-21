@@ -82,6 +82,12 @@ pub struct Task {
     /// GitHub comment ID for "Review in progress" placeholder (reviewer tasks).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placeholder_comment_id: Option<u64>,
+    /// Avatar color override (CSS color string, e.g., "#ff5f5f").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Lucide icon name for avatar (e.g., "shield", "database").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
     /// Number of times this task's session has been restarted.
     #[serde(default)]
     pub restart_count: u32,
@@ -116,6 +122,8 @@ impl Default for Task {
             model: None,
             plan: None,
             placeholder_comment_id: None,
+            color: None,
+            icon: None,
             restart_count: 0,
             execution_skill: None,
             created_at: now,

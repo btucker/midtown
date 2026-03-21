@@ -314,6 +314,8 @@ pub enum Effect {
         name: String,
         status: String,
         current_task: Option<String>,
+        color: Option<String>,
+        icon: Option<String>,
     },
     /// Record a cooldown entry (category + key).
     RecordCooldown { category: String, key: String },
@@ -1448,8 +1450,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 name,
                 status,
                 current_task,
+                color,
+                icon,
             } => {
-                state.broadcast_coworker_update(&name, &status, current_task.as_deref());
+                state.broadcast_coworker_update(
+                    &name,
+                    &status,
+                    current_task.as_deref(),
+                    color.as_deref(),
+                    icon.as_deref(),
+                );
             }
             Effect::RecordCooldown { category, key } => {
                 let mut cooldowns = state.cooldowns.lock().unwrap();
@@ -1727,10 +1737,19 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 worktree_id,
                                 coworker: name.clone(),
                             },
-                            Effect::BroadcastCoworkerUpdate {
-                                name: name.clone(),
-                                status: "running".to_string(),
-                                current_task: None,
+                            {
+                                let task_avatar = state
+                                    .task_store
+                                    .load(&task_id)
+                                    .ok()
+                                    .map(|t| (t.color, t.icon));
+                                Effect::BroadcastCoworkerUpdate {
+                                    name: name.clone(),
+                                    status: "running".to_string(),
+                                    current_task: None,
+                                    color: task_avatar.as_ref().and_then(|(c, _)| c.clone()),
+                                    icon: task_avatar.as_ref().and_then(|(_, i)| i.clone()),
+                                }
                             },
                             Effect::post_to_ops(success_message),
                             Effect::RecordCooldown {
@@ -2108,6 +2127,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     model: None,
                     plan: None,
                     placeholder_comment_id: None,
+                    color: None,
+                    icon: None,
                     restart_count: 0,
                     execution_skill: None,
                     created_at: chrono::Utc::now(),
@@ -2843,6 +2864,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     model: None,
                     plan: None,
                     placeholder_comment_id: None,
+                    color: None,
+                    icon: None,
                     restart_count: 0,
                     execution_skill: None,
                     created_at: chrono::Utc::now(),
@@ -2975,7 +2998,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     // persistent state.
                     let _ = shutdown_coworker_impl(&name, &reason, state).await;
 
-                    state.broadcast_coworker_update(&name, "stopped", None);
+                    state.broadcast_coworker_update(&name, "stopped", None, None, None);
                 } else {
                     // No name mapped — session may have already been partially
                     // cleaned up. Still mark SessionRecord as stopped

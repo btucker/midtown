@@ -113,6 +113,12 @@ pub struct SessionRecord {
     /// How many times this session has been restarted.
     #[serde(default)]
     pub restart_count: u32,
+    /// Avatar color override (CSS color string, e.g., "#ff5f5f").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Lucide icon name for avatar (e.g., "shield", "database").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 impl Default for SessionRecord {
@@ -138,6 +144,8 @@ impl Default for SessionRecord {
             platform: None,
             profile: None,
             restart_count: 0,
+            color: None,
+            icon: None,
         }
     }
 }

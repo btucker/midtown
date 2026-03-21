@@ -97,6 +97,12 @@ pub struct CoworkerInfo {
     /// PR number currently associated with this coworker's activity.
     #[serde(default)]
     pub pr_number: Option<u64>,
+    /// Avatar color override (CSS color string).
+    #[serde(default)]
+    pub color: Option<String>,
+    /// Lucide icon name for avatar.
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

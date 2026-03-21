@@ -105,6 +105,12 @@ pub enum AgentCommand {
         /// receives this as its first nudge instead of the default framing.
         #[arg(long = "initial-message")]
         initial_message: Option<String>,
+        /// Avatar color override (CSS color string, e.g., "#ff5f5f")
+        #[arg(long)]
+        color: Option<String>,
+        /// Lucide icon name for avatar (e.g., "shield", "database")
+        #[arg(long)]
+        icon: Option<String>,
     },
     /// Clear a session: stop it and restart fresh with the same initial prompt.
     Clear {
@@ -165,6 +171,8 @@ pub fn handle(cmd: &AgentCommand, client: &DaemonClient) -> Result<Response, Str
             session_id,
             name,
             initial_message,
+            color,
+            icon,
         } => {
             let sid = session_id
                 .clone()
@@ -172,7 +180,14 @@ pub fn handle(cmd: &AgentCommand, client: &DaemonClient) -> Result<Response, Str
                 .ok_or_else(|| {
                     "Missing session ID. Pass --session-id or set $MIDTOWN_SESSION_ID.".to_string()
                 })?;
-            client.session_fork(thread_id, &sid, name.as_deref(), initial_message.as_deref())
+            client.session_fork(
+                thread_id,
+                &sid,
+                name.as_deref(),
+                initial_message.as_deref(),
+                color.as_deref(),
+                icon.as_deref(),
+            )
         }
         AgentCommand::Clear { target } => client.session_clear(target),
         AgentCommand::UploadImage { .. } => {

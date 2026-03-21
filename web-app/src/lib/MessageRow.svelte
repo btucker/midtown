@@ -2,6 +2,7 @@
 import GitFork from "@lucide/svelte/icons/git-fork";
 import { getApiBase, selectDm } from "./api.ts";
 import { getDisplayableDmChannels } from "./channelUtils.ts";
+import DynamicIcon from "./DynamicIcon.svelte";
 import { renderContent } from "./markdown.ts";
 import {
 	formatTime,
@@ -60,9 +61,12 @@ function avatarLetter(name) {
 // fork names are visible. Use the parent lead's color for visual continuity.
 let isForkWithParent = $derived(isDedicatedSession && !!forkParentLead);
 let displayName = $derived(msg.from);
+let senderCoworker = $derived($coworkers.find((cw) => cw.name === msg.from));
 let displayColor = $derived(
-	getSenderColor(isForkWithParent ? forkParentLead : displayName, senderOverrides, channelName),
+	senderCoworker?.color ||
+		getSenderColor(isForkWithParent ? forkParentLead : displayName, senderOverrides, channelName),
 );
+let senderIcon = $derived(senderCoworker?.icon);
 // For click navigation, always use msg.from (the actual session name) so
 // fork messages navigate to dm-<forkName>, not dm-<parentLeadName>.
 let clickName = $derived(msg.from);
@@ -145,7 +149,7 @@ let hidden = $derived(!showToolData && isToolOnly(msg));
       <div
         class="rounded-md flex items-center justify-center text-white font-bold text-[1rem] select-none mt-[0.15rem]"
         style="width: {AVATAR_SIZE}; height: {AVATAR_SIZE}; background-color: {displayColor}"
-      >{avatarLetter(displayName)}</div>
+      >{#if senderIcon}<DynamicIcon name={senderIcon} size={18}>{#snippet fallback()}{avatarLetter(displayName)}{/snippet}</DynamicIcon>{:else}{avatarLetter(displayName)}{/if}</div>
       {#if isDedicatedSession}
         <div
           class="absolute -bottom-1 -right-1 flex items-center justify-center w-4 h-4 rounded-full bg-background border border-border"

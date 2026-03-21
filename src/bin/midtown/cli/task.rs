@@ -40,6 +40,12 @@ pub enum TaskCommand {
         /// Agent type for specialized task dispatch (e.g., midtown-code-reviewer)
         #[arg(long)]
         agent_type: Option<String>,
+        /// Avatar color override (CSS color string, e.g., "#ff5f5f")
+        #[arg(long)]
+        color: Option<String>,
+        /// Lucide icon name for avatar (e.g., "shield", "database")
+        #[arg(long)]
+        icon: Option<String>,
     },
     /// Claim a task
     Claim {
@@ -150,6 +156,8 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             thread_id,
             parent,
             agent_type,
+            color,
+            icon,
         } => {
             let env_thread_id = std::env::var("MIDTOWN_BOUND_THREAD_ID").ok();
             let effective_thread_id =
@@ -166,6 +174,8 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
                 effective_thread_id.as_deref(),
                 parent.as_deref(),
                 agent_type.as_deref(),
+                color.as_deref(),
+                icon.as_deref(),
             )
         }
         TaskCommand::Update {

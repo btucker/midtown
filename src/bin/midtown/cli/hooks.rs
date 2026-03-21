@@ -432,6 +432,8 @@ fn ensure_lead_task_persistence(
                 model: None,
                 plan: None,
                 placeholder_comment_id: None,
+                color: None,
+                icon: None,
                 restart_count: 0,
                 execution_skill: None,
                 created_at: Utc::now(),

@@ -108,6 +108,8 @@ fn test_coworker_status_update_serialization() {
         progress: None,
         time_estimate: None,
         health: None,
+        color: None,
+        icon: None,
     });
 
     let json = serde_json::to_string(&update).unwrap();
@@ -209,6 +211,8 @@ fn test_coworker_status_update_without_task() {
         progress: None,
         time_estimate: None,
         health: None,
+        color: None,
+        icon: None,
     });
 
     let json = serde_json::to_string(&update).unwrap();

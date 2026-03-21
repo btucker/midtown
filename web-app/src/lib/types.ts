@@ -50,6 +50,8 @@ export interface Coworker {
 	pr_number?: number | null;
 	progress?: number | null;
 	channel?: string;
+	color?: string;
+	icon?: string;
 }
 
 // ── Tasks ────────────────────────────────────────────────────────────────────

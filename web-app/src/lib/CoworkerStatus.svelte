@@ -4,6 +4,7 @@ import { SvelteMap } from "svelte/reactivity";
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
 import * as Tooltip from "$lib/components/ui/tooltip/index.ts";
 import { openTaskThread, selectDm } from "./api.ts";
+import DynamicIcon from "./DynamicIcon.svelte";
 import { getSenderColor } from "./messageUtils.ts";
 import { coworkers, kanbanData, maxInProgressTasks, repoStatus } from "./store.ts";
 
@@ -119,8 +120,8 @@ function openPrDetail(prNumber) {
                 <span class="relative shrink-0 w-5 h-5 inline-block">
                   <span
                     class="flex items-center justify-center w-5 h-5 rounded text-[0.6rem] font-bold text-white select-none"
-                    style="background-color: {getSenderColor(cw.name)}"
-                  >{avatarLetter(cw.name)}</span>
+                    style="background-color: {cw.color || getSenderColor(cw.name)}"
+                  >{#if cw.icon}<DynamicIcon name={cw.icon} size={12}>{#snippet fallback()}{avatarLetter(cw.name)}{/snippet}</DynamicIcon>{:else}{avatarLetter(cw.name)}{/if}</span>
                   {#if isOffline(cw)}
                     <span class="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border-2 border-sidebar bg-muted-foreground/40"></span>
                   {:else}
