@@ -776,6 +776,26 @@ impl DaemonPersistentState {
         self.sessions.values().find(|s| s.name == name)
     }
 
+    /// Find the best session record bound to a given thread.
+    ///
+    /// Prefers running sessions over stopped ones. Returns `None` if no session
+    /// is bound to this thread. This replaces the old `topic_sessions` in-memory
+    /// map — SessionRecord is the single source of truth.
+    pub fn session_by_thread(&self, thread_id: &str) -> Option<&SessionRecord> {
+        let mut best: Option<&SessionRecord> = None;
+        for s in self.sessions.values() {
+            if s.bound_thread_id.as_deref() == Some(thread_id) {
+                if s.is_running {
+                    return Some(s);
+                }
+                if best.is_none() {
+                    best = Some(s);
+                }
+            }
+        }
+        best
+    }
+
     /// Find a mutable session record by coworker name.
     pub fn session_by_name_mut(&mut self, name: &str) -> Option<&mut SessionRecord> {
         self.sessions.values_mut().find(|s| s.name == name)

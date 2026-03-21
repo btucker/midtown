@@ -104,6 +104,22 @@ Three session types, each bound to exactly one thing:
 - `agent_type` refers to the agent definition passed to `--agent` (e.g., `midtown-code-author`). It is NOT the session name.
 - `agent_name` is the creative session name (e.g., `ghost-town`). It is NOT the agent definition.
 
+## Session Architecture
+
+**SessionRecord is the single source of truth** for all session state. There are no parallel in-memory maps for thread bindings, channel bindings, or fork tracking.
+
+**Two session types, one model:**
+- **Lead/Worker sessions** have `bound_thread_id: None` (or set for task-thread routing).
+- **Fork sessions** have `bound_thread_id: Some(thread_id)` AND `agent_type: "midtown-channel-lead"`. Detected via `SessionRecord::is_fork_session()`.
+
+**No parallel state:**
+- Thread routing (`session_by_thread()`) queries SessionRecord directly.
+- Output binding (auto-tagging posts with `thread_parent_id`) reads `SessionRecord.bound_thread_id`.
+- Fork channel routing reads `SessionRecord.channel` filtered by `is_fork_session()`.
+- `pending_forks: HashSet<String>` guards concurrent fork creation (replaces the old "pending" sentinel).
+
+**Dead forks stay dead.** When a fork session's process exits, its `SessionRecord.is_running` is set to `false`. There is no auto-respawn. Thread replies to dead forks fall through to the channel lead.
+
 ## Keeping docs/architecture.md Up-to-Date
 
 `docs/architecture.md` is the living reference for how the codebase works. Keep it current:

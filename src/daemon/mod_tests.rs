@@ -11,6 +11,15 @@ fn test_dm_mirror_agent_names_excludes_leads_and_forks() {
             ..Default::default()
         }
     }
+    fn make_fork_record(session_id: &str, name: &str) -> state::SessionRecord {
+        state::SessionRecord {
+            session_id: session_id.to_string(),
+            name: name.to_string(),
+            agent_type: "midtown-channel-lead".to_string(),
+            bound_thread_id: Some("thread-123".to_string()),
+            ..Default::default()
+        }
+    }
     let sessions = std::collections::HashMap::from([
         ("sess-lead".to_string(), make_record("sess-lead", "midtown")),
         ("sess-auth".to_string(), make_record("sess-auth", "auth")),
@@ -21,7 +30,7 @@ fn test_dm_mirror_agent_names_excludes_leads_and_forks() {
         ),
         (
             "sess-fork".to_string(),
-            make_record("sess-fork", "auth-discuss-a1b2"),
+            make_fork_record("sess-fork", "auth-discuss-a1b2"),
         ),
         // Regular coworker with a thread binding (task thread) — should still get DM
         (
@@ -31,16 +40,8 @@ fn test_dm_mirror_agent_names_excludes_leads_and_forks() {
     ]);
     let channel_lead_sessions =
         std::collections::HashMap::from([("auth".to_string(), "sess-auth".to_string())]);
-    // fork_bound_channels only contains fork sessions, not regular coworkers
-    let fork_bound_channels =
-        std::collections::HashMap::from([("auth-discuss-a1b2".to_string(), "auth".to_string())]);
 
-    let dm_names = dm_mirror_agent_names(
-        &sessions,
-        &channel_lead_sessions,
-        &fork_bound_channels,
-        "midtown",
-    );
+    let dm_names = dm_mirror_agent_names(&sessions, &channel_lead_sessions, "midtown");
 
     assert!(
         !dm_names.contains("midtown"),
@@ -64,7 +65,7 @@ fn test_dm_mirror_agent_names_excludes_leads_and_forks() {
     );
     assert!(
         dm_names.contains("broadway"),
-        "regular coworkers with thread bindings still need DMs (fork_bound_channels excludes them correctly)"
+        "regular coworkers with thread bindings still need DMs (is_fork_session excludes them correctly)"
     );
 }
 

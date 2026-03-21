@@ -1208,3 +1208,93 @@ fn test_name_task_assignments_lowercases_name() {
     assert_eq!(assignments.get("lexington").unwrap(), "42");
     assert!(!assignments.contains_key("Lexington"));
 }
+
+// ── session_by_thread tests ──────────────────────────────────────────────────
+
+#[test]
+fn test_session_by_thread_returns_running_session() {
+    let mut ps = DaemonPersistentState::default();
+    ps.sessions.insert(
+        "sess-1".into(),
+        SessionRecord {
+            session_id: "sess-1".into(),
+            name: "riverside".into(),
+            bound_thread_id: Some("thread-abc".into()),
+            is_running: true,
+            agent_type: "midtown-channel-lead".into(),
+            ..Default::default()
+        },
+    );
+    let result = ps.session_by_thread("thread-abc");
+    assert_eq!(result.unwrap().session_id, "sess-1");
+}
+
+#[test]
+fn test_session_by_thread_prefers_running_over_stopped() {
+    let mut ps = DaemonPersistentState::default();
+    ps.sessions.insert(
+        "sess-old".into(),
+        SessionRecord {
+            session_id: "sess-old".into(),
+            name: "riverside-old".into(),
+            bound_thread_id: Some("thread-abc".into()),
+            is_running: false,
+            agent_type: "midtown-channel-lead".into(),
+            ..Default::default()
+        },
+    );
+    ps.sessions.insert(
+        "sess-new".into(),
+        SessionRecord {
+            session_id: "sess-new".into(),
+            name: "riverside-new".into(),
+            bound_thread_id: Some("thread-abc".into()),
+            is_running: true,
+            agent_type: "midtown-channel-lead".into(),
+            ..Default::default()
+        },
+    );
+    let result = ps.session_by_thread("thread-abc");
+    assert_eq!(result.unwrap().session_id, "sess-new");
+}
+
+#[test]
+fn test_session_by_thread_returns_stopped_when_no_running() {
+    let mut ps = DaemonPersistentState::default();
+    ps.sessions.insert(
+        "sess-1".into(),
+        SessionRecord {
+            session_id: "sess-1".into(),
+            name: "riverside".into(),
+            bound_thread_id: Some("thread-abc".into()),
+            is_running: false,
+            agent_type: "midtown-channel-lead".into(),
+            ..Default::default()
+        },
+    );
+    let result = ps.session_by_thread("thread-abc");
+    assert_eq!(result.unwrap().session_id, "sess-1");
+}
+
+#[test]
+fn test_session_by_thread_returns_none_for_unbound_thread() {
+    let mut ps = DaemonPersistentState::default();
+    ps.sessions.insert(
+        "sess-1".into(),
+        SessionRecord {
+            session_id: "sess-1".into(),
+            name: "riverside".into(),
+            bound_thread_id: Some("thread-abc".into()),
+            is_running: true,
+            agent_type: "midtown-channel-lead".into(),
+            ..Default::default()
+        },
+    );
+    assert!(ps.session_by_thread("thread-xyz").is_none());
+}
+
+#[test]
+fn test_session_by_thread_returns_none_for_empty_sessions() {
+    let ps = DaemonPersistentState::default();
+    assert!(ps.session_by_thread("thread-abc").is_none());
+}
