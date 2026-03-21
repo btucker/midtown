@@ -454,7 +454,8 @@ fn test_assembled_lead_prompt_has_all_layers() {
 
 #[test]
 fn test_assembled_channel_lead_prompt_has_all_layers() {
-    let prompt = channel_lead_system_prompt("web-interface", "Active tasks.", "midtown", None);
+    let prompt =
+        channel_lead_system_prompt("web-interface", "Active tasks.", "midtown", None, false);
     // Layer 1: Channel lead definition
     assert!(
         prompt.contains("Channel Lead") || prompt.contains("channel lead"),
@@ -473,5 +474,44 @@ fn test_assembled_channel_lead_prompt_has_all_layers() {
     assert!(
         !prompt.contains("{channel_name}"),
         "Assembled channel lead prompt should have no unreplaced {{channel_name}}"
+    );
+}
+
+#[test]
+fn test_layer3_suppress_auto_output_injects_override() {
+    let input = "Base prompt with auto-posting info";
+    let result = build_runtime_context(
+        input,
+        &RuntimeContext {
+            name: "web",
+            project_name: "midtown",
+            suppress_auto_output: true,
+            ..RuntimeContext::default()
+        },
+    );
+    assert!(
+        result.contains("Channel Auto-Posting Override"),
+        "Should inject auto-posting override section"
+    );
+    assert!(
+        result.contains("NOT** automatically posted"),
+        "Should tell the lead that auto-posting is disabled"
+    );
+}
+
+#[test]
+fn test_layer3_no_suppress_auto_output_by_default() {
+    let input = "Base prompt";
+    let result = build_runtime_context(
+        input,
+        &RuntimeContext {
+            name: "web",
+            project_name: "midtown",
+            ..RuntimeContext::default()
+        },
+    );
+    assert!(
+        !result.contains("Channel Auto-Posting Override"),
+        "Should NOT inject auto-posting override by default"
     );
 }

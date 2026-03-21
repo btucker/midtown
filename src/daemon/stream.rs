@@ -107,16 +107,24 @@ pub fn extract_assistant_text(events: &[StreamEvent]) -> String {
 /// - Coworker text is handled separately by [`process_agent_output()`].
 ///
 /// `channel_lead_sessions` maps channel name → session ID for active channel leads.
+///
+/// `suppress_auto_output_channels` is the set of channel names where
+/// `show_full_lead_output` is `false`. Lead auto-output for those channels is
+/// suppressed; fork auto-output is exempt and always posted.
 pub fn process_lead_output(
     events: &HashMap<String, Vec<StreamEvent>>,
     channel_lead_sessions: &HashMap<String, String>,
     main_lead_session_name: &str,
     fork_bound_channels: &HashMap<String, String>,
+    suppress_auto_output_channels: &HashSet<String>,
 ) -> Vec<Effect> {
     let mut effects = Vec::new();
 
     // Main lead → posts to main channel (project name = default channel name).
-    if let Some(lead_events) = events.get(main_lead_session_name) {
+    if let Some(lead_events) = events
+        .get(main_lead_session_name)
+        .filter(|_| !suppress_auto_output_channels.contains(main_lead_session_name))
+    {
         push_lead_output_effects(
             &mut effects,
             lead_events,
@@ -127,6 +135,9 @@ pub fn process_lead_output(
 
     // Channel leads → each posts to its respective topic channel.
     for channel_name in channel_lead_sessions.keys() {
+        if suppress_auto_output_channels.contains(channel_name) {
+            continue;
+        }
         if let Some(cl_events) = events.get(channel_name.as_str()) {
             push_lead_output_effects(
                 &mut effects,
@@ -138,6 +149,7 @@ pub fn process_lead_output(
     }
 
     // Forked channel leads → posts to the channel they were inherited from.
+    // Forks are exempt from suppression — they always auto-post to their bound thread.
     for (fork_name, channel_name) in fork_bound_channels {
         if let Some(fork_events) = events.get(fork_name.as_str()) {
             push_lead_output_effects(

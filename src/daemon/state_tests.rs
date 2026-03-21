@@ -1298,3 +1298,50 @@ fn test_session_by_thread_returns_none_for_empty_sessions() {
     let ps = DaemonPersistentState::default();
     assert!(ps.session_by_thread("thread-abc").is_none());
 }
+
+// ── ChannelSettings tests ──────────────────────────────────────────
+
+#[test]
+fn test_channel_settings_default() {
+    let settings = ChannelSettings::default();
+    assert!(settings.show_full_lead_output);
+}
+
+#[test]
+fn test_channel_settings_serde_roundtrip() {
+    let mut ps = DaemonPersistentState::default();
+    ps.channel_settings.insert(
+        "web".to_string(),
+        ChannelSettings {
+            show_full_lead_output: false,
+        },
+    );
+
+    let json = serde_json::to_string(&ps).unwrap();
+    let ps2: DaemonPersistentState = serde_json::from_str(&json).unwrap();
+    let settings = ps2.channel_settings.get("web").unwrap();
+    assert!(!settings.show_full_lead_output);
+}
+
+#[test]
+fn test_channel_settings_absent_defaults_to_true() {
+    // Simulate an old daemon-state.json without channel_settings
+    let json = r#"{"github":{},"reminders":{}}"#;
+    let ps: DaemonPersistentState = serde_json::from_str(json).unwrap();
+    assert!(ps.channel_settings.is_empty());
+    // Accessing a missing channel should give defaults
+    let settings = ps.channel_settings.get("web").cloned().unwrap_or_default();
+    assert!(settings.show_full_lead_output);
+}
+
+#[test]
+fn test_channel_settings_missing_field_defaults_to_true() {
+    // Channel settings present but show_full_lead_output field missing
+    let json = r#"{"channel_settings":{"web":{}}}"#;
+    let ps: DaemonPersistentState = serde_json::from_str(json).unwrap();
+    let settings = ps.channel_settings.get("web").unwrap();
+    assert!(
+        settings.show_full_lead_output,
+        "Missing show_full_lead_output should default to true"
+    );
+}

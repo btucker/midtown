@@ -1322,6 +1322,77 @@ pub(crate) fn build_topic_thread_nudge_effect(
     }
 }
 
+// ============================================================================
+// Channel settings
+// ============================================================================
+
+/// Handle `channel.get_settings` RPC method.
+///
+/// Params:
+/// - `channel` (required): channel name
+///
+/// Returns the channel's settings, or defaults if none are stored.
+pub(super) async fn handle_channel_get_settings(
+    id: RequestId,
+    channel: &str,
+    state: &DaemonState,
+) -> Response {
+    let ps = state.persistent_state.lock().await;
+    let settings = ps
+        .channel_settings
+        .get(channel)
+        .cloned()
+        .unwrap_or_default();
+
+    Response::success(
+        id,
+        serde_json::json!({
+            "show_full_lead_output": settings.show_full_lead_output,
+        }),
+    )
+}
+
+/// Handle `channel.set_settings` RPC method.
+///
+/// Params:
+/// - `channel` (required): channel name
+/// - `show_full_lead_output` (optional): boolean
+///
+/// Only updates fields that are present in the request.
+pub(super) async fn handle_channel_set_settings(
+    id: RequestId,
+    channel: &str,
+    show_full_lead_output: Option<bool>,
+    state: &DaemonState,
+) -> Response {
+    let mut ps = state.persistent_state.lock().await;
+
+    let settings = ps.channel_settings.entry(channel.to_string()).or_default();
+
+    if let Some(v) = show_full_lead_output {
+        settings.show_full_lead_output = v;
+    }
+
+    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+        error!(
+            channel = %channel,
+            "channel.set_settings: failed to save daemon state: {}",
+            e
+        );
+        return Response::error(
+            id,
+            RpcError::new(-32603, format!("failed to persist state: {e}")),
+        );
+    }
+
+    debug!(
+        channel = %channel,
+        "channel.set_settings: settings updated"
+    );
+
+    Response::success(id, serde_json::json!({ "ok": true }))
+}
+
 #[path = "rpc_channel_tests.rs"]
 #[cfg(test)]
 mod tests;

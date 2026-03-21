@@ -19,6 +19,7 @@ fn make_spawn(name: &str) -> Effect {
         persisted_initial_prompt: None,
         cwd_subdir: None,
         system_prompt_extra: None,
+        suppress_auto_output: false,
     })
 }
 
@@ -93,6 +94,7 @@ fn make_spawn_with_callbacks(name: &str) -> Effect {
         persisted_initial_prompt: None,
         cwd_subdir: None,
         system_prompt_extra: None,
+        suppress_auto_output: false,
     };
     Effect::SpawnCoworkerWithCallbacks {
         config,
@@ -119,6 +121,7 @@ fn make_spawn_for_task(name: &str, task_id: &str) -> Effect {
         persisted_initial_prompt: None,
         cwd_subdir: None,
         system_prompt_extra: None,
+        suppress_auto_output: false,
     };
     Effect::SpawnForTask {
         task_id: task_id.to_string(),
@@ -303,6 +306,7 @@ fn dedup_prevents_double_spawn_for_same_task_across_variants() {
         persisted_initial_prompt: None,
         cwd_subdir: None,
         system_prompt_extra: None,
+        suppress_auto_output: false,
     };
     let spawn_with_callbacks = Effect::SpawnCoworkerWithCallbacks {
         config: config_york,
