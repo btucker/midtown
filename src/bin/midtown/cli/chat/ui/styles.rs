@@ -34,12 +34,39 @@ pub fn is_system_like_sender(sender: &str) -> bool {
     matches!(sender.to_lowercase().as_str(), "daemon" | "system")
 }
 
+/// Parse a CSS hex color string (e.g., "#ff5f5f") into a ratatui Color.
+/// Returns None if the string is not a valid 6-digit hex color.
+pub fn parse_css_color(color: &str) -> Option<Color> {
+    let hex = color.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some(Color::Rgb(r, g, b))
+}
+
+#[path = "styles_tests.rs"]
+#[cfg(test)]
+mod tests;
+
 /// Get color for a sender name.
+///
+/// If `color_override` is provided (a CSS hex color from the server), it takes
+/// precedence over all other color rules.
 ///
 /// Pass `channel_lead_names` to give channel-specific leads (e.g. a lead
 /// posting from topic channel "auth") the same LightYellow treatment as the
 /// main lead. Pass an empty slice when no channel lead context is available.
-pub fn get_sender_color_with_leads(name: &str, channel_lead_names: &[String]) -> Color {
+pub fn get_sender_color_with_leads(
+    name: &str,
+    channel_lead_names: &[String],
+    color_override: Option<&str>,
+) -> Color {
+    if let Some(color) = color_override.and_then(parse_css_color) {
+        return color;
+    }
     match name.to_lowercase().as_str() {
         "lead" => Color::LightYellow,
         "user" => Color::White,

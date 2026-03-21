@@ -7,6 +7,7 @@ import LoaderCircle from "@lucide/svelte/icons/loader-circle";
 import Search from "@lucide/svelte/icons/search";
 import { openTaskThread, selectDm } from "./api.ts";
 import { getPrUrl as getPrUrlUtil } from "./channelUtils.ts";
+import DynamicIcon from "./DynamicIcon.svelte";
 import { renderContent } from "./markdown.ts";
 import { getSenderColor } from "./messageUtils.ts";
 import { activeChannel, channels, coworkers, daemonStatus, kanbanData, repoStatus, repoStatuses } from "./store.ts";
@@ -40,15 +41,18 @@ const effectiveCw = $derived(isCard ? (task.owner ? (cwMap?.get(task.owner) ?? n
 const effectiveReviewer = $derived(isCard ? (relatedPr?.reviewer ?? null) : reviewer);
 const effectiveReviewPosted = $derived(isCard ? relatedPr?.review_posted || false : reviewPosted);
 const hasProgress = $derived(effectiveCw?.progress != null);
+const ownerColor = $derived(effectiveCw?.color || (task.owner ? getSenderColor(task.owner) : null));
+const ownerIcon = $derived(effectiveCw?.icon);
 
 const prUrl = $derived(
 	relatedPr && $repoStatus.fullName ? `https://github.com/${$repoStatus.fullName}/pull/${relatedPr.number}` : null,
 );
 const descriptionHtml = $derived(isCard && task.description ? renderContent(task.description) : "");
 
-function statusBarColor(status, owner) {
+function statusBarColor(status, owner, colorOverride) {
 	if (status === "done") return "hsl(var(--accent-green, 145 40% 38%))";
 	if (status !== "in_progress") return "hsl(var(--muted-foreground) / 0.3)";
+	if (colorOverride) return colorOverride;
 	if (owner) return getSenderColor(owner);
 	return "hsl(var(--accent-teal))";
 }
@@ -95,7 +99,7 @@ function handleDescriptionClick(e) {
   onclick={isCard ? undefined : onclick}
   data-testid={isCard ? 'task-card' : undefined}
 >
-  <span class="w-[3px] rounded-sm shrink-0 self-stretch" style="background: {statusBarColor(isCard ? task.status : rolledUpStatus, task.owner)}"></span>
+  <span class="w-[3px] rounded-sm shrink-0 self-stretch" style="background: {statusBarColor(isCard ? task.status : rolledUpStatus, task.owner, ownerColor)}"></span>
   <div class="flex-1 min-w-0 flex flex-col gap-[3px]">
     {#if isCard}
       <span class="shrink-0 font-semibold text-[0.65rem] {isActive ? 'opacity-80' : 'opacity-60'}">!{task.id}</span>
@@ -113,11 +117,11 @@ function handleDescriptionClick(e) {
             role="button"
             tabindex="0"
             class="relative shrink-0 size-4 rounded-[3px] border-none p-0 m-0 flex items-center justify-center text-[0.55rem] font-bold text-white leading-none cursor-pointer hover:opacity-85 {ownerGlow ? 'shadow-[0_0_6px_1px_var(--glow-color)]' : ''}"
-            style="background-color: {getSenderColor(task.owner)}; font-family: var(--font-sans){ownerGlow ? `; --glow-color: ${getSenderColor(task.owner)}` : ''}"
+            style="background-color: {ownerColor || getSenderColor(task.owner)}; font-family: var(--font-sans){ownerGlow ? `; --glow-color: ${ownerColor || getSenderColor(task.owner)}` : ''}"
             title="{task.owner}{effectiveCw?.phase ? ` · ${effectiveCw.phase}` : ''}"
             onclick={(e) => { e.stopPropagation(); selectDm(task.owner) }}
             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(task.owner) } }}
-          >{task.owner[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="hsl(var(--sidebar-background))" /></span></span>
+          >{#if ownerIcon}<DynamicIcon name={ownerIcon} size={10} />{:else}{task.owner[0].toUpperCase()}{/if}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="hsl(var(--sidebar-background))" /></span></span>
         {/if}
         {#if effectiveReviewer}
           {@const reviewerGlow = isActive && !effectiveReviewPosted}
@@ -134,7 +138,7 @@ function handleDescriptionClick(e) {
       </div>
     {/if}
     {#if isActive && (hasProgress || effectiveReviewer) && task.owner}
-      {@const segments = lifecycleSegments(effectiveCw?.progress ?? 0, effectiveReviewer, effectiveReviewPosted, getSenderColor(task.owner), effectiveReviewer ? getSenderColor(effectiveReviewer) : null)}
+      {@const segments = lifecycleSegments(effectiveCw?.progress ?? 0, effectiveReviewer, effectiveReviewPosted, ownerColor || getSenderColor(task.owner), effectiveReviewer ? getSenderColor(effectiveReviewer) : null)}
       {@const totalPct = Math.round(segments.reduce((sum, s) => sum + s.width, 0))}
       <div class="flex items-center gap-1.5 pr-0.5">
         <div class="flex-1 h-[3px] bg-sidebar-accent rounded-sm overflow-hidden flex">
@@ -173,11 +177,11 @@ function handleDescriptionClick(e) {
             role="button"
             tabindex="0"
             class="relative shrink-0 size-4 rounded-[3px] border-none p-0 m-0 flex items-center justify-center text-[0.55rem] font-bold text-white leading-none cursor-pointer hover:opacity-85 {ownerGlow ? 'shadow-[0_0_6px_1px_var(--glow-color)]' : ''}"
-            style="background-color: {getSenderColor(task.owner)}; font-family: var(--font-sans){ownerGlow ? `; --glow-color: ${getSenderColor(task.owner)}` : ''}"
+            style="background-color: {ownerColor || getSenderColor(task.owner)}; font-family: var(--font-sans){ownerGlow ? `; --glow-color: ${ownerColor || getSenderColor(task.owner)}` : ''}"
             title="{task.owner}{effectiveCw?.phase ? ` · ${effectiveCw.phase}` : ''}"
             onclick={(e) => { e.stopPropagation(); selectDm(task.owner) }}
             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(task.owner) } }}
-          >{task.owner[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="hsl(var(--sidebar-background))" /></span></span>
+          >{#if ownerIcon}<DynamicIcon name={ownerIcon} size={10} />{:else}{task.owner[0].toUpperCase()}{/if}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="hsl(var(--sidebar-background))" /></span></span>
         {/if}
         {#if effectiveReviewer}
           {@const reviewerGlow = isActive && !effectiveReviewPosted}

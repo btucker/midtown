@@ -686,6 +686,8 @@ pub fn check_for_duplicate_task_workers(
                 name: duplicate.clone(),
                 status: "stopped".to_string(),
                 current_task: None,
+                color: None,
+                icon: None,
             });
             effects.push(Effect::ShutdownCoworker {
                 name: duplicate.clone(),

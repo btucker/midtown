@@ -526,7 +526,7 @@ pub(super) async fn handle_session_attach(
     if running {
         // Gracefully pause the running headless session, giving Claude time to
         // persist its session state so `--resume` works in the interactive pane.
-        state.broadcast_coworker_update(&name, "attaching", None);
+        state.broadcast_coworker_update(&name, "attaching", None, None, None);
         if let Err(e) = state
             .session_manager
             .graceful_shutdown(&name, std::time::Duration::from_secs(10))
@@ -713,7 +713,7 @@ pub(super) async fn handle_session_detach(
             detach_msg.channel = Some(OPS_CHANNEL.to_string());
             let _ = state.send_and_broadcast_async(&detach_msg).await;
 
-            state.broadcast_coworker_update(&name, "running", None);
+            state.broadcast_coworker_update(&name, "running", None, None, None);
 
             Response::success(
                 id,
@@ -1021,7 +1021,7 @@ pub(super) async fn handle_session_clear(
             clear_msg.channel = Some(OPS_CHANNEL.to_string());
             let _ = state.send_and_broadcast_async(&clear_msg).await;
 
-            state.broadcast_coworker_update(&name, "running", None);
+            state.broadcast_coworker_update(&name, "running", None, None, None);
 
             Response::success(
                 id,
@@ -1238,11 +1238,14 @@ pub(super) fn build_fork_config(
 /// The `fork_channel` is the resolved channel for the fork session (`None` only for
 /// pre-existing forks).
 /// Returns `Err` if a concurrent fork is in progress or spawn fails.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn create_fork_session(
     thread_parent_id: &str,
     calling_session_id: &str,
     channel_hint: Option<&str>,
     fork_name_hint: Option<&str>,
+    color: Option<&str>,
+    icon: Option<&str>,
     caller: &str,
     state: &DaemonState,
 ) -> Result<(String, bool, Option<String>), String> {
@@ -1401,6 +1404,8 @@ pub(super) async fn create_fork_session(
                     .map(crate::platform::Platform::from_provider),
                 profile: parent_record.as_ref().and_then(|r| r.profile.clone()),
                 restart_count: 0,
+                color: color.map(|c| c.to_string()),
+                icon: icon.map(|i| i.to_string()),
             },
         );
         if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
@@ -1512,12 +1517,15 @@ async fn build_channel_summary_for_fork(channel: &crate::channel::Channel) -> Op
 /// - `initial_message`: Optional initial message for the fork. When provided, this is
 ///   sent as the nudge instead of any fallback. This lets callers combine fork + nudge
 ///   into a single command with precise instructions.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_session_fork(
     id: RequestId,
     thread_parent_id: &str,
     calling_session_id: &str,
     name_hint: Option<&str>,
     initial_message: Option<&str>,
+    color: Option<&str>,
+    icon: Option<&str>,
     state: &DaemonState,
 ) -> crate::rpc::Response {
     // Validate thread_parent_id is a UUID — reject Claude API message IDs
@@ -1543,6 +1551,8 @@ pub(super) async fn handle_session_fork(
         calling_session_id,
         None,
         name_hint,
+        color,
+        icon,
         "session.fork",
         state,
     )
@@ -1809,6 +1819,8 @@ pub(super) async fn handle_session_fork_thread(
         &lead_session_id,
         Some(channel),
         None, // no name hint from web UI
+        None, // no color from web UI
+        None, // no icon from web UI
         "session.fork_thread",
         state,
     )

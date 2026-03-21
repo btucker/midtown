@@ -1216,6 +1216,8 @@ fn build_reviewer_respawn_effects(
             name: name.to_string(),
             status: "running".to_string(),
             current_task: Some(format!("reviewing PR #{}", pr_number)),
+            color: None,
+            icon: None,
         },
         Effect::CreateTaskSessionSpan {
             task_id: tasks

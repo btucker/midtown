@@ -251,7 +251,7 @@ pub(super) async fn handle_coworker_spawn(
     match state.spawn_coworker(&config).await {
         Ok(_) => {
             info!("Spawned coworker: {}", config.name);
-            state.broadcast_coworker_update(&config.name, "running", None);
+            state.broadcast_coworker_update(&config.name, "running", None, None, None);
 
             // If --task was provided, execute task assignment effects and update
             // the task file on disk (same as dispatch + SpawnForTask do)
@@ -283,6 +283,8 @@ pub(super) async fn handle_coworker_spawn(
                         name: config.name.clone(),
                         status: "running".to_string(),
                         current_task: None,
+                        color: None,
+                        icon: None,
                     },
                     effects::Effect::post_to_ops(format!(
                         "Called in coworker {} for task !{}",
@@ -425,7 +427,7 @@ pub(super) async fn handle_coworker_break(
         );
     }
 
-    state.broadcast_coworker_update(name, "stopped", None);
+    state.broadcast_coworker_update(name, "stopped", None, None, None);
 
     // Shut down the headless session, then deregister from tracking
     if let Err(e) = state.session_manager.shutdown(name).await {
@@ -658,6 +660,8 @@ pub(super) async fn handle_coworker_report_state(
                     name: name.to_string(),
                     status: "stopped".to_string(),
                     current_task: None,
+                    color: None,
+                    icon: None,
                 },
             ],
         }];

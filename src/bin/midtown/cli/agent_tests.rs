@@ -890,6 +890,8 @@ fn fork_parses_thread_id_flag() {
             session_id,
             name,
             initial_message,
+            color: _,
+            icon: _,
         } => {
             assert_eq!(thread_id, "msg-123");
             assert!(session_id.is_none());
@@ -930,6 +932,8 @@ fn fork_parses_all_flags() {
             session_id,
             name,
             initial_message,
+            color: _,
+            icon: _,
         } => {
             assert_eq!(thread_id, "thread-abc");
             assert_eq!(session_id.as_deref(), Some("sess-456"));

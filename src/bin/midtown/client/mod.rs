@@ -507,6 +507,7 @@ impl DaemonClient {
     // Task commands
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn task_create(
         &self,
         subject: &str,
@@ -520,6 +521,8 @@ impl DaemonClient {
         thread_id: Option<&str>,
         parent: Option<&str>,
         agent_type: Option<&str>,
+        color: Option<&str>,
+        icon: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({
             "subject": subject,
@@ -551,6 +554,12 @@ impl DaemonClient {
         }
         if let Some(at) = agent_type {
             params["agent_type"] = serde_json::json!(at);
+        }
+        if let Some(c) = color {
+            params["color"] = serde_json::json!(c);
+        }
+        if let Some(i) = icon {
+            params["icon"] = serde_json::json!(i);
         }
         self.send("task.create", Some(params))
     }
@@ -720,6 +729,8 @@ impl DaemonClient {
         calling_session_id: &str,
         name: Option<&str>,
         initial_message: Option<&str>,
+        color: Option<&str>,
+        icon: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({
             "thread_parent_id": thread_parent_id,
@@ -730,6 +741,12 @@ impl DaemonClient {
         }
         if let Some(msg) = initial_message {
             params["initial_message"] = serde_json::json!(msg);
+        }
+        if let Some(c) = color {
+            params["color"] = serde_json::json!(c);
+        }
+        if let Some(i) = icon {
+            params["icon"] = serde_json::json!(i);
         }
         self.send("session.fork", Some(params))
     }

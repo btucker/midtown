@@ -523,6 +523,8 @@ async fn test_handle_session_fork_with_initial_message() {
         calling_session_id,
         None,
         Some("Custom: investigate the auth bug"),
+        None,
+        None,
         &state,
     )
     .await;
@@ -1185,6 +1187,8 @@ async fn test_handle_session_fork_rejects_non_uuid_thread_id() {
         "any-caller",
         None,
         None,
+        None,
+        None,
         &state,
     )
     .await;
@@ -1203,6 +1207,41 @@ async fn test_handle_session_fork_rejects_non_uuid_thread_id() {
         msg.contains("channel message UUID"),
         "Error should suggest using channel message UUID, got: {}",
         msg
+    );
+}
+
+/// `handle_session_fork` accepts valid UUID thread IDs.
+#[tokio::test]
+async fn test_handle_session_fork_accepts_valid_uuid() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let valid_uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+
+    // Pre-populate topic_sessions with an alive session so the fork returns
+    // "already exists" without needing to spawn a real process.
+    state
+        .topic_sessions
+        .lock()
+        .unwrap()
+        .insert(valid_uuid.to_string(), "existing-session".to_string());
+    setup_alive_fork(&state, "existing-session", "fork-existing").await;
+
+    let resp = handle_session_fork(
+        RequestId::Number(101),
+        valid_uuid,
+        "any-caller",
+        None,
+        None,
+        None,
+        None,
+        &state,
+    )
+    .await;
+    let json = serde_json::to_value(&resp).unwrap();
+    assert!(
+        json.get("error").is_none(),
+        "Should accept valid UUID thread ID, got error: {:?}",
+        json.get("error")
     );
 }
 /// `handle_session_fork` rejects various non-UUID strings.
@@ -1226,6 +1265,8 @@ async fn test_handle_session_fork_rejects_various_non_uuid_formats() {
             RequestId::Number(200),
             invalid_id,
             "any-caller",
+            None,
+            None,
             None,
             None,
             &state,

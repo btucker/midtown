@@ -368,6 +368,12 @@ pub struct CoworkerStatusData {
     /// Health status color: "green", "yellow", or "red".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub health: Option<String>,
+    /// Avatar color override (CSS color string).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Lucide icon name for avatar (e.g., "shield", "database").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2844,6 +2850,8 @@ pub fn coworker_status_update(
     status: &str,
     current_task: Option<&str>,
     model: &str,
+    color: Option<&str>,
+    icon: Option<&str>,
 ) -> WebUpdate {
     WebUpdate::CoworkerStatus(CoworkerStatusData {
         name: name.to_string(),
@@ -2855,6 +2863,8 @@ pub fn coworker_status_update(
         progress: None,
         time_estimate: None,
         health: None,
+        color: color.map(|s| s.to_string()),
+        icon: icon.map(|s| s.to_string()),
     })
 }
 
@@ -2880,6 +2890,8 @@ pub fn coworker_progress_update(
         progress,
         time_estimate,
         health,
+        color: None,
+        icon: None,
     })
 }
 
@@ -2891,7 +2903,14 @@ pub fn broadcast_coworker_status(
     current_task: Option<&str>,
     model: &str,
 ) {
-    let _ = tx.send(coworker_status_update(name, status, current_task, model));
+    let _ = tx.send(coworker_status_update(
+        name,
+        status,
+        current_task,
+        model,
+        None,
+        None,
+    ));
 }
 
 /// Build a `WebUpdate` for a channel message.

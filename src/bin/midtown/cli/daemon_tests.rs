@@ -152,6 +152,8 @@ fn test_running_coworker_names_excludes_channel_leads() {
             output_tokens: 0,
             phase: None,
             pr_number: None,
+            color: None,
+            icon: None,
         },
         CoworkerInfo {
             name: "channel-lead-daemon-core".to_string(),
@@ -165,6 +167,8 @@ fn test_running_coworker_names_excludes_channel_leads() {
             output_tokens: 0,
             phase: None,
             pr_number: None,
+            color: None,
+            icon: None,
         },
     ];
 

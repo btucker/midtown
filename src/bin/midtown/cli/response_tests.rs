@@ -171,6 +171,8 @@ fn test_coworkers_response_display_includes_provider_and_profile() {
                 output_tokens: 0,
                 phase: None,
                 pr_number: None,
+                color: None,
+                icon: None,
             },
             CoworkerInfo {
                 name: "park".to_string(),
@@ -184,6 +186,8 @@ fn test_coworkers_response_display_includes_provider_and_profile() {
                 output_tokens: 0,
                 phase: None,
                 pr_number: None,
+                color: None,
+                icon: None,
             },
         ],
     };
@@ -221,6 +225,8 @@ fn test_status_pretty_excludes_channel_leads_from_count() {
                     output_tokens: 0,
                     phase: None,
                     pr_number: None,
+                    color: None,
+                    icon: None,
                 },
                 CoworkerInfo {
                     name: "tui".to_string(),
@@ -234,6 +240,8 @@ fn test_status_pretty_excludes_channel_leads_from_count() {
                     output_tokens: 0,
                     phase: None,
                     pr_number: None,
+                    color: None,
+                    icon: None,
                 },
             ],
             tasks: vec![],
@@ -375,6 +383,8 @@ fn test_status_pretty_format() {
                     output_tokens: 0,
                     phase: None,
                     pr_number: None,
+                    color: None,
+                    icon: None,
                 },
                 CoworkerInfo {
                     name: "park".to_string(),
@@ -388,6 +398,8 @@ fn test_status_pretty_format() {
                     output_tokens: 0,
                     phase: None,
                     pr_number: None,
+                    color: None,
+                    icon: None,
                 },
             ],
             tasks: vec![TaskInfo {
@@ -438,6 +450,8 @@ fn test_coworkers_pretty_excludes_channel_leads() {
                 output_tokens: 0,
                 phase: None,
                 pr_number: None,
+                color: None,
+                icon: None,
             },
             CoworkerInfo {
                 name: "tui".to_string(),
@@ -451,6 +465,8 @@ fn test_coworkers_pretty_excludes_channel_leads() {
                 output_tokens: 0,
                 phase: None,
                 pr_number: None,
+                color: None,
+                icon: None,
             },
         ],
     };
@@ -494,6 +510,8 @@ fn test_status_pretty_shows_lead_sessions() {
                     output_tokens: 0,
                     phase: None,
                     pr_number: None,
+                    color: None,
+                    icon: None,
                 },
                 CoworkerInfo {
                     name: "cli".to_string(),
@@ -507,6 +525,8 @@ fn test_status_pretty_shows_lead_sessions() {
                     output_tokens: 0,
                     phase: None,
                     pr_number: None,
+                    color: None,
+                    icon: None,
                 },
             ],
             tasks: vec![],
@@ -558,6 +578,8 @@ fn test_coworkers_pretty_empty_when_only_channel_leads() {
             output_tokens: 0,
             phase: None,
             pr_number: None,
+            color: None,
+            icon: None,
         }],
     };
 
@@ -619,6 +641,8 @@ fn test_token_display_in_status() {
                 output_tokens: 4_100,
                 phase: None,
                 pr_number: None,
+                color: None,
+                icon: None,
             }],
             tasks: vec![],
             pull_requests: vec![],
@@ -660,6 +684,8 @@ fn test_status_shows_reviewing_pr_when_phase_is_review() {
                 output_tokens: 0,
                 phase: Some("review".to_string()),
                 pr_number: Some(1421),
+                color: None,
+                icon: None,
             }],
             tasks: vec![],
             pull_requests: vec![],
@@ -703,6 +729,8 @@ fn test_status_shows_phase_without_pr() {
                 output_tokens: 0,
                 phase: Some("dev".to_string()),
                 pr_number: None,
+                color: None,
+                icon: None,
             }],
             tasks: vec![],
             pull_requests: vec![],
@@ -741,6 +769,8 @@ fn test_status_falls_back_to_working_on_when_no_phase() {
                 output_tokens: 0,
                 phase: None,
                 pr_number: None,
+                color: None,
+                icon: None,
             }],
             tasks: vec![],
             pull_requests: vec![],
@@ -791,6 +821,8 @@ fn make_cw(phase: Option<&str>, pr: Option<u64>, task: Option<&str>) -> Coworker
         output_tokens: 0,
         phase: phase.map(|s| s.to_string()),
         pr_number: pr,
+        color: None,
+        icon: None,
     }
 }
 
