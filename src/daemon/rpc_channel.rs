@@ -467,17 +467,58 @@ pub(super) async fn handle_channel_post(
                 if is_pending {
                     None
                 } else {
-                    let (sid, fork_name) = {
+                    let (sid, fork_name, fork_running) = {
                         let ps = state.persistent_state.lock().await;
-                        match ps.session_by_thread(parent_id).filter(|s| s.is_running) {
-                            Some(s) => (Some(s.session_id.clone()), Some(s.name.clone())),
-                            None => (None, None),
+                        match ps.session_by_thread(parent_id) {
+                            Some(s) => (
+                                Some(s.session_id.clone()),
+                                Some(s.name.clone()),
+                                s.is_running,
+                            ),
+                            None => (None, None, false),
                         }
                     };
-                    // Verify the process is actually alive. Dead forks stay dead.
                     match (sid, fork_name) {
-                        (Some(sid), Some(name)) if state.session_manager.is_alive(&name).await => {
+                        (Some(sid), Some(name))
+                            if fork_running && state.session_manager.is_alive(&name).await =>
+                        {
                             Some(sid)
+                        }
+                        (Some(sid), Some(name)) if !name.is_empty() => {
+                            // Dead fork — user posted to its thread, attempt resume.
+                            info!(
+                                "Resuming dead fork '{}' for user thread reply (thread {})",
+                                name, parent_id
+                            );
+                            let record = {
+                                let ps = state.persistent_state.lock().await;
+                                ps.sessions.get(&sid).cloned()
+                            };
+                            if let Some(record) = record {
+                                let mut config = crate::launch::LaunchConfig::coworker(
+                                    &name,
+                                    state.paths.dir_key(),
+                                    crate::launch::SessionMode::ResumeSession(sid.clone()),
+                                    None,
+                                    None,
+                                );
+                                if let Some(provider) = record.provider {
+                                    config.auth_provider = provider;
+                                }
+                                config.working_dir = Some(record.working_dir.clone().into());
+                                match state.spawn_coworker(&config).await {
+                                    Ok(new_sid) => {
+                                        info!("Resumed fork '{}' (new session: {})", name, new_sid);
+                                        Some(new_sid)
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to resume fork '{}': {}", name, e);
+                                        None
+                                    }
+                                }
+                            } else {
+                                None
+                            }
                         }
                         _ => None,
                     }
