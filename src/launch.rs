@@ -88,6 +88,9 @@ pub struct LaunchConfig {
     /// Extra content appended to the system prompt (e.g., domain context for channel leads).
     /// Injected after the standard system prompt layers during rendering.
     pub system_prompt_extra: Option<String>,
+    /// When `true`, inject a prompt override telling the lead that auto-posting
+    /// is disabled. Only relevant for `midtown-channel-lead` agent types.
+    pub suppress_auto_output: bool,
 }
 
 /// The shell command string and any pre-assigned provider session ID.
@@ -332,6 +335,7 @@ impl LaunchConfig {
             persisted_initial_prompt: None,
             cwd_subdir: None,
             system_prompt_extra,
+            suppress_auto_output: false,
         }
     }
 
@@ -497,6 +501,7 @@ impl LaunchConfig {
                     domain_context,
                     project_name,
                     None,
+                    self.suppress_auto_output,
                 )
             }
             // Fallback: use coworker system prompt for unknown agent types

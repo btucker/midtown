@@ -46,6 +46,7 @@ fn test_lead_system_prompt_saved_on_spawn() {
         persisted_initial_prompt: None,
         cwd_subdir: None,
         system_prompt_extra: None,
+        suppress_auto_output: false,
     };
 
     // Convert to headless config (this should save the system prompt)
@@ -315,6 +316,7 @@ fn test_codex_channel_lead_skips_disallowed_tools() {
         persisted_initial_prompt: None,
         cwd_subdir: None,
         system_prompt_extra: None,
+        suppress_auto_output: false,
     };
 
     let headless = config.to_headless_config(&test_paths("myrepo", "myrepo"));
@@ -346,6 +348,7 @@ fn test_claude_channel_lead_still_has_disallowed_tools() {
         persisted_initial_prompt: None,
         cwd_subdir: None,
         system_prompt_extra: None,
+        suppress_auto_output: false,
     };
 
     let headless = config.to_headless_config(&test_paths("myrepo", "myrepo"));

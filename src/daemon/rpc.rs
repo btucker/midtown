@@ -225,6 +225,7 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             | "coworker.list"
             | "coworker.questions"
             | "channel.list"
+            | "channel.get_settings"
             | "reminder.list"
             | "workflow.list"
             | "session.list"
@@ -522,6 +523,25 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let old = require_str!(params, "old", request.id);
             let new = require_str!(params, "new", request.id);
             super::rpc_channel::handle_channel_rename(request.id, old, new, state).await
+        }
+
+        "channel.get_settings" => {
+            let channel = require_str!(params, "channel", request.id);
+            super::rpc_channel::handle_channel_get_settings(request.id, channel, state).await
+        }
+
+        "channel.set_settings" => {
+            let channel = require_str!(params, "channel", request.id);
+            let show_full_lead_output = params
+                .and_then(|p| p.get("show_full_lead_output"))
+                .and_then(|v| v.as_bool());
+            super::rpc_channel::handle_channel_set_settings(
+                request.id,
+                channel,
+                show_full_lead_output,
+                state,
+            )
+            .await
         }
 
         // ---- Tasks ----

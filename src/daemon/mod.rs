@@ -3837,11 +3837,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         .filter(|s| s.is_fork_session() && s.channel.is_some())
                         .map(|s| (s.name.clone(), s.channel.clone().unwrap()))
                         .collect();
+                    // Collect channels where show_full_lead_output is disabled.
+                    let suppress_auto_output_channels: HashSet<String> = ps
+                        .channel_settings
+                        .iter()
+                        .filter(|(_, s)| !s.show_full_lead_output)
+                        .map(|(name, _)| name.clone())
+                        .collect();
                     let lead_effects = stream::process_lead_output(
                         &events,
                         &ps.channel_lead_sessions,
                         &state.project_name,
                         &fork_bound_channels,
+                        &suppress_auto_output_channels,
                     );
 
                     // Only agents without a native home channel get DM mirrors.

@@ -162,6 +162,31 @@ impl SessionRecord {
     }
 }
 
+/// Per-channel settings that control daemon behavior for a specific channel.
+///
+/// Persisted in `DaemonPersistentState::channel_settings` and modifiable
+/// via the `channel.get_settings` / `channel.set_settings` RPC methods.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelSettings {
+    /// When `false`, the daemon suppresses auto-posting of lead output to the
+    /// channel. The lead must use `midtown channel post` explicitly. Forks are
+    /// exempt — they always auto-post to their bound thread. Default: `true`.
+    #[serde(default = "default_true")]
+    pub show_full_lead_output: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for ChannelSettings {
+    fn default() -> Self {
+        Self {
+            show_full_lead_output: true,
+        }
+    }
+}
+
 /// All persistent daemon state in one struct.
 ///
 /// Serialized to `~/.midtown/projects/<repo>/daemon-state.json`.
@@ -224,6 +249,13 @@ pub struct DaemonPersistentState {
     /// built-in state machine (auto-dispatch, reviewer spawning, PR nudges).
     #[serde(default)]
     pub lead_driven_channels: HashSet<String>,
+
+    /// Per-channel settings controlling daemon behavior.
+    ///
+    /// Maps channel name → `ChannelSettings`. Channels without an entry use
+    /// the default settings (all features enabled).
+    #[serde(default)]
+    pub channel_settings: HashMap<String, ChannelSettings>,
 
     /// Workflow state, owned by the daemon.
     ///
