@@ -5517,3 +5517,76 @@ async fn test_review_task_dedup_includes_completed_tasks() {
         effects
     );
 }
+
+#[test]
+fn test_extract_all_placeholder_comment_ids_finds_all() {
+    let json = serde_json::json!({
+        "comments": [
+            {
+                "body": "<!-- midtown task:100 type:review-placeholder -->\n🔍 Review in progress...",
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-111111"
+            },
+            {
+                "body": "LGTM! Great work.",
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-222222"
+            },
+            {
+                "body": "<!-- midtown task:101 type:review-placeholder -->\n🔍 Review in progress...",
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-333333"
+            }
+        ]
+    });
+
+    let ids = super::extract_all_placeholder_comment_ids(&json);
+    assert_eq!(ids, vec![111111, 333333]);
+}
+
+#[test]
+fn test_extract_all_placeholder_comment_ids_empty_when_no_placeholders() {
+    let json = serde_json::json!({
+        "comments": [
+            {
+                "body": "<!-- midtown session:abc task:100 type:review -->\n## Code Review\nLGTM!",
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-111111"
+            },
+            {
+                "body": "Regular comment",
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-222222"
+            }
+        ]
+    });
+
+    let ids = super::extract_all_placeholder_comment_ids(&json);
+    assert!(ids.is_empty());
+}
+
+#[test]
+fn test_extract_all_placeholder_comment_ids_handles_missing_comments() {
+    let json = serde_json::json!({});
+    let ids = super::extract_all_placeholder_comment_ids(&json);
+    assert!(ids.is_empty());
+}
+
+#[test]
+fn test_extract_all_placeholder_comment_ids_skips_null_body_and_url() {
+    let json = serde_json::json!({
+        "comments": [
+            {
+                "body": "<!-- midtown task:100 type:review-placeholder -->\n🔍 Review in progress...",
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-111111"
+            },
+            {
+                "body": null,
+                "url": "https://github.com/owner/repo/pull/42#issuecomment-222222"
+            },
+            {
+                "body": "<!-- midtown task:102 type:review-placeholder -->\n🔍 Review in progress..."
+                // missing url field
+            }
+        ]
+    });
+
+    // Should find the first placeholder, skip null body, skip missing url
+    let ids = super::extract_all_placeholder_comment_ids(&json);
+    assert_eq!(ids, vec![111111]);
+}

@@ -3174,6 +3174,111 @@ fn extract_placeholder_comment_id(json: &serde_json::Value) -> Option<u64> {
     None
 }
 
+/// Extract all placeholder comment IDs from parsed PR JSON.
+///
+/// Unlike `extract_placeholder_comment_id` (which returns only the most recent),
+/// this returns all placeholder comment IDs for bulk deletion.
+fn extract_all_placeholder_comment_ids(json: &serde_json::Value) -> Vec<u64> {
+    let Some(comments) = json.get("comments").and_then(|c| c.as_array()) else {
+        return vec![];
+    };
+
+    comments
+        .iter()
+        .filter(|comment| {
+            let body = comment.get("body").and_then(|b| b.as_str()).unwrap_or("");
+            crate::daemon::helpers::parse_frontmatter(body).is_some_and(|fm| fm.is_placeholder())
+        })
+        .filter_map(|comment| {
+            comment
+                .get("url")
+                .and_then(|u| u.as_str())
+                .and_then(|url| url.split("issuecomment-").nth(1))
+                .and_then(|id_str| id_str.parse::<u64>().ok())
+        })
+        .collect()
+}
+
+/// Backstop: delete all review placeholder comments on a PR.
+///
+/// Called when a `type:review` comment is detected via webhook. This handles
+/// the case where the final review was posted directly (e.g., via `gh pr comment`)
+/// instead of through `midtown pr review post` which would have PATCH'd the
+/// placeholder in place.
+pub(super) async fn cleanup_review_placeholders(pr_number: u64, repo_full_name: &str) {
+    let output = tokio::process::Command::new("gh")
+        .args(["pr", "view", &pr_number.to_string(), "--json", "comments"])
+        .output()
+        .await;
+
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            warn!(
+                "Failed to list comments for placeholder cleanup on PR #{}: {}",
+                pr_number,
+                stderr.trim()
+            );
+            return;
+        }
+        Err(e) => {
+            warn!(
+                "Failed to run gh for placeholder cleanup on PR #{}: {}",
+                pr_number, e
+            );
+            return;
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = match serde_json::from_str(&stdout) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let placeholder_ids = extract_all_placeholder_comment_ids(&json);
+    if placeholder_ids.is_empty() {
+        return;
+    }
+
+    info!(
+        "Cleaning up {} review placeholder comment(s) on PR #{}",
+        placeholder_ids.len(),
+        pr_number
+    );
+
+    for comment_id in placeholder_ids {
+        let endpoint = format!("/repos/{}/issues/comments/{}", repo_full_name, comment_id);
+        let result = tokio::process::Command::new("gh")
+            .args(["api", "--method", "DELETE", &endpoint])
+            .output()
+            .await;
+        match result {
+            Ok(o) if o.status.success() => {
+                info!(
+                    "Deleted review placeholder comment {} on PR #{}",
+                    comment_id, pr_number
+                );
+            }
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                warn!(
+                    "Failed to delete placeholder comment {}: {}",
+                    comment_id,
+                    stderr.trim()
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to run gh api for placeholder delete {}: {}",
+                    comment_id, e
+                );
+            }
+        }
+    }
+}
+
 // Auto-nudge helpers for PR activity
 // ============================================================================
 
