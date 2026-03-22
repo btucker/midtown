@@ -3674,19 +3674,19 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         let mut placeholder_cache =
                             state.reviewer_placeholder_cache.lock().unwrap();
                         placeholder_cache.remove(&pr_number);
+                        // Backstop: clean up stale review placeholder comments
+                        // on GitHub. Only runs when author_matches to avoid
+                        // deleting placeholders for in-flight reviewers.
+                        if let Some(repo) = webhook_repo_full_name {
+                            tokio::spawn(async move {
+                                pr::cleanup_review_placeholders(pr_number, &repo).await;
+                            });
+                        }
                     } else {
                         debug!(
                             "Webhook: ignoring review for PR #{} — author {:?} does not match assigned reviewer {:?}",
                             pr_number, webhook_event.review_author, assigned_reviewer
                         );
-                    }
-                    // Backstop: clean up stale review placeholder comments.
-                    // This runs regardless of author matching — any type:review
-                    // comment means placeholders are no longer needed.
-                    if let Some(repo) = webhook_repo_full_name.clone() {
-                        tokio::spawn(async move {
-                            pr::cleanup_review_placeholders(pr_number, &repo).await;
-                        });
                     }
                 }
 
