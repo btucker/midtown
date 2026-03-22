@@ -3411,6 +3411,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     }
                 }
 
+                // Extract repo_full_name before pr_activity is moved (used later for placeholder cleanup)
+                let webhook_repo_full_name = webhook_event
+                    .pr_activity
+                    .as_ref()
+                    .and_then(|a| a.repo_full_name.clone());
+
                 // Nudge PR owner when someone else comments on their PR
                 if let Some(activity) = webhook_event.pr_activity {
                     let state = Arc::clone(&state);
@@ -3668,6 +3674,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         let mut placeholder_cache =
                             state.reviewer_placeholder_cache.lock().unwrap();
                         placeholder_cache.remove(&pr_number);
+                        // Backstop: clean up stale review placeholder comments
+                        // on GitHub. Only runs when author_matches to avoid
+                        // deleting placeholders for in-flight reviewers.
+                        if let Some(repo) = webhook_repo_full_name {
+                            tokio::spawn(async move {
+                                pr::cleanup_review_placeholders(pr_number, &repo).await;
+                            });
+                        }
                     } else {
                         debug!(
                             "Webhook: ignoring review for PR #{} — author {:?} does not match assigned reviewer {:?}",
