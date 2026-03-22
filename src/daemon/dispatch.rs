@@ -1901,6 +1901,91 @@ pub fn reset_orphaned_tasks(ps: &DaemonPersistentState, _tasks: &[Task]) -> Vec<
 }
 
 // ============================================================================
+// Auto-close tasks when coworker exits with work complete
+// ============================================================================
+
+/// Auto-close in_progress tasks whose coworker session has exited but whose
+/// work product is already present (PR opened, review posted).
+///
+/// This is a backstop — coworkers should self-close, but this catches the ones
+/// that don't. Only fires after the grace period has elapsed and the session is
+/// confirmed inactive.
+pub fn auto_close_completed_tasks(ps: &DaemonPersistentState, tasks: &[Task]) -> Vec<Effect> {
+    let mut effects = vec![];
+    let recently_stopped = compute_recently_stopped(ps);
+
+    for task in tasks {
+        if task.status != crate::task_store::TaskStatus::InProgress {
+            continue;
+        }
+
+        let owner_clean = task.agent_name.trim().trim_matches('"').to_lowercase();
+
+        // Only act on tasks whose owner has exited (not active, past grace)
+        if owner_clean.is_empty() {
+            continue;
+        }
+        if ps.tick_active_session_names.contains(&owner_clean) {
+            continue;
+        }
+        if recently_stopped.contains(&owner_clean) {
+            continue;
+        }
+
+        // Check for work product based on task type
+        let has_work_product = if task.agent_type == "midtown-code-reviewer" {
+            // Review task: check if review was posted on the assigned PR
+            task.pr
+                .map(|pr| ps.github.reviewed_prs.contains(&pr))
+                .unwrap_or(false)
+        } else {
+            // Code/rebase task: check if a PR exists for this task
+            ps.tick_pr_task_index.task_has_pr(&task.id)
+        };
+
+        if !has_work_product {
+            continue;
+        }
+
+        let task_channel = task.channel.clone();
+        let task_type_label = if task.agent_type == "midtown-code-reviewer" {
+            "review posted"
+        } else {
+            "PR opened"
+        };
+
+        info!(
+            "Auto-closing task !{} — coworker {} exited with work complete ({})",
+            task.id, owner_clean, task_type_label
+        );
+
+        let push_url = task_channel.as_ref().map(|ch| {
+            build_push_deep_link(&ps.tick_project_name, ch, task.message_id.as_deref(), None)
+        });
+        effects.extend(task_completed_effects(
+            &task.id,
+            &ps.tick_dir_key,
+            &task.subject,
+            format!(
+                "✅ Auto-closed task !{} — coworker {} exited with work complete ({})",
+                task.id, owner_clean, task_type_label
+            ),
+            task_channel,
+            Some(task.agent_name.clone()),
+            TaskEventContext {
+                subject: None,
+                description: task.description.clone(),
+                thread_id: task.thread_id.clone(),
+                message_id: task.message_id.clone(),
+            },
+            push_url,
+        ));
+    }
+
+    effects
+}
+
+// ============================================================================
 // Session recovery decision (local to dispatch)
 // ============================================================================
 

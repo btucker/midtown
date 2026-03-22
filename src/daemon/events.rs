@@ -97,6 +97,7 @@ pub async fn evaluate_tick(
             {
                 let ps = state.persistent_state.lock().await;
                 let tasks = state.task_store.load_all();
+                effects.extend(super::dispatch::auto_close_completed_tasks(&ps, &tasks));
                 effects.extend(super::dispatch::reset_orphaned_tasks(&ps, &tasks));
                 effects.extend(super::dispatch::check_for_duplicate_task_workers(
                     &ps, &tasks,

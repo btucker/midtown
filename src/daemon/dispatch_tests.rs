@@ -348,6 +348,171 @@ fn reset_orphaned_skips_active_owner() {
 }
 
 // ============================================================================
+// Auto-close completed tasks
+// ============================================================================
+
+#[test]
+fn auto_close_code_task_with_pr_when_owner_exited() {
+    let mut ps = make_ps("test");
+    // Owner is NOT in active sessions (session exited)
+    // Task has an associated PR
+    ps.tick_pr_task_index = crate::daemon::snapshot::PrTaskIndex::from_task_maps(
+        [("1".to_string(), 42)].into_iter().collect(),
+        HashMap::new(),
+    );
+
+    let mut task = make_task("1", "Fix bug", "park", TaskStatus::InProgress);
+    task.agent_type = "midtown-code-author".to_string();
+    task.channel = Some("ops".to_string());
+    let tasks = vec![task];
+
+    let effects = auto_close_completed_tasks(&ps, &tasks);
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::CompleteTask { task_id, .. } if task_id == "1")),
+        "Should auto-close code task with PR when owner exited"
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::ClearBlockedBy { completed_task_id, .. } if completed_task_id == "1")),
+        "Should clear blocked_by for completed task"
+    );
+}
+
+#[test]
+fn auto_close_review_task_when_review_posted() {
+    let mut ps = make_ps("test");
+    // Owner is NOT in active sessions (session exited)
+    // Review has been posted for PR #42
+    ps.github.reviewed_prs.insert(42);
+
+    let mut task = make_task("1", "Review PR #42", "riverside", TaskStatus::InProgress);
+    task.agent_type = "midtown-code-reviewer".to_string();
+    task.pr = Some(42);
+    task.channel = Some("ops".to_string());
+    let tasks = vec![task];
+
+    let effects = auto_close_completed_tasks(&ps, &tasks);
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::CompleteTask { task_id, .. } if task_id == "1")),
+        "Should auto-close review task when review posted"
+    );
+}
+
+#[test]
+fn auto_close_skips_active_owner() {
+    let mut ps = make_ps("test");
+    ps.tick_active_session_names = ["park".to_string()].into_iter().collect();
+    ps.tick_pr_task_index = crate::daemon::snapshot::PrTaskIndex::from_task_maps(
+        [("1".to_string(), 42)].into_iter().collect(),
+        HashMap::new(),
+    );
+
+    let mut task = make_task("1", "Fix bug", "park", TaskStatus::InProgress);
+    task.agent_type = "midtown-code-author".to_string();
+    let tasks = vec![task];
+
+    let effects = auto_close_completed_tasks(&ps, &tasks);
+    assert!(
+        effects.is_empty(),
+        "Should not auto-close task with active owner"
+    );
+}
+
+#[test]
+fn auto_close_skips_recently_stopped_owner() {
+    let mut ps = make_ps("test");
+    ps.tick_coworker_stop_times
+        .insert("park".to_string(), chrono::Utc::now());
+    ps.tick_pr_task_index = crate::daemon::snapshot::PrTaskIndex::from_task_maps(
+        [("1".to_string(), 42)].into_iter().collect(),
+        HashMap::new(),
+    );
+
+    let mut task = make_task("1", "Fix bug", "park", TaskStatus::InProgress);
+    task.agent_type = "midtown-code-author".to_string();
+    let tasks = vec![task];
+
+    let effects = auto_close_completed_tasks(&ps, &tasks);
+    assert!(
+        effects.is_empty(),
+        "Should not auto-close during grace period"
+    );
+}
+
+#[test]
+fn auto_close_skips_code_task_without_pr() {
+    let ps = make_ps("test");
+    // Owner exited, no PR for task
+
+    let mut task = make_task("1", "Fix bug", "park", TaskStatus::InProgress);
+    task.agent_type = "midtown-code-author".to_string();
+    let tasks = vec![task];
+
+    let effects = auto_close_completed_tasks(&ps, &tasks);
+    assert!(
+        effects.is_empty(),
+        "Should not auto-close code task without PR"
+    );
+}
+
+#[test]
+fn auto_close_skips_review_task_without_review() {
+    let ps = make_ps("test");
+    // Owner exited, but review NOT posted
+
+    let mut task = make_task("1", "Review PR #42", "riverside", TaskStatus::InProgress);
+    task.agent_type = "midtown-code-reviewer".to_string();
+    task.pr = Some(42);
+    let tasks = vec![task];
+
+    let effects = auto_close_completed_tasks(&ps, &tasks);
+    assert!(
+        effects.is_empty(),
+        "Should not auto-close review task without review posted"
+    );
+}
+
+#[test]
+fn auto_close_skips_completed_tasks() {
+    let mut ps = make_ps("test");
+    ps.tick_pr_task_index = crate::daemon::snapshot::PrTaskIndex::from_task_maps(
+        [("1".to_string(), 42)].into_iter().collect(),
+        HashMap::new(),
+    );
+
+    let mut task = make_task("1", "Fix bug", "park", TaskStatus::Completed);
+    task.agent_type = "midtown-code-author".to_string();
+    let tasks = vec![task];
+
+    let effects = auto_close_completed_tasks(&ps, &tasks);
+    assert!(
+        effects.is_empty(),
+        "Should not act on already-completed tasks"
+    );
+}
+
+#[test]
+fn auto_close_skips_ownerless_tasks() {
+    let mut ps = make_ps("test");
+    ps.tick_pr_task_index = crate::daemon::snapshot::PrTaskIndex::from_task_maps(
+        [("1".to_string(), 42)].into_iter().collect(),
+        HashMap::new(),
+    );
+
+    let mut task = make_task("1", "Fix bug", "", TaskStatus::InProgress);
+    task.agent_type = "midtown-code-author".to_string();
+    let tasks = vec![task];
+
+    let effects = auto_close_completed_tasks(&ps, &tasks);
+    assert!(effects.is_empty(), "Should not auto-close ownerless tasks");
+}
+
+// ============================================================================
 // Session recovery decision
 // ============================================================================
 

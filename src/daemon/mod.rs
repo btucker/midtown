@@ -62,7 +62,8 @@ pub use effects::Effect;
 // Pure functions that take &DaemonPersistentState + &[Task] and return Vec<Effect>.
 #[doc(hidden)]
 pub use dispatch::{
-    build_subject_based_completion_effects, check_for_duplicate_task_workers, reset_orphaned_tasks,
+    auto_close_completed_tasks, build_subject_based_completion_effects,
+    check_for_duplicate_task_workers, reset_orphaned_tasks,
 };
 #[doc(hidden)]
 pub use events::DaemonEvent;
