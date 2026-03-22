@@ -377,7 +377,7 @@ fn detect_abandoned_pr_tasks(
 
 /// Resolve the owner of a PR from snapshot data.
 ///
-/// Uses session-based resolution only: PR# → task → session → current_name.
+/// Uses session-based resolution only: PR# → task → session → name.
 /// Returns `None` if no session owns the PR.
 fn resolve_pr_owner(pf: &PrFields<'_>, tick: &PrPollTickState) -> Option<String> {
     resolve_pr_owner_from_session(
@@ -713,7 +713,7 @@ async fn process_pr_issue_nudges(
             continue;
         }
 
-        // Session-based resolution: PR# → task → session → current_name.
+        // Session-based resolution: PR# → task → session → name.
         let owner_opt = resolve_pr_owner(&pf, tick);
         let issues = detect_pr_issues(pr);
 
@@ -2609,6 +2609,182 @@ fn user_review_complete_effects(
     ]
 }
 
+// ---------------------------------------------------------------------------
+// Reviewer-spawn guard helpers
+// ---------------------------------------------------------------------------
+
+/// Reason a PR was skipped during reviewer-spawn evaluation.
+///
+/// Used by `should_skip_pr_for_review` to provide structured skip reasons that
+/// are useful for debug logging and make the guard cascade easier to reason about.
+#[derive(Debug)]
+enum ReviewSkipReason {
+    /// PR number is zero (malformed JSON).
+    InvalidPr,
+    /// PR is a draft.
+    Draft,
+    /// PR belongs to a lead-driven channel.
+    LeadDriven,
+    /// PR is too new (hasn't passed the review delay).
+    TooNew {
+        #[allow(dead_code)]
+        age_secs: u64,
+        #[allow(dead_code)]
+        delay_secs: u64,
+    },
+    /// A webhook recently handled this PR (polling defers).
+    WebhookDeferred,
+}
+
+/// Pre-review-complete guard checks: determines whether a PR should be skipped
+/// before we even check if it already has a completed review.
+///
+/// Returns `Some(reason)` if the PR should be skipped, `None` if processing
+/// should continue.
+fn should_skip_pr_for_review(
+    pf: &PrFields<'_>,
+    pr_ctx: &PrContext,
+    is_polling_fallback: bool,
+    review_delay: u64,
+    pr: &serde_json::Value,
+    pr_last_webhook_event: &HashMap<u64, chrono::DateTime<chrono::Utc>>,
+) -> Option<ReviewSkipReason> {
+    if pf.number == 0 {
+        return Some(ReviewSkipReason::InvalidPr);
+    }
+
+    if pf.is_draft {
+        return Some(ReviewSkipReason::Draft);
+    }
+
+    if pr_ctx.is_lead_driven(pf.number) {
+        return Some(ReviewSkipReason::LeadDriven);
+    }
+
+    if let Some(age_secs) = get_pr_age_secs(pr)
+        && age_secs < review_delay
+    {
+        return Some(ReviewSkipReason::TooNew {
+            age_secs,
+            delay_secs: review_delay,
+        });
+    }
+
+    if is_polling_fallback {
+        let window_secs = review_delay as i64 * 2;
+        let webhook_recently_handled = pr_last_webhook_event.get(&pf.number).is_some_and(|ts| {
+            let elapsed = chrono::Utc::now().signed_duration_since(*ts);
+            elapsed < chrono::Duration::seconds(window_secs)
+        });
+        if webhook_recently_handled {
+            return Some(ReviewSkipReason::WebhookDeferred);
+        }
+    }
+
+    None
+}
+
+/// Context for orphan detection, grouping the shared lookup tables needed
+/// to determine whether a PR's author is reachable.
+struct OrphanCheckCtx<'a> {
+    worktree_registry: &'a crate::worktree_registry::WorktreeRegistry,
+    pr_task_associations: &'a HashMap<u64, String>,
+    session_task_map: &'a HashMap<String, String>,
+    sessions: &'a HashMap<String, super::state::SessionRecord>,
+    active_names: &'a HashSet<String>,
+    repo_owner: Option<&'a str>,
+}
+
+/// Determines whether a PR is orphaned (no active author who can address feedback).
+///
+/// A PR is orphaned when we can't identify an active worktree or running coworker
+/// that owns it. Orphaned PRs should not get auto-review spawned since the author
+/// can't address feedback.
+///
+/// Resolution strategy (in order):
+/// 1. Look up worktree by PR number (webhook-linked)
+/// 2. Look up by task ID extracted from PR title
+/// 3. Fall back to branch name lookup
+/// 4. If no worktree: check if it's a lead branch, session-owned, or lead-authored
+fn is_pr_orphaned(
+    pr_number: u64,
+    head_ref: &str,
+    title: &str,
+    pr: &serde_json::Value,
+    ctx: &OrphanCheckCtx<'_>,
+) -> bool {
+    let worktree = ctx
+        .worktree_registry
+        .get_by_pr(pr_number)
+        .or_else(|| {
+            crate::task_store::extract_task_id_from_pr_title(title).and_then(|task_id| {
+                let task_id_str = task_id.to_string();
+                ctx.worktree_registry
+                    .all_assignments()
+                    .values()
+                    .find(|a| a.task_id.as_ref() == Some(&task_id_str))
+            })
+        })
+        .or_else(|| ctx.worktree_registry.get_by_branch(head_ref));
+
+    match worktree {
+        Some(assignment) if assignment.completed_at.is_none() => {
+            // Has active worktree — not orphaned.
+            false
+        }
+        Some(_) => {
+            // Worktree exists but is completed. If the PR is still open (which it
+            // is, since it's in the `prs` list), the author can still push to the
+            // branch, so completed worktrees with open PRs are NOT orphaned.
+            false
+        }
+        None => {
+            // No worktree found — check alternative ownership signals.
+            if is_lead_branch(head_ref) {
+                debug!(
+                    "PR #{} is a lead PR (branch: {}), not orphaned",
+                    pr_number, head_ref
+                );
+                false
+            } else if let Some(owner) = ctx
+                .pr_task_associations
+                .get(&pr_number)
+                .and_then(|task_id| ctx.session_task_map.get(task_id.as_str()))
+                .and_then(|session_id| ctx.sessions.get(session_id))
+                .map(|record| record.name.clone())
+                .filter(|n| !n.is_empty())
+            {
+                let is_active = ctx.active_names.contains(&owner.to_lowercase());
+                if is_active {
+                    debug!(
+                        "PR #{} has no worktree for owner {} but coworker is active, not orphaned",
+                        pr_number, owner
+                    );
+                    false
+                } else {
+                    debug!(
+                        "PR #{} is orphaned (no worktree, owner {} not active, branch: {})",
+                        pr_number, owner, head_ref
+                    );
+                    true
+                }
+            } else if super::helpers::is_lead_authored_pr(pr, ctx.repo_owner) {
+                debug!(
+                    "PR #{} is authored by lead (branch: {}), not orphaned",
+                    pr_number, head_ref
+                );
+                false
+            } else {
+                debug!(
+                    "PR #{} is orphaned (no determinable owner or worktree, branch: {})",
+                    pr_number, head_ref
+                );
+                true
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn collect_reviewer_effects_with_source(
     worktree_registry: &crate::worktree_registry::WorktreeRegistry,
@@ -2694,33 +2870,10 @@ pub(crate) async fn collect_reviewer_effects_with_source(
     for pr in prs {
         let pf = PrFields::from_json(pr);
         let pr_number = pf.number;
-        if pr_number == 0 {
-            continue;
-        }
 
-        // Skip draft PRs
-        let is_draft = pf.is_draft;
-        if is_draft {
-            debug!("PR #{} is a draft, skipping auto-review", pr_number);
-            continue;
-        }
-
-        // Skip PRs in lead-driven channels — the lead manages reviewer spawning.
-        if pr_ctx.is_lead_driven(pr_number) {
-            debug!(
-                "PR #{}: skipping reviewer spawn — channel is lead-driven",
-                pr_number
-            );
-            continue;
-        }
-
-        // Check if PR is old enough (enforce review delay).
-        //
-        // When the polling fallback encounters a PR whose channel has a workflow
-        // workflow, use the much longer PR_REVIEW_DELAY_SCRIPT_SECS. The workflow
-        // spawns reviewers in real-time via rpc.spawn_reviewer() on pr.opened,
-        // so polling should only act as a safety net for missed webhooks — not
-        // race with the workflow.
+        // --- Pre-review-complete guards ---
+        // Compute the review delay for this PR (longer for workflow-enabled channels
+        // when polling, since the workflow handles real-time spawning).
         let review_delay = if is_polling_fallback {
             let has_workflow = pr_task_associations
                 .get(&pr_number)
@@ -2736,36 +2889,19 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             PR_REVIEW_DELAY_SECS
         };
 
-        if let Some(age_secs) = get_pr_age_secs(pr)
-            && age_secs < review_delay
-        {
-            debug!(
-                "PR #{} is too new ({}s < {}s), skipping auto-review",
-                pr_number, age_secs, review_delay
-            );
+        if let Some(reason) = should_skip_pr_for_review(
+            &pf,
+            &pr_ctx,
+            is_polling_fallback,
+            review_delay,
+            pr,
+            &pr_last_webhook_event,
+        ) {
+            debug!("PR #{}: skipping reviewer spawn ({:?})", pr_number, reason);
             continue;
         }
 
-        // When polling, defer to webhooks if one recently handled this PR.
-        // This prevents polling from spawning a duplicate reviewer when the
-        // webhook already triggered reviewer spawning via the workflow script.
-        if is_polling_fallback {
-            let window_secs = review_delay as i64 * 2;
-            let webhook_recently_handled =
-                pr_last_webhook_event.get(&pr_number).is_some_and(|ts| {
-                    let elapsed = chrono::Utc::now().signed_duration_since(*ts);
-                    elapsed < chrono::Duration::seconds(window_secs)
-                });
-            if webhook_recently_handled {
-                debug!(
-                    "PR #{} was recently handled by webhook, polling defers",
-                    pr_number
-                );
-                continue;
-            }
-        }
-
-        // Check if PR already has a completed review.
+        // --- Check if PR already has a completed review ---
         if let Some(review_effects) = collect_review_complete_effects(
             pr_number,
             pr,
@@ -2785,6 +2921,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             continue;
         }
 
+        // --- Post-review-complete guards ---
         if !spawn_local_reviewers {
             debug!(
                 "PR #{} review pending but local reviewer spawn disabled (execution.review_mode={:?})",
@@ -2810,125 +2947,26 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             }
         }
 
-        // Skip orphaned PRs (PRs whose author has no active worktree, no running coworker,
-        // or can't be determined). These should not get auto-review spawned since the author
-        // can't address feedback. The main PR loop already posts warnings for orphaned PRs
-        // with critical issues.
-        let head_ref = pr.get("headRefName").and_then(|s| s.as_str()).unwrap_or("");
-        let title = pr.get("title").and_then(|s| s.as_str()).unwrap_or("");
-
-        // Check if this PR has an active worktree in the registry.
-        // After daemon restart, worktree bindings may have changed (current_coworker
-        // may differ from the PR branch owner), so we can't rely on matching the
-        // owner name. Instead, check if a worktree exists for this PR's task.
-        //
-        // Try multiple strategies to find the worktree:
-        // 1. Look up by PR number (if the PR was linked to a worktree via webhook)
-        // 2. Look up by task ID extracted from PR title (most reliable for task-based PRs)
-        // 3. Fall back to branch name lookup (for non-task PRs or legacy workflows)
-        // 4. If no worktree found and the branch identifies a coworker owner, check whether
-        //    that coworker is currently running (active coworkers can always address feedback)
-        let worktree = worktree_registry
-            .get_by_pr(pr_number)
-            .or_else(|| {
-                // Extract task ID from title and look up by task
-                crate::task_store::extract_task_id_from_pr_title(title).and_then(|task_id| {
-                    let task_id_str = task_id.to_string();
-                    worktree_registry
-                        .all_assignments()
-                        .values()
-                        .find(|a| a.task_id.as_ref() == Some(&task_id_str))
-                })
-            })
-            .or_else(|| worktree_registry.get_by_branch(head_ref));
-
-        let is_orphaned = match worktree {
-            Some(assignment) if assignment.completed_at.is_none() => {
-                // Has active worktree - not orphaned
-                false
-            }
-            Some(_assignment) => {
-                // Worktree exists but is completed.
-                // IMPORTANT: If the PR is still open (which it is, since it's in the `prs` list),
-                // the author can still address review feedback by pushing to the branch.
-                // Therefore, completed worktrees with open PRs are NOT orphaned.
-                //
-                // Only mark as orphaned if the PR is merged/closed (which would exclude it
-                // from the `prs` list in the first place).
-                //
-                // After daemon restart, if a task was marked complete but the PR is still
-                // open awaiting review, polling reconciliation should spawn a reviewer.
-                false
-            }
-            None => {
-                // No worktree found - check if this is a lead PR
-                // Lead PRs are never orphaned because the lead's main worktree is always
-                // available to address review feedback, even if the PR's specific branch
-                // doesn't have a dedicated worktree entry.
-                if is_lead_branch(head_ref) {
-                    debug!(
-                        "PR #{} is a lead PR (branch: {}), not orphaned",
-                        pr_number, head_ref
-                    );
-                    false
-                } else if let Some(owner) = pr_task_associations
-                    .get(&pr_number)
-                    .and_then(|task_id| session_task_map.get(task_id.as_str()))
-                    .and_then(|session_id| sessions.get(session_id))
-                    .map(|record| record.name.clone())
-                    .filter(|n| !n.is_empty())
-                {
-                    // A session owns this PR's task. Only treat as orphaned if the
-                    // coworker is NOT currently active — an active coworker can always
-                    // address review feedback regardless of whether a worktree is registered.
-                    // Uses the caller-provided active_names (from tick state) which includes
-                    // both pane-based and headless sessions, unlike list_running() which only
-                    // tracks pane-based coworkers.
-                    let is_active = active_names.contains(&owner.to_lowercase());
-                    if is_active {
-                        debug!(
-                            "PR #{} has no worktree for owner {} but coworker is active, not orphaned",
-                            pr_number, owner
-                        );
-                        false
-                    } else {
-                        debug!(
-                            "PR #{} is orphaned (no worktree found for owner {}, branch: {}, coworker not running), skipping auto-review",
-                            pr_number, owner, head_ref
-                        );
-                        true
-                    }
-                } else if super::helpers::is_lead_authored_pr(pr, state.repo_owner.as_deref()) {
-                    // PR is authored by the lead (repo owner) but doesn't follow lead/* naming.
-                    // The lead can still address feedback from their main worktree.
-                    debug!(
-                        "PR #{} is authored by lead (branch: {}), not orphaned",
-                        pr_number, head_ref
-                    );
-                    false
-                } else {
-                    debug!(
-                        "PR #{} is orphaned (no determinable owner or worktree, branch: {}), skipping auto-review",
-                        pr_number, head_ref
-                    );
-                    true
-                }
-            }
+        let orphan_ctx = OrphanCheckCtx {
+            worktree_registry,
+            pr_task_associations: &pr_task_associations,
+            session_task_map: &session_task_map,
+            sessions: &sessions,
+            active_names,
+            repo_owner: state.repo_owner.as_deref(),
         };
-
-        if is_orphaned {
+        if is_pr_orphaned(pr_number, pf.head_ref, pf.title, pr, &orphan_ctx) {
             continue;
         }
 
-        // Create a child review task. The task dispatch system handles coworker
-        // limit checks, name allocation, worktree setup, and session spawning.
+        // --- Spawn reviewer ---
         let channel = pr_ctx.get_channel(pr_number);
         let parent_task_id = pr_task_associations.get(&pr_number).cloned();
 
         debug!(
             "Creating review task for PR #{}: {}",
             pr_number,
-            truncate_str(title, 40)
+            truncate_str(pf.title, 40)
         );
 
         effects.push(Effect::CreateReviewTask {
