@@ -435,13 +435,15 @@ pub(super) fn check_and_recover_orphans(
     ps: &DaemonPersistentState,
     tasks: &[Task],
     _state: &DaemonState,
+    exclude_task_ids: &HashSet<String>,
 ) -> Vec<effects::Effect> {
-    check_and_recover_orphans_impl(ps, tasks)
+    check_and_recover_orphans_impl(ps, tasks, exclude_task_ids)
 }
 
 fn check_and_recover_orphans_impl(
     ps: &DaemonPersistentState,
     tasks: &[Task],
+    exclude_task_ids: &HashSet<String>,
 ) -> Vec<effects::Effect> {
     if ps.tick_orphan_spawn_cooldown_active {
         debug!("Orphan recovery cooldown active");
@@ -456,6 +458,13 @@ fn check_and_recover_orphans_impl(
         .tick_in_progress_tasks
         .iter()
         .filter(|(task_id, _task_subject, _owner)| {
+            if exclude_task_ids.contains(task_id) {
+                debug!(
+                    "Orphan recovery skipping task !{} — already being completed",
+                    task_id
+                );
+                return false;
+            }
             if ps.tick_pr_protected_tasks.contains(task_id) {
                 debug!("Orphan recovery skipping task !{} — PR-protected", task_id);
                 return false;

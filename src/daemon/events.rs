@@ -97,7 +97,10 @@ pub async fn evaluate_tick(
             {
                 let ps = state.persistent_state.lock().await;
                 let tasks = state.task_store.load_all();
-                effects.extend(super::dispatch::auto_close_completed_tasks(&ps, &tasks));
+                let auto_close_effects = super::dispatch::auto_close_completed_tasks(&ps, &tasks);
+                let auto_closed_ids =
+                    super::effects::extract_completed_task_ids_from_effects(&auto_close_effects);
+                effects.extend(auto_close_effects);
                 effects.extend(super::dispatch::reset_orphaned_tasks(&ps, &tasks));
                 effects.extend(super::dispatch::check_for_duplicate_task_workers(
                     &ps, &tasks,
@@ -109,7 +112,13 @@ pub async fn evaluate_tick(
                     super::effects::extract_claimed_task_ids_from_effects(&session_effects);
                 effects.extend(session_effects);
                 // Orphan recovery handles all orphaned in-progress tasks (with or without sessions).
-                let orphan_effects = super::dispatch::check_and_recover_orphans(&ps, &tasks, state);
+                // Exclude tasks already being auto-closed to prevent conflicting effects.
+                let orphan_effects = super::dispatch::check_and_recover_orphans(
+                    &ps,
+                    &tasks,
+                    state,
+                    &auto_closed_ids,
+                );
                 let orphan_claimed =
                     super::effects::extract_claimed_task_ids_from_effects(&orphan_effects);
                 claimed_ids.extend(orphan_claimed);

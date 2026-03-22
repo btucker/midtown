@@ -245,7 +245,7 @@ fn orphan_recovery_skips_when_cooldown_active() {
     ps.tick_in_progress_tasks = vec![("1".into(), "Fix".into(), "park".into())];
 
     let tasks = vec![make_task("1", "Fix", "park", TaskStatus::InProgress)];
-    let effects = check_and_recover_orphans_impl(&ps, &tasks);
+    let effects = check_and_recover_orphans_impl(&ps, &tasks, &HashSet::new());
     assert!(effects.is_empty());
 }
 
@@ -256,7 +256,7 @@ fn orphan_recovery_skips_pr_protected_tasks() {
     ps.tick_pr_protected_tasks = ["1".to_string()].into_iter().collect();
 
     let tasks = vec![make_task("1", "Fix", "park", TaskStatus::InProgress)];
-    let effects = check_and_recover_orphans_impl(&ps, &tasks);
+    let effects = check_and_recover_orphans_impl(&ps, &tasks, &HashSet::new());
     assert!(effects.is_empty());
 }
 
@@ -268,12 +268,27 @@ fn orphan_recovery_spawns_for_dead_owner() {
     ps.tick_active_session_names = HashSet::new();
 
     let tasks = vec![make_task("1", "Fix", "park", TaskStatus::InProgress)];
-    let effects = check_and_recover_orphans_impl(&ps, &tasks);
+    let effects = check_and_recover_orphans_impl(&ps, &tasks, &HashSet::new());
     assert!(
         effects
             .iter()
             .any(|e| matches!(e, Effect::SpawnForTask { .. })),
         "Should spawn to recover orphaned task"
+    );
+}
+
+#[test]
+fn orphan_recovery_skips_auto_closed_tasks() {
+    let mut ps = make_ps("test");
+    ps.tick_in_progress_tasks = vec![("1".into(), "Fix".into(), "park".into())];
+    ps.tick_active_session_names = HashSet::new();
+
+    let tasks = vec![make_task("1", "Fix", "park", TaskStatus::InProgress)];
+    let exclude = HashSet::from(["1".to_string()]);
+    let effects = check_and_recover_orphans_impl(&ps, &tasks, &exclude);
+    assert!(
+        effects.is_empty(),
+        "Should skip tasks already being auto-closed"
     );
 }
 
@@ -289,7 +304,7 @@ fn orphan_recovery_resumes_stopped_session() {
     ps.tick_session_task_map.insert("1".into(), "sess-1".into());
 
     let tasks = vec![make_task("1", "Fix", "park", TaskStatus::InProgress)];
-    let effects = check_and_recover_orphans_impl(&ps, &tasks);
+    let effects = check_and_recover_orphans_impl(&ps, &tasks, &HashSet::new());
     // Should use ResumeSession mode
     let has_spawn = effects.iter().any(|e| {
         if let Effect::SpawnForTask { config, .. } = e {
