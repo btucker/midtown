@@ -103,6 +103,21 @@ Daemon settings can be overridden with environment variables:
 | `MIDTOWN_CHAT_MONITOR` | `chat_monitor_enabled` (set to `0` to disable) |
 | `MIDTOWN_MAX_IN_PROGRESS_TASKS` | `max_in_progress_tasks` |
 
+## Per-Channel Settings
+
+Channels have runtime settings that can be configured via the web API:
+
+```
+GET  /api/channels/{channel}/settings
+PUT  /api/channels/{channel}/settings
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `show_full_lead_output` | `true` | When `false`, the daemon suppresses auto-posting of lead output to the channel. The lead is instructed to use `midtown channel post` explicitly. Forks are exempt and always auto-post to their bound threads. |
+
+These settings are persisted in the daemon state and broadcast to connected web clients via WebSocket when changed.
+
 ## Custom System Prompts
 
 Customize the system prompts for Lead and Coworkers with markdown files:

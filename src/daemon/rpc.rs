@@ -225,7 +225,6 @@ async fn handle_request(line: &str, state: &DaemonState) -> Response {
             | "coworker.list"
             | "coworker.questions"
             | "channel.list"
-            | "channel.get_settings"
             | "reminder.list"
             | "workflow.list"
             | "session.list"
