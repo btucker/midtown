@@ -308,7 +308,13 @@ fn test_extract_assistant_text_codex_bare_result_no_deltas_ignored() {
 #[test]
 fn test_process_lead_output_no_events() {
     let events = HashMap::new();
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert!(effects.is_empty());
 }
 
@@ -316,7 +322,13 @@ fn test_process_lead_output_no_events() {
 fn test_process_lead_output_no_lead_events() {
     let mut events = HashMap::new();
     events.insert("coworker".to_string(), vec![]);
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert!(effects.is_empty());
 }
 
@@ -335,7 +347,13 @@ fn test_process_lead_output_returns_post_effect() {
         }],
     );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "myproject", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "myproject",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 1);
 
     match &effects[0] {
@@ -378,7 +396,13 @@ fn test_process_lead_output_aggregates_multiple_events() {
         ],
     );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 1);
 
     match &effects[0] {
@@ -403,7 +427,13 @@ fn test_process_lead_output_empty_text_posts_tool_data_only() {
         }],
     );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 1, "Should post tool_data even without text");
     match &effects[0] {
         Effect::PostToChannel {
@@ -436,7 +466,13 @@ fn test_process_lead_output_main_lead_sets_channel_to_project_name() {
         }],
     );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "myproject", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "myproject",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 1);
 
     match &effects[0] {
@@ -480,7 +516,13 @@ fn test_process_lead_output_main_lead_tool_data_sets_channel() {
         }],
     );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "myproject", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "myproject",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel { channel, .. } => {
@@ -510,7 +552,13 @@ fn test_process_lead_output_trims_leading_newlines() {
         }],
     );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel { message, .. } => {
@@ -534,7 +582,13 @@ fn test_process_lead_output_trims_trailing_newlines() {
         }],
     );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel { message, .. } => {
@@ -558,7 +612,13 @@ fn test_process_lead_output_whitespace_only_not_posted() {
         }],
     );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert!(
         effects.is_empty(),
         "Should not post a message that is only whitespace after trimming"
@@ -583,7 +643,13 @@ fn test_process_lead_output_channel_lead_text_posted_to_channel() {
     let mut channel_leads = HashMap::new();
     channel_leads.insert("web".to_string(), "some-session-id".to_string());
 
-    let effects = process_lead_output(&events, &channel_leads, "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &channel_leads,
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel {
@@ -618,7 +684,13 @@ fn test_process_lead_output_channel_lead_empty_text_posts_tool_data() {
     let mut channel_leads = HashMap::new();
     channel_leads.insert("web".to_string(), "some-session-id".to_string());
 
-    let effects = process_lead_output(&events, &channel_leads, "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &channel_leads,
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 1, "Should post tool_data even without text");
     match &effects[0] {
         Effect::PostToChannel {
@@ -663,7 +735,13 @@ fn test_process_lead_output_main_and_channel_lead_both_post() {
     let mut channel_leads = HashMap::new();
     channel_leads.insert("features".to_string(), "cl-session-id".to_string());
 
-    let effects = process_lead_output(&events, &channel_leads, "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &channel_leads,
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 2);
 
     let main_effect = effects
@@ -702,7 +780,13 @@ fn test_process_lead_output_coworker_not_treated_as_channel_lead() {
         }],
     );
     // No channel leads registered
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert!(
         effects.is_empty(),
         "Coworker text should not be posted to channel"
@@ -716,7 +800,13 @@ fn test_process_lead_output_channel_lead_no_events_in_drain() {
     let mut channel_leads = HashMap::new();
     channel_leads.insert("web".to_string(), "some-session-id".to_string());
 
-    let effects = process_lead_output(&events, &channel_leads, "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &channel_leads,
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert!(
         effects.is_empty(),
         "Should not post when channel lead has no events in current drain"
@@ -739,7 +829,13 @@ fn test_process_lead_output_forked_session_is_inherited_to_channel() {
     let mut fork_bound_channels = HashMap::new();
     fork_bound_channels.insert("fork-1234".to_string(), "topic-omega".to_string());
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &fork_bound_channels);
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &fork_bound_channels,
+        &HashSet::new(),
+    );
     let fork_effect = effects
         .iter()
         .find(|e| matches!(e, Effect::PostToChannel { sender, .. } if sender == "fork-1234"));
@@ -780,7 +876,13 @@ fn test_process_lead_output_tool_data_populated_for_main_lead() {
         }],
     );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     // Should have exactly 1 effect — the tool_data message (no text).
     assert_eq!(effects.len(), 1);
     match &effects[0] {
@@ -825,7 +927,13 @@ fn test_process_lead_output_tool_data_and_text_produce_separate_effects() {
         }],
     );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(
         effects.len(),
         2,
@@ -878,7 +986,13 @@ fn test_process_lead_output_tool_data_for_channel_lead() {
     let mut channel_leads = HashMap::new();
     channel_leads.insert("web".to_string(), "some-session-id".to_string());
 
-    let effects = process_lead_output(&events, &channel_leads, "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &channel_leads,
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel {
@@ -920,7 +1034,13 @@ fn test_process_lead_output_tool_data_for_fork_session() {
     let mut fork_bound_channels = HashMap::new();
     fork_bound_channels.insert("fork-1234".to_string(), "topic-omega".to_string());
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &fork_bound_channels);
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &fork_bound_channels,
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel {
@@ -964,7 +1084,13 @@ fn test_process_lead_output_batch_boundary_tool_use_without_result() {
         }],
     );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel { tool_data, .. } => {
@@ -1012,7 +1138,13 @@ fn test_process_lead_output_tool_data_with_result_in_same_batch() {
         ],
     );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel { tool_data, .. } => {
@@ -1045,7 +1177,13 @@ fn test_process_lead_output_multiple_tool_calls_in_summary() {
         }],
     );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel {
@@ -1073,7 +1211,13 @@ fn test_process_lead_output_text_only_has_no_tool_data() {
         }],
     );
 
-    let effects = process_lead_output(&events, &HashMap::new(), "lead", &HashMap::new());
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &HashMap::new(),
+        &HashSet::new(),
+    );
     assert_eq!(effects.len(), 1);
     match &effects[0] {
         Effect::PostToChannel {
@@ -1083,6 +1227,129 @@ fn test_process_lead_output_text_only_has_no_tool_data() {
             assert!(tool_data.is_none(), "text-only should have no tool_data");
         }
         _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+// ── suppress_auto_output_channels tests ─────────────────────────────
+
+#[test]
+fn test_process_lead_output_suppressed_main_lead() {
+    let mut events = HashMap::new();
+    events.insert(
+        "myproject".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({"content": [{"type": "text", "text": "Hello"}]}),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+
+    let suppress: HashSet<String> = ["myproject".to_string()].into();
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "myproject",
+        &HashMap::new(),
+        &suppress,
+    );
+    assert!(
+        effects.is_empty(),
+        "Main lead auto-output should be suppressed when channel is in suppress set"
+    );
+}
+
+#[test]
+fn test_process_lead_output_suppressed_channel_lead() {
+    let mut events = HashMap::new();
+    events.insert(
+        "web".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({"content": [{"type": "text", "text": "Channel lead output"}]}),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let mut channel_leads = HashMap::new();
+    channel_leads.insert("web".to_string(), "session-id".to_string());
+
+    let suppress: HashSet<String> = ["web".to_string()].into();
+    let effects = process_lead_output(&events, &channel_leads, "lead", &HashMap::new(), &suppress);
+    assert!(
+        effects.is_empty(),
+        "Channel lead auto-output should be suppressed when channel is in suppress set"
+    );
+}
+
+#[test]
+fn test_process_lead_output_suppressed_does_not_affect_forks() {
+    let mut events = HashMap::new();
+    events.insert(
+        "fork-1234".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({"content": [{"type": "text", "text": "Fork output"}]}),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let mut fork_bound_channels = HashMap::new();
+    fork_bound_channels.insert("fork-1234".to_string(), "web".to_string());
+
+    // Suppress "web" channel, but forks should still post
+    let suppress: HashSet<String> = ["web".to_string()].into();
+    let effects = process_lead_output(
+        &events,
+        &HashMap::new(),
+        "lead",
+        &fork_bound_channels,
+        &suppress,
+    );
+    assert_eq!(effects.len(), 1, "Fork output should NOT be suppressed");
+    match &effects[0] {
+        Effect::PostToChannel {
+            sender, channel, ..
+        } => {
+            assert_eq!(sender, "fork-1234");
+            assert_eq!(channel.as_deref(), Some("web"));
+        }
+        _ => panic!("Expected PostToChannel effect"),
+    }
+}
+
+#[test]
+fn test_process_lead_output_suppressed_only_affects_listed_channels() {
+    let mut events = HashMap::new();
+    events.insert(
+        "web".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({"content": [{"type": "text", "text": "Web output"}]}),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    events.insert(
+        "ops".to_string(),
+        vec![StreamEvent::Assistant {
+            message: json!({"content": [{"type": "text", "text": "Ops output"}]}),
+            session_id: None,
+            extra: json!(null),
+        }],
+    );
+    let mut channel_leads = HashMap::new();
+    channel_leads.insert("web".to_string(), "s1".to_string());
+    channel_leads.insert("ops".to_string(), "s2".to_string());
+
+    // Only suppress "web", "ops" should still post
+    let suppress: HashSet<String> = ["web".to_string()].into();
+    let effects = process_lead_output(&events, &channel_leads, "lead", &HashMap::new(), &suppress);
+    assert_eq!(effects.len(), 1);
+    match &effects[0] {
+        Effect::PostToChannel {
+            sender, channel, ..
+        } => {
+            assert_eq!(sender, "ops");
+            assert_eq!(channel.as_deref(), Some("ops"));
+        }
+        _ => panic!("Expected PostToChannel effect for ops"),
     }
 }
 

@@ -842,6 +842,7 @@ pub(crate) fn build_attach_launch_spec(
             "",
             &repo_name,
             None,
+            false,
         ),
         _ => midtown::agents::coworker_system_prompt(name, &repo_name, None),
     };

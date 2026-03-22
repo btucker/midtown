@@ -278,7 +278,8 @@ fn test_reviewer_system_prompt_contains_review_note_pattern() {
 
 #[test]
 fn test_channel_lead_system_prompt_no_unreplaced_template_vars() {
-    let prompt = channel_lead_system_prompt("web-interface", "No context yet.", "midtown", None);
+    let prompt =
+        channel_lead_system_prompt("web-interface", "No context yet.", "midtown", None, false);
     assert!(
         !prompt.contains("{channel_name}"),
         "Channel lead prompt should not contain unreplaced {{channel_name}} placeholders"
@@ -296,7 +297,7 @@ fn test_channel_lead_system_prompt_no_unreplaced_template_vars() {
 #[test]
 fn test_channel_lead_system_prompt_substitutes_domain_context() {
     let context = "Active tasks: !42 Add WebSocket reconnect. Recent PRs: #99 merged.";
-    let prompt = channel_lead_system_prompt("daemon-core", context, "midtown", None);
+    let prompt = channel_lead_system_prompt("daemon-core", context, "midtown", None, false);
     assert!(
         prompt.contains(context),
         "Channel lead prompt should inject domain context"
@@ -309,7 +310,7 @@ fn test_channel_lead_system_prompt_substitutes_domain_context() {
 
 #[test]
 fn test_channel_lead_system_prompt_contains_required_sections() {
-    let prompt = channel_lead_system_prompt("tui", "No context.", "midtown", None);
+    let prompt = channel_lead_system_prompt("tui", "No context.", "midtown", None, false);
     assert!(
         prompt.contains("Identity"),
         "Channel lead prompt should have Identity section"
@@ -330,7 +331,8 @@ fn test_channel_lead_system_prompt_contains_required_sections() {
 
 #[test]
 fn test_channel_lead_system_prompt_contains_escalation_to_lead() {
-    let prompt = channel_lead_system_prompt("github-integration", "No context.", "midtown", None);
+    let prompt =
+        channel_lead_system_prompt("github-integration", "No context.", "midtown", None, false);
     assert!(
         prompt.contains("@midtown"),
         "Channel lead prompt should mention @midtown for escalation"
@@ -339,7 +341,7 @@ fn test_channel_lead_system_prompt_contains_escalation_to_lead() {
 
 #[test]
 fn test_channel_lead_notes_path_is_absolute() {
-    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", None);
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", None, false);
     assert!(
         prompt.contains("~/.midtown/projects/midtown/channels/web/notes/"),
         "Channel lead prompt should use absolute project-level path for notes, got: {}",
@@ -356,7 +358,7 @@ fn test_channel_lead_notes_path_is_absolute() {
 
 #[test]
 fn test_channel_lead_notes_triggers_present() {
-    let prompt = channel_lead_system_prompt("daemon", "No context.", "midtown", None);
+    let prompt = channel_lead_system_prompt("daemon", "No context.", "midtown", None, false);
     assert!(
         prompt.contains("When to Write Notes"),
         "Channel lead prompt should have a 'When to Write Notes' section with actionable triggers"
@@ -659,7 +661,7 @@ fn test_channel_lead_no_hardcoded_midtown_channel() {
     // When project_name is NOT "midtown", `--channel midtown` and `#midtown`
     // (as channel refs) should not appear. These indicate hardcoded channel
     // names that should use {project_name}.
-    let prompt = channel_lead_system_prompt("daemon-core", "No context.", "ravioli", None);
+    let prompt = channel_lead_system_prompt("daemon-core", "No context.", "ravioli", None, false);
     assert!(
         !prompt.contains("--channel midtown"),
         "Channel lead prompt should not contain hardcoded '--channel midtown'"
@@ -674,7 +676,7 @@ fn test_channel_lead_no_hardcoded_midtown_channel() {
 fn test_ops_channel_lead_no_hardcoded_midtown_channel() {
     // The ops channel lead gets extra content from ops-channel-lead.md.
     // Verify that content also uses {project_name} not literal "midtown".
-    let prompt = channel_lead_system_prompt("ops", "No context.", "ravioli", None);
+    let prompt = channel_lead_system_prompt("ops", "No context.", "ravioli", None, false);
     assert!(
         !prompt.contains("--channel midtown"),
         "Ops channel lead prompt should not contain hardcoded '--channel midtown'"
@@ -704,7 +706,7 @@ fn test_main_lead_no_hardcoded_midtown_channel() {
 fn test_channel_lead_system_prompt_without_agents_md() {
     // When no AGENTS.md content is provided, prompt should not contain
     // the "Workflow Facilitation" section.
-    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", None);
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", None, false);
     assert!(
         !prompt.contains("## Workflow Facilitation"),
         "No AGENTS.md content should mean no Workflow Facilitation section"
@@ -714,7 +716,7 @@ fn test_channel_lead_system_prompt_without_agents_md() {
 #[test]
 fn test_channel_lead_system_prompt_with_agents_md() {
     let agents = "Use `/study` to begin research.\n\nPhase transitions happen automatically.";
-    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", Some(agents));
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", Some(agents), false);
     assert!(
         prompt.contains("## Workflow Facilitation"),
         "AGENTS.md content should add Workflow Facilitation section"
@@ -731,7 +733,7 @@ fn test_channel_lead_system_prompt_with_agents_md() {
 
 #[test]
 fn test_channel_lead_system_prompt_skips_empty_agents_md() {
-    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", Some("  \n  "));
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", Some("  \n  "), false);
     assert!(
         !prompt.contains("## Workflow Facilitation"),
         "Empty AGENTS.md content should not add a section"
@@ -744,11 +746,37 @@ fn test_channel_lead_system_prompt_preserves_literal_placeholders_in_injected_co
     // documentation showing template syntax). These must NOT be rewritten by template
     // substitution.
     let agents = "Use {name} as the template variable in your config.";
-    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", Some(agents));
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", Some(agents), false);
 
     assert!(
         prompt.contains("Use {name} as the template variable"),
         "Literal {{name}} in AGENTS.md should be preserved, got: {}",
         prompt
+    );
+}
+
+#[test]
+fn test_channel_lead_system_prompt_suppress_auto_output() {
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", None, true);
+    assert!(
+        prompt.contains("Channel Auto-Posting Override"),
+        "Should contain override section when suppress_auto_output is true"
+    );
+    assert!(
+        prompt.contains("NOT** automatically posted"),
+        "Should tell the lead that auto-posting is disabled"
+    );
+    assert!(
+        prompt.contains("midtown channel post"),
+        "Should instruct to use midtown channel post"
+    );
+}
+
+#[test]
+fn test_channel_lead_system_prompt_no_suppress_auto_output() {
+    let prompt = channel_lead_system_prompt("web", "No context.", "midtown", None, false);
+    assert!(
+        !prompt.contains("Channel Auto-Posting Override"),
+        "Should NOT contain override section when suppress_auto_output is false"
     );
 }

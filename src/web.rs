@@ -244,6 +244,9 @@ pub enum WebUpdate {
     /// Thread ownership changed (dedicated session created or destroyed)
     #[serde(rename = "thread_ownership")]
     ThreadOwnership(ThreadOwnershipData),
+    /// Channel settings changed
+    #[serde(rename = "channel_settings_changed")]
+    ChannelSettingsChanged(ChannelSettingsChangedData),
 }
 
 /// Thread ownership state sent to web clients when a fork is created/destroyed.
@@ -264,6 +267,16 @@ pub struct ThreadOwnershipData {
     /// of the fork session's own name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_lead: Option<String>,
+}
+
+/// Data for a channel settings change notification.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChannelSettingsChangedData {
+    /// The channel whose settings changed
+    pub channel: String,
+    /// New value of show_full_lead_output, if changed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_full_lead_output: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -481,6 +494,10 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         // Legacy route: old channel messages reference [Attached: .../screenshots/<file>]
         // and the frontend rewrites those to /api/screenshots/<file>. Keep serving them.
         .route("/api/screenshots/{filename}", get(api_get_screenshot))
+        .route(
+            "/api/channels/{channel}/settings",
+            get(api_channel_settings_get).put(api_channel_settings_set),
+        )
         .route(
             "/api/channels/{channel}/agents-md",
             get(api_channel_agents_md).put(api_channel_agents_md_update),
@@ -2503,6 +2520,183 @@ async fn api_set_channel_workflow(
         Ok(()) => Ok(Json(serde_json::json!({ "ok": true }))),
         Err(e) => {
             warn!("Failed to set channel workflow: {e}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// GET /api/channels/{channel}/settings — read channel settings.
+async fn api_channel_settings_get(
+    State(state): State<Arc<WebState>>,
+    Path(channel): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if channel.contains("..")
+        || channel.contains('/')
+        || channel.contains('\\')
+        || channel.is_empty()
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let dir_key = state.config.dir_key.clone();
+    let ch = channel.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+
+        let socket = crate::paths::daemon_socket_for_repo(&dir_key);
+        let stream = UnixStream::connect(&socket)
+            .map_err(|e| format!("Failed to connect to daemon: {e}"))?;
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+
+        let mut writer = stream
+            .try_clone()
+            .map_err(|e| format!("Failed to clone stream: {e}"))?;
+        let mut reader = BufReader::new(stream);
+
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "channel.get_settings",
+            "params": { "channel": ch },
+            "id": 1
+        });
+        writeln!(&mut writer, "{}", request).map_err(|e| format!("Failed to send RPC: {e}"))?;
+        writer.flush().ok();
+
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .map_err(|e| format!("Failed to read RPC response: {e}"))?;
+
+        let response: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| format!("Invalid RPC response: {e}"))?;
+
+        if let Some(err) = response.get("error") {
+            return Err(format!(
+                "RPC error: {}",
+                err.get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown")
+            ));
+        }
+
+        Ok(response
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::json!({})))
+    })
+    .await
+    .map_err(|e| {
+        warn!("spawn_blocking panic in channel_settings_get: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    match result {
+        Ok(settings) => Ok(Json(settings)),
+        Err(e) => {
+            warn!("Failed to get channel settings: {e}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// PUT /api/channels/{channel}/settings — update channel settings.
+async fn api_channel_settings_set(
+    State(state): State<Arc<WebState>>,
+    Path(channel): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if channel.contains("..")
+        || channel.contains('/')
+        || channel.contains('\\')
+        || channel.is_empty()
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let show_full_lead_output = body.get("show_full_lead_output").and_then(|v| v.as_bool());
+
+    if show_full_lead_output.is_none() {
+        return Ok(Json(serde_json::json!({ "ok": true })));
+    }
+
+    let dir_key = state.config.dir_key.clone();
+    let ch = channel.clone();
+    let updates_tx = state.updates_tx.clone();
+
+    let mut rpc_params = serde_json::json!({ "channel": ch });
+    if let Some(v) = show_full_lead_output {
+        rpc_params["show_full_lead_output"] = serde_json::json!(v);
+    }
+
+    let result = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+
+        let socket = crate::paths::daemon_socket_for_repo(&dir_key);
+        let stream = UnixStream::connect(&socket)
+            .map_err(|e| format!("Failed to connect to daemon: {e}"))?;
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+
+        let mut writer = stream
+            .try_clone()
+            .map_err(|e| format!("Failed to clone stream: {e}"))?;
+        let mut reader = BufReader::new(stream);
+
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "channel.set_settings",
+            "params": rpc_params,
+            "id": 1
+        });
+        writeln!(&mut writer, "{}", request).map_err(|e| format!("Failed to send RPC: {e}"))?;
+        writer.flush().ok();
+
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .map_err(|e| format!("Failed to read RPC response: {e}"))?;
+
+        let response: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| format!("Invalid RPC response: {e}"))?;
+
+        if let Some(err) = response.get("error") {
+            return Err(format!(
+                "RPC error: {}",
+                err.get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown")
+            ));
+        }
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| {
+        warn!("spawn_blocking panic in channel_settings_set: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    match result {
+        Ok(()) => {
+            let _ = updates_tx.send(WebUpdate::ChannelSettingsChanged(
+                ChannelSettingsChangedData {
+                    channel,
+                    show_full_lead_output,
+                },
+            ));
+            Ok(Json(serde_json::json!({ "ok": true })))
+        }
+        Err(e) => {
+            warn!("Failed to set channel settings: {e}");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

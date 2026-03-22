@@ -2545,14 +2545,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             );
                         }
                     }
-                    let (wf_name, wf_state_summary) = {
+                    let (wf_name, wf_state_summary, suppress_auto_output) = {
                         let ps = state.persistent_state.lock().await;
                         let wf = ps.channel_workflows.get(&name).cloned();
                         let wfs = ps
                             .workflow_state
                             .get(&name)
                             .map(format_workflow_state_summary);
-                        (wf, wfs)
+                        let suppress = ps
+                            .channel_settings
+                            .get(&name)
+                            .is_some_and(|s| !s.show_full_lead_output);
+                        (wf, wfs, suppress)
                     };
                     let (domain_context, agents_md) = load_channel_lead_context(
                         base_dir.clone(),
@@ -2573,6 +2577,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     );
                     config.cwd_subdir =
                         crate::paths::read_channel_directory(state.paths.dir_key(), &name);
+                    config.suppress_auto_output = suppress_auto_output;
                     match state.spawn_coworker(&config).await {
                         Ok(session_id) => {
                             info!(
@@ -2935,14 +2940,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let base_dir = state.paths.base_dir().to_path_buf();
                 let project_root = state.all_repo_paths.first().cloned().unwrap_or_default();
                 let dir_key = state.paths.dir_key().to_string();
-                let (wf_name, wf_state_summary) = {
+                let (wf_name, wf_state_summary, suppress_auto_output) = {
                     let ps = state.persistent_state.lock().await;
                     let wf = ps.channel_workflows.get(&channel_name).cloned();
                     let wfs = ps
                         .workflow_state
                         .get(&channel_name)
                         .map(format_workflow_state_summary);
-                    (wf, wfs)
+                    let suppress = ps
+                        .channel_settings
+                        .get(&channel_name)
+                        .is_some_and(|s| !s.show_full_lead_output);
+                    (wf, wfs, suppress)
                 };
                 let channel_directory =
                     crate::paths::read_channel_directory(state.paths.dir_key(), &channel_name);
@@ -2970,6 +2979,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     &config.agent_type,
                 );
                 config.cwd_subdir = channel_directory;
+                config.suppress_auto_output = suppress_auto_output;
 
                 let name = config.name.clone();
                 match state.spawn_coworker(&config).await {

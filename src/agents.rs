@@ -97,6 +97,9 @@ pub struct RuntimeContext<'a> {
     pub platform: Option<crate::auth::AuthProvider>,
     /// PR number for code review invocation formatting.
     pub pr_number: Option<u64>,
+    /// When `true`, inject an override telling the lead that auto-posting is
+    /// disabled and it must use `midtown channel post` explicitly.
+    pub suppress_auto_output: bool,
 }
 
 /// Layer 1: Load the agent definition for a role.
@@ -193,6 +196,19 @@ pub fn build_runtime_context(base_prompt: &str, ctx: &RuntimeContext) -> String 
         if !agents.is_empty() {
             prompt = format!("{prompt}\n\n## Workflow Facilitation\n\n{agents}");
         }
+    }
+
+    // When show_full_lead_output is OFF, override the auto-posting instructions.
+    // This goes last so it takes precedence over the default "Channel Auto-Posting"
+    // section from lead-common.md.
+    if ctx.suppress_auto_output {
+        prompt = format!(
+            "{prompt}\n\n## Channel Auto-Posting Override\n\n\
+             Your text output is **NOT** automatically posted to the channel. \
+             The daemon has suppressed auto-posting for this channel.\n\n\
+             Use `midtown channel post \"<message>\"` for anything you want visible in the channel. \
+             Thread replies still require `--thread <message-id>`."
+        );
     }
 
     prompt
@@ -462,11 +478,15 @@ pub fn coworker_nudge_prompt(task_id: &str, subject: &str) -> String {
 /// For channel leads, `{name}` = channel_name.
 ///
 /// `agents_md` is optional workflow facilitation content from the project's `AGENTS.md`.
+///
+/// `suppress_auto_output` injects an override telling the lead that auto-posting
+/// is disabled — it must use `midtown channel post` explicitly.
 pub fn channel_lead_system_prompt(
     channel_name: &str,
     domain_context: &str,
     project_name: &str,
     agents_md: Option<&str>,
+    suppress_auto_output: bool,
 ) -> String {
     // Layer 1: Agent definition
     let layer1 = load_agent_definition_for_role(AgentRole::ChannelLead);
@@ -483,6 +503,7 @@ pub fn channel_lead_system_prompt(
             channel_name: Some(channel_name),
             domain_context: Some(domain_context),
             agents_md,
+            suppress_auto_output,
             ..RuntimeContext::default()
         },
     )
