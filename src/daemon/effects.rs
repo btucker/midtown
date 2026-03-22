@@ -802,6 +802,20 @@ pub(crate) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashS
     ids
 }
 
+/// Extract task IDs that are being completed by effects in this batch.
+///
+/// Used to prevent orphan recovery from spawning a new session for a task
+/// that is already being auto-closed in the same tick.
+pub(crate) fn extract_completed_task_ids_from_effects(effects: &[Effect]) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    for effect in effects {
+        if let Effect::CompleteTask { task_id, .. } = effect {
+            ids.insert(task_id.clone());
+        }
+    }
+    ids
+}
+
 impl Effect {
     /// Convenience: nudge a channel lead with a freeform message.
     ///
