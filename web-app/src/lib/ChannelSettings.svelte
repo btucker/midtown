@@ -2,7 +2,9 @@
 import {
 	fetchChannelAgentsMd,
 	fetchChannelDirectory,
+	fetchChannelSettings,
 	fetchDirectories,
+	putChannelSettings,
 	saveChannelAgentsMd,
 	saveChannelDirectory,
 } from "./api.ts";
@@ -10,6 +12,7 @@ import ChannelWorkflow from "./ChannelWorkflow.svelte";
 import { activeChannel, channelSettings } from "./store.ts";
 
 let inlineToolCalls = $derived($channelSettings[$activeChannel]?.inlineToolCalls ?? true);
+let showFullLeadOutput = $derived($channelSettings[$activeChannel]?.showFullLeadOutput ?? true);
 
 function toggleInlineToolCalls() {
 	channelSettings.update((s) => ({
@@ -19,6 +22,19 @@ function toggleInlineToolCalls() {
 			inlineToolCalls: !inlineToolCalls,
 		},
 	}));
+}
+
+function toggleShowFullLeadOutput() {
+	const newValue = !showFullLeadOutput;
+	channelSettings.update((s) => ({
+		...s,
+		[$activeChannel]: {
+			...s[$activeChannel],
+			showFullLeadOutput: newValue,
+		},
+	}));
+	// Sync to daemon API
+	putChannelSettings($activeChannel, { show_full_lead_output: newValue });
 }
 
 // Working directory editor state
@@ -136,6 +152,21 @@ const sourceLabels = {
 	none: "Not set",
 };
 
+// Sync showFullLeadOutput from daemon on channel load
+async function syncChannelSettings() {
+	const channel = $activeChannel;
+	const remote = await fetchChannelSettings(channel);
+	if (remote && typeof remote.show_full_lead_output === "boolean") {
+		channelSettings.update((s) => ({
+			...s,
+			[channel]: {
+				...s[channel],
+				showFullLeadOutput: remote.show_full_lead_output,
+			},
+		}));
+	}
+}
+
 // Load when channel changes
 let lastChannel = $state("");
 $effect(() => {
@@ -143,12 +174,36 @@ $effect(() => {
 		lastChannel = $activeChannel;
 		loadDirectory();
 		loadAgentsMd();
+		syncChannelSettings();
 	}
 });
 </script>
 
 <div class="settings-layout">
   <div class="settings-content">
+    <!-- Lead output toggle -->
+    <section class="settings-section">
+      <h2 class="section-title">Lead Output</h2>
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Show full lead output</span>
+          <span class="setting-description">
+            Show all auto-posted lead messages. When off, only explicit posts are shown and the lead is told to use <code>midtown channel post</code>.
+          </span>
+        </div>
+        <button
+          class="toggle-switch"
+          class:active={showFullLeadOutput}
+          onclick={toggleShowFullLeadOutput}
+          role="switch"
+          aria-checked={showFullLeadOutput}
+          aria-label="Toggle full lead output"
+        >
+          <span class="toggle-knob"></span>
+        </button>
+      </div>
+    </section>
+
     <!-- Tool-call display toggle -->
     <section class="settings-section">
       <h2 class="section-title">Tool Call Display</h2>

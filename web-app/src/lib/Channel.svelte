@@ -79,9 +79,14 @@ let activeChannelMeta = $derived($channelsStore.find((ch) => ch.name === $active
 let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith("dm-"));
 let dmPeerName = $derived($activeChannel.startsWith("dm-") ? $activeChannel.slice(3) : $activeChannel);
 let showInlineToolData = $derived(isDm || ($channelSettings[$activeChannel]?.inlineToolCalls ?? true));
+let showFullLeadOutput = $derived($channelSettings[$activeChannel]?.showFullLeadOutput ?? true);
 
-// Filter messages by active channel
-let channelMessages = $derived($messagesByChannel[$activeChannel] || []);
+// Filter messages by active channel, optionally hiding auto-output from lead
+let channelMessages = $derived.by(() => {
+	const all = $messagesByChannel[$activeChannel] || [];
+	if (showFullLeadOutput) return all;
+	return all.filter((msg) => !msg.auto_output);
+});
 
 // Visible slice of messages for the DOM. Only these get rendered.
 let visibleMessages = $derived(channelMessages.slice(renderStartIndex));
@@ -181,6 +186,17 @@ $effect(() => {
 	}
 	// New messages on current channel: no-op. visibleMessages is an
 	// open-ended slice so new messages at the end render automatically.
+	// However, if the list shrank (e.g. filter toggle), clamp renderStartIndex
+	// so visibleMessages doesn't become empty.
+	if (len > 0 && renderStartIndex >= len) {
+		const version = ++renderVersion;
+		const newIndex = Math.max(0, len - INITIAL_WINDOW_SIZE);
+		pendingRenderStartIndex = newIndex;
+		queueMicrotask(() => {
+			if (version !== renderVersion) return;
+			renderStartIndex = newIndex;
+		});
+	}
 });
 
 // Save/restore drafts when switching channels
@@ -586,8 +602,21 @@ $effect(() => {
 	// Find the target message's index in channelMessages.
 	// If not found yet, leave the target set — this effect re-fires reactively
 	// when channelMessages changes (e.g. after fetchHistory completes).
-	const targetIndex = channelMessages.findIndex((m) => m.id === targetId);
-	if (targetIndex === -1) return;
+	let targetIndex = channelMessages.findIndex((m) => m.id === targetId);
+	if (targetIndex === -1) {
+		// The target may be hidden by the auto_output filter. If it exists in the
+		// unfiltered list, re-enable showFullLeadOutput so the message is visible.
+		const allMessages = $messagesByChannel[$activeChannel] || [];
+		if (!showFullLeadOutput && allMessages.some((m) => m.id === targetId)) {
+			channelSettings.update((s) => ({
+				...s,
+				[$activeChannel]: { ...s[$activeChannel], showFullLeadOutput: true },
+			}));
+			// Effect will re-fire with the filter disabled and find the target.
+			return;
+		}
+		return;
+	}
 
 	// Cancel any pending window-positioning microtask so it can't overwrite
 	// the renderStartIndex we're about to set.
