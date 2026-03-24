@@ -169,11 +169,21 @@ fn apply_task_channel_mapping(
 
 /// Determine the `from` author for a "created task:" channel notification.
 ///
-/// Returns "lead" when the task is in the main channel (i.e., `task_channel`
-/// matches `main_channel`), because the project lead owns the main channel.
-/// Returns the channel name for topic channels, because channel leads have the
-/// same session name as their channel (`channel_lead_session_name` is identity).
-pub(crate) fn task_created_message_author(task_channel: &str, main_channel: &str) -> String {
+/// When the caller provides a `session_name` (via the `MIDTOWN_AGENT` env var),
+/// that name is used directly — it reflects the actual lead or fork identity.
+/// Falls back to "lead" for the main channel or the channel name for topic
+/// channels when no caller identity is available (e.g., external CLI callers).
+pub(crate) fn task_created_message_author(
+    task_channel: &str,
+    main_channel: &str,
+    session_name: Option<&str>,
+) -> String {
+    if let Some(name) = session_name
+        && !name.is_empty()
+    {
+        return name.to_string();
+    }
+    // Fallback: derive from channel context
     if task_channel == main_channel {
         "lead".to_string()
     } else {
@@ -293,6 +303,7 @@ pub(super) async fn handle_task_create(
     agent_type: Option<&str>,
     color: Option<&str>,
     icon: Option<&str>,
+    session_name: Option<&str>,
     state: &DaemonState,
 ) -> Response {
     // Require agent_name
@@ -441,7 +452,11 @@ pub(super) async fn handle_task_create(
             .ok()
             .and_then(|t| t.thread_id.clone()),
     };
-    let author = task_created_message_author(effective_channel, state.default_channel_name());
+    let author = task_created_message_author(
+        effective_channel,
+        state.default_channel_name(),
+        session_name,
+    );
     let msg = task_announcement_message(
         effective_channel,
         &author,
