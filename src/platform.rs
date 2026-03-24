@@ -148,6 +148,7 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
         env: _env,
         fork_session,
         disallowed_tools,
+        additional_dirs,
         agent_name,
     } = config;
 
@@ -156,7 +157,7 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
 
     let mut args = build_claude_common_args(
         model,
-        &[], // headless sessions don't use additional_dirs
+        additional_dirs,
     );
 
     // Setting sources — skip for legacy fork-resume sessions because

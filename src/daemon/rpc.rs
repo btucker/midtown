@@ -1001,6 +1001,7 @@ async fn handle_oneshot_execute(
         env: std::collections::BTreeMap::new(),
         fork_session: false,
         disallowed_tools: vec![],
+        additional_dirs: vec![],
         agent_name: None,
     };
 

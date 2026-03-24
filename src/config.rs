@@ -423,6 +423,57 @@ pub struct ChannelsSection {
     pub seed: Vec<String>,
 }
 
+/// Per-channel override entry supporting both legacy string and new table TOML forms.
+///
+/// Legacy (string value):
+/// ```toml
+/// [channel_leads.overrides]
+/// "my-channel" = "opus"
+/// ```
+///
+/// New (table value with optional context_dirs):
+/// ```toml
+/// [channel_leads.overrides]
+/// "my-channel" = { model = "opus", context_dirs = ["/path/to/CLAUDE.md"] }
+/// ```
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ChannelLeadOverride {
+    /// Model override for this channel.
+    pub model: Option<String>,
+    /// Additional directories to pass via --add-dir for this channel's lead.
+    pub context_dirs: Option<Vec<std::path::PathBuf>>,
+}
+
+impl<'de> serde::Deserialize<'de> for ChannelLeadOverride {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = ChannelLeadOverride;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a model string or a table with model and context_dirs")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(ChannelLeadOverride {
+                    model: Some(v.to_string()),
+                    context_dirs: None,
+                })
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+                #[derive(Deserialize)]
+                struct Helper {
+                    #[serde(default)]
+                    model: Option<String>,
+                    #[serde(default)]
+                    context_dirs: Option<Vec<std::path::PathBuf>>,
+                }
+                let h = Helper::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(ChannelLeadOverride { model: h.model, context_dirs: h.context_dirs })
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
 /// Channel lead configuration section.
 ///
 /// Configures per-channel model selection for channel leads.
@@ -443,9 +494,14 @@ pub struct ChannelLeadsConfig {
     #[serde(default)]
     pub default_model: Option<String>,
 
-    /// Per-channel model overrides. Keys are channel names, values are model names.
+    /// Per-channel overrides. Keys are channel names.
+    /// Values are either a model string (legacy) or a table with model/context_dirs.
     #[serde(default)]
-    pub overrides: std::collections::HashMap<String, String>,
+    pub overrides: std::collections::HashMap<String, ChannelLeadOverride>,
+
+    /// Default additional directories to pass via --add-dir for all channel leads.
+    #[serde(default)]
+    pub context_dirs: Option<Vec<std::path::PathBuf>>,
 }
 
 impl ChannelLeadsConfig {
@@ -468,7 +524,7 @@ impl ChannelLeadsConfig {
     ) -> String {
         self.overrides
             .get(channel_name)
-            .cloned()
+            .and_then(|o| o.model.clone())
             .or_else(|| self.default_model.clone())
             .or_else(|| execution_fallback.map(|s| s.as_model_str().to_string()))
             .unwrap_or_else(|| {
@@ -478,6 +534,17 @@ impl ChannelLeadsConfig {
                     "sonnet".to_string()
                 }
             })
+    }
+
+    /// Get the additional context directories for a given channel.
+    ///
+    /// Priority: per-channel override → global context_dirs → empty.
+    pub fn context_dirs_for_channel(&self, channel_name: &str) -> Vec<std::path::PathBuf> {
+        self.overrides
+            .get(channel_name)
+            .and_then(|o| o.context_dirs.clone())
+            .or_else(|| self.context_dirs.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -3060,10 +3127,11 @@ allowed_paths = ["~/.cargo", "~/.rustup", "/opt/toolchain"]
     #[test]
     fn test_channel_leads_ops_override_takes_precedence() {
         let mut overrides = std::collections::HashMap::new();
-        overrides.insert("ops".to_string(), "sonnet".to_string());
+        overrides.insert("ops".to_string(), ChannelLeadOverride { model: Some("sonnet".to_string()), context_dirs: None });
         let config = ChannelLeadsConfig {
             default_model: None,
             overrides,
+            context_dirs: None,
         };
         assert_eq!(config.model_for_channel("ops"), "sonnet");
     }
@@ -3073,6 +3141,7 @@ allowed_paths = ["~/.cargo", "~/.rustup", "/opt/toolchain"]
         let config = ChannelLeadsConfig {
             default_model: Some("opus".to_string()),
             overrides: std::collections::HashMap::new(),
+            context_dirs: None,
         };
         assert_eq!(config.model_for_channel("ops"), "opus");
     }
@@ -3082,6 +3151,7 @@ allowed_paths = ["~/.cargo", "~/.rustup", "/opt/toolchain"]
         let config = ChannelLeadsConfig {
             default_model: Some("opus".to_string()),
             overrides: std::collections::HashMap::new(),
+            context_dirs: None,
         };
         assert_eq!(config.model_for_channel("any-channel"), "opus");
     }
@@ -3089,10 +3159,11 @@ allowed_paths = ["~/.cargo", "~/.rustup", "/opt/toolchain"]
     #[test]
     fn test_channel_leads_per_channel_override() {
         let mut overrides = std::collections::HashMap::new();
-        overrides.insert("daemon-architecture".to_string(), "opus".to_string());
+        overrides.insert("daemon-architecture".to_string(), ChannelLeadOverride { model: Some("opus".to_string()), context_dirs: None });
         let config = ChannelLeadsConfig {
             default_model: Some("sonnet".to_string()),
             overrides,
+            context_dirs: None,
         };
         assert_eq!(config.model_for_channel("daemon-architecture"), "opus");
         assert_eq!(config.model_for_channel("web-interface"), "sonnet");
@@ -3101,10 +3172,11 @@ allowed_paths = ["~/.cargo", "~/.rustup", "/opt/toolchain"]
     #[test]
     fn test_channel_leads_override_takes_precedence_over_default() {
         let mut overrides = std::collections::HashMap::new();
-        overrides.insert("tui".to_string(), "haiku".to_string());
+        overrides.insert("tui".to_string(), ChannelLeadOverride { model: Some("haiku".to_string()), context_dirs: None });
         let config = ChannelLeadsConfig {
             default_model: Some("opus".to_string()),
             overrides,
+            context_dirs: None,
         };
         assert_eq!(config.model_for_channel("tui"), "haiku");
     }

@@ -850,12 +850,16 @@ impl DaemonState {
                 }
             }
 
-            let config = crate::launch::LaunchConfig::channel_lead(
+            let mut config = crate::launch::LaunchConfig::channel_lead(
                 ops_channel,
                 self.paths.dir_key(),
                 session_mode,
                 "",
                 None,
+            );
+            config.additional_dirs.extend(
+                crate::config::get_channel_leads_config(self.paths.dir_key())
+                    .context_dirs_for_channel(ops_channel)
             );
 
             match self.spawn_coworker(&config).await {

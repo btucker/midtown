@@ -741,6 +741,7 @@ impl LaunchConfig {
             env,
             fork_session: false,
             disallowed_tools,
+            additional_dirs: self.additional_dirs.clone(),
             agent_name,
         }
     }

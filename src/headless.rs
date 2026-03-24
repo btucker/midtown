@@ -122,6 +122,9 @@ pub struct HeadlessConfig {
     /// modification tools (Edit, Write, Bash, NotebookEdit).
     #[serde(default)]
     pub disallowed_tools: Vec<String>,
+    /// Additional directories to pass via `--add-dir` for multi-repo context.
+    #[serde(default)]
+    pub additional_dirs: Vec<std::path::PathBuf>,
     /// Agent definition name for `--agent <name>` flag.
     ///
     /// When set, the CLI arg builder emits `--agent <name>` for both fresh and
@@ -1200,6 +1203,7 @@ fn codex_launch_plan_from_config(config: &HeadlessConfig) -> Result<CodexLaunchP
         env: _env,
         fork_session,
         disallowed_tools,
+        additional_dirs: _additional_dirs,
         agent_name: _agent_name,
     } = config;
 

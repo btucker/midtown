@@ -2592,6 +2592,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     config.cwd_subdir =
                         crate::paths::read_channel_directory(state.paths.dir_key(), &name);
                     config.suppress_auto_output = suppress_auto_output;
+                    config.additional_dirs = crate::config::get_channel_leads_config(state.paths.dir_key())
+                        .context_dirs_for_channel(&name);
                     match state.spawn_coworker(&config).await {
                         Ok(session_id) => {
                             info!(
@@ -2994,6 +2996,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 );
                 config.cwd_subdir = channel_directory;
                 config.suppress_auto_output = suppress_auto_output;
+                config.additional_dirs = crate::config::get_channel_leads_config(state.paths.dir_key())
+                    .context_dirs_for_channel(&channel_name);
 
                 let name = config.name.clone();
                 match state.spawn_coworker(&config).await {
