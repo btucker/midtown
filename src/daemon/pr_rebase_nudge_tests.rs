@@ -257,3 +257,22 @@ fn only_nudges_for_new_merged_prs_not_processed_ones() {
     assert_eq!(processed_pr_keys.len(), 1);
     assert_eq!(processed_pr_keys[0], "200");
 }
+
+#[test]
+fn nudge_carries_merge_rebase_nudge_type() {
+    let mut ps = DaemonPersistentState::default();
+    ps.tick_merged_pr_numbers.insert(42);
+    add_coworker_with_open_pr(&mut ps, "lexington", "session-1", 200);
+
+    let effects = collect_merge_rebase_nudge_effects(&ps);
+
+    let nudge_types: Vec<&str> = effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::NudgeCoworkerByName { nudge_type, .. } => Some(nudge_type.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(nudge_types, vec!["merge_rebase"]);
+}

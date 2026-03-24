@@ -262,7 +262,11 @@ pub enum Effect {
     /// Send a nudge message to a coworker by name via stdin prompt injection.
     ///
     /// Used for non-urgent messages like task assignments and PR feedback.
-    NudgeCoworkerByName { name: String, message: String },
+    NudgeCoworkerByName {
+        name: String,
+        message: String,
+        nudge_type: String,
+    },
     /// Post a message to the IRC-style channel (and broadcast to WebSocket clients).
     ///
     /// The executor resolves channel and thread in two phases:
@@ -1300,11 +1304,36 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
                 }
             }
-            Effect::NudgeCoworkerByName { name, message } => {
+            Effect::NudgeCoworkerByName {
+                name,
+                message,
+                nudge_type,
+            } => {
                 if let Err(e) = state.session_manager.send_message(&name, &message).await {
                     warn!("NudgeCoworkerByName: failed to nudge {}: {}", name, e);
                 } else {
                     debug!("NudgeCoworkerByName: delivered message to {}", name);
+                    // Post to DM channel for observability (skip fork sessions).
+                    let is_fork = {
+                        let ps = state.persistent_state.lock().await;
+                        ps.session_by_name(&name)
+                            .is_some_and(|s| s.is_fork_session())
+                    };
+                    if !is_fork {
+                        let dm_effect = Effect::PostToChannel {
+                            sender: "system".to_owned(),
+                            message: message.clone(),
+                            channel: Some(format!("dm-{}", name)),
+                            auto_output: false,
+                            message_type: Some(crate::message::MessageType::Nudge),
+                            nudge_type: Some(nudge_type),
+                            tool_data: None,
+                            provider: None,
+                            tool_use_id: None,
+                            parent_tool_use_id: None,
+                        };
+                        Box::pin(execute_effects(vec![dm_effect], state)).await;
+                    }
                 }
             }
             Effect::PostToChannel {

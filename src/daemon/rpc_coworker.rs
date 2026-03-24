@@ -855,6 +855,28 @@ pub(super) async fn handle_coworker_nudge(
         questions.retain(|q| q.coworker_name != name);
     }
 
+    // Post to DM channel for observability (skip fork sessions).
+    let is_fork = {
+        let ps = state.persistent_state.lock().await;
+        ps.session_by_name(name)
+            .is_some_and(|s| s.is_fork_session())
+    };
+    if !is_fork {
+        let dm_effect = super::effects::Effect::PostToChannel {
+            sender: "system".to_owned(),
+            message: message.to_owned(),
+            channel: Some(format!("dm-{}", name)),
+            auto_output: false,
+            message_type: Some(crate::message::MessageType::Nudge),
+            nudge_type: Some("manual_nudge".to_owned()),
+            tool_data: None,
+            provider: None,
+            tool_use_id: None,
+            parent_tool_use_id: None,
+        };
+        super::effects::execute_effects(vec![dm_effect], state).await;
+    }
+
     info!("Queued nudge for coworker {}: {}", name, message);
     Response::success(
         id,

@@ -4506,6 +4506,7 @@ pub fn collect_merge_rebase_nudge_effects(ps: &super::state::DaemonPersistentSta
         effects.push(Effect::NudgeCoworkerByName {
             name: coworker_name.clone(),
             message,
+            nudge_type: "merge_rebase".to_string(),
         });
         effects.push(Effect::RecordCooldown {
             category: "merge_rebase_nudge".to_string(),
@@ -4741,6 +4742,7 @@ pub fn evaluate_rebase_regression(input: &RebaseRegressionInput) -> Vec<Effect> 
         Effect::NudgeCoworkerByName {
             name: input.coworker_name.clone(),
             message: nudge_message,
+            nudge_type: "rebase_regression".to_string(),
         },
         Effect::RecordCooldown {
             category: "rebase_regression".to_string(),

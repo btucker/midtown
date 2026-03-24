@@ -34,7 +34,7 @@ fn flags_overlapping_files_after_rebase() {
         .find(|e| matches!(e, Effect::NudgeCoworkerByName { .. }));
     assert!(nudge.is_some(), "should emit a nudge");
 
-    if let Some(Effect::NudgeCoworkerByName { name, message }) = nudge {
+    if let Some(Effect::NudgeCoworkerByName { name, message, .. }) = nudge {
         assert_eq!(name, "lexington");
         assert!(
             message.contains("src/lib.rs"),
@@ -179,4 +179,18 @@ fn parse_reflog_timestamp_no_match_fails_open() {
         ),
         "should fail-open when no timestamp can be parsed"
     );
+}
+
+#[test]
+fn rebase_regression_nudge_carries_nudge_type() {
+    let input = make_input("lexington", &["src/lib.rs"], &["src/lib.rs"], true);
+
+    let effects = evaluate_rebase_regression(&input);
+
+    let nudge_type = effects.iter().find_map(|e| match e {
+        Effect::NudgeCoworkerByName { nudge_type, .. } => Some(nudge_type.as_str()),
+        _ => None,
+    });
+
+    assert_eq!(nudge_type, Some("rebase_regression"));
 }
