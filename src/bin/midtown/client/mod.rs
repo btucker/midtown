@@ -522,6 +522,7 @@ impl DaemonClient {
         agent_type: Option<&str>,
         color: Option<&str>,
         icon: Option<&str>,
+        session_name: Option<&str>,
     ) -> Result<Response, String> {
         let mut params = serde_json::json!({
             "subject": subject,
@@ -559,6 +560,9 @@ impl DaemonClient {
         }
         if let Some(i) = icon {
             params["icon"] = serde_json::json!(i);
+        }
+        if let Some(sn) = session_name {
+            params["session_name"] = serde_json::json!(sn);
         }
         self.send("task.create", Some(params))
     }

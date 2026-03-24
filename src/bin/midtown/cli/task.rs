@@ -162,6 +162,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
             let env_thread_id = std::env::var("MIDTOWN_BOUND_THREAD_ID").ok();
             let effective_thread_id =
                 derive_thread_id(thread_id.as_deref(), env_thread_id.as_deref());
+            let session_name = std::env::var("MIDTOWN_AGENT").ok();
             client.task_create(
                 subject,
                 description,
@@ -176,6 +177,7 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
                 agent_type.as_deref(),
                 color.as_deref(),
                 icon.as_deref(),
+                session_name.as_deref(),
             )
         }
         TaskCommand::Update {

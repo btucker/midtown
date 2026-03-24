@@ -177,58 +177,89 @@ fn test_apply_task_model_mapping_none_on_empty_map() {
 
 // ── task_created_message_author tests ────────────────────────────────────────
 
-/// For the main channel, the task-created message should be attributed to "lead".
+/// When session_name is provided, it is used as the author regardless of channel.
 #[test]
-fn test_task_created_message_author_main_channel() {
-    // When task_channel matches the main channel, "lead" should be the author.
-    let author = task_created_message_author("midtown", "midtown");
+fn test_task_created_message_author_uses_session_name() {
+    let author = task_created_message_author("midtown", "midtown", Some("daemon-core"));
+    assert_eq!(author, "daemon-core");
+}
+
+/// When session_name is provided for a topic channel, it overrides channel name.
+#[test]
+fn test_task_created_message_author_session_name_overrides_channel() {
+    let author = task_created_message_author("notes", "midtown", Some("my-fork-abc"));
+    assert_eq!(author, "my-fork-abc");
+}
+
+/// When session_name is None, fall back to "lead" for the main channel.
+#[test]
+fn test_task_created_message_author_fallback_main_channel() {
+    let author = task_created_message_author("midtown", "midtown", None);
     assert_eq!(author, "lead");
 }
 
-/// For a sub-channel, the task-created message should be attributed to the
-/// channel lead, whose session name equals the channel name.
+/// When session_name is None, fall back to channel name for topic channels.
 #[test]
-fn test_task_created_message_author_sub_channel() {
-    let author = task_created_message_author("notes", "midtown");
+fn test_task_created_message_author_fallback_sub_channel() {
+    let author = task_created_message_author("notes", "midtown", None);
     assert_eq!(author, "notes");
 }
 
-/// For a sub-channel with a hyphenated name.
+/// When session_name is an empty string, fall back to channel-based logic.
+#[test]
+fn test_task_created_message_author_empty_session_name_falls_back() {
+    let author = task_created_message_author("midtown", "midtown", Some(""));
+    assert_eq!(author, "lead");
+
+    let author = task_created_message_author("notes", "midtown", Some(""));
+    assert_eq!(author, "notes");
+}
+
+/// For a sub-channel with a hyphenated name and no session_name.
 #[test]
 fn test_task_created_message_author_hyphenated_sub_channel() {
-    let author = task_created_message_author("web-interface", "myrepo");
+    let author = task_created_message_author("web-interface", "myrepo", None);
     assert_eq!(author, "web-interface");
 }
 
 /// The main_channel comparison must use the channel router's default ("midtown"),
-/// NOT the repo name. In repos whose name differs from "midtown", tasks created
-/// without an explicit channel still land in "midtown" (the hardcoded default),
-/// so comparing against the repo name would incorrectly treat them as topic channels.
+/// NOT the repo name. Falls back correctly when no session_name is provided.
 #[test]
 fn test_task_created_message_author_main_channel_non_midtown_repo() {
-    // Repo named "myrepo", default channel is "midtown" (hardcoded in channel router).
-    // A task with channel="midtown" should be attributed to "lead", not "midtown".
-    let author = task_created_message_author("midtown", "midtown");
+    let author = task_created_message_author("midtown", "midtown", None);
     assert_eq!(author, "lead");
 
-    // Sanity check: "myrepo" as main_channel with task_channel="midtown" would
-    // previously return "midtown" (wrong), but now callers pass the router's
-    // default ("midtown") instead of the repo name.
-    let wrong_author = task_created_message_author("midtown", "myrepo");
-    assert_eq!(wrong_author, "midtown"); // demonstrates the old bug
+    // "myrepo" as main_channel with task_channel="midtown" falls back to channel name
+    let wrong_author = task_created_message_author("midtown", "myrepo", None);
+    assert_eq!(wrong_author, "midtown");
 }
 
 // ── task_created_message routing tests ───────────────────────────────────────
 
-/// For the main channel, the task-created Message should have channel=main
-/// and from="lead".
+/// When session_name is provided, the message author reflects the caller identity.
+#[test]
+fn test_task_created_message_routing_with_session_name() {
+    use crate::message::MessageType;
+
+    let author = task_created_message_author("midtown", "midtown", Some("daemon-core"));
+    let msg = crate::message::Message::for_channel(
+        "midtown",
+        &author,
+        "created task: Fix the bug",
+        MessageType::Text,
+    );
+    assert_eq!(msg.channel_name(), "midtown");
+    assert_eq!(msg.from, "daemon-core", "should use session name as author");
+}
+
+/// For the main channel without session_name, falls back to "lead".
 #[test]
 fn test_task_created_message_main_channel_routing() {
     use crate::message::MessageType;
 
     let msg = crate::message::Message::for_channel(
         "midtown",
-        task_created_message_author("midtown", "midtown"),
+        task_created_message_author("midtown", "midtown", None),
         "created task: Fix the bug",
         MessageType::Text,
     );
@@ -239,26 +270,25 @@ fn test_task_created_message_main_channel_routing() {
     );
     assert_eq!(
         msg.from, "lead",
-        "main channel tasks should be attributed to lead"
+        "main channel tasks should fall back to lead when no session name"
     );
 }
 
-/// For a sub-channel, the task-created Message should route to that channel
-/// and be attributed to the channel lead (whose name equals the channel name).
+/// For a sub-channel without session_name, uses the channel name.
 #[test]
 fn test_task_created_message_sub_channel_routing() {
     use crate::message::MessageType;
 
     let msg = crate::message::Message::for_channel(
         "notes",
-        task_created_message_author("notes", "midtown"),
+        task_created_message_author("notes", "midtown", None),
         "created task: Add wiki page",
         MessageType::Text,
     );
     assert_eq!(msg.channel_name(), "notes", "should route to sub-channel");
     assert_eq!(
         msg.from, "notes",
-        "sub-channel tasks should be attributed to channel lead"
+        "sub-channel tasks should fall back to channel name when no session name"
     );
 }
 

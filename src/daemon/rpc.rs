@@ -559,6 +559,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             let agent_type = params.str_param("agent_type");
             let color = params.str_param("color");
             let icon = params.str_param("icon");
+            let session_name = params.str_param("session_name");
             super::rpc_task::handle_task_create(
                 request.id,
                 subject,
@@ -574,6 +575,7 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 agent_type,
                 color,
                 icon,
+                session_name,
                 state,
             )
             .await
