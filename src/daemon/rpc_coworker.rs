@@ -824,67 +824,29 @@ pub(super) async fn handle_coworker_nudge(
     message: &str,
     state: &DaemonState,
 ) -> Response {
-    // Always enqueue to headed intercom for wrapper-managed sessions.
-    state.enqueue_headed_nudge(name, message).await;
-
-    // Best-effort headless delivery for active headless sessions.
-    let delivered_headless = match state.session_manager.send_message(name, message).await {
-        Ok(()) => true,
-        Err(e) => {
-            let text = e.to_string();
-            if text.contains("No headless session for") || text.contains("has stopped") {
-                debug!(
-                    "No active headless session for coworker {}, queued headed nudge only",
-                    name
-                );
-            } else {
-                warn!(
-                    "Headless nudge delivery failed for coworker {} (still queued headed): {}",
-                    name, e
-                );
-            }
-            false
-        }
+    // Deliver via core nudge function (send_message + DM post + attribution).
+    let delivered = if let Some(follow_up) =
+        super::effects::deliver_coworker_nudge(state, name, message, "manual_nudge").await
+    {
+        super::effects::execute_effects(follow_up, state).await;
+        true
+    } else {
+        false
     };
 
-    // Clear pending questions AFTER delivery — the nudge has been enqueued (headed)
-    // and best-effort delivered (headless). Clearing after ensures we don't lose the
-    // question if enqueue_headed_nudge were to fail in the future.
+    // Clear pending questions after delivery.
     {
         let mut questions = state.pending_questions.lock().unwrap();
         questions.retain(|q| q.coworker_name != name);
     }
 
-    // Post to DM channel for observability (skip fork sessions).
-    let is_fork = {
-        let ps = state.persistent_state.lock().await;
-        ps.session_by_name(name)
-            .is_some_and(|s| s.is_fork_session())
-    };
-    if !is_fork {
-        let dm_effect = super::effects::Effect::PostToChannel {
-            sender: "system".to_owned(),
-            message: message.to_owned(),
-            channel: Some(format!("dm-{}", name)),
-            auto_output: false,
-            message_type: Some(crate::message::MessageType::Nudge),
-            nudge_type: Some("manual_nudge".to_owned()),
-            tool_data: None,
-            provider: None,
-            tool_use_id: None,
-            parent_tool_use_id: None,
-        };
-        super::effects::execute_effects(vec![dm_effect], state).await;
-    }
-
-    info!("Queued nudge for coworker {}: {}", name, message);
+    info!("Nudge for coworker {}: {}", name, message);
     Response::success(
         id,
         serde_json::json!({
             "success": true,
             "message": format!("Nudged coworker: {}", name),
-            "queued_headed": true,
-            "delivered_headless": delivered_headless
+            "delivered_headless": delivered
         }),
     )
 }

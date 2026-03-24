@@ -2571,7 +2571,7 @@ async fn test_review_mode_both_allows_local_reviewer_spawn() {
 /// The coworker system prompt says not to enable auto-merge before review completes,
 /// but without an explicit notification the warning can be missed.
 ///
-/// Fix: Add a `NudgeCoworkerByName` to `on_success` warning the PR author not to
+/// Fix: Add a `NudgeCoworker` to `on_success` warning the PR author not to
 /// enable auto-merge until the review is complete.
 #[tokio::test]
 async fn test_reviewer_spawn_warns_pr_author_via_nudge() {
@@ -2623,7 +2623,7 @@ async fn test_reviewer_spawn_warns_pr_author_via_nudge() {
     .await;
 
     // The function should emit a CreateReviewTask effect for this PR.
-    // Author warning (NudgeCoworkerByName) is now handled by the dispatch system.
+    // Author warning (NudgeCoworker) is now handled by the dispatch system.
     let has_create_review_task = effects
         .iter()
         .any(|e| matches!(e, Effect::CreateReviewTask { pr_number: pn, .. } if *pn == pr_number));
@@ -3240,7 +3240,7 @@ async fn test_review_complete_without_owner_posts_merge_reminder() {
         !effects.iter().any(|e| matches!(
             e,
             Effect::SpawnCoworkerWithCallbacks { .. }
-                | Effect::NudgeSessionWithCallbacks { .. }
+                | Effect::NudgeCoworker { .. }
                 | Effect::NudgeSession { .. }
         )),
         "Should not try to spawn/nudge a coworker when owner cannot be resolved, got: {:#?}",
@@ -4714,7 +4714,7 @@ async fn test_review_complete_lead_branch_notifies_user_not_coworker() {
         !effects.iter().any(|e| matches!(
             e,
             Effect::SpawnCoworkerWithCallbacks { .. }
-                | Effect::NudgeSessionWithCallbacks { .. }
+                | Effect::NudgeCoworker { .. }
                 | Effect::NudgeSession { .. }
         )),
         "Bug !2124: Should not spawn/nudge a coworker for a user-authored (lead/*) PR. \
@@ -4937,7 +4937,7 @@ async fn test_review_complete_coworker_pr_no_repeat_after_cooldown() {
             Effect::PostToChannel { message, .. } if message.contains("completed review")
         ) || matches!(
             e,
-            Effect::NudgeSessionWithCallbacks { .. } | Effect::SpawnCoworkerWithCallbacks { .. }
+            Effect::NudgeCoworker { .. } | Effect::SpawnCoworkerWithCallbacks { .. }
         )
     });
     assert!(

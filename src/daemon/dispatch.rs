@@ -864,17 +864,14 @@ fn dispatch_owned_pending_tasks(
                 task_subject: ref subj,
             } => {
                 let task_key = format!("pending-{}", tid);
-                let session_id = ps
-                    .tick_name_session_map
-                    .get(&o.to_lowercase())
-                    .cloned()
-                    .unwrap_or_default();
-                effects.push(Effect::NudgeSessionWithCallbacks {
-                    session_id,
-                    reason: super::wake_reason::WakeReason::TaskAssigned {
-                        task_id: tid.clone(),
-                        subject: subj.clone(),
-                    },
+                let reason = super::wake_reason::WakeReason::TaskAssigned {
+                    task_id: tid.clone(),
+                    subject: subj.clone(),
+                };
+                effects.push(Effect::NudgeCoworker {
+                    name: o.clone(),
+                    message: reason.to_nudge_message(),
+                    nudge_type: reason.nudge_type().to_string(),
                     on_success: vec![
                         Effect::RecordCooldown {
                             category: "task_nudge".to_string(),
@@ -1330,22 +1327,12 @@ fn validate_coworker_assignment(
 // ── Effect builders for dispatch branches ────────────────────────────────────
 
 /// Build effects to nudge an already-running coworker to claim a grouped task.
-fn build_grouped_nudge_effects(
-    task: &Task,
-    coworker_name: &str,
-    ps: &DaemonPersistentState,
-    tasks: &[Task],
-) -> Vec<Effect> {
+fn build_grouped_nudge_effects(task: &Task, coworker_name: &str, tasks: &[Task]) -> Vec<Effect> {
     let channel_msg = daemon_messages::called_in_assigned_task(
         coworker_name,
         &task.id.to_string(),
         &task.subject,
     );
-    let session_id = ps
-        .tick_name_session_map
-        .get(&coworker_name.to_lowercase())
-        .cloned()
-        .unwrap_or_default();
     let mut assign_callbacks = vec![
         Effect::RecordTaskAssignment {
             coworker: coworker_name.to_string(),
@@ -1367,13 +1354,15 @@ fn build_grouped_nudge_effects(
         ));
     }
     let plan_section = build_plan_prompt_section(&task.id, tasks);
-    vec![Effect::NudgeSessionWithCallbacks {
-        session_id,
-        reason: super::wake_reason::WakeReason::TaskClaimed {
-            task_id: task.id.clone(),
-            subject: task.subject.clone(),
-            plan_section,
-        },
+    let reason = super::wake_reason::WakeReason::TaskClaimed {
+        task_id: task.id.clone(),
+        subject: task.subject.clone(),
+        plan_section,
+    };
+    vec![Effect::NudgeCoworker {
+        name: coworker_name.to_string(),
+        message: reason.to_nudge_message(),
+        nudge_type: reason.nudge_type().to_string(),
         on_success: assign_callbacks,
     }]
 }
@@ -1630,7 +1619,7 @@ fn dispatch_unowned_pending_tasks(
                 "reviewer task !{} reached already_running path",
                 task.id
             );
-            effects.extend(build_grouped_nudge_effects(task, &coworker_name, ps, tasks));
+            effects.extend(build_grouped_nudge_effects(task, &coworker_name, tasks));
         } else if is_reviewer_task {
             // Reviewer task → spawn on isolated review worktree.
             if let Some(reviewer_effects) = build_reviewer_spawn_effects(task, &coworker_name, ps) {

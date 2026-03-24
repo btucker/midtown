@@ -1306,7 +1306,7 @@ fn build_workflow_event(
 /// `NudgeOwner` and `SpawnOwner` are collapsed into `Effect::TaskPrompt` — the
 /// `deliver_task_prompt` function handles nudge-if-running / resume-if-stopped
 /// internally. For task-less PRs, `NudgeOwner` produces
-/// `NudgeSessionWithCallbacks` and `SpawnOwner` produces
+/// `NudgeCoworker` and `SpawnOwner` produces
 /// `SpawnCoworkerWithCallbacks` — only `PrAction::PostToChannel` maps to
 /// `Effect::PostToChannel`.
 ///
@@ -4426,7 +4426,7 @@ pub fn collect_merged_pr_cleanup_effects(ps: &super::state::DaemonPersistentStat
 /// Nudge active coworkers with open PRs to rebase after a PR merges to main.
 ///
 /// When a PR merges, other coworkers' branches may drift. This function emits
-/// `NudgeCoworkerByName` effects telling each eligible coworker to rebase,
+/// `NudgeCoworker` effects telling each eligible coworker to rebase,
 /// along with guidance about re-reading files after the rebase completes.
 ///
 /// Skips:
@@ -4503,10 +4503,11 @@ pub fn collect_merge_rebase_nudge_effects(ps: &super::state::DaemonPersistentSta
             "Nudging coworker to rebase after PR merge"
         );
 
-        effects.push(Effect::NudgeCoworkerByName {
+        effects.push(Effect::NudgeCoworker {
             name: coworker_name.clone(),
             message,
             nudge_type: "merge_rebase".to_string(),
+            on_success: vec![],
         });
         effects.push(Effect::RecordCooldown {
             category: "merge_rebase_nudge".to_string(),
@@ -4540,7 +4541,7 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::ShutdownCoworker { .. } => "ShutdownCoworker",
         Effect::ShutdownCoworkerWithCallbacks { .. } => "ShutdownCoworkerWithCallbacks",
         Effect::ResumeCoworker { .. } => "ResumeCoworker",
-        Effect::NudgeCoworkerByName { .. } => "NudgeCoworkerByName",
+        Effect::NudgeCoworker { .. } => "NudgeCoworker",
         Effect::PostToChannel { .. } => "PostToChannel",
         Effect::PostSystemMessage { .. } => "PostSystemMessage",
         Effect::BroadcastCoworkerUpdate { .. } => "BroadcastCoworkerUpdate",
@@ -4590,7 +4591,6 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::AutoDetachCoworker { .. } => "AutoDetachCoworker",
         Effect::NudgeChannelLead { .. } => "NudgeChannelLead",
         Effect::NudgeSession { .. } => "NudgeSession",
-        Effect::NudgeSessionWithCallbacks { .. } => "NudgeSessionWithCallbacks",
         Effect::ShutdownSession { .. } => "ShutdownSession",
         Effect::RecordSession { .. } => "RecordSession",
         Effect::MergePr { .. } => "MergePr",
@@ -4739,10 +4739,11 @@ pub fn evaluate_rebase_regression(input: &RebaseRegressionInput) -> Vec<Effect> 
     );
 
     vec![
-        Effect::NudgeCoworkerByName {
+        Effect::NudgeCoworker {
             name: input.coworker_name.clone(),
             message: nudge_message,
             nudge_type: "rebase_regression".to_string(),
+            on_success: vec![],
         },
         Effect::RecordCooldown {
             category: "rebase_regression".to_string(),

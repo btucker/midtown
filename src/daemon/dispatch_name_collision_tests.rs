@@ -99,7 +99,7 @@ fn test_dispatch_excludes_active_session_names() {
 
     let has_nudge = effects
         .iter()
-        .any(|e| matches!(e, effects::Effect::NudgeSessionWithCallbacks { .. }));
+        .any(|e| matches!(e, effects::Effect::NudgeCoworker { .. }));
 
     assert!(
         has_spawn || !has_nudge,

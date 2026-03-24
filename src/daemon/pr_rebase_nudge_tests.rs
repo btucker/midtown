@@ -36,7 +36,7 @@ fn nudges_coworkers_with_open_prs_when_pr_merges() {
     let nudge_names: Vec<String> = effects
         .iter()
         .filter_map(|e| match e {
-            Effect::NudgeCoworkerByName { name, .. } => Some(name.clone()),
+            Effect::NudgeCoworker { name, .. } => Some(name.clone()),
             _ => None,
         })
         .collect();
@@ -91,7 +91,7 @@ fn does_not_nudge_coworker_whose_pr_merged() {
     let nudge_names: Vec<String> = effects
         .iter()
         .filter_map(|e| match e {
-            Effect::NudgeCoworkerByName { name, .. } => Some(name.clone()),
+            Effect::NudgeCoworker { name, .. } => Some(name.clone()),
             _ => None,
         })
         .collect();
@@ -115,7 +115,7 @@ fn does_not_nudge_coworkers_on_cooldown() {
     let nudge_names: Vec<String> = effects
         .iter()
         .filter_map(|e| match e {
-            Effect::NudgeCoworkerByName { name, .. } => Some(name.clone()),
+            Effect::NudgeCoworker { name, .. } => Some(name.clone()),
             _ => None,
         })
         .collect();
@@ -150,7 +150,7 @@ fn does_not_nudge_coworkers_without_sessions() {
     let nudge_names: Vec<String> = effects
         .iter()
         .filter_map(|e| match e {
-            Effect::NudgeCoworkerByName { name, .. } => Some(name.clone()),
+            Effect::NudgeCoworker { name, .. } => Some(name.clone()),
             _ => None,
         })
         .collect();
@@ -179,7 +179,7 @@ fn nudge_message_contains_rebase_guidance() {
     let message = effects
         .iter()
         .find_map(|e| match e {
-            Effect::NudgeCoworkerByName { message, .. } => Some(message.clone()),
+            Effect::NudgeCoworker { message, .. } => Some(message.clone()),
             _ => None,
         })
         .expect("should have a nudge");
@@ -230,7 +230,7 @@ fn only_nudges_for_new_merged_prs_not_processed_ones() {
     let nudge_messages: Vec<String> = effects
         .iter()
         .filter_map(|e| match e {
-            Effect::NudgeCoworkerByName { message, .. } => Some(message.clone()),
+            Effect::NudgeCoworker { message, .. } => Some(message.clone()),
             _ => None,
         })
         .collect();
@@ -269,7 +269,7 @@ fn nudge_carries_merge_rebase_nudge_type() {
     let nudge_types: Vec<&str> = effects
         .iter()
         .filter_map(|e| match e {
-            Effect::NudgeCoworkerByName { nudge_type, .. } => Some(nudge_type.as_str()),
+            Effect::NudgeCoworker { nudge_type, .. } => Some(nudge_type.as_str()),
             _ => None,
         })
         .collect();

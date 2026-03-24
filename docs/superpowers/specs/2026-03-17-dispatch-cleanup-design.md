@@ -34,7 +34,7 @@ Name allocation always happens at execution time in one place. Dispatch code nev
 
 ### Keep as-is
 
-- `NudgeSessionWithCallbacks` — nudging a running session is fundamentally different from spawning
+- `NudgeCoworker` — nudging a running session is fundamentally different from spawning
 - `TaskPrompt` — sending a message to an already-running session
 
 ## SpawnDecision
@@ -83,7 +83,7 @@ Keep `dispatch.rs` as a single file. The consolidation should reduce it to ~1800
 ## What does NOT change
 
 - The dispatch decision logic (which task to pick, grouping, priority ordering)
-- `NudgeSessionWithCallbacks` / `TaskPrompt` effects
+- `NudgeCoworker` / `TaskPrompt` effects
 - The tick pipeline call order in `events.rs`
 - `dispatch_priority.rs` (new module from the prior PR)
 - Task data model on disk
