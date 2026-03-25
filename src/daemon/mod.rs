@@ -3178,6 +3178,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Skip the first tick (token was just fetched at startup)
     gh_token_refresh_interval.tick().await;
 
+    // Timer for proactive Claude OAuth token refresh (every 5 minutes).
+    // Checks all Claude profiles and refreshes tokens that expire within the
+    // next 5 minutes so sessions never hit an auth error mid-task.
+    let mut claude_token_refresh_interval =
+        tokio::time::interval(std::time::Duration::from_secs(300));
+    // Skip the first tick — tokens were just loaded at startup.
+    claude_token_refresh_interval.tick().await;
+
     // Timer for periodic note staleness review (every hour)
     let mut note_review_interval = interval(NOTE_REVIEW_CHECK_INTERVAL);
     // Skip the first tick (which fires immediately)
@@ -4152,6 +4160,18 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     let user = github_user.clone();
                     tokio::task::spawn_blocking(move || {
                         startup::refresh_gh_token(&user);
+                    });
+                }
+            }
+
+            // Proactive Claude OAuth token refresh: check all Claude profiles and
+            // refresh any tokens within 5 minutes of expiry so running sessions
+            // never hit an auth error due to token expiry.
+            _ = claude_token_refresh_interval.tick() => {
+                let profiles = crate::auth::list_profiles().unwrap_or_default();
+                for profile in profiles {
+                    tokio::task::spawn_blocking(move || {
+                        crate::usage::try_refresh_oauth_token_for_profile(&profile);
                     });
                 }
             }

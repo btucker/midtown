@@ -152,6 +152,213 @@ pub fn get_oauth_credentials_for_profile(_profile: &str) -> Option<OAuthCredenti
     None
 }
 
+/// Refresh threshold: refresh token when fewer than this many ms remain before expiry.
+const OAUTH_TOKEN_REFRESH_THRESHOLD_MS: i64 = 5 * 60 * 1000; // 5 minutes
+
+/// Claude Code OAuth client ID (public, embedded in the Claude Code binary).
+const CLAUDE_CODE_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+
+/// Anthropic token endpoint for Claude Code OAuth.
+const CLAUDE_TOKEN_ENDPOINT: &str = "https://platform.claude.com/v1/oauth/token";
+
+/// Read the keychain account name for a service entry.
+///
+/// Returns the account field from the keychain item, or an empty string if not found.
+/// Used when writing back to ensure the update targets the same item.
+#[cfg(target_os = "macos")]
+fn get_keychain_account(service_name: &str) -> String {
+    let output = Command::new("security")
+        .args(["find-generic-password", "-s", service_name])
+        .output()
+        .ok();
+
+    let text = output.map(|o| {
+        // security writes item attributes to stdout
+        String::from_utf8_lossy(&o.stdout).to_string()
+    });
+
+    if let Some(text) = text {
+        for line in text.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix(r#""acct"<blob>="#) {
+                // Strip surrounding quotes: "mknapp" → mknapp
+                let rest = rest.trim_matches('"');
+                return rest.to_string();
+            }
+        }
+    }
+
+    String::new()
+}
+
+/// Attempt to proactively refresh the Claude OAuth token for a profile.
+///
+/// Reads the current token from the macOS Keychain, checks if it expires within
+/// `OAUTH_TOKEN_REFRESH_THRESHOLD_MS`, and if so calls the Anthropic token
+/// endpoint with the stored refresh token.  On success the keychain entry is
+/// updated in-place so all Claude Code sessions using this profile pick up the
+/// new token automatically.
+///
+/// Returns `true` if the token was refreshed, `false` if no refresh was needed
+/// or if the refresh failed (caller should log a warning).
+#[cfg(target_os = "macos")]
+pub fn try_refresh_oauth_token_for_profile(profile: &str) -> bool {
+    refresh_oauth_token_inner(profile).unwrap_or_default()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn try_refresh_oauth_token_for_profile(_profile: &str) -> bool {
+    false
+}
+
+/// Inner implementation using `?` for early-exit on missing data.
+#[cfg(target_os = "macos")]
+fn refresh_oauth_token_inner(profile: &str) -> Option<bool> {
+    use sha2::{Digest, Sha256};
+
+    let config_dir = crate::auth::profile_dir(profile);
+    let config_dir_str = config_dir.to_string_lossy();
+
+    let mut hasher = Sha256::new();
+    hasher.update(config_dir_str.as_bytes());
+    let hash = hasher.finalize();
+    let hash_prefix = format!(
+        "{:02x}{:02x}{:02x}{:02x}",
+        hash[0], hash[1], hash[2], hash[3]
+    );
+    let service_name = format!("Claude Code-credentials-{}", hash_prefix);
+
+    // Read current credential JSON from keychain
+    let cred_output = Command::new("security")
+        .args(["find-generic-password", "-s", &service_name, "-w"])
+        .output()
+        .ok()?;
+
+    if !cred_output.status.success() {
+        return None; // No credentials stored for this profile
+    }
+
+    let cred_json_raw = String::from_utf8(cred_output.stdout).ok()?;
+    let mut cred: serde_json::Value = serde_json::from_str(cred_json_raw.trim()).ok()?;
+
+    let oauth = cred.get("claudeAiOauth")?.as_object()?.clone();
+
+    let refresh_token = oauth.get("refreshToken")?.as_str()?.to_string();
+    let expires_at_ms = oauth.get("expiresAt")?.as_i64()?;
+
+    // Collect scopes from keychain; fall back to the standard Claude Code default.
+    let scopes = oauth
+        .get("scopes")
+        .and_then(|s| s.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_else(|| {
+            "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
+                .to_string()
+        });
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let ms_until_expiry = expires_at_ms - now_ms;
+
+    if ms_until_expiry > OAUTH_TOKEN_REFRESH_THRESHOLD_MS {
+        // Token is still fresh — no refresh needed.
+        return Some(false);
+    }
+
+    tracing::info!(
+        "OAuth token for profile '{}' expires in {}s, refreshing proactively",
+        profile,
+        ms_until_expiry / 1000
+    );
+
+    let body = serde_json::json!({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": CLAUDE_CODE_CLIENT_ID,
+        "scope": scopes,
+    });
+
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post(CLAUDE_TOKEN_ENDPOINT)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .ok()?;
+
+    if !resp.status().is_success() {
+        tracing::warn!(
+            "OAuth token refresh for profile '{}' failed: HTTP {}",
+            profile,
+            resp.status()
+        );
+        return None;
+    }
+
+    let data: serde_json::Value = resp.json().ok()?;
+
+    let new_access_token = data.get("access_token")?.as_str()?.to_string();
+    let new_refresh_token = data
+        .get("refresh_token")
+        .and_then(|t| t.as_str())
+        .unwrap_or(&refresh_token)
+        .to_string();
+    let expires_in_secs = data
+        .get("expires_in")
+        .and_then(|e| e.as_i64())
+        .unwrap_or(86400);
+    let new_expires_at_ms = chrono::Utc::now().timestamp_millis() + expires_in_secs * 1000;
+
+    // Patch the credential JSON in-place, preserving all other fields.
+    let oauth_obj = cred.get_mut("claudeAiOauth")?.as_object_mut()?;
+    oauth_obj.insert(
+        "accessToken".to_string(),
+        serde_json::Value::String(new_access_token),
+    );
+    oauth_obj.insert(
+        "refreshToken".to_string(),
+        serde_json::Value::String(new_refresh_token),
+    );
+    oauth_obj.insert(
+        "expiresAt".to_string(),
+        serde_json::Value::Number(new_expires_at_ms.into()),
+    );
+
+    let new_json = serde_json::to_string(&cred).ok()?;
+    let account = get_keychain_account(&service_name);
+
+    // Update the keychain entry in-place (-U = update existing item).
+    let write_status = Command::new("security")
+        .args([
+            "add-generic-password",
+            "-U",
+            "-s",
+            &service_name,
+            "-a",
+            &account,
+            "-w",
+            &new_json,
+        ])
+        .status()
+        .ok()?;
+
+    if !write_status.success() {
+        tracing::warn!(
+            "Failed to write refreshed OAuth token to keychain for profile '{}'",
+            profile
+        );
+        return None;
+    }
+
+    tracing::info!("OAuth token refreshed successfully for profile '{}'", profile);
+    Some(true)
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn get_oauth_credentials() -> Option<OAuthCredentials> {
     None
