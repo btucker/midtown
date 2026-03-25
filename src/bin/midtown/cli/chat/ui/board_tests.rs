@@ -71,7 +71,7 @@ fn test_channel_header_with_unread() {
     let mut lines = Vec::new();
     render_channel_header(&app, "auth", &mut lines);
     assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0].spans[0].content.as_ref(), "#auth (5)");
+    assert_eq!(lines[0].spans[0].content.as_ref(), "● #auth");
 }
 
 #[test]

@@ -310,14 +310,14 @@ pub fn draw_board_panel(f: &mut Frame, app: &mut App, area: Rect) -> (Vec<Hyperl
     (hyperlinks, tasks_area)
 }
 
-/// Render a channel header line: `#channel-name` or `@peer` (for DMs) with optional `(X)` unread count.
+/// Render a channel header line: `#channel-name` or `@peer` (for DMs).
+/// Channels with unread messages are prefixed with a dot (●) and rendered bold.
 fn render_channel_header(app: &App, channel_name: &str, lines: &mut Vec<Line<'static>>) {
     let display_name = super::format_channel_display_name(channel_name);
-    let channel_header = if let Some(&unread_count) = app.channel_unread_counts.get(channel_name) {
-        format!("{} ({})", display_name, unread_count)
-    } else {
-        display_name
-    };
+    let has_unread = app
+        .channel_unread_counts
+        .get(channel_name)
+        .is_some_and(|&n| n > 0);
 
     let is_selected = app.board_selection.as_ref().is_some_and(|sel| match sel {
         BoardSelection::Channel(ch) => ch == channel_name,
@@ -325,14 +325,21 @@ fn render_channel_header(app: &App, channel_name: &str, lines: &mut Vec<Line<'st
     });
 
     let palette = app.theme.palette();
-    let mut style = Style::default()
-        .fg(palette.accent)
-        .add_modifier(Modifier::BOLD);
+    let mut style = Style::default().fg(palette.accent);
+    if has_unread {
+        style = style.add_modifier(Modifier::BOLD);
+    }
     if is_selected {
         style = style.bg(palette.selection);
     }
 
-    lines.push(Line::from(vec![Span::styled(channel_header, style)]));
+    let content = if has_unread {
+        format!("● {}", display_name)
+    } else {
+        display_name
+    };
+
+    lines.push(Line::from(vec![Span::styled(content, style)]));
 }
 
 /// Derive the phase status label for a task based on its PR and coworker state.
