@@ -5554,4 +5554,49 @@ pub(super) mod tests {
             "scroll_up() should do nothing when there is no rendered overflow"
         );
     }
+
+    // --- parse_skill_description tests ---
+
+    #[test]
+    fn test_parse_skill_description_single_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_md = dir.path().join("SKILL.md");
+        std::fs::write(
+            &skill_md,
+            "---\nname: do\ndescription: Write or revise a draft\n---\n\n# body",
+        )
+        .unwrap();
+        assert_eq!(
+            parse_skill_description(&skill_md),
+            Some("Write or revise a draft".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_skill_description_no_description_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_md = dir.path().join("SKILL.md");
+        std::fs::write(&skill_md, "---\nname: do\n---\n\n# body").unwrap();
+        assert_eq!(parse_skill_description(&skill_md), None);
+    }
+
+    #[test]
+    fn test_parse_skill_description_no_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_md = dir.path().join("SKILL.md");
+        std::fs::write(&skill_md, "# No frontmatter here\ndescription: ignored").unwrap();
+        assert_eq!(parse_skill_description(&skill_md), None);
+    }
+
+    #[test]
+    fn test_parse_skill_description_description_outside_frontmatter_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_md = dir.path().join("SKILL.md");
+        std::fs::write(
+            &skill_md,
+            "---\nname: do\n---\n\ndescription: not frontmatter",
+        )
+        .unwrap();
+        assert_eq!(parse_skill_description(&skill_md), None);
+    }
 }
