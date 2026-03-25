@@ -1955,6 +1955,37 @@ impl App {
         result.is_ok()
     }
 
+    /// Cancel an in-flight Claude request for the current channel by sending Esc
+    /// to the appropriate headed session's PTY.
+    ///
+    /// Returns `true` if the Esc was successfully enqueued, `false` on error.
+    /// Also clears the optimistic thinking state for the channel so the spinner stops.
+    pub fn cancel_lead_request(&mut self) -> bool {
+        use crate::client::DaemonClient;
+
+        let target_session = self.image_target_session();
+        let channel = self.selected_channel.clone();
+
+        let result = DaemonClient::connect()
+            .and_then(|client| client.headed_enqueue_esc(&target_session));
+
+        // Clear thinking state regardless of whether the Esc was delivered —
+        // the user pressed Esc and expects the spinner to stop.
+        self.channel_lead_thinking.remove(&channel);
+
+        result.is_ok()
+    }
+
+    /// Returns true if the current channel has an active (non-expired) optimistic
+    /// thinking state — i.e., a request was recently submitted and no response has
+    /// arrived yet.
+    pub fn is_channel_lead_thinking(&self) -> bool {
+        self.channel_lead_thinking
+            .get(&self.selected_channel)
+            .map(|t| t.elapsed() < CHANNEL_LEAD_THINKING_TIMEOUT)
+            .unwrap_or(false)
+    }
+
     /// Determine which session to send the image to based on the current channel.
     ///
     /// If viewing a topic channel that has an active channel lead, send to that session.
@@ -2409,19 +2440,54 @@ impl App {
     }
 
     /// Get /slash command autocomplete items.
+    ///
+    /// Returns hardcoded midtown commands plus any skills discovered from
+    /// `CLAUDE_CONFIG_DIR/skills/` (falling back to `~/.claude/skills/`).
+    /// Skills are identified by subdirectories containing a `SKILL.md` file.
     fn get_slash_items(&self, query: &str) -> Vec<AutocompleteItem> {
-        let commands: &[(&str, &str)] = &[
+        let hardcoded: &[(&str, &str)] = &[
             ("/channel create", "Create a new channel"),
             ("/me", "Post an action message"),
         ];
-        commands
+
+        let mut items: Vec<AutocompleteItem> = hardcoded
             .iter()
             .filter(|(cmd, _)| cmd[1..].starts_with(query))
             .map(|(cmd, desc)| AutocompleteItem {
                 value: cmd.to_string(),
                 description: Some(desc.to_string()),
             })
-            .collect()
+            .collect();
+
+        // Discover skills from CLAUDE_CONFIG_DIR/skills/ or ~/.claude/skills/
+        let skills_dir = std::env::var("CLAUDE_CONFIG_DIR")
+            .ok()
+            .map(std::path::PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|h| h.join(".claude")))
+            .map(|d| d.join("skills"));
+
+        if let Some(skills_dir) = skills_dir {
+            if let Ok(entries) = std::fs::read_dir(&skills_dir) {
+                for entry in entries.flatten() {
+                    let skill_md = entry.path().join("SKILL.md");
+                    if !skill_md.exists() {
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let cmd = format!("/{}", name);
+                    if !name.starts_with(query) {
+                        continue;
+                    }
+                    let description = parse_skill_description(&skill_md);
+                    items.push(AutocompleteItem {
+                        value: cmd,
+                        description,
+                    });
+                }
+            }
+        }
+
+        items
     }
 
     /// Get @mention autocomplete items (coworkers + lead)
@@ -3103,6 +3169,31 @@ impl App {
 
         self.coworkers = coworkers;
     }
+}
+
+/// Parse the `description:` field from a SKILL.md frontmatter block.
+///
+/// Expects YAML-style frontmatter between `---` delimiters. Returns `None` if
+/// the file can't be read or no description field is found.
+fn parse_skill_description(skill_md: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(skill_md).ok()?;
+    let mut in_frontmatter = false;
+    for line in content.lines() {
+        if line == "---" {
+            if !in_frontmatter {
+                in_frontmatter = true;
+                continue;
+            } else {
+                break;
+            }
+        }
+        if in_frontmatter {
+            if let Some(rest) = line.strip_prefix("description:") {
+                return Some(rest.trim().to_string());
+            }
+        }
+    }
+    None
 }
 
 /// Fetch tasks from Claude Code's task storage.
