@@ -962,21 +962,22 @@ pub(crate) async fn deliver_task_prompt(
     } else if is_alive {
         // Session is running — deliver via core nudge function
         let name = coworker_name.as_deref().unwrap_or("unknown");
-        if let Some(follow_up) =
-            super::effects::deliver_coworker_nudge(state, name, message, "task_prompt").await
+        match super::effects::deliver_coworker_nudge(state, name, message, "task_prompt", "system")
+            .await
         {
-            Box::pin(super::effects::execute_effects(follow_up, state)).await;
-            info!(
-                "Delivered prompt to running session {} (coworker {}) for task !{}",
-                session_id, name, task_id
-            );
-            Ok(TaskPromptResult {
-                message: format!("Prompt delivered to {} (task !{})", name, task_id),
-                action: "nudged",
-                session_id,
-            })
-        } else {
-            Err(format!("Failed to deliver prompt to {}", name))
+            Ok(follow_up) => {
+                Box::pin(super::effects::execute_effects(follow_up, state)).await;
+                info!(
+                    "Delivered prompt to running session {} (coworker {}) for task !{}",
+                    session_id, name, task_id
+                );
+                Ok(TaskPromptResult {
+                    message: format!("Prompt delivered to {} (task !{})", name, task_id),
+                    action: "nudged",
+                    session_id,
+                })
+            }
+            Err(e) => Err(e),
         }
     } else {
         // Session is stopped — resume with the prompt as initial message

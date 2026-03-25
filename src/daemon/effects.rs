@@ -1064,13 +1064,14 @@ fn is_worktree_active(
 ///
 /// Used by `NudgeCoworker` effect executor, `handle_coworker_nudge()` RPC,
 /// and `deliver_task_prompt()`. Returns follow-up effects (DM channel post)
-/// on success, `None` on failure.
+/// on success, or an error string on failure.
 pub(super) async fn deliver_coworker_nudge(
     state: &DaemonState,
     name: &str,
     message: &str,
     nudge_type: &str,
-) -> Option<Vec<Effect>> {
+    sender: &str,
+) -> Result<Vec<Effect>, String> {
     match state.session_manager.send_message(name, message).await {
         Ok(()) => {
             state.record_pending_nudge(name, message);
@@ -1084,7 +1085,7 @@ pub(super) async fn deliver_coworker_nudge(
             let mut follow_up = Vec::new();
             if !is_fork {
                 follow_up.push(Effect::PostToChannel {
-                    sender: "system".to_owned(),
+                    sender: sender.to_owned(),
                     message: message.to_owned(),
                     channel: Some(format!("dm-{}", name)),
                     auto_output: false,
@@ -1096,11 +1097,11 @@ pub(super) async fn deliver_coworker_nudge(
                     parent_tool_use_id: None,
                 });
             }
-            Some(follow_up)
+            Ok(follow_up)
         }
         Err(e) => {
             warn!("Failed to nudge coworker {}: {}", name, e);
-            None
+            Err(format!("Failed to nudge coworker {}: {}", name, e))
         }
     }
 }
@@ -1358,8 +1359,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     .into_iter()
                     .collect();
 
-                if let Some(follow_up) =
-                    deliver_coworker_nudge(state, &name, &message, &nudge_type).await
+                if let Ok(follow_up) =
+                    deliver_coworker_nudge(state, &name, &message, &nudge_type, "system").await
                 {
                     let mut all = on_success;
                     all.extend(follow_up);

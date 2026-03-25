@@ -819,14 +819,14 @@ pub(super) async fn handle_coworker_report_state(
 /// Handle coworker.nudge RPC method.
 pub(super) async fn handle_coworker_nudge(
     id: RequestId,
-    _from: &str,
+    from: &str,
     name: &str,
     message: &str,
     state: &DaemonState,
 ) -> Response {
     // Deliver via core nudge function (send_message + DM post + attribution).
-    let delivered = if let Some(follow_up) =
-        super::effects::deliver_coworker_nudge(state, name, message, "manual_nudge").await
+    let delivered = if let Ok(follow_up) =
+        super::effects::deliver_coworker_nudge(state, name, message, "manual_nudge", from).await
     {
         super::effects::execute_effects(follow_up, state).await;
         true
