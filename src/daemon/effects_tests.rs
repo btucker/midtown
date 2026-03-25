@@ -81,10 +81,10 @@ fn clear_task_binding_in_records_clears_expected_running_session() {
     assert!(!sessions["sid-running"].resume_on_startup);
 }
 
-fn count_nudge_with_callbacks(effects: &[Effect], sid: &str) -> usize {
+fn count_nudge_coworker(effects: &[Effect], target_name: &str) -> usize {
     effects
         .iter()
-        .filter(|e| matches!(e, Effect::NudgeSessionWithCallbacks { session_id, .. } if session_id == sid))
+        .filter(|e| matches!(e, Effect::NudgeCoworker { name, .. } if name == target_name))
         .count()
 }
 
@@ -107,27 +107,30 @@ fn test_dedup_removes_duplicate_nudge_session() {
 }
 
 #[test]
-fn test_dedup_removes_duplicate_nudge_with_callbacks() {
+fn test_dedup_removes_duplicate_nudge_coworker() {
     let effects = vec![
-        Effect::nudge_session_with_callbacks(
-            "sess-riverside-1",
+        Effect::nudge_coworker(
+            "riverside",
             "CI green",
+            "ci_green",
             vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::Approved,
             }],
         ),
-        Effect::nudge_session_with_callbacks(
-            "sess-riverside-1",
+        Effect::nudge_coworker(
+            "riverside",
             "review complete",
+            "review_complete",
             vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::ReviewComplete,
             }],
         ),
-        Effect::nudge_session_with_callbacks(
-            "sess-riverside-1",
+        Effect::nudge_coworker(
+            "riverside",
             "merge conflict",
+            "merge_conflict",
             vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::MergeConflict,
@@ -137,23 +140,25 @@ fn test_dedup_removes_duplicate_nudge_with_callbacks() {
 
     let deduped = dedup_nudge_effects(effects);
     assert_eq!(
-        count_nudge_with_callbacks(&deduped, "sess-riverside-1"),
+        count_nudge_coworker(&deduped, "riverside"),
         1,
         "Should collapse 3 nudges into 1"
     );
     // First message wins, but all callbacks are merged
-    if let Effect::NudgeSessionWithCallbacks {
-        reason, on_success, ..
+    if let Effect::NudgeCoworker {
+        message,
+        on_success,
+        ..
     } = &deduped[0]
     {
-        assert_eq!(reason.to_nudge_message(), "CI green");
+        assert_eq!(message, "CI green");
         assert_eq!(
             on_success.len(),
             3,
             "All three on_success callbacks should be merged"
         );
     } else {
-        panic!("Expected NudgeSessionWithCallbacks");
+        panic!("Expected NudgeCoworker");
     }
 }
 
@@ -172,15 +177,15 @@ fn test_dedup_preserves_different_sessions() {
 }
 
 #[test]
-fn test_dedup_mixed_nudge_types_promotes_callbacks() {
-    // Plain NudgeSession first, then NudgeSessionWithCallbacks — the nudge
-    // is deduped but on_success callbacks are promoted to standalone effects
-    // so state tracking (RecordPrNudge) still fires.
+fn test_dedup_nudge_coworker_merges_callbacks() {
+    // First NudgeCoworker has no callbacks, second has callbacks — callbacks
+    // merge into the first nudge's (empty) on_success vec.
     let effects = vec![
-        Effect::nudge_session("sess-riverside-1", "plain nudge"),
-        Effect::nudge_session_with_callbacks(
-            "sess-riverside-1",
+        Effect::nudge_coworker("riverside", "plain nudge", "nudge", vec![]),
+        Effect::nudge_coworker(
+            "riverside",
             "callback nudge",
+            "nudge",
             vec![Effect::RecordPrNudge {
                 pr_number: 42,
                 issue_type: PrIssueType::Approved,
@@ -189,16 +194,17 @@ fn test_dedup_mixed_nudge_types_promotes_callbacks() {
     ];
 
     let deduped = dedup_nudge_effects(effects);
-    // 1 NudgeSession + 1 promoted RecordPrNudge callback
-    assert_eq!(deduped.len(), 2);
-    assert_eq!(count_nudge_session(&deduped, "sess-riverside-1"), 1);
-    // Verify the RecordPrNudge callback was promoted as a standalone effect
-    assert!(
-        deduped
-            .iter()
-            .any(|e| matches!(e, Effect::RecordPrNudge { pr_number: 42, .. })),
-        "RecordPrNudge callback should be promoted to standalone effect"
+    assert_eq!(
+        count_nudge_coworker(&deduped, "riverside"),
+        1,
+        "Should collapse 2 nudges into 1"
     );
+    // Callbacks merged into the first nudge
+    if let Effect::NudgeCoworker { on_success, .. } = &deduped[0] {
+        assert_eq!(on_success.len(), 1, "Callback should be merged");
+    } else {
+        panic!("Expected NudgeCoworker");
+    }
 }
 
 #[test]
@@ -320,37 +326,41 @@ fn test_dedup_session_id_based() {
 }
 
 #[test]
-fn test_dedup_quadruple_nudge_scenario() {
-    // Reproduces the exact bug: 4 nudges to same session in 1 second
+fn test_dedup_quadruple_nudge_coworker_scenario() {
+    // Reproduces the exact bug: 4 nudges to same coworker in 1 second
     // from different PR issue sources.
     let effects = vec![
-        Effect::nudge_session_with_callbacks(
-            "sess-riverside-1",
+        Effect::nudge_coworker(
+            "riverside",
             "PR #181 - CI checks passed",
+            "ci_green",
             vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::Approved,
             }],
         ),
-        Effect::nudge_session_with_callbacks(
-            "sess-riverside-1",
+        Effect::nudge_coworker(
+            "riverside",
             "PR #181 - Review complete",
+            "review_complete",
             vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::ReviewComplete,
             }],
         ),
-        Effect::nudge_session_with_callbacks(
-            "sess-riverside-1",
+        Effect::nudge_coworker(
+            "riverside",
             "PR #181 - Merge conflict",
+            "merge_conflict",
             vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::MergeConflict,
             }],
         ),
-        Effect::nudge_session_with_callbacks(
-            "sess-riverside-1",
+        Effect::nudge_coworker(
+            "riverside",
             "PR #181 - Green with feedback",
+            "green_with_feedback",
             vec![Effect::RecordPrNudge {
                 pr_number: 181,
                 issue_type: PrIssueType::GreenWithFeedback,
@@ -362,24 +372,22 @@ fn test_dedup_quadruple_nudge_scenario() {
 
     // Should have: 1 nudge (with merged callbacks)
     assert_eq!(
-        count_nudge_with_callbacks(&deduped, "sess-riverside-1"),
+        count_nudge_coworker(&deduped, "riverside"),
         1,
         "4 nudges should collapse into 1"
     );
 
     // The merged nudge should have all 4 on_success callbacks
-    if let Effect::NudgeSessionWithCallbacks {
-        on_success, reason, ..
+    if let Effect::NudgeCoworker {
+        on_success,
+        message,
+        ..
     } = &deduped[0]
     {
-        assert_eq!(
-            reason.to_nudge_message(),
-            "PR #181 - CI checks passed",
-            "First message wins"
-        );
+        assert_eq!(message, "PR #181 - CI checks passed", "First message wins");
         assert_eq!(on_success.len(), 4, "All 4 callbacks should be merged");
     } else {
-        panic!("Expected NudgeSessionWithCallbacks");
+        panic!("Expected NudgeCoworker");
     }
 }
 

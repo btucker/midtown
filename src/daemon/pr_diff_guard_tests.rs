@@ -31,10 +31,10 @@ fn flags_overlapping_files_after_rebase() {
 
     let nudge = effects
         .iter()
-        .find(|e| matches!(e, Effect::NudgeCoworkerByName { .. }));
+        .find(|e| matches!(e, Effect::NudgeCoworker { .. }));
     assert!(nudge.is_some(), "should emit a nudge");
 
-    if let Some(Effect::NudgeCoworkerByName { name, message }) = nudge {
+    if let Some(Effect::NudgeCoworker { name, message, .. }) = nudge {
         assert_eq!(name, "lexington");
         assert!(
             message.contains("src/lib.rs"),
@@ -111,9 +111,9 @@ fn multiple_overlapping_files_listed_in_nudge() {
     let effects = evaluate_rebase_regression(&input);
     assert_eq!(effects.len(), 3);
 
-    if let Some(Effect::NudgeCoworkerByName { message, .. }) = effects
+    if let Some(Effect::NudgeCoworker { message, .. }) = effects
         .iter()
-        .find(|e| matches!(e, Effect::NudgeCoworkerByName { .. }))
+        .find(|e| matches!(e, Effect::NudgeCoworker { .. }))
     {
         assert!(message.contains("src/b.rs"), "should list src/b.rs");
         assert!(message.contains("src/c.rs"), "should list src/c.rs");
@@ -179,4 +179,18 @@ fn parse_reflog_timestamp_no_match_fails_open() {
         ),
         "should fail-open when no timestamp can be parsed"
     );
+}
+
+#[test]
+fn rebase_regression_nudge_carries_nudge_type() {
+    let input = make_input("lexington", &["src/lib.rs"], &["src/lib.rs"], true);
+
+    let effects = evaluate_rebase_regression(&input);
+
+    let nudge_type = effects.iter().find_map(|e| match e {
+        Effect::NudgeCoworker { nudge_type, .. } => Some(nudge_type.as_str()),
+        _ => None,
+    });
+
+    assert_eq!(nudge_type, Some("rebase_regression"));
 }

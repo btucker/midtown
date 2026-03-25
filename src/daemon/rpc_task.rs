@@ -975,32 +975,13 @@ pub(crate) async fn deliver_task_prompt(
             session_id,
         })
     } else if is_alive {
-        // Session is running — deliver prompt via send_message (like nudge)
+        // Session is running — deliver via core nudge function
         let name = coworker_name.as_deref().unwrap_or("unknown");
-        match state.session_manager.send_message(name, message).await {
-            Ok(()) => {
-                // Post to DM channel for observability (skip fork sessions)
-                let is_fork = {
-                    let ps = state.persistent_state.lock().await;
-                    ps.session_by_name(name)
-                        .is_some_and(|s| s.is_fork_session())
-                };
-                if !is_fork {
-                    let dm_effect = super::effects::Effect::PostToChannel {
-                        sender: from.to_string(),
-                        message: message.to_string(),
-                        channel: Some(format!("dm-{}", name)),
-                        auto_output: false,
-                        message_type: Some(crate::message::MessageType::Nudge),
-                        nudge_type: Some("task_prompt".to_string()),
-                        tool_data: None,
-                        provider: None,
-                        tool_use_id: None,
-                        parent_tool_use_id: None,
-                    };
-                    Box::pin(super::effects::execute_effects(vec![dm_effect], state)).await;
-                }
-
+        match super::effects::deliver_coworker_nudge(state, name, message, "task_prompt", "system")
+            .await
+        {
+            Ok(follow_up) => {
+                Box::pin(super::effects::execute_effects(follow_up, state)).await;
                 info!(
                     "Delivered prompt to running session {} (coworker {}) for task !{}",
                     session_id, name, task_id
@@ -1011,7 +992,7 @@ pub(crate) async fn deliver_task_prompt(
                     session_id,
                 })
             }
-            Err(e) => Err(format!("Failed to deliver prompt to {}: {}", name, e)),
+            Err(e) => Err(e),
         }
     } else {
         // Session is stopped — resume with the prompt as initial message

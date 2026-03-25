@@ -819,50 +819,34 @@ pub(super) async fn handle_coworker_report_state(
 /// Handle coworker.nudge RPC method.
 pub(super) async fn handle_coworker_nudge(
     id: RequestId,
-    _from: &str,
+    from: &str,
     name: &str,
     message: &str,
     state: &DaemonState,
 ) -> Response {
-    // Always enqueue to headed intercom for wrapper-managed sessions.
-    state.enqueue_headed_nudge(name, message).await;
-
-    // Best-effort headless delivery for active headless sessions.
-    let delivered_headless = match state.session_manager.send_message(name, message).await {
-        Ok(()) => true,
-        Err(e) => {
-            let text = e.to_string();
-            if text.contains("No headless session for") || text.contains("has stopped") {
-                debug!(
-                    "No active headless session for coworker {}, queued headed nudge only",
-                    name
-                );
-            } else {
-                warn!(
-                    "Headless nudge delivery failed for coworker {} (still queued headed): {}",
-                    name, e
-                );
-            }
-            false
-        }
+    // Deliver via core nudge function (send_message + DM post + attribution).
+    let delivered = if let Ok(follow_up) =
+        super::effects::deliver_coworker_nudge(state, name, message, "manual_nudge", from).await
+    {
+        super::effects::execute_effects(follow_up, state).await;
+        true
+    } else {
+        false
     };
 
-    // Clear pending questions AFTER delivery — the nudge has been enqueued (headed)
-    // and best-effort delivered (headless). Clearing after ensures we don't lose the
-    // question if enqueue_headed_nudge were to fail in the future.
+    // Clear pending questions after delivery.
     {
         let mut questions = state.pending_questions.lock().unwrap();
         questions.retain(|q| q.coworker_name != name);
     }
 
-    info!("Queued nudge for coworker {}: {}", name, message);
+    info!("Nudge for coworker {}: {}", name, message);
     Response::success(
         id,
         serde_json::json!({
             "success": true,
             "message": format!("Nudged coworker: {}", name),
-            "queued_headed": true,
-            "delivered_headless": delivered_headless
+            "delivered_headless": delivered
         }),
     )
 }

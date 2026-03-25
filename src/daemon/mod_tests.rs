@@ -1325,12 +1325,13 @@ fn test_grouped_tasks_should_not_duplicate_nudge_to_running_coworker() {
 fn test_mark_in_flight_spawns_covers_all_effect_variants() {
     // mark_in_flight_spawns_from_effects must track task IDs from:
     // 1. SpawnForTask (unified task spawn path)
-    // 2. NudgeSessionWithCallbacks with RecordTaskAssignment (nudges)
+    // 2. NudgeCoworker with RecordTaskAssignment (nudges)
     // 3. SpawnCoworkerWithCallbacks with RecordTaskAssignment (non-task spawns like reviewers)
     let effects = vec![
-        effects::Effect::nudge_session_with_callbacks(
-            "sess-pleasant-1",
+        effects::Effect::nudge_coworker(
+            "pleasant",
             "task prompt",
+            "task_assigned",
             vec![effects::Effect::RecordTaskAssignment {
                 coworker: "pleasant".to_string(),
                 task_id: "873".to_string(),
@@ -1396,7 +1397,7 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
             effects::Effect::SpawnForTask { task_id, .. } => {
                 in_flight_tasks.insert(task_id.clone());
             }
-            effects::Effect::NudgeSessionWithCallbacks { on_success, .. }
+            effects::Effect::NudgeCoworker { on_success, .. }
             | effects::Effect::SpawnCoworkerWithCallbacks { on_success, .. } => {
                 for sub_effect in on_success {
                     if let effects::Effect::RecordTaskAssignment { task_id, .. } = sub_effect {
@@ -1410,7 +1411,7 @@ fn test_mark_in_flight_spawns_covers_all_effect_variants() {
 
     assert!(
         in_flight_tasks.contains("873"),
-        "NudgeSessionWithCallbacks with RecordTaskAssignment should be tracked"
+        "NudgeCoworker with RecordTaskAssignment should be tracked"
     );
     assert!(
         in_flight_tasks.contains("874"),
