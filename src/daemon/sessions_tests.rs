@@ -1152,4 +1152,3 @@ async fn test_get_output_with_path_empty_file_returns_zero_offset() {
         .expect("should return Some for empty file");
     assert_eq!(offset, 0, "empty file must yield offset 0");
 }
-
