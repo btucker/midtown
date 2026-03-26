@@ -273,6 +273,15 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub workflow_state: HashMap<String, serde_json::Value>,
 
+    /// Per-channel set of thread IDs the user wants visible in the sidebar.
+    ///
+    /// Maps channel name → set of thread parent IDs. Synced to all web clients
+    /// via WebSocket so thread visibility is consistent across devices.
+    /// Threads are added when opened or created, removed on manual close or
+    /// 12-hour idle timeout.
+    #[serde(default)]
+    pub open_threads: HashMap<String, HashSet<String>>,
+
     /// Permanent PR nudge entries that survive daemon restarts.
     ///
     /// Stores one-shot nudge records (e.g., ReviewComplete for user-authored PRs)

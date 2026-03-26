@@ -23,6 +23,10 @@ mod rpc_channel;
 mod rpc_coworker;
 mod rpc_headed;
 mod rpc_headless;
+mod rpc_open_threads;
+#[path = "rpc_open_threads_tests.rs"]
+#[cfg(test)]
+mod rpc_open_threads_tests;
 mod rpc_prs;
 mod rpc_reminder;
 mod rpc_session;
