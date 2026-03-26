@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::*;
 use crate::daemon::state::{DaemonPersistentState, SessionRecord};
 use crate::task_store::{Task, TaskStatus};
@@ -54,7 +56,7 @@ fn stops_running_session_for_completed_task() {
     );
     ps.tick_active_session_names.insert("york".into());
 
-    let effects = stop_sessions_for_completed_tasks(&ps, &tasks);
+    let effects = stop_sessions_for_completed_tasks(&ps, &tasks, &HashSet::new());
 
     let shutdown_names: Vec<_> = effects
         .iter()
@@ -80,7 +82,7 @@ fn skips_in_progress_task() {
     );
     ps.tick_active_session_names.insert("york".into());
 
-    let effects = stop_sessions_for_completed_tasks(&ps, &tasks);
+    let effects = stop_sessions_for_completed_tasks(&ps, &tasks, &HashSet::new());
 
     let shutdowns: Vec<_> = effects
         .iter()
@@ -103,7 +105,7 @@ fn skips_stopped_session() {
         make_session("sess-1", Some("1"), "york", false),
     );
 
-    let effects = stop_sessions_for_completed_tasks(&ps, &tasks);
+    let effects = stop_sessions_for_completed_tasks(&ps, &tasks, &HashSet::new());
 
     let shutdowns: Vec<_> = effects
         .iter()
@@ -125,7 +127,7 @@ fn skips_session_without_task() {
         .insert("sess-1".into(), make_session("sess-1", None, "york", true));
     ps.tick_active_session_names.insert("york".into());
 
-    let effects = stop_sessions_for_completed_tasks(&ps, &tasks);
+    let effects = stop_sessions_for_completed_tasks(&ps, &tasks, &HashSet::new());
 
     let shutdowns: Vec<_> = effects
         .iter()
@@ -149,7 +151,7 @@ fn skips_fork_sessions() {
     ps.sessions.insert("sess-1".into(), session);
     ps.tick_active_session_names.insert("york".into());
 
-    let effects = stop_sessions_for_completed_tasks(&ps, &tasks);
+    let effects = stop_sessions_for_completed_tasks(&ps, &tasks, &HashSet::new());
 
     let shutdowns: Vec<_> = effects
         .iter()
@@ -183,7 +185,7 @@ fn stops_multiple_sessions_for_completed_tasks() {
     ps.tick_active_session_names.insert("park".into());
     ps.tick_active_session_names.insert("madison".into());
 
-    let effects = stop_sessions_for_completed_tasks(&ps, &tasks);
+    let effects = stop_sessions_for_completed_tasks(&ps, &tasks, &HashSet::new());
 
     let mut shutdown_names: Vec<_> = effects
         .iter()
@@ -200,6 +202,36 @@ fn stops_multiple_sessions_for_completed_tasks() {
 }
 
 #[test]
+fn stops_session_for_same_tick_auto_closed_task() {
+    let mut ps = make_ps("proj");
+    // Task is still InProgress in the snapshot — it's being auto-closed this tick
+    let tasks = vec![make_task("1", "Fix bug", "york", TaskStatus::InProgress)];
+
+    ps.sessions.insert(
+        "sess-1".into(),
+        make_session("sess-1", Some("1"), "york", true),
+    );
+    ps.tick_active_session_names.insert("york".into());
+
+    // Task "1" is in also_completed_ids because auto_close_completed_tasks
+    // emitted a CompleteTask effect for it this tick
+    let also_completed = HashSet::from(["1".to_string()]);
+    let effects = stop_sessions_for_completed_tasks(&ps, &tasks, &also_completed);
+
+    let shutdown_names: Vec<_> = effects
+        .iter()
+        .filter_map(|e| {
+            if let Effect::ShutdownCoworker { name, .. } = e {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(shutdown_names, vec!["york"]);
+}
+
+#[test]
 fn posts_ops_message_when_stopping() {
     let mut ps = make_ps("proj");
     let tasks = vec![make_task("1", "Fix bug", "york", TaskStatus::Completed)];
@@ -210,7 +242,7 @@ fn posts_ops_message_when_stopping() {
     );
     ps.tick_active_session_names.insert("york".into());
 
-    let effects = stop_sessions_for_completed_tasks(&ps, &tasks);
+    let effects = stop_sessions_for_completed_tasks(&ps, &tasks, &HashSet::new());
 
     let ops_messages: Vec<_> = effects
         .iter()

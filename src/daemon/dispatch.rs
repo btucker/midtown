@@ -2014,9 +2014,14 @@ pub fn auto_close_completed_tasks(ps: &DaemonPersistentState, tasks: &[Task]) ->
 /// When a task transitions to `Completed` (via auto-close, PR merge, or manual completion),
 /// the coworker session may still be running. This function detects those idle sessions
 /// and emits `ShutdownCoworker` effects to free slots for new work.
+///
+/// `also_completed_ids` includes task IDs being auto-closed in the current tick (their
+/// `CompleteTask` effects haven't executed yet, so the `tasks` snapshot still shows the
+/// old status). This lets us stop sessions in the same tick rather than waiting for the next.
 pub fn stop_sessions_for_completed_tasks(
     ps: &DaemonPersistentState,
     tasks: &[Task],
+    also_completed_ids: &HashSet<String>,
 ) -> Vec<Effect> {
     let mut effects = vec![];
 
@@ -2044,10 +2049,11 @@ pub fn stop_sessions_for_completed_tasks(
             continue;
         }
 
-        // Check if the task is completed
+        // Check if the task is already completed or being completed this tick
         let is_completed = task_status
             .get(task_id)
-            .is_some_and(|s| **s == crate::task_store::TaskStatus::Completed);
+            .is_some_and(|s| **s == crate::task_store::TaskStatus::Completed)
+            || also_completed_ids.contains(task_id);
 
         if !is_completed {
             continue;

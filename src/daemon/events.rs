@@ -101,9 +101,12 @@ pub async fn evaluate_tick(
                 let auto_closed_ids =
                     super::effects::extract_completed_task_ids_from_effects(&auto_close_effects);
                 effects.extend(auto_close_effects);
-                // Stop running sessions whose task is already completed (e.g., PR merged).
+                // Stop running sessions whose task is already completed (e.g., PR merged)
+                // or being completed this tick (auto_closed_ids).
                 effects.extend(super::dispatch::stop_sessions_for_completed_tasks(
-                    &ps, &tasks,
+                    &ps,
+                    &tasks,
+                    &auto_closed_ids,
                 ));
                 effects.extend(super::dispatch::reset_orphaned_tasks(&ps, &tasks));
                 effects.extend(super::dispatch::check_for_duplicate_task_workers(
