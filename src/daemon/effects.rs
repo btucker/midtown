@@ -3198,7 +3198,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
 
                     // 2. No active session — determine agent type and fall back.
                     if agent_name == state.project_name {
-                        // Project lead: use headed intercom fallback
+                        // Project lead: nudge via session manager
                         state.nudge_lead(&msg).await;
                     } else if state
                         .persistent_state

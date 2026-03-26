@@ -21,7 +21,6 @@ mod rpc;
 mod rpc_auth;
 mod rpc_channel;
 mod rpc_coworker;
-mod rpc_headed;
 mod rpc_headless;
 mod rpc_prs;
 mod rpc_reminder;
@@ -80,7 +79,7 @@ pub use pr::{
 #[doc(hidden)]
 pub use state::SessionRecord;
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read as _, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -135,36 +134,6 @@ pub(crate) struct PendingQuestion {
     pub question: String,
     /// When the question was received.
     pub timestamp: chrono::DateTime<chrono::Utc>,
-}
-
-/// Max messages buffered per headed session before dropping oldest entries.
-const HEADED_SESSION_QUEUE_MAX: usize = 200;
-/// Lease timeout for headed adapters (seconds without heartbeat/poll).
-const HEADED_LEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub(crate) struct HeadedQueuedMessage {
-    pub id: u64,
-    pub kind: String,
-    pub text: String,
-    pub submit: bool,
-}
-
-#[derive(Debug, Clone)]
-struct HeadedLease {
-    adapter_id: String,
-    provider: crate::auth::AuthProvider,
-    last_seen: tokio::time::Instant,
-}
-
-#[derive(Debug, Default)]
-struct HeadedSessionState {
-    next_id: u64,
-    acked_id: u64,
-    lease: Option<HeadedLease>,
-    messages: VecDeque<HeadedQueuedMessage>,
-    /// Pending capture request: daemon sets this, wrapper fulfils it on next poll.
-    capture_tx: Option<tokio::sync::oneshot::Sender<String>>,
 }
 
 /// Result of daemon execution — determines what happens after the event loop exits.
@@ -647,12 +616,6 @@ pub(crate) struct DaemonState {
     /// (e.g., `daemon.exec-restart`) needs to trigger shutdown, it sends on
     /// this channel to break the main loop.
     shutdown_tx: broadcast::Sender<()>,
-    /// Session-scoped intercom queues for headed adapters (wrapper transport).
-    ///
-    /// Each session (e.g., "myproject", "park") has an ordered queue and an
-    /// exclusive adapter lease. Adapters consume via poll+ack; the daemon
-    /// enqueues logical control messages (nudges/keys) without terminal coupling.
-    headed_sessions: Mutex<HashMap<String, HeadedSessionState>>,
     /// Pre-formatted tool activity headers per agent, keyed by lowercase agent name.
     ///
     /// Populated from `tool_data` ToolBlocks on `PostToChannel` effects.
@@ -1340,7 +1303,6 @@ impl DaemonState {
             draining: std::sync::atomic::AtomicBool::new(false),
             restart_requested: std::sync::atomic::AtomicBool::new(false),
             shutdown_tx,
-            headed_sessions: Mutex::new(HashMap::new()),
             tool_activity_headers: std::sync::RwLock::new(HashMap::new()),
             pending_questions: std::sync::Mutex::new(Vec::new()),
             pending_question_id_counter: std::sync::atomic::AtomicU64::new(1),
@@ -1899,290 +1861,14 @@ impl DaemonState {
         pending.remove(&name.to_lowercase());
     }
 
-    fn session_key(session: &str) -> String {
-        session.trim().to_ascii_lowercase()
-    }
-
-    fn lease_is_active(lease: &HeadedLease) -> bool {
-        lease.last_seen.elapsed() <= HEADED_LEASE_TIMEOUT
-    }
-
-    fn current_lease<'a>(
-        state: &'a mut HeadedSessionState,
-        session: &str,
-        adapter_id: &str,
-    ) -> Result<&'a mut HeadedLease, String> {
-        if state.lease.is_none() {
-            return Err(format!(
-                "No active headed adapter for session '{}'",
-                session
-            ));
-        }
-        if state
-            .lease
-            .as_ref()
-            .is_some_and(|l| !Self::lease_is_active(l))
-        {
-            state.lease = None;
-            return Err(format!(
-                "Headed adapter lease expired for session '{}'",
-                session
-            ));
-        }
-        let Some(lease) = state.lease.as_mut() else {
-            return Err(format!(
-                "No active headed adapter for session '{}'",
-                session
-            ));
-        };
-        if lease.adapter_id != adapter_id {
-            return Err(format!(
-                "Session '{}' is leased by adapter '{}' (not '{}')",
-                session, lease.adapter_id, adapter_id
-            ));
-        }
-        Ok(lease)
-    }
-
-    pub(crate) async fn headed_register(
-        &self,
-        session: &str,
-        adapter_id: &str,
-        provider: crate::auth::AuthProvider,
-    ) -> Result<(u64, crate::auth::AuthProvider), String> {
-        let key = Self::session_key(session);
-        let mut sessions = self.headed_sessions.lock().await;
-        let session_state = sessions.entry(key.clone()).or_default();
-
-        match session_state.lease.as_mut() {
-            None => {
-                session_state.lease = Some(HeadedLease {
-                    adapter_id: adapter_id.to_string(),
-                    provider,
-                    last_seen: tokio::time::Instant::now(),
-                });
-            }
-            Some(existing) if existing.adapter_id == adapter_id => {
-                existing.provider = provider;
-                existing.last_seen = tokio::time::Instant::now();
-            }
-            Some(existing) if !Self::lease_is_active(existing) => {
-                session_state.lease = Some(HeadedLease {
-                    adapter_id: adapter_id.to_string(),
-                    provider,
-                    last_seen: tokio::time::Instant::now(),
-                });
-            }
-            Some(existing) => {
-                return Err(format!(
-                    "Session '{}' already has active headed adapter '{}'",
-                    key, existing.adapter_id
-                ));
-            }
-        }
-
-        let lease_provider = session_state
-            .lease
-            .as_ref()
-            .map(|l| l.provider)
-            .unwrap_or(provider);
-        Ok((session_state.acked_id, lease_provider))
-    }
-
-    pub(crate) async fn headed_unregister(
-        &self,
-        session: &str,
-        adapter_id: &str,
-    ) -> Result<(), String> {
-        let key = Self::session_key(session);
-        let mut sessions = self.headed_sessions.lock().await;
-        let Some(session_state) = sessions.get_mut(&key) else {
-            return Ok(());
-        };
-        match session_state.lease.as_ref() {
-            Some(lease) if lease.adapter_id == adapter_id => {
-                session_state.lease = None;
-                Ok(())
-            }
-            Some(lease) => Err(format!(
-                "Session '{}' is leased by adapter '{}' (not '{}')",
-                key, lease.adapter_id, adapter_id
-            )),
-            None => Ok(()),
-        }
-    }
-
-    pub(crate) async fn headed_heartbeat(
-        &self,
-        session: &str,
-        adapter_id: &str,
-    ) -> Result<(), String> {
-        let key = Self::session_key(session);
-        let mut sessions = self.headed_sessions.lock().await;
-        let session_state = sessions.entry(key.clone()).or_default();
-        let lease = Self::current_lease(session_state, &key, adapter_id)?;
-        lease.last_seen = tokio::time::Instant::now();
-        Ok(())
-    }
-
-    pub(crate) async fn headed_poll(
-        &self,
-        session: &str,
-        adapter_id: &str,
-        after_id: u64,
-        limit: usize,
-    ) -> Result<(Vec<HeadedQueuedMessage>, bool), String> {
-        let key = Self::session_key(session);
-        let mut sessions = self.headed_sessions.lock().await;
-        let session_state = sessions.entry(key.clone()).or_default();
-        let lease = Self::current_lease(session_state, &key, adapter_id)?;
-        lease.last_seen = tokio::time::Instant::now();
-
-        let capture_requested = session_state.capture_tx.is_some();
-
-        let capped_limit = limit.clamp(1, 200);
-        let messages = session_state
-            .messages
-            .iter()
-            .filter(|m| m.id > after_id)
-            .take(capped_limit)
-            .cloned()
-            .collect();
-        Ok((messages, capture_requested))
-    }
-
-    pub(crate) async fn headed_ack(
-        &self,
-        session: &str,
-        adapter_id: &str,
-        msg_id: u64,
-    ) -> Result<u64, String> {
-        let key = Self::session_key(session);
-        let mut sessions = self.headed_sessions.lock().await;
-        let session_state = sessions.entry(key.clone()).or_default();
-        let lease = Self::current_lease(session_state, &key, adapter_id)?;
-        lease.last_seen = tokio::time::Instant::now();
-
-        if msg_id > session_state.acked_id {
-            session_state.acked_id = msg_id;
-        }
-        while session_state
-            .messages
-            .front()
-            .is_some_and(|m| m.id <= session_state.acked_id)
-        {
-            session_state.messages.pop_front();
-        }
-
-        Ok(session_state.acked_id)
-    }
-
-    pub(crate) async fn enqueue_headed_nudge(&self, session: &str, text: &str) {
-        self.enqueue_headed_text(session, text, true).await;
-    }
-
-    /// Enqueue a raw text payload to a headed session's intercom queue.
-    ///
-    /// `submit` controls whether the headed wrapper appends an Enter keystroke
-    /// after writing `text` to the PTY. Pass `false` for raw control characters
-    /// (e.g., Ctrl+V) that should not be followed by Enter.
-    pub(crate) async fn enqueue_headed_text(&self, session: &str, text: &str, submit: bool) {
-        let key = Self::session_key(session);
-        let mut sessions = self.headed_sessions.lock().await;
-        let session_state = sessions.entry(key).or_default();
-        session_state.next_id = session_state.next_id.saturating_add(1);
-        let next_id = session_state.next_id;
-
-        session_state.messages.push_back(HeadedQueuedMessage {
-            id: next_id,
-            kind: "nudge_text".to_string(),
-            text: text.to_string(),
-            submit,
-        });
-
-        while session_state.messages.len() > HEADED_SESSION_QUEUE_MAX {
-            if let Some(dropped) = session_state.messages.pop_front()
-                && dropped.id > session_state.acked_id
-            {
-                warn!(
-                    "Headed session queue exceeded {} messages - dropped message #{} (kind: {}, text: {})",
-                    HEADED_SESSION_QUEUE_MAX,
-                    dropped.id,
-                    dropped.kind,
-                    if dropped.text.len() > 100 {
-                        format!("{}...", &dropped.text[..100])
-                    } else {
-                        dropped.text.clone()
-                    }
-                );
-                session_state.acked_id = dropped.id;
-            }
-        }
-    }
-
-    /// Request a PTY capture from a headed session.
-    ///
-    /// Installs a oneshot sender. The next `headed.poll` will signal
-    /// `capture_output: true` to the wrapper, which calls `headed.output`
-    /// to deliver the content. Returns a receiver the caller awaits.
-    pub(crate) async fn headed_request_capture(
-        &self,
-        session: &str,
-    ) -> Result<tokio::sync::oneshot::Receiver<String>, String> {
-        let key = Self::session_key(session);
-        let mut sessions = self.headed_sessions.lock().await;
-        let session_state = sessions
-            .get_mut(&key)
-            .ok_or_else(|| format!("No headed session for '{}'", session))?;
-        if session_state.lease.is_none() {
-            return Err(format!("No active wrapper lease for '{}'", session));
-        }
-        // Replace any stale pending capture
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        session_state.capture_tx = Some(tx);
-        Ok(rx)
-    }
-
-    /// Deliver captured PTY output from the wrapper.
-    ///
-    /// Called by `headed.output` RPC. Sends the content to whoever is
-    /// waiting on the oneshot receiver from `headed_request_capture`.
-    pub(crate) async fn headed_deliver_output(&self, session: &str, output: String) {
-        let key = Self::session_key(session);
-        let mut sessions = self.headed_sessions.lock().await;
-        if let Some(session_state) = sessions.get_mut(&key)
-            && let Some(tx) = session_state.capture_tx.take()
-        {
-            let _ = tx.send(output);
-        }
-    }
-
-    /// Nudge the Lead session.
-    ///
-    /// First tries the headless session_manager path (lead running headless).
-    /// Falls back to the headed intercom queue (lead attached interactively).
-    ///
-    /// Uses `is_alive` (not `is_nudgeable`) so that sessions still in
-    /// `Starting` state receive queued messages — the Codex backend can
-    /// buffer them until init completes. `is_nudgeable` would reject
-    /// Starting sessions and route to the headed intercom, where there
-    /// is usually no attached wrapper during startup.
+    /// Nudge the Lead session via the headless session manager.
     pub(crate) async fn nudge_lead(&self, message: &str) {
-        if self.session_manager.is_alive(&self.project_name).await {
-            if let Err(e) = self
-                .session_manager
-                .send_message(&self.project_name, message)
-                .await
-            {
-                tracing::debug!(
-                    "Failed to nudge lead via session_manager ({}), falling back to headed intercom",
-                    e
-                );
-                self.enqueue_headed_nudge(&self.project_name, message).await;
-            }
-        } else {
-            // Lead is attached interactively — use headed intercom
-            self.enqueue_headed_nudge(&self.project_name, message).await;
+        if let Err(e) = self
+            .session_manager
+            .send_message(&self.project_name, message)
+            .await
+        {
+            tracing::debug!("Failed to nudge lead via session_manager: {}", e);
         }
     }
 }

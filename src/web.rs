@@ -2854,7 +2854,7 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
                 ));
             }
 
-            // Lead nudges flow through the headed intercom queue, not the web UI.
+            // Lead nudges flow through the session manager, not the web UI.
             return Err("Lead nudge via web UI is not supported".to_string());
         }
         ClientMessage::SendKey { target, key } => {

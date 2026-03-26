@@ -350,14 +350,6 @@ const ALL_RPC_METHODS: &[&str] = &[
     "session.fork_thread",
     "session.unfork_thread",
     "session.thread_ownership",
-    // Headed wrapper intercom
-    "headed.register",
-    "headed.unregister",
-    "headed.heartbeat",
-    "headed.poll",
-    "headed.ack",
-    "headed.output",
-    "headed.enqueue",
 ];
 
 /// Methods that are safe to cache: parameter-free reads without their own
@@ -432,13 +424,6 @@ const UNCACHEABLE_METHODS: &[&str] = &[
     "session.fork",
     "session.fork_thread",
     "session.unfork_thread",
-    // Mutating: headed intercom
-    "headed.register",
-    "headed.unregister",
-    "headed.heartbeat",
-    "headed.ack",
-    "headed.output",
-    "headed.enqueue",
     // Reads with own domain cache
     "prs.status",
     "coworkers.status",
@@ -449,7 +434,6 @@ const UNCACHEABLE_METHODS: &[&str] = &[
     "session.resolve",
     "session.view",
     "session.thread_ownership",
-    "headed.poll",
     "task.metadata",
 ];
 
@@ -563,7 +547,6 @@ fn test_non_allowlisted_method_not_cached() {
         "channel.post",
         "task.create",
         "session.fork",
-        "headed.enqueue",
         "workflow.set_state",
     ] {
         let cached = CACHEABLE_METHODS.contains(method);

@@ -809,9 +809,7 @@ pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> R
 
 /// Handle session.view RPC method.
 ///
-/// Returns recent output for a session. For headed sessions (attached
-/// interactively with a wrapper), captures the live PTY screen on demand.
-/// For headless sessions, returns the tail of the JSONL event log.
+/// Returns recent output for a session by reading the tail of the JSONL event log.
 pub(super) async fn handle_session_view(
     id: RequestId,
     target: &str,
@@ -822,45 +820,7 @@ pub(super) async fn handle_session_view(
         Err(e) => return Response::error(id, RpcError::new(-32602, e)),
     };
 
-    // Check if this session has an active headed wrapper lease.
-    // If so, request a PTY capture on demand.
-    let headed_key = DaemonState::session_key(&name);
-    let has_headed_lease = {
-        let sessions = state.headed_sessions.lock().await;
-        sessions.get(&headed_key).is_some_and(|s| s.lease.is_some())
-    };
-
-    if has_headed_lease {
-        // Request capture and wait for the wrapper to deliver it
-        match state.headed_request_capture(&name).await {
-            Ok(rx) => {
-                match tokio::time::timeout(std::time::Duration::from_secs(3), rx).await {
-                    Ok(Ok(output)) => {
-                        return Response::success(
-                            id,
-                            serde_json::json!({
-                                "success": true,
-                                "output": output,
-                                "source": "pty",
-                            }),
-                        );
-                    }
-                    _ => {
-                        // Timeout or channel closed — fall through to JSONL
-                        info!(
-                            "PTY capture timed out for '{}', falling back to JSONL",
-                            name
-                        );
-                    }
-                }
-            }
-            Err(_) => {
-                // No headed session / no lease — fall through
-            }
-        }
-    }
-
-    // Headless path: read JSONL event log
+    // Read JSONL event log
     match state.session_manager.get_output_with_path(&name).await {
         Some((output, log_path, log_offset)) => Response::success(
             id,

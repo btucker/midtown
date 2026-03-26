@@ -5,8 +5,8 @@
 //! - **Platform** (which binary and CLI protocol to use): `claude` vs `codex`
 //!
 //! The shared arg builders (`build_claude_common_args`, `build_claude_headless_args`,
-//! `build_claude_headed_args`) are the single source of truth for CLI flag construction.
-//! Both headed (interactive terminal) and headless (JSON streaming) launch paths
+//! `build_claude_interactive_args`) are the single source of truth for CLI flag construction.
+//! Both interactive (terminal) and headless (JSON streaming) launch paths
 //! delegate to these builders, eliminating the sync burden that previously caused bugs.
 
 use std::path::{Path, PathBuf};
@@ -52,7 +52,7 @@ impl Platform {
 // Claude platform arg builders
 // ============================================================================
 
-/// Args shared by ALL Claude sessions (headed + headless).
+/// Args shared by ALL Claude sessions (interactive + headless).
 ///
 /// Always produces:
 /// - `--dangerously-skip-permissions`
@@ -255,15 +255,15 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
     args
 }
 
-/// Build CLI args for a headed (interactive terminal) Claude session.
+/// Build CLI args for an interactive (terminal) Claude session.
 ///
 /// Calls `build_claude_common_args()` for shared flags, then adds
-/// headed-specific flags. The returned Vec starts with `"claude"`.
+/// interactive-specific flags. The returned Vec starts with `"claude"`.
 ///
 /// Returns `(args, session_id)` where `session_id` is `Some(uuid)` for fresh sessions.
 ///
 /// Does NOT include sandbox prefix or env vars — callers add those.
-pub fn build_claude_headed_args(
+pub fn build_claude_interactive_args(
     config: &LaunchConfig,
     settings_file: &Path,
     prompt_file: &Path,
@@ -276,7 +276,7 @@ pub fn build_claude_headed_args(
         &config.additional_dirs,
     ));
 
-    // Setting sources — always included for headed (interactive) sessions
+    // Setting sources — always included for interactive sessions
     args.push("--setting-sources".to_string());
     args.push("project,local".to_string());
 
@@ -299,7 +299,7 @@ pub fn build_claude_headed_args(
         }
     };
 
-    // Settings file — always included for headed sessions
+    // Settings file — always included for interactive sessions
     args.push("--settings".to_string());
     args.push(settings_file.display().to_string());
 
@@ -331,7 +331,7 @@ pub fn build_codex_headless_args() -> Vec<String> {
     vec!["app-server".to_string()]
 }
 
-/// Build CLI args for a headed (interactive terminal) Codex session.
+/// Build CLI args for an interactive (terminal) Codex session.
 ///
 /// Midtown injects the role prompt via `-c developer_instructions=<TOML string>`.
 /// Fresh sessions set `--model` explicitly, but resume flows intentionally omit
@@ -341,7 +341,7 @@ pub fn build_codex_headless_args() -> Vec<String> {
 /// Returns `(args, session_id)`. Codex's interactive CLI does not expose a way
 /// to pre-assign the eventual thread/session ID, so the second tuple element is
 /// always `None`.
-pub fn build_codex_headed_args(
+pub fn build_codex_interactive_args(
     config: &LaunchConfig,
     system_prompt: &str,
     initial_prompt: Option<&str>,
