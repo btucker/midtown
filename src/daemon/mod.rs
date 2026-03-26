@@ -3247,10 +3247,10 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     }
     orphan_process_interval.tick().await;
 
-    // Timer for draining headless session events (every 2 seconds).
+    // Timer for draining headless session events (every 500ms).
     // Must be fast to prevent stdout pipe buffer (64KB) from filling up,
     // which would block coworker processes and cause silent hangs.
-    let mut session_drain_interval = interval(std::time::Duration::from_secs(2));
+    let mut session_drain_interval = interval(std::time::Duration::from_millis(500));
     session_drain_interval.tick().await;
 
     // Timer for flushing batched CI notifications (check every 5 seconds).
