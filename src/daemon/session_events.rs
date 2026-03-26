@@ -40,7 +40,6 @@ pub fn channel() -> (
 ///
 /// The task runs until both stdout and stderr channels close, then sends
 /// a `Stopped` event. Returns the JoinHandle for the spawned task.
-#[allow(dead_code)]
 pub fn spawn_forwarder(
     name: String,
     slot_id: String,
