@@ -2,9 +2,13 @@ import { writable } from "svelte/store";
 
 const STORAGE_KEY = "midtown-theme";
 
-function getInitialTheme() {
+function getInitialTheme(): "light" | "dark" {
 	const stored = typeof localStorage !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
-	return stored === "light" ? "light" : "dark";
+	if (stored === "light" || stored === "dark") return stored;
+	if (typeof window !== "undefined" && window.matchMedia) {
+		return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+	}
+	return "dark";
 }
 
 export const theme = writable(getInitialTheme());

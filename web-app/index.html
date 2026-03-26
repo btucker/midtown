@@ -24,7 +24,8 @@
       // FOUC prevention: apply theme class and set theme-aware assets before first paint.
       // All theme-dependent DOM setup lives in this single block to avoid fragile
       // cross-script dependencies on the isLight variable.
-      var isLight = localStorage.getItem('midtown-theme') === 'light'
+      var stored = localStorage.getItem('midtown-theme')
+      var isLight = stored === 'light' ? true : stored === 'dark' ? false : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? false : true)
       if (!isLight) {
         document.documentElement.classList.add('dark')
       }
