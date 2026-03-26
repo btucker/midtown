@@ -1,8 +1,10 @@
 <script lang="ts">
 import ArchiveIcon from "@lucide/svelte/icons/archive";
 import Check from "@lucide/svelte/icons/check";
+import GripVertical from "@lucide/svelte/icons/grip-vertical";
 import X from "@lucide/svelte/icons/x";
 import { SvelteSet } from "svelte/reactivity";
+import { dndzone } from "svelte-dnd-action";
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
 import {
 	closeThread,
@@ -31,6 +33,7 @@ import { getSenderColor } from "./messageUtils.ts";
 import {
 	activeChannel,
 	activeProject,
+	channelOrder,
 	channels,
 	coworkers,
 	dismissedThreads,
@@ -66,6 +69,42 @@ $: {
 }
 
 $: regularChannels = $channels.filter((ch) => !ch.is_dm && !ch.name.startsWith("dm-"));
+
+// Apply user-defined channel order. Channels in the saved order come first
+// (in that order), followed by any new channels not yet in the saved order.
+$: orderedChannels = (() => {
+	const order = $channelOrder;
+	if (order.length === 0) return regularChannels;
+	const byName = new Map(regularChannels.map((ch) => [ch.name, ch]));
+	const ordered = [];
+	for (const name of order) {
+		const ch = byName.get(name);
+		if (ch) {
+			ordered.push(ch);
+			byName.delete(name);
+		}
+	}
+	// Append channels not in the saved order
+	for (const ch of regularChannels) {
+		if (byName.has(ch.name)) {
+			ordered.push(ch);
+		}
+	}
+	return ordered;
+})();
+
+// svelte-dnd-action needs items with `id` fields
+$: dndChannelItems = orderedChannels.map((ch) => ({ ...ch, id: ch.name }));
+
+function handleDndConsider(e: CustomEvent) {
+	dndChannelItems = e.detail.items;
+}
+
+function handleDndFinalize(e: CustomEvent) {
+	dndChannelItems = e.detail.items;
+	channelOrder.set(dndChannelItems.map((item: { name: string }) => item.name));
+}
+
 $: forkNames = new Set(Object.values($threadForkOwners));
 $: dmChannels = getDisplayableDmChannels($channels, forkNames);
 
@@ -368,7 +407,13 @@ function handleKeyDown(event) {
     </div>
   {/if}
 
-  {#each regularChannels as channel}
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    use:dndzone={{ items: dndChannelItems, flipDurationMs: 200, dropTargetStyle: {}, dragDisabled: false, type: "channels" }}
+    onconsider={handleDndConsider}
+    onfinalize={handleDndFinalize}
+  >
+  {#each dndChannelItems as channel (channel.id)}
     {@const counts = getChannelTaskCount(channel.name, $kanbanData)}
     {@const ciStatus = getChannelCiStatus(channel.name, $kanbanData)}
     {@const isActive = $activeChannel === channel.name}
@@ -377,10 +422,16 @@ function handleKeyDown(event) {
     {@const hasTrackedThreads = getChannelHasTrackedThreads(channel.name, $trackedThreads, taskThreadIds, completedTaskThreadIds)}
     {@const hasUnread = channel.unread > 0 && channel.name !== 'ops'}
 
-    <div class="mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
+    <div class="channel-row mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
       <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
+        <span
+          class="drag-handle flex items-center justify-center w-4 ml-1 cursor-grab text-muted-foreground/40 hover:text-muted-foreground/80 transition-colors duration-150 shrink-0"
+          title="Drag to reorder"
+        >
+          <GripVertical size={12} />
+        </span>
         <button
-          class="flex items-center justify-between flex-1 min-w-0 px-3 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
+          class="flex items-center justify-between flex-1 min-w-0 px-2 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
           aria-label="Select channel {channel.name}"
           onclick={() => selectChannel(channel.name)}
         >
@@ -439,6 +490,7 @@ function handleKeyDown(event) {
       {/if}
     </div>
   {/each}
+  </div>
 
   {#if dmChannels.length > 0}
     <div class="flex items-center px-3 pt-3 pb-1">
@@ -630,6 +682,16 @@ function handleKeyDown(event) {
   .completed-dismiss-btn:hover {
     color: hsl(var(--muted-foreground));
     background: hsl(var(--sidebar-accent));
+  }
+
+  .drag-handle {
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+
+  /* Show drag handle on hover of the parent channel row */
+  :global(.channel-row:hover) .drag-handle {
+    opacity: 1;
   }
 
 </style>
