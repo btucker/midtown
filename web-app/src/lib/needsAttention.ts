@@ -96,7 +96,7 @@ export function computeAttentionItems(opts: {
 					threadId,
 					timestamp: new Date(lastMsg.timestamp).getTime(),
 					workerName: lastMsg.sender,
-					workerColor: getSenderColor(lastMsg.sender),
+					workerColor: getSenderColor(lastMsg.sender, null),
 				});
 			}
 		}
@@ -120,7 +120,7 @@ export function computeAttentionItems(opts: {
 			taskId: task.id,
 			timestamp: now,
 			workerName: task.owner,
-			workerColor: task.owner ? getSenderColor(task.owner) : undefined,
+			workerColor: task.owner ? getSenderColor(task.owner, null) : undefined,
 		});
 	}
 
@@ -147,7 +147,7 @@ export function computeAttentionItems(opts: {
 				taskId: task.id,
 				timestamp: lastChange,
 				workerName: task.owner,
-				workerColor: task.owner ? getSenderColor(task.owner) : undefined,
+				workerColor: task.owner ? getSenderColor(task.owner, null) : undefined,
 			});
 		}
 	}
