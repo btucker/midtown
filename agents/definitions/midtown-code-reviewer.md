@@ -68,26 +68,36 @@ Use the code-review skill to analyze the PR. The skill creates sub-tasks to trac
 
 **TEST SUGGESTIONS**: For each issue, include: "Test suggestion: <description of test that would fail before the fix>". Use "N/A (style/docs issue)" when not applicable.
 
+**IMPORTANT: The skill will exit early ("do not proceed") when no issues meet the confidence threshold.** This does NOT mean the review is done — you still MUST post to GitHub. Continue to "Posting Your Review" below.
+
 ## Posting Your Review
 
-You MUST always post review results, even if no issues are found. If the code-review skill finishes without providing comment text, prepare a "no issues found" comment yourself.
+After the code-review skill completes, you MUST post via `midtown pr review post` regardless of outcome. The skill may or may not have posted a `gh pr comment` itself — either way, the daemon only tracks reviews submitted through the RPC command below.
 
-Write findings to a temp file and submit via CLI. The daemon handles frontmatter and footer automatically.
+**If the skill found and posted issues:** collect the review content and repost it through the daemon RPC.
+
+**If the skill exited early with no issues (the common case for clean PRs):** write the LGTM review yourself:
 
 ```bash
-cat > /tmp/review.md << 'REVIEW_EOF'
-[your review content here — no frontmatter or footer needed]
-REVIEW_EOF
+cat > /tmp/review-<PR>.md << 'REVIEW_EOF'
+### Code review
 
-midtown pr review post --pr <PR> --body-file /tmp/review.md
+No issues found. Checked for bugs and CLAUDE.md compliance.
+REVIEW_EOF
+```
+
+Then submit via CLI. The daemon handles frontmatter and footer automatically. Use a PR-specific filename to avoid collisions when multiple reviewers run concurrently.
+
+```bash
+midtown pr review post --pr <PR> --body-file /tmp/review-<PR>.md
 
 # Cross-post review to the task thread so the team sees it inline
-midtown channel post "$(cat /tmp/review.md)"
+midtown channel post "$(cat /tmp/review-<PR>.md)"
 ```
 
 A code review is **not complete** until you have:
-- Posted a GitHub PR comment (either with issues found or a "no issues found" message)
-- Shared the comment URL in the channel
+- Run `midtown pr review post` (this is what tells the daemon the review is done)
+- Shared the review in the channel
 - Marked your task as done: `midtown task done <task-id>`
 
 ## Refactor Detection
