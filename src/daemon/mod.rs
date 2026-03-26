@@ -29,6 +29,10 @@ mod rpc_session;
 mod rpc_status;
 mod rpc_task;
 mod rpc_workflow;
+pub(crate) mod session_events;
+#[path = "session_events_tests.rs"]
+#[cfg(test)]
+mod session_events_tests;
 pub(crate) mod sessions;
 #[allow(dead_code)]
 pub(crate) mod sidecar;
