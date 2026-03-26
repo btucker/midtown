@@ -4379,7 +4379,7 @@ async fn handle_session_stopped(name: &str, stderr_lines: &[String], state: &Arc
             "Coworker"
         };
 
-        // Format message with stderr (not available in realtime path)
+        // Format message with accumulated stderr from realtime path
         let stderr_ref = if stderr_lines.is_empty() {
             None
         } else {
