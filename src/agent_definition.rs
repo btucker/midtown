@@ -28,6 +28,8 @@ pub struct AgentDefinition {
     pub description: Option<String>,
     /// Model override (e.g., "opus", "sonnet").
     pub model: Option<String>,
+    /// Lucide icon name for avatar badge (e.g., "pen-tool", "eye").
+    pub avatar_badge: Option<String>,
     /// The markdown body — used as the agent's system prompt.
     pub system_prompt: String,
     /// Path the definition was loaded from (for diagnostics).
@@ -122,6 +124,7 @@ pub(crate) fn parse_agent_content(
             name,
             description: None,
             model: None,
+            avatar_badge: None,
             system_prompt: content.to_string(),
             source_path: source_path.to_path_buf(),
         });
@@ -146,6 +149,7 @@ pub(crate) fn parse_agent_content(
     let mut name = None;
     let mut description = None;
     let mut model = None;
+    let mut avatar_badge = None;
 
     for line in frontmatter_str.lines() {
         let line = line.trim();
@@ -161,6 +165,11 @@ pub(crate) fn parse_agent_content(
                 "model" => {
                     if !value.is_empty() {
                         model = Some(value.to_string());
+                    }
+                }
+                "avatar_badge" => {
+                    if !value.is_empty() {
+                        avatar_badge = Some(value.to_string());
                     }
                 }
                 _ => {} // Ignore unknown fields (tools, etc.)
@@ -180,6 +189,7 @@ pub(crate) fn parse_agent_content(
         name: resolved_name,
         description,
         model,
+        avatar_badge,
         system_prompt: body.to_string(),
         source_path: source_path.to_path_buf(),
     })

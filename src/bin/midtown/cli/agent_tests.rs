@@ -168,6 +168,7 @@ fn test_to_cli_args_resume_includes_all_flags() {
         suppress_auto_output: false,
         color: None,
         icon: None,
+        avatar_badge: None,
     };
 
     let settings = std::env::temp_dir().join("test-cli-args-settings.json");
@@ -224,6 +225,7 @@ fn test_to_cli_args_fresh_generates_session_id() {
         suppress_auto_output: false,
         color: None,
         icon: None,
+        avatar_badge: None,
     };
 
     let settings = std::env::temp_dir().join("test-cli-args-settings2.json");
@@ -269,6 +271,7 @@ fn test_to_cli_args_coworker_restricts_settings() {
         suppress_auto_output: false,
         color: None,
         icon: None,
+        avatar_badge: None,
     };
 
     let settings = std::env::temp_dir().join("test-settings.json");
@@ -397,6 +400,7 @@ fn test_to_cli_args_includes_model_flag() {
         suppress_auto_output: false,
         color: None,
         icon: None,
+        avatar_badge: None,
     };
 
     let settings = std::env::temp_dir().join("test-model-settings.json");
@@ -440,6 +444,7 @@ fn test_to_cli_args_coworker_gets_sonnet_model() {
         suppress_auto_output: false,
         color: None,
         icon: None,
+        avatar_badge: None,
     };
 
     let settings = std::env::temp_dir().join("test-model-settings2.json");

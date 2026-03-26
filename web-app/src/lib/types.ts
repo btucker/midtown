@@ -52,6 +52,7 @@ export interface Coworker {
 	channel?: string;
 	color?: string;
 	icon?: string;
+	avatar_badge?: string;
 }
 
 // ── Tasks ────────────────────────────────────────────────────────────────────

@@ -526,7 +526,7 @@ pub(super) async fn handle_session_attach(
     if running {
         // Gracefully pause the running headless session, giving Claude time to
         // persist its session state so `--resume` works in the interactive pane.
-        state.broadcast_coworker_update(&name, "attaching", None, None, None);
+        state.broadcast_coworker_update(&name, "attaching", None, None, None, None);
         if let Err(e) = state
             .session_manager
             .graceful_shutdown(&name, std::time::Duration::from_secs(10))
@@ -713,7 +713,7 @@ pub(super) async fn handle_session_detach(
             detach_msg.channel = Some(OPS_CHANNEL.to_string());
             let _ = state.send_and_broadcast_async(&detach_msg).await;
 
-            state.broadcast_coworker_update(&name, "running", None, None, None);
+            state.broadcast_coworker_update(&name, "running", None, None, None, None);
 
             Response::success(
                 id,
@@ -1021,7 +1021,7 @@ pub(super) async fn handle_session_clear(
             clear_msg.channel = Some(OPS_CHANNEL.to_string());
             let _ = state.send_and_broadcast_async(&clear_msg).await;
 
-            state.broadcast_coworker_update(&name, "running", None, None, None);
+            state.broadcast_coworker_update(&name, "running", None, None, None, None);
 
             Response::success(
                 id,
@@ -1175,7 +1175,7 @@ pub(super) async fn handle_session_cancel(
     match state.spawn_coworker(&config).await {
         Ok(_) => {
             info!("Resumed session '{}' after cancel", name);
-            state.broadcast_coworker_update(&name, "running", None, None, None);
+            state.broadcast_coworker_update(&name, "running", None, None, None, None);
 
             Response::success(
                 id,
@@ -1557,6 +1557,7 @@ pub(super) async fn create_fork_session(
                 restart_count: 0,
                 color: color.map(|c| c.to_string()),
                 icon: icon.map(|i| i.to_string()),
+                avatar_badge: None,
             },
         );
         if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {

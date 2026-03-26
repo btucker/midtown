@@ -1647,6 +1647,7 @@ impl DaemonState {
                     bound_thread_id: bound_thread_id.clone(),
                     color: config.color.clone(),
                     icon: config.icon.clone(),
+                    avatar_badge: config.avatar_badge.clone(),
                     ..Default::default()
                 },
             );
@@ -2380,6 +2381,7 @@ impl DaemonState {
         current_task: Option<&str>,
         color: Option<&str>,
         icon: Option<&str>,
+        avatar_badge: Option<&str>,
     ) {
         // Look up the model from the coworker manager, defaulting to "sonnet" if not found
         let model = self
@@ -2394,6 +2396,7 @@ impl DaemonState {
             &model,
             color,
             icon,
+            avatar_badge,
         ));
     }
 

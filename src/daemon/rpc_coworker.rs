@@ -215,6 +215,9 @@ pub(super) async fn handle_coworker_spawn(
     if let Some(m) = agent_def.as_ref().and_then(|d| d.model.clone()) {
         config.model = m;
     }
+    if let Some(badge) = agent_def.as_ref().and_then(|d| d.avatar_badge.clone()) {
+        config.avatar_badge = Some(badge);
+    }
 
     // Pre-spawn: ensure task worktree exists and register assignment
     if let Some((ref worktree_id, ref path)) = task_worktree {
@@ -251,7 +254,14 @@ pub(super) async fn handle_coworker_spawn(
     match state.spawn_coworker(&config).await {
         Ok(_) => {
             info!("Spawned coworker: {}", config.name);
-            state.broadcast_coworker_update(&config.name, "running", None, None, None);
+            state.broadcast_coworker_update(
+                &config.name,
+                "running",
+                None,
+                None,
+                None,
+                config.avatar_badge.as_deref(),
+            );
 
             // If --task was provided, execute task assignment effects and update
             // the task file on disk (same as dispatch + SpawnForTask do)
@@ -285,6 +295,7 @@ pub(super) async fn handle_coworker_spawn(
                         current_task: None,
                         color: None,
                         icon: None,
+                        avatar_badge: None,
                     },
                     effects::Effect::post_to_ops(format!(
                         "Called in coworker {} for task !{}",
@@ -427,7 +438,7 @@ pub(super) async fn handle_coworker_break(
         );
     }
 
-    state.broadcast_coworker_update(name, "stopped", None, None, None);
+    state.broadcast_coworker_update(name, "stopped", None, None, None, None);
 
     // Shut down the headless session, then deregister from tracking
     if let Err(e) = state.session_manager.shutdown(name).await {
@@ -662,6 +673,7 @@ pub(super) async fn handle_coworker_report_state(
                     current_task: None,
                     color: None,
                     icon: None,
+                    avatar_badge: None,
                 },
             ],
         }];
@@ -1109,15 +1121,29 @@ async fn build_coworkers_data(
         })
         .unwrap_or_default();
 
-    // Extract avatar color/icon overrides from session records
-    let session_avatars: HashMap<String, (Option<String>, Option<String>)> = state
+    // Extract avatar color/icon/badge overrides from session records
+    struct AvatarOverrides {
+        color: Option<String>,
+        icon: Option<String>,
+        avatar_badge: Option<String>,
+    }
+    let session_avatars: HashMap<String, AvatarOverrides> = state
         .persistent_state
         .try_lock()
         .map(|ps| {
             ps.sessions
                 .values()
-                .filter(|s| s.color.is_some() || s.icon.is_some())
-                .map(|s| (s.name.clone(), (s.color.clone(), s.icon.clone())))
+                .filter(|s| s.color.is_some() || s.icon.is_some() || s.avatar_badge.is_some())
+                .map(|s| {
+                    (
+                        s.name.clone(),
+                        AvatarOverrides {
+                            color: s.color.clone(),
+                            icon: s.icon.clone(),
+                            avatar_badge: s.avatar_badge.clone(),
+                        },
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -1205,8 +1231,9 @@ async fn build_coworkers_data(
                 "profile": cw.profile,
                 "progress": record.and_then(|r| r.progress),
                 "time_estimate": record.and_then(|r| r.format_time_remaining()),
-                "color": avatar.and_then(|(c, _)| c.as_deref()),
-                "icon": avatar.and_then(|(_, i)| i.as_deref()),
+                "color": avatar.and_then(|a| a.color.as_deref()),
+                "icon": avatar.and_then(|a| a.icon.as_deref()),
+                "avatar_badge": avatar.and_then(|a| a.avatar_badge.as_deref()),
             }))
         })
         .collect::<Vec<_>>();

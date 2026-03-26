@@ -22,6 +22,7 @@ fn make_spawn(name: &str) -> Effect {
         suppress_auto_output: false,
         color: None,
         icon: None,
+        avatar_badge: None,
     })
 }
 
@@ -99,6 +100,7 @@ fn make_spawn_with_callbacks(name: &str) -> Effect {
         suppress_auto_output: false,
         color: None,
         icon: None,
+        avatar_badge: None,
     };
     Effect::SpawnCoworkerWithCallbacks {
         config,
@@ -128,6 +130,7 @@ fn make_spawn_for_task(name: &str, task_id: &str) -> Effect {
         suppress_auto_output: false,
         color: None,
         icon: None,
+        avatar_badge: None,
     };
     Effect::SpawnForTask {
         task_id: task_id.to_string(),
@@ -315,6 +318,7 @@ fn dedup_prevents_double_spawn_for_same_task_across_variants() {
         suppress_auto_output: false,
         color: None,
         icon: None,
+        avatar_badge: None,
     };
     let spawn_with_callbacks = Effect::SpawnCoworkerWithCallbacks {
         config: config_york,

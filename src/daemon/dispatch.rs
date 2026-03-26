@@ -693,6 +693,7 @@ pub fn check_for_duplicate_task_workers(
                 current_task: None,
                 color: None,
                 icon: None,
+                avatar_badge: None,
             });
             effects.push(Effect::ShutdownCoworker {
                 name: duplicate.clone(),

@@ -1150,7 +1150,7 @@ pub(super) async fn handle_task_handoff(
             "Stopping session {} (coworker {}) for task !{} handoff to agent {}",
             session_id, name, task_id, agent
         );
-        state.broadcast_coworker_update(name, "stopped", None, None, None);
+        state.broadcast_coworker_update(name, "stopped", None, None, None, None);
         if let Err(e) = state.session_manager.shutdown(name).await {
             warn!("Failed to shut down session for handoff: {}", e);
         }
