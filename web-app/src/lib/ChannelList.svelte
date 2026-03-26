@@ -378,7 +378,8 @@ function handleKeyDown(event: KeyboardEvent) {
 
       <!-- Inline open threads -->
       {#each channelThreads as thread (thread.id)}
-        <button
+        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+        <div
           class="thread-row"
           onclick={() => handleOpenThread(thread.id, channel.name)}
         >
@@ -391,7 +392,7 @@ function handleKeyDown(event: KeyboardEvent) {
             class="thread-close"
             onclick={(e) => { e.stopPropagation(); handleCloseThread(channel.name, thread.id); }}
           >✕</button>
-        </button>
+        </div>
       {/each}
     </div>
   {/each}
