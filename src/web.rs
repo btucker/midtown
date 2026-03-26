@@ -3011,7 +3011,7 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
                 daemon_rpc_call(
                     &repo,
                     "session.cancel",
-                    serde_json::json!({ "target": target }),
+                    serde_json::json!({ "target": format!("name/{}", target) }),
                 )
             })
             .await
