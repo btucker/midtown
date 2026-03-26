@@ -1961,6 +1961,22 @@ impl HeadlessSession {
         Ok(())
     }
 
+    /// Take ownership of the stdout and stderr receivers.
+    ///
+    /// After this call, `next_event()` and `drain_stderr()` will no longer work
+    /// on this session (the receivers are moved to the forwarder). Returns None
+    /// if receivers were already taken or not available (e.g., Codex backend).
+    pub fn take_receivers(
+        &mut self,
+    ) -> Option<(
+        mpsc::UnboundedReceiver<StreamEvent>,
+        mpsc::UnboundedReceiver<String>,
+    )> {
+        let stdout = self.stdout_rx.take()?;
+        let stderr = self.stderr_rx.take()?;
+        Some((stdout, stderr))
+    }
+
     /// Read the next streaming event from the session.
     ///
     /// Returns `None` when the process exits (stdout closes).

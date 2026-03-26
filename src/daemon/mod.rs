@@ -1289,6 +1289,8 @@ impl DaemonState {
             python_sdk_dir,
         );
 
+        let (session_agg_tx, _session_agg_rx) = session_events::channel();
+
         Ok(Self {
             coworkers,
             channel_router,
@@ -1336,7 +1338,10 @@ impl DaemonState {
             headless_health_generation: std::sync::atomic::AtomicU64::new(0),
             health_derived_cache: std::sync::Mutex::new(None),
             attached_coworkers: std::sync::Mutex::new(HashMap::new()),
-            session_manager: sessions::SessionManager::new(session_manager_repo_name),
+            session_manager: sessions::SessionManager::new(
+                session_manager_repo_name,
+                session_agg_tx,
+            ),
             rpc_response_cache: Mutex::new(HashMap::new()),
             prs_cache: rpc_prs::PrsCache::new(),
             pr_review_negative_cache: std::sync::Mutex::new(HashMap::new()),
@@ -3254,11 +3259,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Timer for draining headless session events (every 500ms).
     // Must be fast to prevent stdout pipe buffer (64KB) from filling up,
     // which would block coworker processes and cause silent hangs.
-    // The drain_notify provides event-driven wakeup for near-zero latency
-    // when sessions produce output; the interval tick remains as a fallback.
     let mut session_drain_interval = interval(std::time::Duration::from_millis(500));
     session_drain_interval.tick().await;
-    let session_drain_notify = state.session_manager.drain_notify();
 
     // Timer for flushing batched CI notifications (check every 5 seconds).
     // The actual flush delay is 15 seconds from the oldest buffered item.
@@ -3765,14 +3767,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
             // Drain events from headless sessions to prevent stdout buffer filling up.
             // Also detects process exits and updates health state for the snapshot.
-            // Wakes on EITHER: (a) event-driven notify from stdout reader, or
-            // (b) fallback interval tick (catches edge cases like process exit).
-            _ = async {
-                tokio::select! {
-                    _ = session_drain_notify.notified() => {},
-                    _ = session_drain_interval.tick() => {},
-                }
-            } => {
+            _ = session_drain_interval.tick() => {
                 // Check plugin daemon health and ensure it's running if plugins exist.
                 state.plugin_daemon.check_health().await;
                 if state.plugin_daemon.has_plugins() {

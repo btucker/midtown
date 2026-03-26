@@ -12,9 +12,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::{DateTime, Datelike, TimeZone, Utc};
-use std::sync::Arc;
-
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent, shutdown_codex_runtime};
@@ -333,11 +331,8 @@ type TestIsAliveHook = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
 pub struct SessionManager {
     sessions: RwLock<HashMap<String, CoworkerSession>>,
     repo_name: String,
-    /// Signaled by background stdout reader tasks when any session produces output.
-    ///
-    /// The daemon's event loop awaits this alongside the drain interval tick,
-    /// enabling near-zero-latency output processing instead of polling.
-    drain_notify: Arc<Notify>,
+    /// Sender for the aggregated session event channel.
+    agg_tx: mpsc::UnboundedSender<super::session_events::SessionEvent>,
     #[cfg(test)]
     test_send_message_to_session_id_hook: std::sync::Mutex<Option<TestSendMessageToSessionIdHook>>,
     #[cfg(test)]
@@ -347,24 +342,19 @@ pub struct SessionManager {
 #[allow(dead_code)]
 impl SessionManager {
     /// Create a new empty session manager.
-    pub fn new(repo_name: String) -> Self {
+    pub fn new(
+        repo_name: String,
+        agg_tx: mpsc::UnboundedSender<super::session_events::SessionEvent>,
+    ) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
             repo_name,
-            drain_notify: Arc::new(Notify::new()),
+            agg_tx,
             #[cfg(test)]
             test_send_message_to_session_id_hook: std::sync::Mutex::new(None),
             #[cfg(test)]
             test_is_alive_hook: std::sync::Mutex::new(None),
         }
-    }
-
-    /// Returns a handle the event loop can `.notified().await` on.
-    ///
-    /// Wakes whenever any session's stdout reader produces output, allowing
-    /// the drain to run immediately instead of waiting for the next tick.
-    pub fn drain_notify(&self) -> Arc<Notify> {
-        Arc::clone(&self.drain_notify)
     }
 
     #[cfg(test)]
@@ -533,9 +523,7 @@ impl SessionManager {
         // No name-uniqueness check needed — slot_id is always unique (UUID).
         // Multiple sessions with the same name are now allowed (keyed by slot_id).
 
-        // Inject the drain notify so the stdout reader wakes the event loop.
-        let mut config = config.clone();
-        config.output_notify = Some(Arc::clone(&self.drain_notify));
+        let config = config.clone();
 
         // Spawn the headless process
         let mut session = HeadlessSession::spawn(&config)
@@ -577,6 +565,10 @@ impl SessionManager {
         let is_resume = config.resume_session_id.is_some();
         let has_initial_prompt = initial_prompt.is_some();
         let mut sessions = self.sessions.write().await;
+
+        // Take per-session receivers BEFORE moving session into CoworkerSession
+        let receivers = session.take_receivers();
+
         let mut cs = CoworkerSession::new(
             slot_id.to_string(),
             name.to_string(),
@@ -593,6 +585,18 @@ impl SessionManager {
             cs.has_pending_api_call = true;
             cs.last_event_at = Some(Utc::now());
         }
+
+        // Spawn aggregated forwarder if receivers are available
+        if let Some((stdout_rx, stderr_rx)) = receivers {
+            super::session_events::spawn_forwarder(
+                name.to_string(),
+                slot_id.to_string(),
+                stdout_rx,
+                stderr_rx,
+                self.agg_tx.clone(),
+            );
+        }
+
         sessions.insert(slot_id.to_string(), cs);
 
         if let Some(ref sid) = session_id {
@@ -637,10 +641,6 @@ impl SessionManager {
     ) -> Result<String, crate::Error> {
         let slot_id = uuid::Uuid::new_v4().to_string();
         let preassigned_session_id = config.session_id.clone();
-
-        // Inject the drain notify so the stdout reader wakes the event loop.
-        let mut config = config;
-        config.output_notify = Some(Arc::clone(&self.drain_notify));
 
         // Spawn the headless process
         let mut session = HeadlessSession::spawn(&config)
@@ -716,6 +716,10 @@ impl SessionManager {
 
         // Register in the sessions map so the event loop picks it up.
         let mut sessions = self.sessions.write().await;
+
+        // Take receivers AFTER init-event discovery but BEFORE moving session
+        let receivers = session.take_receivers();
+
         let mut cs = CoworkerSession::new(
             slot_id.clone(),
             name.to_string(),
@@ -724,6 +728,18 @@ impl SessionManager {
             Some(fork_session_id.clone()),
         );
         cs.is_resume = config.resume_session_id.is_some();
+
+        // Spawn aggregated forwarder if receivers are available
+        if let Some((stdout_rx, stderr_rx)) = receivers {
+            super::session_events::spawn_forwarder(
+                name.to_string(),
+                slot_id.clone(),
+                stdout_rx,
+                stderr_rx,
+                self.agg_tx.clone(),
+            );
+        }
+
         sessions.insert(slot_id, cs);
 
         info!(
@@ -1860,7 +1876,8 @@ pub fn format_events_as_rich_text<'a>(lines: impl Iterator<Item = &'a str>) -> S
 
 impl Default for SessionManager {
     fn default() -> Self {
-        Self::new(String::new())
+        let (agg_tx, _agg_rx) = mpsc::unbounded_channel();
+        Self::new(String::new(), agg_tx)
     }
 }
 
