@@ -13,7 +13,6 @@ import {
 	setOpenThreads,
 } from "./api.ts";
 import { computeVisibleDmChannels, getDisplayableDmChannels } from "./channelUtils.ts";
-import { getSenderColor } from "./messageUtils.ts";
 import NeedsAttention from "./NeedsAttention.svelte";
 import {
 	activeChannel,
@@ -21,11 +20,9 @@ import {
 	channelOrder,
 	channels,
 	dismissedThreads,
-	kanbanData,
 	messagesByChannel,
 	openThreads,
 	showArchivedChannels,
-	threadData,
 	threadForkOwners,
 	threadUnreadCounts,
 	trackedThreads,
@@ -164,7 +161,7 @@ function handleAttentionItemClick(item: NeedsAttentionItem) {
 		// Find the parent message in the channel's message store, or create a stub
 		const channelMsgs = $messagesByChannel[item.channel] || [];
 		const parentMsg = channelMsgs.find((m) => m.id === item.threadId);
-		const msg = parentMsg || { id: item.threadId!, from: "", content: item.title, timestamp: "" };
+		const msg = parentMsg || { id: item.threadId ?? "", from: "", content: item.title, timestamp: "" };
 		openThread(msg, item.channel);
 		sidebar.setOpenMobile(false);
 	} else if (item.taskId) {
