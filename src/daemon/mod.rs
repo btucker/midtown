@@ -522,6 +522,12 @@ pub(crate) struct DaemonState {
     /// add those task IDs here. In `spawn_for_pending_tasks`, skip tasks that are
     /// already in-flight. Clear entries when effects complete (success or failure).
     in_flight_task_spawns: std::sync::Mutex<HashSet<String>>,
+    /// PR numbers with pending CreateReviewTask effects.
+    ///
+    /// Guards against duplicate review task creation across ticks (!2511).
+    /// Populated from `extract_review_pr_numbers_from_effects` after
+    /// `evaluate_tick`, cleared when the CreateReviewTask effect completes.
+    in_flight_review_prs: std::sync::Mutex<HashSet<u64>>,
     // Task assignments are tracked via sessions[].task_id — no separate HashMap needed.
     /// Pending nudges sent to coworkers, awaiting confirmation of submission.
     ///
@@ -1311,6 +1317,7 @@ impl DaemonState {
             user_display_name,
             last_webhook_event_at: Mutex::new(None),
             in_flight_task_spawns: std::sync::Mutex::new(HashSet::new()),
+            in_flight_review_prs: std::sync::Mutex::new(HashSet::new()),
             // Task assignments are tracked via sessions[].task_id
             pending_nudges: std::sync::Mutex::new(HashMap::new()),
             comment_tracker: Mutex::new(trackers::CommentTracker::new()),
@@ -1685,6 +1692,24 @@ impl DaemonState {
             .lock()
             .unwrap()
             .insert(task_id.to_string());
+    }
+
+    /// Check if a review task creation is already in-flight for this PR.
+    pub(crate) fn is_review_pr_in_flight(&self, pr_number: u64) -> bool {
+        self.in_flight_review_prs
+            .lock()
+            .unwrap()
+            .contains(&pr_number)
+    }
+
+    /// Mark a PR as having a pending CreateReviewTask effect.
+    pub(crate) fn mark_review_pr_in_flight(&self, pr_number: u64) {
+        self.in_flight_review_prs.lock().unwrap().insert(pr_number);
+    }
+
+    /// Clear the in-flight marker for a review PR after its effect completes.
+    pub(crate) fn clear_review_pr_in_flight(&self, pr_number: u64) {
+        self.in_flight_review_prs.lock().unwrap().remove(&pr_number);
     }
 
     /// Clear the in-flight marker for a task after its spawn or nudge effect completes.
@@ -2172,6 +2197,10 @@ impl DaemonState {
         for task_id in effects::extract_claimed_task_ids_from_effects(effects) {
             self.mark_task_spawn_in_flight(&task_id);
             debug!("Marked task !{} as in-flight spawn", task_id);
+        }
+        for pr_number in effects::extract_review_pr_numbers_from_effects(effects) {
+            self.mark_review_pr_in_flight(pr_number);
+            debug!("Marked PR #{} as in-flight review task creation", pr_number);
         }
     }
 

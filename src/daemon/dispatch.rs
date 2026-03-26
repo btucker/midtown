@@ -1188,18 +1188,25 @@ fn select_coworker_name(
     };
 
     // Use grouped name if found, otherwise allocate a fresh coworker.
+    // Grouped tasks (nudges to already-running coworkers) bypass the task limit.
     let was_grouped = grouped_name.is_some();
     let in_progress_count = ps.tick_in_progress_tasks.len();
     let task_cap = ps.tick_max_in_progress_tasks;
     let effective_count = in_progress_count + loop_state.spawns_queued_this_tick;
     let at_task_limit = effective_count >= task_cap;
 
+    // Hard cap: also check active session count as a safety net for spawn storms
+    // when task state tracking has gaps (e.g., review tasks not yet in
+    // pr_task_index). Only applied to fresh spawns, not grouped tasks. (!2511)
+    let session_count = ps.tick_active_session_names.len() + loop_state.spawns_queued_this_tick;
+    let at_session_cap = session_count >= task_cap;
+
     let name = if let Some(name) = grouped_name {
         name
-    } else if at_task_limit {
+    } else if at_task_limit || at_session_cap {
         debug!(
-            "Task limit reached ({}+{} >= {}), deferring task !{}",
-            in_progress_count, loop_state.spawns_queued_this_tick, task_cap, task.id
+            "Task limit reached (tasks: {}+{}, sessions: {} >= {}), deferring task !{}",
+            in_progress_count, loop_state.spawns_queued_this_tick, session_count, task_cap, task.id
         );
         return None;
     } else {
@@ -1240,8 +1247,16 @@ fn allocate_fresh_coworker_name(
     {
         let candidate = format!("{}-reviewer", parent_task.agent_name).to_lowercase();
         if excluded_names.contains(&candidate) {
-            let suffix = fastrand::u32(1000..9999);
-            format!("{}-{}", candidate, suffix)
+            // Retry up to 10 times to find a suffix that doesn't collide.
+            let mut suffixed = candidate.clone();
+            for _ in 0..10 {
+                let suffix = fastrand::u32(1000..9999);
+                suffixed = format!("{}-{}", candidate, suffix);
+                if !excluded_names.contains(&suffixed) {
+                    break;
+                }
+            }
+            suffixed
         } else {
             candidate
         }

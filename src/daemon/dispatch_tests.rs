@@ -891,3 +891,52 @@ fn duplicate_detection_skips_channel_leads() {
         "Channel leads excluded from duplicate detection"
     );
 }
+
+// ── Reviewer name collision suffix re-check (!2511) ──────────────────────────
+
+/// When a reviewer name collides and a random suffix is appended, the suffixed
+/// name must be re-checked against the exclusion set. Previously, the suffixed
+/// name was returned without verification, potentially colliding with an
+/// existing session.
+#[test]
+fn reviewer_suffixed_name_is_rechecked_against_exclusions() {
+    let parent_task = Task {
+        id: "100".to_string(),
+        subject: "Fix auth".to_string(),
+        agent_name: "york".to_string(),
+        status: TaskStatus::InProgress,
+        ..Default::default()
+    };
+
+    let review_task = Task {
+        id: "200".to_string(),
+        subject: "Review PR #42".to_string(),
+        agent_type: "midtown-code-reviewer".to_string(),
+        parent: Some("100".to_string()),
+        ..Default::default()
+    };
+
+    let mut ps = make_ps("test");
+    // "york-reviewer" is already active, forcing a suffix
+    ps.tick_active_session_names = ["york-reviewer".to_string()].into_iter().collect();
+
+    let tasks = vec![parent_task, review_task.clone()];
+    let name = allocate_fresh_coworker_name(&review_task, &ps, &tasks, true);
+
+    // The name should NOT be "york-reviewer" (it's excluded)
+    assert_ne!(
+        name, "york-reviewer",
+        "Suffixed reviewer name should not collide with active session"
+    );
+    // The name should start with "york-reviewer-" (it has a suffix)
+    assert!(
+        name.starts_with("york-reviewer-"),
+        "Suffixed reviewer name should have a numeric suffix, got: {}",
+        name
+    );
+    // The suffixed name should not be in the exclusion set
+    assert!(
+        !ps.tick_active_session_names.contains(&name),
+        "Suffixed name should not be in exclusion set"
+    );
+}
