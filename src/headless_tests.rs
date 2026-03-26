@@ -22,6 +22,7 @@ fn test_config() -> HeadlessConfig {
         disallowed_tools: vec![],
         agent_name: None,
         additional_dirs: vec![],
+        output_notify: None,
     }
 }
 
@@ -1018,4 +1019,65 @@ fn test_codex_thread_id_reads_conversation_id_for_codex_event() {
         codex_thread_id(&parsed),
         Some("thread-conversation-123".to_string())
     );
+}
+
+#[tokio::test]
+async fn test_stdout_reader_signals_output_notify() {
+    use std::sync::Arc;
+    use tokio::io::AsyncWriteExt;
+    use tokio::sync::Notify;
+
+    // Create a pipe to simulate stdout.
+    let (reader, mut writer) = tokio::io::duplex(4096);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let notify = Arc::new(Notify::new());
+
+    tokio::spawn(claude_stdout_reader_loop(
+        tokio::io::BufReader::new(reader),
+        tx,
+        Some(Arc::clone(&notify)),
+    ));
+
+    // Write a valid stream-json event.
+    let event_json = r#"{"type":"system","subtype":"init","session_id":"sess-1"}"#;
+    writer
+        .write_all(format!("{}\n", event_json).as_bytes())
+        .await
+        .unwrap();
+
+    // The notify should fire — wait with a timeout to avoid hanging.
+    tokio::time::timeout(std::time::Duration::from_secs(1), notify.notified())
+        .await
+        .expect("output_notify should have been signaled after stdout event");
+
+    // The event should also be in the channel.
+    let event = rx.recv().await.expect("should receive parsed event");
+    assert!(matches!(event, StreamEvent::System { .. }));
+}
+
+#[tokio::test]
+async fn test_stdout_reader_works_without_notify() {
+    use tokio::io::AsyncWriteExt;
+
+    // Verify the reader works fine when output_notify is None.
+    let (reader, mut writer) = tokio::io::duplex(4096);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    tokio::spawn(claude_stdout_reader_loop(
+        tokio::io::BufReader::new(reader),
+        tx,
+        None,
+    ));
+
+    let event_json = r#"{"type":"system","subtype":"init","session_id":"sess-1"}"#;
+    writer
+        .write_all(format!("{}\n", event_json).as_bytes())
+        .await
+        .unwrap();
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("should not timeout")
+        .expect("should receive event");
+    assert!(matches!(event, StreamEvent::System { .. }));
 }

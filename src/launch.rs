@@ -758,6 +758,7 @@ impl LaunchConfig {
             disallowed_tools,
             agent_name,
             additional_dirs: self.additional_dirs.clone(),
+            output_notify: None,
         }
     }
 

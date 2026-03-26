@@ -111,6 +111,7 @@ fn test_headless_config() -> HeadlessConfig {
         disallowed_tools: vec![],
         agent_name: None,
         additional_dirs: vec![],
+        output_notify: None,
     }
 }
 

@@ -3250,8 +3250,11 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Timer for draining headless session events (every 500ms).
     // Must be fast to prevent stdout pipe buffer (64KB) from filling up,
     // which would block coworker processes and cause silent hangs.
+    // The drain_notify provides event-driven wakeup for near-zero latency
+    // when sessions produce output; the interval tick remains as a fallback.
     let mut session_drain_interval = interval(std::time::Duration::from_millis(500));
     session_drain_interval.tick().await;
+    let session_drain_notify = state.session_manager.drain_notify();
 
     // Timer for flushing batched CI notifications (check every 5 seconds).
     // The actual flush delay is 15 seconds from the oldest buffered item.
@@ -3758,7 +3761,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
             // Drain events from headless sessions to prevent stdout buffer filling up.
             // Also detects process exits and updates health state for the snapshot.
-            _ = session_drain_interval.tick() => {
+            // Wakes on EITHER: (a) event-driven notify from stdout reader, or
+            // (b) fallback interval tick (catches edge cases like process exit).
+            _ = async {
+                tokio::select! {
+                    _ = session_drain_notify.notified() => {},
+                    _ = session_drain_interval.tick() => {},
+                }
+            } => {
                 // Check plugin daemon health and ensure it's running if plugins exist.
                 state.plugin_daemon.check_health().await;
                 if state.plugin_daemon.has_plugins() {

@@ -1136,3 +1136,12 @@ async fn test_get_output_with_path_empty_file_returns_zero_offset() {
         .expect("should return Some for empty file");
     assert_eq!(offset, 0, "empty file must yield offset 0");
 }
+
+#[test]
+fn test_drain_notify_returns_shared_handle() {
+    let sm = SessionManager::new("test-repo".to_string());
+    let n1 = sm.drain_notify();
+    let n2 = sm.drain_notify();
+    // Both should point to the same Notify (same Arc allocation).
+    assert!(std::sync::Arc::ptr_eq(&n1, &n2));
+}

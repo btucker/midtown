@@ -25,7 +25,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tracing::{debug, info, warn};
 
 /// Configuration for launching a headless Claude Code session.
@@ -139,6 +139,13 @@ pub struct HeadlessConfig {
     /// repos, dependency worktrees).
     #[serde(default)]
     pub additional_dirs: Vec<std::path::PathBuf>,
+    /// Optional notify handle signaled when stdout produces output.
+    ///
+    /// When set, the background stdout reader task calls `notify_one()` after
+    /// each successfully parsed event, allowing the daemon's drain loop to wake
+    /// immediately instead of waiting for the next polling tick.
+    #[serde(skip)]
+    pub output_notify: Option<Arc<Notify>>,
 }
 
 /// Custom serde module for `Option<Duration>` as seconds (f64).
@@ -1240,6 +1247,7 @@ fn codex_launch_plan_from_config(config: &HeadlessConfig) -> Result<CodexLaunchP
         disallowed_tools,
         agent_name: _agent_name,
         additional_dirs: _additional_dirs,
+        output_notify: _output_notify,
     } = config;
 
     let mut unsupported = Vec::new();
@@ -1460,8 +1468,9 @@ impl HeadlessSessionBackend {
 /// channel is heap-backed (unbounded mpsc), so the child process can write at
 /// full speed without stalling on a 64 KB kernel pipe buffer.
 async fn claude_stdout_reader_loop(
-    mut reader: BufReader<tokio::process::ChildStdout>,
+    mut reader: impl tokio::io::AsyncBufRead + Unpin,
     tx: mpsc::UnboundedSender<StreamEvent>,
+    output_notify: Option<Arc<Notify>>,
 ) {
     let mut line = String::new();
     loop {
@@ -1484,6 +1493,9 @@ async fn claude_stdout_reader_loop(
                         if tx.send(event).is_err() {
                             // Receiver dropped — session is gone, stop reading.
                             break;
+                        }
+                        if let Some(ref notify) = output_notify {
+                            notify.notify_one();
                         }
                     }
                     Err(e) => {
@@ -1661,7 +1673,11 @@ impl ClaudeHeadlessAdapter {
         let stdin = child.stdin.take();
 
         let (stdout_tx, stdout_rx) = mpsc::unbounded_channel();
-        tokio::spawn(claude_stdout_reader_loop(BufReader::new(stdout), stdout_tx));
+        tokio::spawn(claude_stdout_reader_loop(
+            BufReader::new(stdout),
+            stdout_tx,
+            config.output_notify.clone(),
+        ));
 
         let (stderr_tx, stderr_rx) = mpsc::unbounded_channel();
         tokio::spawn(claude_stderr_reader_loop(BufReader::new(stderr), stderr_tx));

@@ -150,6 +150,7 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
         disallowed_tools,
         agent_name,
         additional_dirs,
+        output_notify: _output_notify,
     } = config;
 
     let is_resume = resume_session_id.is_some();

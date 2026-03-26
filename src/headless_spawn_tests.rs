@@ -33,6 +33,7 @@ fn test_fresh_session_uses_append_system_prompt() {
         disallowed_tools: vec![],
         agent_name: None,
         additional_dirs: vec![],
+        output_notify: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -86,6 +87,7 @@ fn test_fresh_session_should_not_duplicate_settings_flag() {
         disallowed_tools: vec![],
         agent_name: None,
         additional_dirs: vec![],
+        output_notify: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -129,6 +131,7 @@ fn test_resume_session_should_omit_settings_flag() {
         disallowed_tools: vec![],
         agent_name: None,
         additional_dirs: vec![],
+        output_notify: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -173,6 +176,7 @@ fn test_fresh_session_without_settings_path() {
         disallowed_tools: vec![],
         agent_name: None,
         additional_dirs: vec![],
+        output_notify: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -215,6 +219,7 @@ fn test_fresh_session_with_preassigned_session_id_includes_session_id_flag() {
         disallowed_tools: vec![],
         agent_name: None,
         additional_dirs: vec![],
+        output_notify: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -257,6 +262,7 @@ fn test_fresh_session_without_preassigned_session_id_omits_session_id_flag() {
         disallowed_tools: vec![],
         agent_name: None,
         additional_dirs: vec![],
+        output_notify: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -293,6 +299,7 @@ fn test_resume_session_does_not_use_session_id_flag() {
         disallowed_tools: vec![],
         agent_name: None,
         additional_dirs: vec![],
+        output_notify: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -345,6 +352,7 @@ fn test_daemon_generated_session_id_is_valid_uuid_and_flows_to_cli_args() {
         disallowed_tools: vec![],
         agent_name: None,
         additional_dirs: vec![],
+        output_notify: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -395,6 +403,7 @@ fn test_fork_session_with_preassigned_session_id() {
         disallowed_tools: vec![],
         agent_name: None,
         additional_dirs: vec![],
+        output_notify: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -442,6 +451,7 @@ fn test_fresh_session_with_agent_name_emits_agent_flag() {
         disallowed_tools: vec![],
         agent_name: Some("midtown-code-author".to_string()),
         additional_dirs: vec![],
+        output_notify: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -487,6 +497,7 @@ fn test_fresh_session_without_agent_name_omits_agent_flag() {
         disallowed_tools: vec![],
         agent_name: None,
         additional_dirs: vec![],
+        output_notify: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -524,6 +535,7 @@ fn test_resume_session_includes_agent_name() {
         disallowed_tools: vec![],
         agent_name: Some("midtown-code-author".to_string()),
         additional_dirs: vec![],
+        output_notify: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -576,6 +588,7 @@ fn test_resume_session_with_handoff_agent_name() {
         // Simulates spawn_coworker overriding agent_name from task_agent_type
         agent_name: Some("midtown-code-reviewer".to_string()),
         additional_dirs: vec![],
+        output_notify: None,
     };
 
     let args = extract_spawn_args(&config);
@@ -619,6 +632,7 @@ fn test_headless_additional_dirs_passed_as_add_dir_flags() {
             std::path::PathBuf::from("/tmp/repo2"),
             std::path::PathBuf::from("/tmp/repo3"),
         ],
+        output_notify: None,
     };
 
     let args = extract_spawn_args(&config);

@@ -1010,6 +1010,7 @@ async fn handle_oneshot_execute(
         disallowed_tools: vec![],
         agent_name: None,
         additional_dirs: vec![],
+        output_notify: None,
     };
 
     super::rpc_headless::handle_headless_execute(id, prompt, &config).await
