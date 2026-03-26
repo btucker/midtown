@@ -79,20 +79,20 @@ After the code-review skill completes, you MUST post via `midtown pr review post
 **If the skill exited early with no issues (the common case for clean PRs):** write the LGTM review yourself:
 
 ```bash
-cat > /tmp/review.md << 'REVIEW_EOF'
+cat > /tmp/review-<PR>.md << 'REVIEW_EOF'
 ### Code review
 
 No issues found. Checked for bugs and CLAUDE.md compliance.
 REVIEW_EOF
 ```
 
-Then submit via CLI. The daemon handles frontmatter and footer automatically.
+Then submit via CLI. The daemon handles frontmatter and footer automatically. Use a PR-specific filename to avoid collisions when multiple reviewers run concurrently.
 
 ```bash
-midtown pr review post --pr <PR> --body-file /tmp/review.md
+midtown pr review post --pr <PR> --body-file /tmp/review-<PR>.md
 
 # Cross-post review to the task thread so the team sees it inline
-midtown channel post "$(cat /tmp/review.md)"
+midtown channel post "$(cat /tmp/review-<PR>.md)"
 ```
 
 A code review is **not complete** until you have:
