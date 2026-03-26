@@ -1,7 +1,7 @@
 //! Session management RPC handlers.
 //!
 //! Handles `session.resolve`, `session.attach`, `session.detach`,
-//! `session.list`, `session.view`, and `session.clear` methods,
+//! `session.list`, `session.view`, `session.clear`, and `session.cancel` methods,
 //! allowing interactive terminal sessions to be connected to headless coworker
 //! processes.
 
@@ -1041,6 +1041,157 @@ pub(super) async fn handle_session_clear(
                 RpcError::new(
                     -32603,
                     format!("Failed to relaunch session for '{}': {}", name, e),
+                ),
+            )
+        }
+    }
+}
+
+/// Handle session.cancel RPC method.
+///
+/// Gracefully stops a running session and immediately resumes it with `--resume`.
+/// This preserves the session's full context while aborting whatever the session
+/// was doing. Used by the web UI's Esc-to-cancel feature.
+pub(super) async fn handle_session_cancel(
+    id: RequestId,
+    target: &str,
+    state: &DaemonState,
+) -> Response {
+    let name = match resolve_attach_target(target, state, "cancel").await {
+        Ok(n) => n,
+        Err(e) => return Response::error(id, RpcError::new(-32602, e)),
+    };
+
+    // Get session info from persistent state
+    let session_info = {
+        let persistent = state.persistent_state.lock().await;
+        persistent.session_by_name(&name).cloned()
+    };
+
+    let session_info = match session_info {
+        Some(record) => record,
+        None => {
+            return Response::error(
+                id,
+                RpcError::new(-32603, format!("No session found for '{}'", name)),
+            );
+        }
+    };
+
+    // Guard: refuse to cancel a session that is currently interactively attached.
+    {
+        let attached = state.attached_coworkers.lock().unwrap();
+        if attached.contains_key(&name.to_lowercase()) {
+            return Response::error(
+                id,
+                RpcError::new(
+                    -32602,
+                    format!(
+                        "Session '{}' is currently attached interactively. \
+                         Detach first with `midtown agent detach {}`.",
+                        name, name
+                    ),
+                ),
+            );
+        }
+    }
+
+    // Gracefully stop the running session (SIGTERM → wait → SIGKILL fallback).
+    // This lets Claude Code persist session state for --resume.
+    let session_id: Option<String> = if state.session_manager.is_alive(&name).await {
+        info!("Stopping session '{}' for cancel+resume", name);
+        match state
+            .session_manager
+            .graceful_shutdown(&name, std::time::Duration::from_secs(10))
+            .await
+        {
+            Ok(sid) => sid,
+            Err(e) => {
+                warn!("Failed to gracefully stop session '{}': {}", name, e);
+                let _ = state.session_manager.shutdown(&name).await;
+                Some(session_info.session_id.clone()).filter(|s| !s.is_empty())
+            }
+        }
+    } else {
+        // Session not alive — use persisted session_id for resume
+        Some(session_info.session_id.clone()).filter(|s| !s.is_empty())
+    };
+
+    // Clean up coworker state so spawn_coworker doesn't see stale registrations.
+    state.cleanup_coworker_state(&name).await;
+
+    // Build a resume launch config using the saved session_id.
+    let is_lead =
+        name == "lead" || crate::daemon::helpers::is_project_lead(&name, &state.project_name);
+
+    let mut config = if is_lead {
+        let mut c = crate::launch::LaunchConfig::lead(state.paths.dir_key(), None);
+        c.persisted_initial_prompt = session_info.initial_prompt.clone();
+        c
+    } else {
+        let mut c = crate::launch::LaunchConfig::coworker(
+            &name,
+            state.paths.dir_key(),
+            crate::launch::SessionMode::Fresh, // overridden below
+            None,
+            session_info.task_id.clone(),
+        );
+        c.persisted_initial_prompt = session_info.initial_prompt.clone();
+        c.agent_type = session_info.agent_type.clone();
+        c.pr_number = session_info.pr_number;
+        c.channel = session_info.channel.clone();
+        c
+    };
+
+    // Set resume mode with the saved session_id
+    if let Some(ref sid) = session_id {
+        config.session_mode = crate::launch::SessionMode::ResumeSession(sid.clone());
+    }
+
+    // Restore working directory
+    if is_lead {
+        let lead_wt = state.paths.lead_worktree();
+        if lead_wt.exists() {
+            config.working_dir = Some(lead_wt);
+        }
+    } else if !session_info.working_dir.is_empty() {
+        config.working_dir = Some(std::path::PathBuf::from(&session_info.working_dir));
+    }
+
+    // Restore auth provider and model
+    {
+        let execution_role = crate::config::execution_role_for_agent_type(&config.agent_type);
+        let provider = session_info.provider.unwrap_or_else(|| {
+            crate::config::get_execution_provider_for_role(state.paths.dir_key(), execution_role)
+        });
+        config.auth_provider = provider;
+        config.model = super::helpers::resolve_model_for_role(
+            state.paths.dir_key(),
+            provider,
+            &config.agent_type,
+        );
+    }
+
+    match state.spawn_coworker(&config).await {
+        Ok(_) => {
+            info!("Resumed session '{}' after cancel", name);
+            state.broadcast_coworker_update(&name, "running", None, None, None);
+
+            Response::success(
+                id,
+                serde_json::json!({
+                    "success": true,
+                    "message": format!("Cancelled and resumed session for {}", name),
+                }),
+            )
+        }
+        Err(e) => {
+            warn!("Failed to resume session '{}' after cancel: {}", name, e);
+            Response::error(
+                id,
+                RpcError::new(
+                    -32603,
+                    format!("Failed to resume session '{}': {}", name, e),
                 ),
             )
         }

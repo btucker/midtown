@@ -840,6 +840,11 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             super::rpc_session::handle_session_clear(request.id, target, state).await
         }
 
+        "session.cancel" => {
+            let target = require_str!(params, "target", request.id);
+            super::rpc_session::handle_session_cancel(request.id, target, state).await
+        }
+
         "session.fork" => {
             let thread_parent_id = require_str!(params, "thread_parent_id", request.id);
             let calling_session_id = require_str!(params, "calling_session_id", request.id);

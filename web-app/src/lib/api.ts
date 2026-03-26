@@ -1006,6 +1006,19 @@ export function queryThreadOwnership(threadParentId: string, channelName: string
 	}
 }
 
+// Cancel the lead session's in-flight request (kill + resume).
+// Sends to the active channel's lead — project lead or channel lead.
+export function cancelLead(channelName: string): void {
+	if (ws && ws.readyState === WebSocket.OPEN) {
+		ws.send(
+			JSON.stringify({
+				type: "cancel_lead",
+				channel: channelName,
+			}),
+		);
+	}
+}
+
 // Send a raw JSON message over the WebSocket (for view_window / leave_window).
 // Returns true if the message was sent, false if the WebSocket was not open.
 export function sendWsMessage(msg: Record<string, unknown>): boolean {

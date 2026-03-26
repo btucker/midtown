@@ -1,10 +1,11 @@
 <script lang="ts">
 import ReplyIcon from "@lucide/svelte/icons/reply";
 import SendHorizontal from "@lucide/svelte/icons/send-horizontal";
+import Square from "@lucide/svelte/icons/square";
 import { onMount, tick, untrack } from "svelte";
 import { fly } from "svelte/transition";
 import Autocomplete from "./Autocomplete.svelte";
-import { closeThread, openTaskThread, openThread, sendMessage, uploadFile } from "./api.ts";
+import { cancelLead, closeThread, openTaskThread, openThread, sendMessage, uploadFile } from "./api.ts";
 import { openImageLightbox } from "./biggerPicture.ts";
 import {
 	collectToolBlocks,
@@ -764,6 +765,13 @@ function handleKeyDown(e) {
 		}
 	}
 
+	// Esc cancels an in-flight lead request (when autocomplete is not open)
+	if (e.key === "Escape" && isLeadWorking) {
+		e.preventDefault();
+		cancelLead($activeChannel);
+		return;
+	}
+
 	// Submit on Enter, allow Shift+Enter for new lines
 	if (e.key === "Enter" && !e.shiftKey) {
 		e.preventDefault();
@@ -981,6 +989,17 @@ function getToolCallStatusIcon(entry) {
       {#if mostRecentToolCallEntry}
         <span class="text-muted-foreground/60 select-none">{getToolCallStatusIcon(mostRecentToolCallEntry)}</span>
         <span class="font-mono text-muted-foreground truncate">{describeToolCall(mostRecentToolCallEntry)}</span>
+      {/if}
+      {#if isLeadWorking}
+        <button
+          class="ml-auto flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.75rem] text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer shrink-0"
+          onclick={() => cancelLead($activeChannel)}
+          aria-label="Cancel in-flight request (Esc)"
+          title="Cancel (Esc)"
+        >
+          <Square class="w-3 h-3 fill-current" />
+          <span class="hidden sm:inline">Stop</span>
+        </button>
       {/if}
     {/if}
   </div>
