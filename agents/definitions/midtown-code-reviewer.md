@@ -70,19 +70,15 @@ Use the code-review skill to analyze the PR. The skill creates sub-tasks to trac
 
 ## Posting Your Review
 
-You MUST always post review results, even if no issues are found. The code-review skill writes its findings to `/tmp/review.md`. If the skill finishes without creating that file, or the file is empty, write a "no issues found" review yourself:
+You MUST always post review results, even if no issues are found. If the code-review skill finishes without providing comment text, prepare a "no issues found" comment yourself.
+
+Write findings to a temp file and submit via CLI. The daemon handles frontmatter and footer automatically.
 
 ```bash
 cat > /tmp/review.md << 'REVIEW_EOF'
-### Code review
-
-No issues found. Checked for bugs and CLAUDE.md compliance.
+[your review content here — no frontmatter or footer needed]
 REVIEW_EOF
-```
 
-Then submit via CLI. The daemon handles frontmatter and footer automatically.
-
-```bash
 midtown pr review post --pr <PR> --body-file /tmp/review.md
 
 # Cross-post review to the task thread so the team sees it inline

@@ -185,7 +185,7 @@ For CLAUDE.md issues: double-check that CLAUDE.md actually calls out the specifi
 2. If no issues meet threshold, prepare "no issues found" message
 3. Re-run eligibility check from Step 1 to ensure PR is still open
 
-### Step 7: Prepare Review Content
+### Step 7: Post Comment
 
 Get the full git SHA for links:
 
@@ -221,15 +221,14 @@ No issues found. Checked for bugs and CLAUDE.md compliance.
 - Format: `https://github.com/OWNER/REPO/blob/SHA/path/to/file.ext#Lstart-Lend`
 - Include at least 1 line of context before and after the issue
 
-**IMPORTANT: Do NOT post the comment to GitHub yourself.** Write the formatted review content to a temp file and return it. The calling agent is responsible for posting via `midtown pr review post`.
+Post the comment:
 
 ```bash
-cat > /tmp/review.md << 'REVIEW_EOF'
-<your formatted review content>
-REVIEW_EOF
+gh pr comment <PR_NUMBER> --body "$(cat <<'EOF'
+<your formatted comment>
+EOF
+)"
 ```
-
-You MUST produce a `/tmp/review.md` file even when no issues are found — the "no issues found" message is required output.
 
 ## False Positives to Avoid
 
@@ -244,9 +243,13 @@ Do NOT flag these as issues:
 
 ## Completion
 
-After writing the review content to `/tmp/review.md`, report what you found:
+After posting the GitHub comment, confirm in the project channel:
 
-- If issues were found: list a brief summary of the issues
-- If no issues were found: confirm "No issues found"
+```bash
+midtown channel post "Posted review on PR #<PR_NUMBER>: https://github.com/OWNER/REPO/pull/<PR_NUMBER>#issuecomment-<COMMENT_ID>"
+```
 
-**The skill is complete when `/tmp/review.md` exists with the formatted review content.** The calling agent handles posting to GitHub and sharing in the channel.
+**A code review is NOT complete until:**
+
+1. A GitHub PR comment has been posted (even if "no issues found")
+2. The comment URL has been shared in the channel
