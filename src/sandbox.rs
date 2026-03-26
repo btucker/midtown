@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 /// - Additional configured paths from `[sandbox].allowed_paths` (global + project)
 /// - `~/.midtown/projects/<project>/` (project-scoped daemon state, channel logs, worktrees)
 /// - `~/.midtown/auth/` (auth profile dirs used as CLAUDE_CONFIG_DIR / CODEX_HOME)
+/// - `~/.midtown/platforms/` (shared platform state — symlink target for auth profile data)
 /// - `~/.claude` (Claude Code config, sessions, tasks)
 /// - `~/.codex` (Codex config)
 /// - `~/.local/state/midtown/<project>/` (project-scoped daemon socket, runtime state)
@@ -115,6 +116,14 @@ pub fn writable_dirs(
     // CLAUDE_CONFIG_DIR or CODEX_HOME. Claude Code writes session data, project
     // settings, and tasks there — blocking writes causes immediate process death.
     dirs.push(home.join(".midtown/auth").to_string_lossy().to_string());
+    // Shared platform state: auth profiles symlink projects/plans/tasks into
+    // ~/.midtown/platforms/<provider>/. sandbox-exec resolves symlinks, so the
+    // real target must be writable — not just the symlink source in auth/.
+    dirs.push(
+        home.join(".midtown/platforms")
+            .to_string_lossy()
+            .to_string(),
+    );
     dirs.push(home.join(".claude").to_string_lossy().to_string());
     dirs.push(home.join(".codex").to_string_lossy().to_string());
 
