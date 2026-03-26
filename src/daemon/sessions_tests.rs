@@ -82,14 +82,14 @@ fn test_is_context_exhausted_error_ignores_generic_errors() {
 }
 
 /// Insert a fake session entry for testing (no real process).
-async fn insert_test_session(sm: &SessionManager, name: &str, status: SessionStatus) {
+async fn insert_test_session(sm: &SessionManager, name: &str, status: SessionStatus) -> String {
     let mut sessions = sm.sessions.write().await;
     let slot_id = uuid::Uuid::new_v4().to_string();
     sessions.insert(
         slot_id.clone(),
         CoworkerSession {
             session: None,
-            slot_id,
+            slot_id: slot_id.clone(),
             name: name.to_string(),
             status,
             started_at: Utc::now(),
@@ -113,6 +113,7 @@ async fn insert_test_session(sm: &SessionManager, name: &str, status: SessionSta
             recent_stderr: Vec::new(),
         },
     );
+    slot_id
 }
 
 #[test]
@@ -1151,4 +1152,233 @@ async fn test_get_output_with_path_empty_file_returns_zero_offset() {
         .await
         .expect("should return Some for empty file");
     assert_eq!(offset, 0, "empty file must yield offset 0");
+}
+
+// ── update_session_health tests ───────────────────────────────────────
+
+#[tokio::test]
+async fn test_update_health_init_sets_running_and_session_id() {
+    let sm = test_session_manager();
+    let slot = insert_test_session(&sm, "worker-1", SessionStatus::Starting).await;
+
+    let event = StreamEvent::System {
+        subtype: "init".to_string(),
+        session_id: Some("sess-abc".to_string()),
+        model: None,
+        extra: serde_json::Value::Null,
+    };
+    sm.update_session_health(&slot, &event).await;
+
+    let sessions = sm.sessions.read().await;
+    let cs = sessions.get(&slot).unwrap();
+    assert_eq!(cs.status, SessionStatus::Running);
+    assert_eq!(cs.session_id, Some("sess-abc".to_string()));
+    assert!(cs.last_event_at.is_some());
+}
+
+#[tokio::test]
+async fn test_update_health_result_success_clears_error_flags() {
+    let sm = test_session_manager();
+    let slot = insert_test_session(&sm, "worker-2", SessionStatus::Running).await;
+
+    // Set error flags first
+    {
+        let mut sessions = sm.sessions.write().await;
+        let cs = sessions.get_mut(&slot).unwrap();
+        cs.has_api_error = true;
+        cs.has_auth_error = true;
+        cs.has_usage_limit = true;
+        cs.has_pending_api_call = true;
+    }
+
+    let event = StreamEvent::Result {
+        total_cost_usd: Some(0.05),
+        is_error: false,
+        result: None,
+        subtype: "success".to_string(),
+        duration_ms: Some(100),
+        session_id: None,
+        extra: serde_json::Value::Null,
+        usage: None,
+    };
+    sm.update_session_health(&slot, &event).await;
+
+    let sessions = sm.sessions.read().await;
+    let cs = sessions.get(&slot).unwrap();
+    assert!(!cs.has_api_error);
+    assert!(!cs.has_auth_error);
+    assert!(!cs.has_usage_limit);
+    assert!(!cs.has_pending_api_call);
+    assert_eq!(cs.cost_usd, 0.05);
+}
+
+#[tokio::test]
+async fn test_update_health_result_auth_error() {
+    let sm = test_session_manager();
+    let slot = insert_test_session(&sm, "worker-3", SessionStatus::Running).await;
+
+    let event = StreamEvent::Result {
+        total_cost_usd: None,
+        is_error: true,
+        result: Some("OAuth token has expired".to_string()),
+        subtype: "error".to_string(),
+        duration_ms: None,
+        session_id: None,
+        extra: serde_json::Value::Null,
+        usage: None,
+    };
+    sm.update_session_health(&slot, &event).await;
+
+    let sessions = sm.sessions.read().await;
+    let cs = sessions.get(&slot).unwrap();
+    assert!(cs.has_auth_error);
+    assert!(!cs.has_api_error);
+    assert!(!cs.has_usage_limit);
+}
+
+#[tokio::test]
+async fn test_update_health_result_generic_api_error() {
+    let sm = test_session_manager();
+    let slot = insert_test_session(&sm, "worker-4", SessionStatus::Running).await;
+
+    let event = StreamEvent::Result {
+        total_cost_usd: None,
+        is_error: true,
+        result: Some("Internal server error".to_string()),
+        subtype: "error".to_string(),
+        duration_ms: None,
+        session_id: None,
+        extra: serde_json::Value::Null,
+        usage: None,
+    };
+    sm.update_session_health(&slot, &event).await;
+
+    let sessions = sm.sessions.read().await;
+    let cs = sessions.get(&slot).unwrap();
+    assert!(cs.has_api_error);
+    assert!(!cs.has_auth_error);
+}
+
+#[tokio::test]
+async fn test_update_health_assistant_sets_pending_tool() {
+    let sm = test_session_manager();
+    let slot = insert_test_session(&sm, "worker-5", SessionStatus::Running).await;
+
+    // An assistant message with a tool_use block
+    let message = serde_json::json!({"content": [{
+        "type": "tool_use",
+        "id": "tu_1",
+        "name": "Bash",
+        "input": {"command": "ls"}
+    }]});
+    let event = StreamEvent::Assistant {
+        message,
+        session_id: None,
+        extra: serde_json::Value::Null,
+    };
+    sm.update_session_health(&slot, &event).await;
+
+    let sessions = sm.sessions.read().await;
+    let cs = sessions.get(&slot).unwrap();
+    assert!(cs.has_pending_tool);
+    assert!(!cs.has_pending_api_call);
+}
+
+#[tokio::test]
+async fn test_update_health_user_tool_result_clears_pending() {
+    let sm = test_session_manager();
+    let slot = insert_test_session(&sm, "worker-6", SessionStatus::Running).await;
+
+    // Set pending tool first
+    {
+        let mut sessions = sm.sessions.write().await;
+        let cs = sessions.get_mut(&slot).unwrap();
+        cs.has_pending_tool = true;
+        cs.has_running_subagent = true;
+    }
+
+    // A user message with a tool_result block
+    let message = serde_json::json!({"content": [{
+        "type": "tool_result",
+        "tool_use_id": "tu_1",
+        "content": "result"
+    }]});
+    let event = StreamEvent::User {
+        message,
+        extra: serde_json::Value::Null,
+    };
+    sm.update_session_health(&slot, &event).await;
+
+    let sessions = sm.sessions.read().await;
+    let cs = sessions.get(&slot).unwrap();
+    assert!(!cs.has_pending_tool);
+    assert!(!cs.has_running_subagent);
+    assert!(cs.has_pending_api_call);
+}
+
+// ── handle_stderr_line tests ──────────────────────────────────────────
+
+#[tokio::test]
+async fn test_handle_stderr_line_accumulates() {
+    let sm = test_session_manager();
+    let slot = insert_test_session(&sm, "worker-7", SessionStatus::Running).await;
+
+    sm.handle_stderr_line(&slot, "error 1").await;
+    sm.handle_stderr_line(&slot, "error 2").await;
+
+    let sessions = sm.sessions.read().await;
+    let cs = sessions.get(&slot).unwrap();
+    assert_eq!(cs.recent_stderr, vec!["error 1", "error 2"]);
+}
+
+#[tokio::test]
+async fn test_handle_stderr_line_caps_at_50() {
+    let sm = test_session_manager();
+    let slot = insert_test_session(&sm, "worker-8", SessionStatus::Running).await;
+
+    for i in 0..55 {
+        sm.handle_stderr_line(&slot, &format!("line {}", i)).await;
+    }
+
+    let sessions = sm.sessions.read().await;
+    let cs = sessions.get(&slot).unwrap();
+    assert_eq!(cs.recent_stderr.len(), 50);
+    assert_eq!(cs.recent_stderr[0], "line 5");
+    assert_eq!(cs.recent_stderr[49], "line 54");
+}
+
+#[tokio::test]
+async fn test_handle_stderr_line_detects_tool_name_conflict() {
+    let sm = test_session_manager();
+    let slot = insert_test_session(&sm, "worker-9", SessionStatus::Running).await;
+
+    sm.handle_stderr_line(&slot, "Error: Tool names must be unique across all tools")
+        .await;
+
+    let sessions = sm.sessions.read().await;
+    let cs = sessions.get(&slot).unwrap();
+    assert!(cs.has_tool_name_conflict);
+}
+
+// ── take_recent_stderr tests ──────────────────────────────────────────
+
+#[tokio::test]
+async fn test_take_recent_stderr_drains() {
+    let sm = test_session_manager();
+    let slot = insert_test_session(&sm, "worker-10", SessionStatus::Running).await;
+
+    sm.handle_stderr_line(&slot, "err").await;
+    let lines = sm.take_recent_stderr(&slot).await;
+    assert_eq!(lines, vec!["err"]);
+
+    // Second take should be empty
+    let lines = sm.take_recent_stderr(&slot).await;
+    assert!(lines.is_empty());
+}
+
+#[tokio::test]
+async fn test_take_recent_stderr_unknown_slot() {
+    let sm = test_session_manager();
+    let lines = sm.take_recent_stderr("nonexistent").await;
+    assert!(lines.is_empty());
 }

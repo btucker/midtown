@@ -171,3 +171,74 @@ async fn forwarder_interleaves_stdout_and_stderr() {
     assert!(stderr_count >= 1);
     assert!(stopped);
 }
+
+#[tokio::test]
+async fn forwarder_continues_stdout_after_stderr_closes() {
+    let (agg_tx, mut agg_rx) = session_events::channel();
+    let (stdout_tx, stdout_rx) = mpsc::unbounded_channel();
+    let (stderr_tx, stderr_rx) = mpsc::unbounded_channel();
+
+    session_events::spawn_forwarder(
+        "test".to_string(),
+        "slot-1".to_string(),
+        stdout_rx,
+        stderr_rx,
+        agg_tx,
+    );
+
+    // Send one stderr line, then close stderr while stdout is still open
+    stderr_tx.send("early err".to_string()).unwrap();
+    drop(stderr_tx);
+
+    // Give the forwarder a moment to notice stderr closed
+    tokio::task::yield_now().await;
+
+    // Send stdout events after stderr is closed — these should still arrive
+    stdout_tx.send(StreamEvent::Unknown).unwrap();
+    stdout_tx.send(StreamEvent::Unknown).unwrap();
+    drop(stdout_tx);
+
+    let mut event_count = 0;
+    let mut stderr_count = 0;
+    let mut stopped = false;
+    while let Some(ev) = agg_rx.recv().await {
+        match ev {
+            SessionEvent::Event { .. } => event_count += 1,
+            SessionEvent::Stderr { .. } => stderr_count += 1,
+            SessionEvent::Stopped { .. } => {
+                stopped = true;
+                break;
+            }
+        }
+    }
+    assert_eq!(event_count, 2, "both stdout events should arrive");
+    assert_eq!(stderr_count, 1, "stderr line should arrive");
+    assert!(stopped, "Stopped event should be sent");
+}
+
+#[tokio::test]
+async fn forwarder_exits_when_aggregated_receiver_dropped() {
+    let (agg_tx, agg_rx) = session_events::channel();
+    let (stdout_tx, stdout_rx) = mpsc::unbounded_channel::<StreamEvent>();
+    let (_stderr_tx, stderr_rx) = mpsc::unbounded_channel::<String>();
+
+    let handle = session_events::spawn_forwarder(
+        "test".to_string(),
+        "slot-1".to_string(),
+        stdout_rx,
+        stderr_rx,
+        agg_tx,
+    );
+
+    // Drop the receiver so sends fail
+    drop(agg_rx);
+
+    // Send an event — the forwarder should detect the closed receiver and exit
+    stdout_tx.send(StreamEvent::Unknown).unwrap();
+
+    // The forwarder task should complete (not hang)
+    tokio::time::timeout(std::time::Duration::from_secs(2), handle)
+        .await
+        .expect("forwarder should exit promptly")
+        .expect("forwarder task should not panic");
+}
