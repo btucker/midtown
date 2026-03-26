@@ -793,6 +793,7 @@ fn make_workflow_test_state(
     let cm = crate::coworker::CoworkerManager::new(wm);
     let channel_router = crate::ChannelRouter::new(project_dir.path(), "midtown");
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let (session_agg_tx, _session_agg_rx) = crate::daemon::session_events::channel();
     let state = DaemonState::new(
         "/tmp/workflow-test.sock".into(),
         cm,
@@ -804,6 +805,7 @@ fn make_workflow_test_state(
         None,
         "main".to_string(),
         shutdown_tx,
+        session_agg_tx,
     )
     .expect("daemon state");
 
@@ -1809,6 +1811,7 @@ fn make_insight_test_state(
     let base_dir = temp_dir.path().to_path_buf();
     let channel_router = crate::ChannelRouter::new(&base_dir, repo_name);
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let (session_agg_tx, _session_agg_rx) = crate::daemon::session_events::channel();
     let state = DaemonState::new(
         "/tmp/test.sock".into(),
         cm,
@@ -1820,6 +1823,7 @@ fn make_insight_test_state(
         None,
         "main".to_string(),
         shutdown_tx,
+        session_agg_tx,
     )
     .expect("daemon state");
     (state, temp_dir, _guard)

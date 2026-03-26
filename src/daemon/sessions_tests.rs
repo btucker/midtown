@@ -110,6 +110,7 @@ async fn insert_test_session(sm: &SessionManager, name: &str, status: SessionSta
             is_resume: false,
             output_log: None,
             output_log_path: PathBuf::new(),
+            recent_stderr: Vec::new(),
         },
     );
 }
@@ -304,6 +305,7 @@ async fn test_spawn_with_session_id_sets_session_id_immediately() {
                 is_resume: false,
                 output_log: None,
                 output_log_path: PathBuf::new(),
+                recent_stderr: Vec::new(),
             },
         );
     }
@@ -348,6 +350,7 @@ fn test_select_slot_for_session_id_prefers_live_session() {
             is_resume: false,
             output_log: None,
             output_log_path: PathBuf::new(),
+            recent_stderr: Vec::new(),
         },
     );
     sessions.insert(
@@ -375,6 +378,7 @@ fn test_select_slot_for_session_id_prefers_live_session() {
             is_resume: false,
             output_log: None,
             output_log_path: PathBuf::new(),
+            recent_stderr: Vec::new(),
         },
     );
     sessions.insert(
@@ -402,6 +406,7 @@ fn test_select_slot_for_session_id_prefers_live_session() {
             is_resume: false,
             output_log: None,
             output_log_path: PathBuf::new(),
+            recent_stderr: Vec::new(),
         },
     );
 
@@ -539,6 +544,7 @@ async fn test_graceful_shutdown_all_preserves_session_info() {
                 is_resume: false,
                 output_log: None,
                 output_log_path: PathBuf::new(),
+                recent_stderr: Vec::new(),
             },
         );
     }
@@ -596,6 +602,7 @@ async fn test_collect_session_info_preserves_initial_prompt() {
                 is_resume: false,
                 output_log: None,
                 output_log_path: PathBuf::new(),
+                recent_stderr: Vec::new(),
             },
         );
     }
@@ -651,6 +658,7 @@ async fn test_set_canonical_initial_prompt_overrides_decorated_prompt() {
                 is_resume: false,
                 output_log: None,
                 output_log_path: PathBuf::new(),
+                recent_stderr: Vec::new(),
             },
         );
     }
@@ -852,6 +860,7 @@ async fn test_collect_session_info_preserves_none_initial_prompt() {
                 is_resume: false,
                 output_log: None,
                 output_log_path: PathBuf::new(),
+                recent_stderr: Vec::new(),
             },
         );
     }
@@ -1074,6 +1083,7 @@ async fn test_get_output_with_path_returns_byte_offset() {
                 is_resume: false,
                 output_log: None,
                 output_log_path: log_path.clone(),
+                recent_stderr: Vec::new(),
             },
         );
     }
@@ -1131,6 +1141,7 @@ async fn test_get_output_with_path_empty_file_returns_zero_offset() {
                 is_resume: false,
                 output_log: None,
                 output_log_path: log_path.clone(),
+                recent_stderr: Vec::new(),
             },
         );
     }

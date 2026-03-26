@@ -256,6 +256,9 @@ pub struct CoworkerSession {
     output_log: Option<std::fs::File>,
     /// Path to the output log file.
     output_log_path: PathBuf,
+    /// Recent stderr lines accumulated from the real-time event path.
+    /// Used for crash diagnostics in exit messages.
+    recent_stderr: Vec<String>,
 }
 
 impl CoworkerSession {
@@ -312,6 +315,7 @@ impl CoworkerSession {
             initial_prompt: None,
             output_log,
             output_log_path,
+            recent_stderr: Vec::new(),
         }
     }
 }
@@ -410,6 +414,7 @@ impl SessionManager {
                 initial_prompt: None,
                 output_log: None,
                 output_log_path: std::path::PathBuf::new(),
+                recent_stderr: Vec::new(),
             },
         );
     }
@@ -1189,6 +1194,179 @@ impl SessionManager {
     /// each session's stdout, updates session metadata (session_id, cost,
     /// health flags), and returns events grouped by coworker name.
     ///
+    /// Update health flags on a session from a single stream event.
+    ///
+    /// This is the per-event equivalent of the health-flag updating logic
+    /// from `drain_events()`, called from the real-time event path.
+    pub async fn update_session_health(&self, slot_id: &str, event: &StreamEvent) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(cs) = sessions.get_mut(slot_id) {
+            cs.last_event_at = Some(Utc::now());
+
+            match event {
+                StreamEvent::System {
+                    subtype,
+                    session_id,
+                    ..
+                } if subtype == "init" => {
+                    cs.session_id = session_id.clone();
+                    cs.status = SessionStatus::Running;
+                    debug!(
+                        "Session '{}' initialized (session_id={:?})",
+                        cs.name, cs.session_id
+                    );
+                }
+                StreamEvent::Result {
+                    total_cost_usd,
+                    is_error,
+                    result,
+                    extra,
+                    usage,
+                    ..
+                } => {
+                    // A result event means the current API turn has completed
+                    // (success or error), so it's no longer pending.
+                    cs.has_pending_api_call = false;
+
+                    if let Some(cost) = total_cost_usd {
+                        cs.cost_usd = *cost;
+                    }
+                    if let Some(u) = usage {
+                        cs.input_tokens = u.input_tokens;
+                        cs.output_tokens = u.output_tokens;
+                    }
+                    if *is_error {
+                        // Check error type in priority order:
+                        // 1. Auth errors (require user intervention)
+                        // 2. Usage limits (have a reset time)
+                        // 3. Unrecoverable session errors (needs fresh restart)
+                        // 4. Generic API errors (transient)
+                        let error_msg = result.as_deref().unwrap_or("");
+                        let extra_str = extra.to_string();
+                        let combined = format!("{} {}", error_msg, extra_str);
+
+                        // Errors are mutually exclusive; always clear stale flags first.
+                        cs.has_usage_limit = false;
+                        cs.usage_limit_reset_at = None;
+                        cs.has_api_error = false;
+                        cs.has_auth_error = false;
+
+                        if is_auth_error(&combined) {
+                            cs.has_auth_error = true;
+                            warn!("Session '{}' hit auth error (OAuth token expired)", cs.name);
+                        } else if let Some(reset_time) = parse_usage_limit_reset_time(&combined) {
+                            cs.has_usage_limit = true;
+                            cs.usage_limit_reset_at = Some(reset_time);
+                            debug!(
+                                "Session '{}' hit usage limit, resets at {}",
+                                cs.name, reset_time
+                            );
+                        } else if is_stale_codex_session_error(&combined) {
+                            cs.has_tool_name_conflict = true;
+                            warn!(
+                                "Session '{}' hit stale Codex session/thread error — needs fresh restart",
+                                cs.name
+                            );
+                        } else if is_context_exhausted_error(&combined) {
+                            cs.has_tool_name_conflict = true;
+                            warn!(
+                                "Session '{}' hit context exhaustion ('prompt is too long') — needs fresh restart",
+                                cs.name
+                            );
+                        } else {
+                            // Generic API error (not usage limit or auth)
+                            cs.has_api_error = true;
+                        }
+                    } else {
+                        // Successful result means previous transient session error
+                        // flags have recovered and must not stay sticky.
+                        cs.has_usage_limit = false;
+                        cs.usage_limit_reset_at = None;
+                        cs.has_api_error = false;
+                        cs.has_auth_error = false;
+                    }
+                }
+                StreamEvent::Assistant { message, .. } => {
+                    cs.has_pending_api_call = false;
+                    let (pending, subagent) = extract_tool_state_from_assistant(message);
+                    if pending {
+                        cs.has_pending_tool = true;
+                    }
+                    if let Some(is_subagent) = subagent {
+                        cs.has_running_subagent = is_subagent;
+                    }
+                }
+                StreamEvent::User { message, .. } => {
+                    if has_tool_result(message) {
+                        cs.has_pending_tool = false;
+                        cs.has_running_subagent = false;
+                        // Tool result processed — model is now making an API call
+                        // (possibly with extended thinking). No events will arrive
+                        // until the assistant response begins; exempt from stuck detection.
+                        cs.has_pending_api_call = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Handle a stderr line from a session: accumulate for crash diagnostics
+    /// and check for unrecoverable errors.
+    pub async fn handle_stderr_line(&self, slot_id: &str, line: &str) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(cs) = sessions.get_mut(slot_id) {
+            // Accumulate for crash diagnostics (cap at 50 lines to bound memory)
+            if cs.recent_stderr.len() >= 50 {
+                cs.recent_stderr.remove(0);
+            }
+            cs.recent_stderr.push(line.to_string());
+
+            if !cs.has_tool_name_conflict && line.contains("Tool names must be unique") {
+                warn!(
+                    "Session '{}' hit 'Tool names must be unique' error",
+                    cs.name
+                );
+                cs.has_tool_name_conflict = true;
+            }
+        }
+    }
+
+    /// Take accumulated stderr lines for a session (drains them).
+    pub async fn take_recent_stderr(&self, slot_id: &str) -> Vec<String> {
+        let mut sessions = self.sessions.write().await;
+        if let Some(cs) = sessions.get_mut(slot_id) {
+            std::mem::take(&mut cs.recent_stderr)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Log a stream event to the session's output log file (async, non-blocking).
+    pub async fn log_event(&self, slot_id: &str, event: &StreamEvent) {
+        let sessions = self.sessions.read().await;
+        if let Some(cs) = sessions.get(slot_id)
+            && cs.output_log.is_some()
+        {
+            let log_path = cs.output_log_path.clone();
+            let json = serde_json::to_string(event).ok();
+            drop(sessions);
+            if let Some(json) = json {
+                tokio::task::spawn_blocking(move || {
+                    use std::io::Write;
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&log_path)
+                    {
+                        let _ = writeln!(file, "{}", json);
+                        let _ = file.flush();
+                    }
+                });
+            }
+        }
+    }
+
     /// Also detects sessions that have exited: returns their names in the
     /// second tuple element along with stderr lines from the exited sessions
     /// in the third tuple element (as a HashMap<name, Vec<stderr_lines>>).

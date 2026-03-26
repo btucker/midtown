@@ -9,7 +9,6 @@ use tracing::debug;
 /// `mpsc::UnboundedReceiver<SessionEvent>`, eliminating the need to poll
 /// individual session receivers on a timer.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum SessionEvent {
     /// A parsed stdout event from a session.
     Event {
@@ -19,6 +18,7 @@ pub enum SessionEvent {
     },
     /// A stderr line from a session.
     Stderr {
+        #[allow(dead_code)]
         name: String,
         slot_id: String,
         line: String,
@@ -28,7 +28,6 @@ pub enum SessionEvent {
 }
 
 /// Create a new aggregated session event channel.
-#[allow(dead_code)]
 pub fn channel() -> (
     mpsc::UnboundedSender<SessionEvent>,
     mpsc::UnboundedReceiver<SessionEvent>,

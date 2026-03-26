@@ -57,6 +57,7 @@ fn make_pool_toggle_test_state(
     let cm = crate::coworker::CoworkerManager::new(wm);
     let channel_router = crate::ChannelRouter::new(repo_dir.path(), "midtown");
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let (session_agg_tx, _session_agg_rx) = crate::daemon::session_events::channel();
 
     let state = DaemonState::new(
         "/tmp/test.sock".into(),
@@ -69,6 +70,7 @@ fn make_pool_toggle_test_state(
         None,
         "main".to_string(),
         shutdown_tx,
+        session_agg_tx,
     )
     .expect("daemon state");
 
