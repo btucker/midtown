@@ -506,6 +506,7 @@ pub(super) async fn handle_channel_post(
                                     config.auth_provider = provider;
                                 }
                                 config.working_dir = Some(record.working_dir.clone().into());
+                                config.agent_type = record.agent_type.clone();
                                 config.persisted_initial_prompt = record.initial_prompt.clone();
                                 match crate::daemon::effects::spawn_with_resume_fallback(
                                     state,
