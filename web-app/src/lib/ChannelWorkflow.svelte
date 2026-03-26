@@ -80,6 +80,33 @@ async function handleWorkflowChange(event) {
 	}
 }
 
+let togglingLeadDriven = $state(false);
+
+async function handleLeadDrivenToggle(event) {
+	const channel = $activeChannel;
+	if (!channel) return;
+
+	const enabled = event.target.checked;
+	togglingLeadDriven = true;
+	try {
+		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/workflow`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ lead_driven: enabled }),
+		});
+		if (!res.ok) {
+			const body = await res.json().catch(() => ({}));
+			throw new Error(body.error || `HTTP ${res.status}`);
+		}
+		fetchWorkflow();
+	} catch (e) {
+		console.error("Failed to toggle lead-driven:", e);
+		error = e.message;
+	} finally {
+		togglingLeadDriven = false;
+	}
+}
+
 let taskEntries = $derived(data?.state?.tasks ? Object.entries(data.state.tasks) : []);
 </script>
 
@@ -134,6 +161,29 @@ let taskEntries = $derived(data?.state?.tasks ? Object.entries(data.state.tasks)
             <code class="mono">~/.midtown/projects/&lt;project&gt;/workflows/</code>
           </p>
         {/if}
+      </section>
+
+      <!-- Lead-driven toggle -->
+      <section class="workflow-section">
+        <h2 class="section-title">Lead-Driven Mode</h2>
+        <label class="toggle-row">
+          <input
+            type="checkbox"
+            class="toggle-checkbox"
+            checked={data.lead_driven}
+            onchange={handleLeadDrivenToggle}
+            disabled={togglingLeadDriven}
+          />
+          <span class="toggle-label">
+            Lead controls task dispatch
+            {#if togglingLeadDriven}
+              <span class="assigning-hint">Saving...</span>
+            {/if}
+          </span>
+        </label>
+        <p class="toggle-description">
+          When enabled, the channel lead decides when to create and assign tasks instead of the daemon dispatching automatically.
+        </p>
       </section>
 
       <!-- Mermaid diagram -->
@@ -307,6 +357,40 @@ let taskEntries = $derived(data?.state?.tasks ? Object.entries(data.state.tasks)
   .unassign-btn:disabled {
     opacity: 0.6;
     cursor: not-allowed;
+  }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+  }
+
+  .toggle-checkbox {
+    width: 16px;
+    height: 16px;
+    accent-color: hsl(var(--primary));
+    cursor: pointer;
+  }
+
+  .toggle-checkbox:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .toggle-label {
+    font-size: 0.84rem;
+    color: hsl(var(--foreground));
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .toggle-description {
+    font-size: 0.78rem;
+    color: hsl(var(--muted-foreground));
+    margin: 6px 0 0;
+    line-height: 1.4;
   }
 
   .empty-hint {
