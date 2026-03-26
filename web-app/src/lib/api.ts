@@ -10,7 +10,6 @@ import {
 	coworkers,
 	daemonStatus,
 	deepLinkMsgId,
-	dismissedThreads,
 	kanbanData,
 	maxInProgressTasks,
 	messages,
@@ -63,7 +62,7 @@ function extractThreadSubject(content: string | null | undefined): string {
 	return plain.length > 60 ? `${plain.slice(0, 57)}...` : plain;
 }
 
-// Track a thread in the sidebar (unless previously dismissed by user).
+// Track a thread in the sidebar.
 // When the thread is already tracked, preserves lastActivity (avoids re-sorting)
 // and only upgrades the subject if a better one is available.
 function trackThread(
@@ -72,8 +71,6 @@ function trackThread(
 	content: string | null | undefined,
 	opts?: { replyCount?: number; replyContent?: string | null },
 ): void {
-	const dismissed = get(dismissedThreads);
-	if (dismissed.has(threadParentId)) return;
 	const newSubject = extractThreadSubject(content);
 	// Use reply content for fullText when available, otherwise fall back to parent content
 	const newFullText = extractPlainText(opts?.replyContent ?? content);
@@ -97,14 +94,13 @@ function trackThread(
 	});
 }
 
-// Dismiss a tracked thread — removes from sidebar, prevents re-tracking.
+// Dismiss a tracked thread — removes from sidebar.
 export function dismissThread(threadParentId: string): void {
 	trackedThreads.update((tracked) => {
 		const next = { ...tracked };
 		delete next[threadParentId];
 		return next;
 	});
-	dismissedThreads.update((s) => new Set([...s, threadParentId]));
 	threadUnreadCounts.update((counts) => {
 		const next = { ...counts };
 		delete next[threadParentId];
@@ -181,6 +177,38 @@ export async function setOpenThreads(channel: string, threads: string[]): Promis
 		console.warn("Failed to set open threads:", err);
 	}
 }
+
+const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
+const AUTO_CLOSE_INTERVAL_MS = 5 * 60 * 1000;
+
+// Auto-close threads with no activity for 12+ hours
+setInterval(() => {
+	const now = Date.now();
+	const tracked = get(trackedThreads);
+	const ot = get(openThreads);
+	let changed = false;
+	const updated = { ...ot };
+
+	for (const [channel, threadIds] of Object.entries(updated)) {
+		const remaining = new Set<string>();
+		for (const id of threadIds) {
+			const thread = tracked[id];
+			if (thread && now - new Date(thread.lastActivity).getTime() < TWELVE_HOURS_MS) {
+				remaining.add(id);
+			} else {
+				changed = true;
+			}
+		}
+		if (remaining.size !== threadIds.size) {
+			updated[channel] = remaining;
+			setOpenThreads(channel, [...remaining]);
+		}
+	}
+
+	if (changed) {
+		openThreads.set(updated);
+	}
+}, AUTO_CLOSE_INTERVAL_MS);
 
 // Fetch the list of available channels
 export async function fetchChannels(includeArchived = false): Promise<Channel[]> {
@@ -309,7 +337,6 @@ export function switchProject(projectName: string, webhookPort: number | null): 
 	if (lastProject !== projectName) {
 		trackedThreads.set({});
 		threadUnreadCounts.set({});
-		dismissedThreads.set(new Set());
 	}
 	if (typeof localStorage !== "undefined") {
 		localStorage.setItem("midtown_thread_project", projectName);
@@ -776,6 +803,21 @@ export function handleUpdate(update: Record<string, unknown>): void {
 								...(replyFullText ? { fullText: replyFullText } : {}),
 							},
 						}));
+					}
+
+					// Reopen thread in sidebar if it was auto-closed (not in openThreads)
+					const updatedTracked = get(trackedThreads);
+					const threadInfo = updatedTracked[threadParentId];
+					if (threadInfo) {
+						const ot = get(openThreads);
+						const channelThreads = ot[threadInfo.channelName];
+						if (!channelThreads || !channelThreads.has(threadParentId)) {
+							openThreads.update((current) => ({
+								...current,
+								[threadInfo.channelName]: new Set([...(current[threadInfo.channelName] || []), threadParentId]),
+							}));
+							setOpenThreads(threadInfo.channelName, [...(ot[threadInfo.channelName] || []), threadParentId]);
+						}
 					}
 				}
 

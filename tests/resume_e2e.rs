@@ -494,6 +494,9 @@ fn test_daemon_restart_resumes_sessions() {
     thread::sleep(Duration::from_secs(2));
 
     // 5. Restart daemon (same fixture, same state directory)
+    // Set RUST_LOG so daemon produces diagnostic output
+    // SAFETY: test runs single-threaded (--test-threads=1), no other threads reading env
+    unsafe { std::env::set_var("MIDTOWN_LOG_LEVEL", "debug") };
     eprintln!("Restarting daemon...");
     assert!(fixture.start_daemon(), "Daemon should restart successfully");
 
@@ -531,6 +534,40 @@ fn test_daemon_restart_resumes_sessions() {
         {
             let age = resume_start.elapsed().as_secs();
             eprintln!("Resumed session died after {}s post-restart", age);
+
+            // Dump full snapshot for debugging
+            if let Some(snap) = fixture.rpc_call("snapshot", None) {
+                eprintln!(
+                    "Snapshot after session death:\n{}",
+                    serde_json::to_string_pretty(&snap).unwrap_or_default()
+                );
+            }
+
+            // Dump channel messages for any error output
+            let messages = fixture.read_channel_messages();
+            eprintln!("Channel messages: {:?}", messages);
+
+            // Read daemon logs from the project dir (daemonize redirects there)
+            let daemon_log_dir = fixture.project_dir.join("logs");
+            for log_name in &["daemon.out", "daemon.err"] {
+                let log_path = daemon_log_dir.join(log_name);
+                if let Ok(log) = std::fs::read_to_string(&log_path) {
+                    let lines: Vec<&str> = log.lines().collect();
+                    let start = lines.len().saturating_sub(80);
+                    eprintln!(
+                        "=== {} (last {} of {} lines) ===",
+                        log_name,
+                        lines.len() - start,
+                        lines.len()
+                    );
+                    for line in &lines[start..] {
+                        eprintln!("  {}", line);
+                    }
+                } else {
+                    eprintln!("=== {} not found at {} ===", log_name, log_path.display());
+                }
+            }
+
             if age < 30 {
                 panic!("Failed resume after daemon restart (died in {}s)", age);
             }

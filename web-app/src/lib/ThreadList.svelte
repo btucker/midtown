@@ -3,7 +3,7 @@ import X from "@lucide/svelte/icons/x";
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
 import { dismissThread, openThread } from "./api.ts";
 import { getChannelThreads, getCompletedTaskThreadIds, getTaskThreadIds } from "./channelUtils.ts";
-import { dismissedThreads, kanbanData, messagesByChannel, threadUnreadCounts, trackedThreads } from "./store.ts";
+import { kanbanData, messagesByChannel, threadUnreadCounts, trackedThreads } from "./store.ts";
 
 const sidebar = useSidebar();
 
@@ -29,7 +29,6 @@ $effect(() => {
 		for (const id of ids) delete next[id];
 		return next;
 	});
-	dismissedThreads.update((s) => new Set([...s, ...ids]));
 });
 
 function handleClick(thread) {

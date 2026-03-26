@@ -238,11 +238,6 @@ trackedThreads.subscribe((v) => debouncedSaveToLocalStorage("midtown_tracked_thr
 export const threadUnreadCounts = writable<Record<string, number>>(loadFromLocalStorage("midtown_thread_unread", {}));
 threadUnreadCounts.subscribe((v) => debouncedSaveToLocalStorage("midtown_thread_unread", v));
 
-// Dismissed threads: user clicked X — prevents re-tracking. Stored as array, used as Set.
-const _dismissedArr = loadFromLocalStorage<string[]>("midtown_dismissed_threads", []);
-export const dismissedThreads = writable<Set<string>>(new Set(_dismissedArr));
-dismissedThreads.subscribe((s) => debouncedSaveToLocalStorage("midtown_dismissed_threads", [...s]));
-
 // ── Open threads (server-synced) ────────────────────────────────────────────
 // Per-channel set of thread IDs visible in sidebar. Synced from daemon API.
 // Format: { [channelName]: Set<threadParentId> }

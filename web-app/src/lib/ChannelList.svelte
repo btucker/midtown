@@ -19,7 +19,6 @@ import {
 	activeProject,
 	channelOrder,
 	channels,
-	dismissedThreads,
 	messagesByChannel,
 	openThreads,
 	showArchivedChannels,
