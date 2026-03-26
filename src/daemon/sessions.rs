@@ -12,7 +12,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::{DateTime, Datelike, TimeZone, Utc};
-use tokio::sync::RwLock;
+use std::sync::Arc;
+
+use tokio::sync::{Notify, RwLock};
 use tracing::{debug, info, warn};
 
 use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent, shutdown_codex_runtime};
@@ -331,6 +333,11 @@ type TestIsAliveHook = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
 pub struct SessionManager {
     sessions: RwLock<HashMap<String, CoworkerSession>>,
     repo_name: String,
+    /// Signaled by background stdout reader tasks when any session produces output.
+    ///
+    /// The daemon's event loop awaits this alongside the drain interval tick,
+    /// enabling near-zero-latency output processing instead of polling.
+    drain_notify: Arc<Notify>,
     #[cfg(test)]
     test_send_message_to_session_id_hook: std::sync::Mutex<Option<TestSendMessageToSessionIdHook>>,
     #[cfg(test)]
@@ -344,11 +351,20 @@ impl SessionManager {
         Self {
             sessions: RwLock::new(HashMap::new()),
             repo_name,
+            drain_notify: Arc::new(Notify::new()),
             #[cfg(test)]
             test_send_message_to_session_id_hook: std::sync::Mutex::new(None),
             #[cfg(test)]
             test_is_alive_hook: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Returns a handle the event loop can `.notified().await` on.
+    ///
+    /// Wakes whenever any session's stdout reader produces output, allowing
+    /// the drain to run immediately instead of waiting for the next tick.
+    pub fn drain_notify(&self) -> Arc<Notify> {
+        Arc::clone(&self.drain_notify)
     }
 
     #[cfg(test)]
@@ -517,8 +533,12 @@ impl SessionManager {
         // No name-uniqueness check needed — slot_id is always unique (UUID).
         // Multiple sessions with the same name are now allowed (keyed by slot_id).
 
+        // Inject the drain notify so the stdout reader wakes the event loop.
+        let mut config = config.clone();
+        config.output_notify = Some(Arc::clone(&self.drain_notify));
+
         // Spawn the headless process
-        let mut session = HeadlessSession::spawn(config)
+        let mut session = HeadlessSession::spawn(&config)
             .await
             .map_err(|e| crate::Error::Rpc {
                 code: -32603,
@@ -617,6 +637,10 @@ impl SessionManager {
     ) -> Result<String, crate::Error> {
         let slot_id = uuid::Uuid::new_v4().to_string();
         let preassigned_session_id = config.session_id.clone();
+
+        // Inject the drain notify so the stdout reader wakes the event loop.
+        let mut config = config;
+        config.output_notify = Some(Arc::clone(&self.drain_notify));
 
         // Spawn the headless process
         let mut session = HeadlessSession::spawn(&config)
