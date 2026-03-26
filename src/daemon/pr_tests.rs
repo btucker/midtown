@@ -5923,3 +5923,107 @@ fn no_skip_for_eligible_pr() {
     let result = should_skip_pr_for_review(&pf, &ctx, false, 45, &pr, &HashMap::new());
     assert!(result.is_none());
 }
+
+// ── Reviewer spawn storm regression tests (!2511) ────────────────────────────
+
+/// When a PR closes, pending review tasks for that PR should be auto-completed.
+/// Previously, detect_abandoned_pr_tasks only checked pr_task_index (built from
+/// sessions), missing review tasks that had no session yet.
+#[test]
+fn detect_abandoned_review_tasks_completes_pending_review_on_closed_pr() {
+    use crate::task_store::{Task, TaskStatus};
+
+    let review_task = Task {
+        id: "200".to_string(),
+        subject: "Review PR #42".to_string(),
+        status: TaskStatus::Pending,
+        agent_type: "midtown-code-reviewer".to_string(),
+        pr: Some(42),
+        parent: Some("100".to_string()),
+        ..Default::default()
+    };
+
+    let open_pr_numbers: Vec<u64> = vec![]; // PR #42 is closed
+    let effects = detect_abandoned_review_tasks(&[review_task], &open_pr_numbers, "test-repo");
+
+    assert_eq!(effects.len(), 1, "Should complete the pending review task");
+    assert!(
+        matches!(
+            &effects[0],
+            Effect::CompleteTask { task_id, .. } if task_id == "200"
+        ),
+        "Should emit CompleteTask for the review task, got: {:?}",
+        effects[0]
+    );
+}
+
+/// Review tasks for open PRs should NOT be completed.
+#[test]
+fn detect_abandoned_review_tasks_skips_open_pr() {
+    use crate::task_store::{Task, TaskStatus};
+
+    let review_task = Task {
+        id: "200".to_string(),
+        subject: "Review PR #42".to_string(),
+        status: TaskStatus::Pending,
+        agent_type: "midtown-code-reviewer".to_string(),
+        pr: Some(42),
+        parent: Some("100".to_string()),
+        ..Default::default()
+    };
+
+    let open_pr_numbers: Vec<u64> = vec![42]; // PR #42 is still open
+    let effects = detect_abandoned_review_tasks(&[review_task], &open_pr_numbers, "test-repo");
+
+    assert!(
+        effects.is_empty(),
+        "Should not complete review task for open PR"
+    );
+}
+
+/// Already-completed review tasks should not be re-completed.
+#[test]
+fn detect_abandoned_review_tasks_skips_completed_tasks() {
+    use crate::task_store::{Task, TaskStatus};
+
+    let review_task = Task {
+        id: "200".to_string(),
+        subject: "Review PR #42".to_string(),
+        status: TaskStatus::Completed,
+        agent_type: "midtown-code-reviewer".to_string(),
+        pr: Some(42),
+        parent: Some("100".to_string()),
+        ..Default::default()
+    };
+
+    let open_pr_numbers: Vec<u64> = vec![];
+    let effects = detect_abandoned_review_tasks(&[review_task], &open_pr_numbers, "test-repo");
+
+    assert!(
+        effects.is_empty(),
+        "Should not re-complete an already completed review task"
+    );
+}
+
+/// CreateReviewTask effect should be tracked by extract_review_pr_numbers_from_effects
+/// to prevent duplicate review task creation across ticks.
+#[test]
+fn extract_review_pr_numbers_tracks_create_review_task() {
+    let effects = vec![
+        Effect::CreateReviewTask {
+            pr_number: 42,
+            parent_task_id: Some("100".to_string()),
+            channel: Some("daemon-core".to_string()),
+        },
+        Effect::CreateReviewTask {
+            pr_number: 99,
+            parent_task_id: None,
+            channel: None,
+        },
+    ];
+
+    let pr_numbers = super::super::effects::extract_review_pr_numbers_from_effects(&effects);
+    assert!(pr_numbers.contains(&42), "Should track PR #42");
+    assert!(pr_numbers.contains(&99), "Should track PR #99");
+    assert_eq!(pr_numbers.len(), 2);
+}

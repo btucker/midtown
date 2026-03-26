@@ -1172,6 +1172,18 @@ fn select_coworker_name(
 ) -> Option<(String, bool)> {
     let is_reviewer_task = task.agent_type == "midtown-code-reviewer";
 
+    // Hard cap: refuse to spawn if active sessions already meet/exceed the task
+    // limit. This prevents spawn storms even when task state tracking has gaps
+    // (e.g., review tasks not yet in pr_task_index). (!2511)
+    let session_count = ps.tick_active_session_names.len() + loop_state.spawns_queued_this_tick;
+    if session_count >= ps.tick_max_in_progress_tasks {
+        debug!(
+            "Session hard cap reached ({} >= {}), deferring task !{}",
+            session_count, ps.tick_max_in_progress_tasks, task.id
+        );
+        return None;
+    }
+
     // Step 1: Determine the coworker name by checking grouping strategies.
     // Reviewer tasks skip grouping entirely — they share a PR number with the
     // implementation task, so grouping would route them to the author's session.
@@ -1240,8 +1252,16 @@ fn allocate_fresh_coworker_name(
     {
         let candidate = format!("{}-reviewer", parent_task.agent_name).to_lowercase();
         if excluded_names.contains(&candidate) {
-            let suffix = fastrand::u32(1000..9999);
-            format!("{}-{}", candidate, suffix)
+            // Retry up to 10 times to find a suffix that doesn't collide.
+            let mut suffixed = candidate.clone();
+            for _ in 0..10 {
+                let suffix = fastrand::u32(1000..9999);
+                suffixed = format!("{}-{}", candidate, suffix);
+                if !excluded_names.contains(&suffixed) {
+                    break;
+                }
+            }
+            suffixed
         } else {
             candidate
         }

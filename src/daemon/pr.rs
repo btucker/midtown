@@ -375,6 +375,46 @@ fn detect_abandoned_pr_tasks(
     effects
 }
 
+/// Detect review tasks for PRs that have closed and auto-complete them.
+///
+/// Unlike `detect_abandoned_pr_tasks` (which relies on `pr_task_index` built from
+/// session records), this scans the task store directly. Review tasks that are
+/// still Pending (never spawned a session) won't appear in `pr_task_index`,
+/// so they'd never be cleaned up when their PR closes — causing an infinite
+/// respawn loop (!2511).
+fn detect_abandoned_review_tasks(
+    tasks: &[crate::task_store::Task],
+    open_pr_numbers: &[u64],
+    dir_key: &str,
+) -> Vec<Effect> {
+    let open_set: HashSet<u64> = open_pr_numbers.iter().copied().collect();
+    let mut effects = Vec::new();
+
+    for task in tasks {
+        // Only review tasks
+        if task.agent_type != "midtown-code-reviewer" {
+            continue;
+        }
+        // Only tasks with a PR association
+        let Some(pr_number) = task.pr else {
+            continue;
+        };
+        // Only pending or in-progress (don't re-complete already-completed tasks)
+        if matches!(task.status, crate::task_store::TaskStatus::Completed) {
+            continue;
+        }
+        // PR is closed
+        if !open_set.contains(&pr_number) {
+            effects.push(Effect::CompleteTask {
+                task_id: task.id.clone(),
+                dir_key: dir_key.to_string(),
+            });
+        }
+    }
+
+    effects
+}
+
 /// Resolve the owner of a PR from snapshot data.
 ///
 /// Uses session-based resolution only: PR# → task → session → name.
@@ -550,6 +590,15 @@ async fn update_pr_caches(
         .collect();
     effects.extend(detect_abandoned_pr_tasks(
         tick,
+        tasks,
+        &open_pr_numbers,
+        state.paths.dir_key(),
+    ));
+
+    // Auto-complete review tasks for closed PRs. This catches review tasks
+    // that have no session record yet (Pending), which detect_abandoned_pr_tasks
+    // misses because it only checks pr_task_index (session-derived).
+    effects.extend(detect_abandoned_review_tasks(
         tasks,
         &open_pr_numbers,
         state.paths.dir_key(),
@@ -2926,6 +2975,16 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             debug!(
                 "PR #{} review pending but local reviewer spawn disabled (execution.review_mode={:?})",
                 pr_number, review_mode
+            );
+            continue;
+        }
+
+        // Guard: skip if a CreateReviewTask effect is already in-flight for
+        // this PR from a previous tick (!2511).
+        if state.is_review_pr_in_flight(pr_number) {
+            debug!(
+                "PR #{}: skipping reviewer spawn — CreateReviewTask in-flight",
+                pr_number
             );
             continue;
         }

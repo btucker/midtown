@@ -803,6 +803,22 @@ pub(crate) fn extract_claimed_task_ids_from_effects(effects: &[Effect]) -> HashS
     ids
 }
 
+/// Extract PR numbers from CreateReviewTask effects in this batch.
+///
+/// Used to prevent duplicate review task creation across ticks: if a
+/// CreateReviewTask has already been emitted for a PR number, we should not
+/// emit another one. Unlike task IDs (which are generated dynamically during
+/// effect execution), PR numbers are known at effect creation time.
+pub(crate) fn extract_review_pr_numbers_from_effects(effects: &[Effect]) -> HashSet<u64> {
+    let mut prs = HashSet::new();
+    for effect in effects {
+        if let Effect::CreateReviewTask { pr_number, .. } = effect {
+            prs.insert(*pr_number);
+        }
+    }
+    prs
+}
+
 /// Extract task IDs that are being completed by effects in this batch.
 ///
 /// Used to prevent orphan recovery from spawning a new session for a task
@@ -2223,6 +2239,8 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         warn!("Failed to create review task for PR #{}: {}", pr_number, e);
                     }
                 }
+                // Clear the in-flight guard so the PR can be re-evaluated if needed.
+                state.clear_review_pr_in_flight(pr_number);
             }
             Effect::SendPushNotification {
                 title,
