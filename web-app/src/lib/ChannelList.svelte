@@ -96,13 +96,13 @@ $: orderedChannels = (() => {
 // svelte-dnd-action needs items with `id` fields
 $: dndChannelItems = orderedChannels.map((ch) => ({ ...ch, id: ch.name }));
 
-function handleDndConsider(e) {
+function handleDndConsider(e: CustomEvent) {
 	dndChannelItems = e.detail.items;
 }
 
-function handleDndFinalize(e) {
+function handleDndFinalize(e: CustomEvent) {
 	dndChannelItems = e.detail.items;
-	channelOrder.set(dndChannelItems.map((item) => item.name));
+	channelOrder.set(dndChannelItems.map((item: { name: string }) => item.name));
 }
 
 $: forkNames = new Set(Object.values($threadForkOwners));
@@ -422,7 +422,7 @@ function handleKeyDown(event) {
     {@const hasTrackedThreads = getChannelHasTrackedThreads(channel.name, $trackedThreads, taskThreadIds, completedTaskThreadIds)}
     {@const hasUnread = channel.unread > 0 && channel.name !== 'ops'}
 
-    <div class="mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
+    <div class="channel-row mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
       <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
         <span
           class="drag-handle flex items-center justify-center w-4 ml-1 cursor-grab text-muted-foreground/40 hover:text-muted-foreground/80 transition-colors duration-150 shrink-0"
@@ -690,7 +690,7 @@ function handleKeyDown(event) {
   }
 
   /* Show drag handle on hover of the parent channel row */
-  :global(.mb-0\.5:hover) .drag-handle {
+  :global(.channel-row:hover) .drag-handle {
     opacity: 1;
   }
 
