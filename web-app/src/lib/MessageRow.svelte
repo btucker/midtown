@@ -131,7 +131,7 @@ let hidden = $derived(!showToolData && isToolOnly(msg));
   <!-- Tool-only message with tool data hidden: render nothing -->
 {:else if isTaskDivider(msg)}
   <!-- Task divider: centered HR with task link -->
-  <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem] select-none">
+  <div class="flex items-center gap-2 py-3 text-muted-foreground/70 text-[0.72rem] select-none">
     <div class="flex-1 h-px bg-border/60"></div>
     <span>{@html renderInline(msg.content.replace(/^───\s*/, '').replace(/\s*───$/, ''))}</span>
     <div class="flex-1 h-px bg-border/60"></div>

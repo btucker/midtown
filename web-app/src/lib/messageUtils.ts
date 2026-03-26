@@ -22,9 +22,9 @@ export const AVENUE_COLORS: Record<string, string> = {
 	prince: "#d7afff", // lavender (Indexed 183)
 	mercer: "#ffaf87", // salmon (Indexed 216)
 	lead: "#E3BD3F", // Gold/Amber
-	github: "#585858", // DarkGray
-	system: "#585858", // DarkGray
-	daemon: "#585858", // DarkGray
+	github: "hsl(var(--muted-foreground))", // Theme-aware muted (adapts to light/dark)
+	system: "hsl(var(--muted-foreground))", // Theme-aware muted (adapts to light/dark)
+	daemon: "hsl(var(--muted-foreground))", // Theme-aware muted (adapts to light/dark)
 	midtown: "#E3BD3F", // Gold/Amber (project lead)
 	user: "hsl(var(--foreground))", // Human user — always use the foreground color (black in light, white in dark)
 };

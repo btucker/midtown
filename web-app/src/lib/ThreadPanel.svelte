@@ -670,7 +670,7 @@ let prevThreadId = null;
           />
 
         <!-- Separator with reply count -->
-        <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem]">
+        <div class="flex items-center gap-2 py-3 text-muted-foreground/70 text-[0.72rem]">
           <div class="flex-1 h-px bg-border/60"></div>
           <span>{visibleReplyCount === 0 ? 'no replies yet' : visibleReplyCount === 1 ? '1 reply' : `${visibleReplyCount} replies`}</span>
           <div class="flex-1 h-px bg-border/60"></div>
@@ -829,7 +829,7 @@ let prevThreadId = null;
         />
 
         <!-- Separator with reply count -->
-        <div class="flex items-center gap-2 py-3 text-muted-foreground/50 text-[0.72rem]">
+        <div class="flex items-center gap-2 py-3 text-muted-foreground/70 text-[0.72rem]">
           <div class="flex-1 h-px bg-border/60"></div>
           <span>{visibleReplyCount === 0 ? 'no replies yet' : visibleReplyCount === 1 ? '1 reply' : `${visibleReplyCount} replies`}</span>
           <div class="flex-1 h-px bg-border/60"></div>
