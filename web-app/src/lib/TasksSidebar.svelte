@@ -90,19 +90,21 @@ function getChannelLabel(task: Task): string {
     {@const cw = task.owner ? cwMap.get(task.owner) ?? null : null}
     {@const reviewInfo = reviewerByTaskId.get(String(task.id))}
     {@const channelLabel = getChannelLabel(task)}
-    <div class="relative group">
-      <TaskRow
-        {task}
-        {cw}
-        reviewer={reviewInfo?.reviewer ?? null}
-        reviewPosted={reviewInfo?.reviewPosted ?? false}
-        variant="row"
-        onclick={() => handleTaskClick(task)}
-      />
+    <div class="flex items-start gap-0 px-3 py-[3px] rounded-[5px] hover:bg-sidebar-accent cursor-pointer" onclick={() => handleTaskClick(task)}>
+      <div class="flex-1 min-w-0">
+        <TaskRow
+          {task}
+          {cw}
+          reviewer={reviewInfo?.reviewer ?? null}
+          reviewPosted={reviewInfo?.reviewPosted ?? false}
+          variant="row"
+          onclick={() => handleTaskClick(task)}
+        />
+      </div>
       {#if channelLabel}
         <span
-          class="absolute right-2 top-[5px] pointer-events-none"
-          style="font-size: 10px; color: #555; max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+          class="shrink-0 mt-[5px] ml-1"
+          style="font-size: 10px; color: #555;"
           title={channelLabel}
         >#{channelLabel}</span>
       {/if}

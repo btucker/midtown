@@ -281,7 +281,13 @@ function handleKeyDown(event: KeyboardEvent) {
 </script>
 
 <div class="flex flex-col gap-1 p-3 overflow-y-auto">
-  <!-- Channel create header (archive toggle, + button) -->
+  <!-- Needs Attention section (top priority) -->
+  <NeedsAttention onItemClick={handleAttentionItemClick} />
+
+  <!-- Unified Tasks section -->
+  <TasksSidebar mainChannelName={$activeProject || "midtown"} />
+
+  <!-- Channel header (archive toggle, + button) -->
   <div class="flex items-center justify-between px-3 pt-2 pb-1">
     <div class="section-heading text-xs font-bold text-muted-foreground uppercase tracking-wide">Channels</div>
     <div class="flex gap-1">
@@ -338,12 +344,6 @@ function handleKeyDown(event: KeyboardEvent) {
       </div>
     </div>
   {/if}
-
-  <!-- Needs Attention section -->
-  <NeedsAttention onItemClick={handleAttentionItemClick} />
-
-  <!-- Unified Tasks section -->
-  <TasksSidebar mainChannelName={$activeProject || "midtown"} />
 
   <!-- Channels with inline threads (drag-to-reorder) -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
