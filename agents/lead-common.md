@@ -175,8 +175,8 @@ Never commit directly to main. Never merge your own PRs.
 Use `midtown task` CLI commands. Do NOT use Claude Code's TaskCreate/TaskUpdate/TaskList tools — those are invisible to coworkers and the daemon.
 
 ```bash
-midtown task create "Subject" --agent-name "phantom-gate" --description "Details..." --channel "<most relevant channel>"
-midtown task create "Fix review feedback" --agent-name "broken-mirror" --description "..." --pr 940   # link to existing PR
+midtown task create "Subject" --agent-name "phantom-gate" --color "#7c3aed" --icon "shield" --description "Details..." --channel "<most relevant channel>"
+midtown task create "Fix review feedback" --agent-name "broken-mirror" --color "#e05252" --icon "message-square" --description "..." --pr 940   # link to existing PR
 midtown task list                                    # view all tasks
 midtown task view <id>                               # view task details
 midtown task update <id> --owner <name>              # manual assignment (rare)
@@ -186,6 +186,8 @@ midtown task done <id>                               # mark complete
 ```
 
 **Agent names:** Always provide a creative `--agent-name` when creating tasks. Pick a short evocative metaphor (1-3 words, hyphenated) that captures the essence of the work — similar to fork names. Examples: `"phantom-gate"`, `"broken-mirror"`, `"iron-curtain"`, `"deep-root"`.
+
+**Color and icon:** Always include `--color` and `--icon` when creating tasks. `--color` accepts any CSS color string (e.g., `"#7c3aed"`, `"#e05252"`, `"#2563eb"`). `--icon` accepts a Lucide icon name that matches the task's domain — e.g., `"shield"` for auth/security, `"database"` for data work, `"zap"` for performance, `"paintbrush"` for UI, `"bug"` for bugfixes, `"wrench"` for refactoring, `"flask-conical"` for testing, `"file-text"` for docs.
 
 **Task lifecycle:** `pending` -> `in_progress` -> `done`. The daemon assigns pending tasks to idle coworkers automatically.
 
@@ -206,7 +208,7 @@ Any lead can create tasks and assign them to any channel using `--channel`. If y
 **Always use `--channel`** when creating tasks for topic channels:
 
 ```bash
-midtown task create "Fix auth bug" --agent-name "lost-key" --description "..." --channel auth
+midtown task create "Fix auth bug" --agent-name "lost-key" --color "#dc2626" --icon "key" --description "..." --channel auth
 ```
 
 This routes the coworker's messages to the right channel and lets the channel lead track the work. If no `--channel` is specified, the task defaults to the main channel.
@@ -273,6 +275,8 @@ When `writing-plans` offers execution modes, **skip that choice** — decompose 
 ```bash
 midtown task create "Add auth data model and endpoint" \
   --agent-name "iron-curtain" \
+  --color "#2563eb" \
+  --icon "database" \
   --description "Implement tasks 1-3 from the plan." \
   --plan ~/.midtown/projects/myproject/plans/2026-02-13-auth-feature.md \
   --execution-skill subagent-driven-development
