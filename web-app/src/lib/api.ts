@@ -15,6 +15,7 @@ import {
 	maxInProgressTasks,
 	messages,
 	messagesByChannel,
+	openThreads,
 	pendingQuestions,
 	projects,
 	repoStatus,
@@ -173,6 +174,17 @@ export async function fetchChannels(includeArchived = false): Promise<Channel[]>
 			);
 			// Backend already returns channels sorted with main project channel first
 			channels.set(channelList);
+			// After channels are loaded, fetch open threads for each
+			for (const ch of channelList) {
+				if (!ch.is_dm && !ch.is_archived) {
+					fetchOpenThreads(ch.name).then((threads) => {
+						openThreads.update((ot) => ({
+							...ot,
+							[ch.name]: new Set(threads),
+						}));
+					});
+				}
+			}
 			return channelList;
 		}
 	} catch (err) {
@@ -214,6 +226,33 @@ export async function unarchiveChannel(channelName: string): Promise<{ ok: boole
 	} catch (err: unknown) {
 		console.error("Failed to unarchive channel:", err);
 		return { ok: false, error: (err as Error).message };
+	}
+}
+
+// Fetch the set of open thread IDs for a channel
+export async function fetchOpenThreads(channel: string): Promise<string[]> {
+	try {
+		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/open-threads`);
+		if (res.ok) {
+			const data = await res.json();
+			return data.threads || [];
+		}
+	} catch (err) {
+		console.warn("Failed to fetch open threads:", err);
+	}
+	return [];
+}
+
+// Persist the set of open thread IDs for a channel
+export async function setOpenThreads(channel: string, threads: string[]): Promise<void> {
+	try {
+		await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/open-threads`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ threads }),
+		});
+	} catch (err) {
+		console.warn("Failed to set open threads:", err);
 	}
 }
 
@@ -818,6 +857,14 @@ export function handleUpdate(update: Record<string, unknown>): void {
 			// Re-fetch full channel list from server to get accurate state
 			fetchChannels(get(showArchivedChannels));
 			break;
+		case "open_threads_changed": {
+			const { channel, threads } = update.data as { channel: string; threads: string[] };
+			openThreads.update((ot) => ({
+				...ot,
+				[channel]: new Set(threads),
+			}));
+			break;
+		}
 		case "thread_ownership": {
 			const { thread_parent_id, has_dedicated_session, owner, parent_lead } = update.data as {
 				thread_parent_id: string;
