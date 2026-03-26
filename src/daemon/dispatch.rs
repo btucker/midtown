@@ -274,6 +274,12 @@ fn build_spawn_effects(
         config.model = model.to_string();
     }
 
+    // Persist task color/icon so SessionRecord has them on page refresh
+    if let Some(t) = task {
+        config.color = t.color.clone();
+        config.icon = t.icon.clone();
+    }
+
     // For session resume, clear stale working_dir if needed
     let mut all_effects = Vec::new();
     if let crate::launch::SessionMode::ResumeSession(ref session_id) = decision.session_mode

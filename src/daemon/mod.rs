@@ -1638,6 +1638,8 @@ impl DaemonState {
                     )),
                     profile: Some(profile.clone()),
                     bound_thread_id: bound_thread_id.clone(),
+                    color: config.color.clone(),
+                    icon: config.icon.clone(),
                     ..Default::default()
                 },
             );

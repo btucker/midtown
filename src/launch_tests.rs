@@ -47,6 +47,8 @@ fn test_lead_system_prompt_saved_on_spawn() {
         cwd_subdir: None,
         system_prompt_extra: None,
         suppress_auto_output: false,
+        color: None,
+        icon: None,
     };
 
     // Convert to headless config (this should save the system prompt)
@@ -317,6 +319,8 @@ fn test_codex_channel_lead_skips_disallowed_tools() {
         cwd_subdir: None,
         system_prompt_extra: None,
         suppress_auto_output: false,
+        color: None,
+        icon: None,
     };
 
     let headless = config.to_headless_config(&test_paths("myrepo", "myrepo"));
@@ -349,6 +353,8 @@ fn test_claude_channel_lead_still_has_disallowed_tools() {
         cwd_subdir: None,
         system_prompt_extra: None,
         suppress_auto_output: false,
+        color: None,
+        icon: None,
     };
 
     let headless = config.to_headless_config(&test_paths("myrepo", "myrepo"));
@@ -649,4 +655,26 @@ fn test_reviewer_system_prompt_contains_unexpanded_session_id() {
         expanded.contains("test-uuid-999"),
         "After expansion, the actual session ID should appear in the prompt"
     );
+}
+
+#[test]
+fn test_launch_config_coworker_color_icon_default_none() {
+    let config = LaunchConfig::coworker("test", "myrepo", SessionMode::Fresh, None, None);
+    assert!(
+        config.color.is_none(),
+        "Default coworker should have no color"
+    );
+    assert!(
+        config.icon.is_none(),
+        "Default coworker should have no icon"
+    );
+}
+
+#[test]
+fn test_launch_config_color_icon_set() {
+    let mut config = LaunchConfig::coworker("test", "myrepo", SessionMode::Fresh, None, None);
+    config.color = Some("#ff5f5f".to_string());
+    config.icon = Some("shield".to_string());
+    assert_eq!(config.color.as_deref(), Some("#ff5f5f"));
+    assert_eq!(config.icon.as_deref(), Some("shield"));
 }

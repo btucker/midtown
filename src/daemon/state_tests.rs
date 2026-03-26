@@ -1345,3 +1345,72 @@ fn test_channel_settings_missing_field_defaults_to_true() {
         "Missing show_full_lead_output should default to true"
     );
 }
+
+#[test]
+fn test_session_record_persists_color_and_icon() {
+    // Regression: spawn_coworker created SessionRecord with ..Default::default(),
+    // leaving color/icon as None. On page refresh, the REST endpoint reads from
+    // SessionRecord which showed gray letter avatars instead of the task's color/icon.
+    let mut state = DaemonPersistentState::default();
+
+    let record = SessionRecord {
+        session_id: "sess-123".to_string(),
+        name: "painted-badge".to_string(),
+        is_running: true,
+        color: Some("#ff5f5f".to_string()),
+        icon: Some("shield".to_string()),
+        ..Default::default()
+    };
+    state.upsert_session_running("sess-123".to_string(), record);
+
+    let session = state.sessions.get("sess-123").unwrap();
+    assert_eq!(
+        session.color.as_deref(),
+        Some("#ff5f5f"),
+        "SessionRecord must persist color from LaunchConfig"
+    );
+    assert_eq!(
+        session.icon.as_deref(),
+        Some("shield"),
+        "SessionRecord must persist icon from LaunchConfig"
+    );
+}
+
+#[test]
+fn test_session_record_color_icon_survives_serialization() {
+    // Verify color/icon round-trip through JSON serialization (the persistence format).
+    let record = SessionRecord {
+        session_id: "sess-456".to_string(),
+        name: "ghost-town".to_string(),
+        color: Some("#5fd7ff".to_string()),
+        icon: Some("database".to_string()),
+        ..Default::default()
+    };
+
+    let json = serde_json::to_string(&record).unwrap();
+    let deserialized: SessionRecord = serde_json::from_str(&json).unwrap();
+    assert_eq!(deserialized.color.as_deref(), Some("#5fd7ff"));
+    assert_eq!(deserialized.icon.as_deref(), Some("database"));
+}
+
+#[test]
+fn test_session_record_none_color_icon_omitted_in_json() {
+    // Verify that None color/icon are omitted from JSON (skip_serializing_if).
+    let record = SessionRecord {
+        session_id: "sess-789".to_string(),
+        name: "plain-worker".to_string(),
+        color: None,
+        icon: None,
+        ..Default::default()
+    };
+
+    let json = serde_json::to_string(&record).unwrap();
+    assert!(
+        !json.contains("\"color\""),
+        "None color should be omitted from JSON"
+    );
+    assert!(
+        !json.contains("\"icon\""),
+        "None icon should be omitted from JSON"
+    );
+}
