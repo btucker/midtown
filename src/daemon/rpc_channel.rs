@@ -506,9 +506,26 @@ pub(super) async fn handle_channel_post(
                                     config.auth_provider = provider;
                                 }
                                 config.working_dir = Some(record.working_dir.clone().into());
-                                match state.spawn_coworker(&config).await {
-                                    Ok(new_sid) => {
-                                        info!("Resumed fork '{}' (new session: {})", name, new_sid);
+                                config.persisted_initial_prompt = record.initial_prompt.clone();
+                                match crate::daemon::effects::spawn_with_resume_fallback(
+                                    state,
+                                    state.paths.dir_key(),
+                                    &mut config,
+                                )
+                                .await
+                                {
+                                    Ok((new_sid, used_fallback)) => {
+                                        if used_fallback {
+                                            info!(
+                                                "Resumed fork '{}' via fresh fallback (new session: {})",
+                                                name, new_sid
+                                            );
+                                        } else {
+                                            info!(
+                                                "Resumed fork '{}' (new session: {})",
+                                                name, new_sid
+                                            );
+                                        }
                                         Some(new_sid)
                                     }
                                     Err(e) => {
