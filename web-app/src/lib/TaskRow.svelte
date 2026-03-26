@@ -99,7 +99,7 @@ function handleDescriptionClick(e) {
   onclick={isCard ? undefined : onclick}
   data-testid={isCard ? 'task-card' : undefined}
 >
-  <span class="w-[3px] rounded-sm shrink-0 self-stretch" style="background: {statusBarColor(isCard ? task.status : rolledUpStatus, task.owner, ownerColor)}"></span>
+  {#if isCard}<span class="w-[3px] rounded-sm shrink-0 self-stretch" style="background: {statusBarColor(task.status, task.owner, ownerColor)}"></span>{/if}
   <div class="flex-1 min-w-0 flex flex-col gap-[3px]">
     {#if isCard}
       <span class="shrink-0 font-semibold text-[0.65rem] {isActive ? 'opacity-80' : 'opacity-60'}">!{task.id}</span>
