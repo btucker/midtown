@@ -21,6 +21,7 @@ fn test_config() -> HeadlessConfig {
         fork_session: false,
         disallowed_tools: vec![],
         agent_name: None,
+        additional_dirs: vec![],
     }
 }
 

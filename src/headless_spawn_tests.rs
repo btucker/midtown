@@ -32,6 +32,7 @@ fn test_fresh_session_uses_append_system_prompt() {
         fork_session: false,
         disallowed_tools: vec![],
         agent_name: None,
+        additional_dirs: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -84,6 +85,7 @@ fn test_fresh_session_should_not_duplicate_settings_flag() {
         fork_session: false,
         disallowed_tools: vec![],
         agent_name: None,
+        additional_dirs: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -126,6 +128,7 @@ fn test_resume_session_should_omit_settings_flag() {
         fork_session: false,
         disallowed_tools: vec![],
         agent_name: None,
+        additional_dirs: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -169,6 +172,7 @@ fn test_fresh_session_without_settings_path() {
         fork_session: false,
         disallowed_tools: vec![],
         agent_name: None,
+        additional_dirs: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -210,6 +214,7 @@ fn test_fresh_session_with_preassigned_session_id_includes_session_id_flag() {
         fork_session: false,
         disallowed_tools: vec![],
         agent_name: None,
+        additional_dirs: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -251,6 +256,7 @@ fn test_fresh_session_without_preassigned_session_id_omits_session_id_flag() {
         fork_session: false,
         disallowed_tools: vec![],
         agent_name: None,
+        additional_dirs: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -286,6 +292,7 @@ fn test_resume_session_does_not_use_session_id_flag() {
         fork_session: false,
         disallowed_tools: vec![],
         agent_name: None,
+        additional_dirs: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -337,6 +344,7 @@ fn test_daemon_generated_session_id_is_valid_uuid_and_flows_to_cli_args() {
         fork_session: false,
         disallowed_tools: vec![],
         agent_name: None,
+        additional_dirs: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -386,6 +394,7 @@ fn test_fork_session_with_preassigned_session_id() {
         fork_session: true,
         disallowed_tools: vec![],
         agent_name: None,
+        additional_dirs: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -432,6 +441,7 @@ fn test_fresh_session_with_agent_name_emits_agent_flag() {
         fork_session: false,
         disallowed_tools: vec![],
         agent_name: Some("midtown-code-author".to_string()),
+        additional_dirs: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -476,6 +486,7 @@ fn test_fresh_session_without_agent_name_omits_agent_flag() {
         fork_session: false,
         disallowed_tools: vec![],
         agent_name: None,
+        additional_dirs: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -512,6 +523,7 @@ fn test_resume_session_includes_agent_name() {
         fork_session: false,
         disallowed_tools: vec![],
         agent_name: Some("midtown-code-author".to_string()),
+        additional_dirs: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -563,6 +575,7 @@ fn test_resume_session_with_handoff_agent_name() {
         disallowed_tools: vec![],
         // Simulates spawn_coworker overriding agent_name from task_agent_type
         agent_name: Some("midtown-code-reviewer".to_string()),
+        additional_dirs: vec![],
     };
 
     let args = extract_spawn_args(&config);
@@ -578,5 +591,61 @@ fn test_resume_session_with_handoff_agent_name() {
         args[agent_idx + 1],
         "midtown-code-reviewer",
         "Handoff should pass the new agent name on resume"
+    );
+}
+
+#[test]
+fn test_headless_additional_dirs_passed_as_add_dir_flags() {
+    let config = HeadlessConfig {
+        model: "haiku".to_string(),
+        system_prompt: "test".to_string(),
+        settings_path: None,
+        setting_sources: None,
+        persist_session: true,
+        resume_session_id: None,
+        session_id: None,
+        allow_tools: true,
+        json_schema: None,
+        cwd: None,
+        project_name: Some("midtown".to_string()),
+        max_budget_usd: None,
+        inactivity_timeout: None,
+        auth_provider: crate::auth::AuthProvider::Claude,
+        env: std::collections::BTreeMap::new(),
+        fork_session: false,
+        disallowed_tools: vec![],
+        agent_name: None,
+        additional_dirs: vec![
+            std::path::PathBuf::from("/tmp/repo2"),
+            std::path::PathBuf::from("/tmp/repo3"),
+        ],
+    };
+
+    let args = extract_spawn_args(&config);
+
+    // Each additional_dir should produce an --add-dir flag
+    let add_dir_positions: Vec<usize> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| *a == "--add-dir")
+        .map(|(i, _)| i)
+        .collect();
+
+    assert_eq!(
+        add_dir_positions.len(),
+        2,
+        "Should have two --add-dir flags for two additional_dirs, got {:?}",
+        add_dir_positions
+    );
+
+    assert_eq!(
+        args[add_dir_positions[0] + 1],
+        "/tmp/repo2",
+        "First --add-dir should point to /tmp/repo2"
+    );
+    assert_eq!(
+        args[add_dir_positions[1] + 1],
+        "/tmp/repo3",
+        "Second --add-dir should point to /tmp/repo3"
     );
 }

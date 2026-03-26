@@ -1004,6 +1004,7 @@ async fn handle_oneshot_execute(
         fork_session: false,
         disallowed_tools: vec![],
         agent_name: None,
+        additional_dirs: vec![],
     };
 
     super::rpc_headless::handle_headless_execute(id, prompt, &config).await

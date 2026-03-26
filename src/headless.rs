@@ -132,6 +132,13 @@ pub struct HeadlessConfig {
     /// When `None`, `system_prompt` carries all layers via `--append-system-prompt`.
     #[serde(default)]
     pub agent_name: Option<String>,
+    /// Additional directories to pass via `--add-dir` flags.
+    ///
+    /// Used for multi-repo worktree setups where the session needs access to
+    /// directories beyond the primary working directory (e.g., shared config
+    /// repos, dependency worktrees).
+    #[serde(default)]
+    pub additional_dirs: Vec<std::path::PathBuf>,
 }
 
 /// Custom serde module for `Option<Duration>` as seconds (f64).
@@ -1232,6 +1239,7 @@ fn codex_launch_plan_from_config(config: &HeadlessConfig) -> Result<CodexLaunchP
         fork_session,
         disallowed_tools,
         agent_name: _agent_name,
+        additional_dirs: _additional_dirs,
     } = config;
 
     let mut unsupported = Vec::new();
