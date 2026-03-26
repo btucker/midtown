@@ -4257,7 +4257,7 @@ async fn post_plugin_error(state: &DaemonState, channel: &str, detail: &str) {
     }
 }
 
-async fn spawn_with_resume_fallback(
+pub(crate) async fn spawn_with_resume_fallback(
     state: &DaemonState,
     dir_key: &str,
     config: &mut crate::launch::LaunchConfig,

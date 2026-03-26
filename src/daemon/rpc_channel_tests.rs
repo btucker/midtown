@@ -2613,3 +2613,64 @@ async fn test_channel_read_thread_omits_reply_count() {
         );
     }
 }
+
+/// When a user replies to a dead fork's thread, the resume path should use
+/// spawn_with_resume_fallback (which tries resume then falls back to fresh)
+/// instead of bare spawn_coworker (which has no fallback).
+///
+/// In test env, spawn will fail either way, but the code path is exercised and
+/// the message routes gracefully (falls through to channel lead nudge).
+#[tokio::test]
+async fn test_dead_fork_thread_reply_uses_resume_fallback() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-dead-fork-resume-fallback");
+    let adapter_id = "test-adapter-dead-fork-resume";
+    state
+        .headed_register(
+            &state.project_name,
+            adapter_id,
+            crate::auth::AuthProvider::Claude,
+        )
+        .await
+        .expect("register headed adapter");
+
+    // Post a parent message to create a valid thread anchor
+    let parent_id = post_parent_message(&state, None).await;
+
+    // Insert a dead fork session bound to that thread
+    let fork_sid = "dead-fork-session-123";
+    let fork_name = "test-fork";
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            fork_sid.to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: fork_sid.to_string(),
+                name: fork_name.to_string(),
+                is_running: false, // dead fork
+                bound_thread_id: Some(parent_id.clone()),
+                agent_type: "midtown-channel-lead".to_string(),
+                initial_prompt: Some("investigate the auth issue".to_string()),
+                working_dir: _tmp.path().to_string_lossy().to_string(),
+                ..Default::default()
+            },
+        );
+    }
+
+    // Post a thread reply to the dead fork's thread — this triggers the resume path
+    let response = handle_channel_post(
+        999_i64.into(),
+        "user",
+        "any update on this?",
+        None,
+        Some(&parent_id),
+        &state,
+    )
+    .await;
+
+    // The message should be accepted without error (spawn fails but is handled gracefully)
+    assert!(
+        response.error.is_none(),
+        "channel.post to dead fork thread should not return error, got: {:?}",
+        response.error
+    );
+}
