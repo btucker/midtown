@@ -1172,18 +1172,6 @@ fn select_coworker_name(
 ) -> Option<(String, bool)> {
     let is_reviewer_task = task.agent_type == "midtown-code-reviewer";
 
-    // Hard cap: refuse to spawn if active sessions already meet/exceed the task
-    // limit. This prevents spawn storms even when task state tracking has gaps
-    // (e.g., review tasks not yet in pr_task_index). (!2511)
-    let session_count = ps.tick_active_session_names.len() + loop_state.spawns_queued_this_tick;
-    if session_count >= ps.tick_max_in_progress_tasks {
-        debug!(
-            "Session hard cap reached ({} >= {}), deferring task !{}",
-            session_count, ps.tick_max_in_progress_tasks, task.id
-        );
-        return None;
-    }
-
     // Step 1: Determine the coworker name by checking grouping strategies.
     // Reviewer tasks skip grouping entirely — they share a PR number with the
     // implementation task, so grouping would route them to the author's session.
@@ -1200,18 +1188,25 @@ fn select_coworker_name(
     };
 
     // Use grouped name if found, otherwise allocate a fresh coworker.
+    // Grouped tasks (nudges to already-running coworkers) bypass the task limit.
     let was_grouped = grouped_name.is_some();
     let in_progress_count = ps.tick_in_progress_tasks.len();
     let task_cap = ps.tick_max_in_progress_tasks;
     let effective_count = in_progress_count + loop_state.spawns_queued_this_tick;
     let at_task_limit = effective_count >= task_cap;
 
+    // Hard cap: also check active session count as a safety net for spawn storms
+    // when task state tracking has gaps (e.g., review tasks not yet in
+    // pr_task_index). Only applied to fresh spawns, not grouped tasks. (!2511)
+    let session_count = ps.tick_active_session_names.len() + loop_state.spawns_queued_this_tick;
+    let at_session_cap = session_count >= task_cap;
+
     let name = if let Some(name) = grouped_name {
         name
-    } else if at_task_limit {
+    } else if at_task_limit || at_session_cap {
         debug!(
-            "Task limit reached ({}+{} >= {}), deferring task !{}",
-            in_progress_count, loop_state.spawns_queued_this_tick, task_cap, task.id
+            "Task limit reached (tasks: {}+{}, sessions: {} >= {}), deferring task !{}",
+            in_progress_count, loop_state.spawns_queued_this_tick, session_count, task_cap, task.id
         );
         return None;
     } else {
