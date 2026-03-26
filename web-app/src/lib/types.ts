@@ -162,6 +162,23 @@ export interface TrackedThread {
 	replyCount: number;
 }
 
+// ── Needs Attention ─────────────────────────────────────────────────────────
+
+export type AttentionType = "task_completed" | "thread_waiting" | "mention" | "stale_work";
+
+export interface NeedsAttentionItem {
+	id: string; // unique key for dedup/dismiss
+	type: AttentionType;
+	title: string; // primary line (e.g., task name or thread subject)
+	context: string; // secondary line (who, what, when, channel)
+	channel: string;
+	threadId?: string; // for thread-based items — navigate on click
+	taskId?: number; // for task-based items — navigate on click
+	timestamp: number; // for sorting (ms since epoch)
+	workerName?: string; // for coloring the worker name
+	workerColor?: string;
+}
+
 // ── Pending questions ────────────────────────────────────────────────────────
 
 export interface PendingQuestion {

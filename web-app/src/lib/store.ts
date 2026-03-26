@@ -242,3 +242,14 @@ threadUnreadCounts.subscribe((v) => debouncedSaveToLocalStorage("midtown_thread_
 const _dismissedArr = loadFromLocalStorage<string[]>("midtown_dismissed_threads", []);
 export const dismissedThreads = writable<Set<string>>(new Set(_dismissedArr));
 dismissedThreads.subscribe((s) => debouncedSaveToLocalStorage("midtown_dismissed_threads", [...s]));
+
+// ── Open threads (server-synced) ────────────────────────────────────────────
+// Per-channel set of thread IDs visible in sidebar. Synced from daemon API.
+// Format: { [channelName]: Set<threadParentId> }
+export const openThreads = writable<Record<string, Set<string>>>({});
+
+// ── Dismissed attention items (client-side) ─────────────────────────────────
+// IDs of needs-attention items the user has dismissed. Persists via localStorage.
+const _dismissedAttentionArr = loadFromLocalStorage<string[]>("midtown_dismissed_attention", []);
+export const dismissedAttentionItems = writable<Set<string>>(new Set(_dismissedAttentionArr));
+dismissedAttentionItems.subscribe((s) => debouncedSaveToLocalStorage("midtown_dismissed_attention", [...s]));
