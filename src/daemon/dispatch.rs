@@ -2006,6 +2006,78 @@ pub fn auto_close_completed_tasks(ps: &DaemonPersistentState, tasks: &[Task]) ->
 }
 
 // ============================================================================
+// Auto-stop sessions for completed tasks
+// ============================================================================
+
+/// Stop running coworker sessions whose task has been completed or whose PR has merged.
+///
+/// When a task transitions to `Completed` (via auto-close, PR merge, or manual completion),
+/// the coworker session may still be running. This function detects those idle sessions
+/// and emits `ShutdownCoworker` effects to free slots for new work.
+///
+/// `also_completed_ids` includes task IDs being auto-closed in the current tick (their
+/// `CompleteTask` effects haven't executed yet, so the `tasks` snapshot still shows the
+/// old status). This lets us stop sessions in the same tick rather than waiting for the next.
+pub fn stop_sessions_for_completed_tasks(
+    ps: &DaemonPersistentState,
+    tasks: &[Task],
+    also_completed_ids: &HashSet<String>,
+) -> Vec<Effect> {
+    let mut effects = vec![];
+
+    // Build a lookup of task status by ID
+    let task_status: HashMap<&str, &crate::task_store::TaskStatus> =
+        tasks.iter().map(|t| (t.id.as_str(), &t.status)).collect();
+
+    for record in ps.sessions.values() {
+        // Only consider running sessions
+        if !ps
+            .tick_active_session_names
+            .contains(&record.name.to_lowercase())
+        {
+            continue;
+        }
+
+        // Only consider worker sessions with a task assignment
+        let task_id = match &record.task_id {
+            Some(id) => id.as_str(),
+            None => continue,
+        };
+
+        // Skip forks — they are thread-bound, not task-bound
+        if record.is_fork_session() {
+            continue;
+        }
+
+        // Check if the task is already completed or being completed this tick
+        let is_completed = task_status
+            .get(task_id)
+            .is_some_and(|s| **s == crate::task_store::TaskStatus::Completed)
+            || also_completed_ids.contains(task_id);
+
+        if !is_completed {
+            continue;
+        }
+
+        info!(
+            "Auto-stopping session {} — task !{} is completed",
+            record.name, task_id
+        );
+
+        effects.push(Effect::post_to_ops(format!(
+            "🛑 Auto-stopping coworker {} — task !{} is completed",
+            record.name, task_id
+        )));
+        effects.push(Effect::ShutdownCoworker {
+            name: record.name.clone(),
+            message: String::new(),
+        });
+    }
+
+    effects
+}
+
+// ============================================================================
 // Session recovery decision (local to dispatch)
 // ============================================================================
 
@@ -2167,3 +2239,7 @@ mod tests;
 #[path = "dispatch_name_collision_tests.rs"]
 #[cfg(test)]
 mod name_collision_tests;
+
+#[path = "dispatch_auto_stop_tests.rs"]
+#[cfg(test)]
+mod auto_stop_tests;
