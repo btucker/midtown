@@ -214,14 +214,14 @@ let hiddenCount = $derived(merged.length - visibleItems.length);
     {#if !inlineMode && merged.length > 0}
       <!-- Header bar with chevron and count -->
       <div class="flex items-center justify-between px-3 py-1 select-none">
-        <span class="text-[0.72rem] text-muted-foreground/50 font-mono">
+        <span class="text-[0.72rem] text-muted-foreground/70 font-mono">
           {#if expanded}
             {merged.length} tool call{merged.length !== 1 ? 's' : ''}
           {:else if hiddenCount > 0}
             +{hiddenCount} more
           {/if}
         </span>
-        <span class="text-[0.72rem] text-muted-foreground/40 transition-transform duration-150" class:rotate-180={expanded}>
+        <span class="text-[0.72rem] text-muted-foreground/60 transition-transform duration-150" class:rotate-180={expanded}>
           ▾
         </span>
       </div>
@@ -237,7 +237,7 @@ let hiddenCount = $derived(merged.length - visibleItems.length);
         {#each displayItems as entry (entry.block.call_id)}
           {@const dimmed = expanded && completedAt.has(entry.block.call_id)}
           <div class="flex items-center gap-[6px] py-[1px]" class:opacity-45={dimmed}>
-            <span class="flex-shrink-0 select-none text-[0.82rem] leading-[1.35] text-muted-foreground/60">
+            <span class="flex-shrink-0 select-none text-[0.82rem] leading-[1.35] text-muted-foreground/75">
               {#if entry.status === 'error'}
                 <span class="text-destructive">✗</span>
               {:else if entry.status === 'ok'}
