@@ -2438,8 +2438,8 @@ async fn test_nudge_channel_lead_dm_no_active_session_logs_warning() {
 async fn test_nudge_channel_lead_dm_project_lead_uses_nudge_lead() {
     let (state, _project_dir, _guard) = make_workflow_test_state("myrepo");
 
-    // Don't register any session — the lead uses headed intercom fallback.
-    // This should not panic — it falls through to nudge_lead()
+    // Don't register any session — nudge_lead() sends via session_manager.
+    // This should not panic — the session_manager handles missing sessions gracefully.
     execute_effects(
         vec![Effect::NudgeChannelLead {
             channel_name: "dm-myrepo".to_string(),

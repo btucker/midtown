@@ -1,6 +1,6 @@
 //! Platform-specific pre-launch hooks.
 //!
-//! These hooks run immediately before launching provider CLIs (headed or
+//! These hooks run immediately before launching provider CLIs (interactive or
 //! headless), so setup logic is centralized and consistent across paths.
 
 use std::collections::HashSet;

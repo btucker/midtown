@@ -19,7 +19,7 @@ pub(crate) static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 use cli::{
     AgentCommand, AuthCommand, ChannelCommand, ConfigCommand, DiagramCommand, E2eCommand,
-    HeadedWrapperCommand, HookCommand, NotesCommand, PrCommand, TaskCommand, WorkflowCommand,
+    HookCommand, NotesCommand, PrCommand, TaskCommand, WorkflowCommand,
 };
 use client::DaemonClient;
 
@@ -152,12 +152,6 @@ enum Commands {
     },
     /// Show system status
     Status,
-    /// Headed wrapper intercom (register/poll/ack)
-    #[command(hide = true)]
-    HeadedWrapper {
-        #[command(subcommand)]
-        command: HeadedWrapperCommand,
-    },
     /// Pull request commands
     Pr {
         #[command(subcommand)]
@@ -953,7 +947,6 @@ fn main() {
         Commands::Task { command } => cli::handle_task(command, &client),
         Commands::Workflow { command } => cli::handle_workflow(command, &client),
         Commands::Status => cli::handle_status(&client),
-        Commands::HeadedWrapper { command } => cli::handle_headed_wrapper(command, &client),
         Commands::Pr { command } => cli::handle_pr(command, &client),
         Commands::Oneshot {
             prompt,

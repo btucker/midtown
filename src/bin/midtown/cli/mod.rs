@@ -7,7 +7,6 @@ mod config;
 mod daemon;
 mod diagram;
 pub mod e2e;
-mod headed_wrapper;
 mod hooks;
 mod notes;
 mod pr;
@@ -54,7 +53,6 @@ pub use channel::ChannelCommand;
 pub use config::ConfigCommand;
 pub use diagram::DiagramCommand;
 pub use e2e::E2eCommand;
-pub use headed_wrapper::HeadedWrapperCommand;
 pub use hooks::HookCommand;
 // Note: daemon::get_lead_status and daemon::LEAD_SESSION available if needed
 pub use notes::NotesCommand;
@@ -85,13 +83,6 @@ pub fn handle_task_local(cmd: &TaskCommand) -> Option<Result<Response, String>> 
 
 pub fn handle_status(client: &DaemonClient) -> Result<Response, String> {
     client.status()
-}
-
-pub fn handle_headed_wrapper(
-    cmd: &HeadedWrapperCommand,
-    client: &DaemonClient,
-) -> Result<Response, String> {
-    headed_wrapper::handle(cmd, client)
 }
 
 pub fn handle_pr(cmd: &PrCommand, client: &DaemonClient) -> Result<Response, String> {

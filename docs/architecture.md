@@ -22,7 +22,7 @@ Webhooks handle real-time GitHub events. Polling runs at a relaxed cadence (~2 m
 
 - **Initial prompt** — "Here's your mission." One-shot context at spawn time.
 - **Channel** — "Here's what's happening." Ambient team awareness, async.
-- **Nudge** (headed-intercom delivery for Lead, JSON streaming for coworkers) — "Pay attention now." Synchronous interrupt for session recovery, urgent PR feedback, task assignment to active coworkers.
+- **Nudge** (JSON streaming via session manager) — "Pay attention now." Synchronous interrupt for session recovery, urgent PR feedback, task assignment to active coworkers.
 
 Don't nudge for information that can wait for the next channel read.
 
@@ -77,7 +77,6 @@ The daemon handles:
 - PR polling for merge conflicts and stuck conditions
 - @mention routing between team members
 - Topic channel message routing to channel leads
-- Headed wrapper intercom RPC endpoints (`headed.register/poll/ack/...`)
 
 ## Daemon Startup Sequence
 
@@ -112,12 +111,6 @@ Each coworker runs as:
 - In an isolated git worktree (no merge conflicts during development)
 - With `--add-dir` worktrees for additional repos in multi-repo projects
 - Nudges are delivered via stdin JSON, and health is monitored via stdout stream events
-
-### Headed Sessions (via `midtown start`)
-
-Headed (interactive terminal) sessions are launched via `midtown start`, not `midtown agent`. The `midtown agent` namespace is exclusively for headless daemon-managed sessions. See `midtown start --help` for details.
-
-**Attach/view profile fidelity:** `session.attach` now returns the persisted auth profile from the `SessionRecord`, and all headed attach/view/chat entry points reuse that profile when rebuilding the interactive shell command. This keeps attach flows on the same credentials and `CODEX_HOME`/`CLAUDE_CONFIG_DIR` that the headless session was launched with instead of whatever profile happens to be active locally. Codex prelaunch skill sync also targets that explicit profile directory.
 
 ### Daemon-Bypass CLI Commands
 
@@ -298,7 +291,7 @@ Channel leads are headless Claude Code sessions attached to individual topic cha
 
 All triggers use the `NudgeChannelLead { channel_name, reason }` effect. The execution layer in `effects.rs` routes with session-id-first behavior to avoid name collisions: it tries `send_message_to_session_id()` using the stored channel mapping; if stale/missing, it refreshes from the active named session; if resume is possible, it uses `spawn_with_resume_fallback(...)` and then sends to the resumed/fresh session; otherwise it spawns fresh and persists the new session ID.
 
-The project lead is the channel lead for the main channel — `NudgeChannelLead` routes to the project lead's dual-path nudge (headless session manager or headed intercom) when the channel is the default channel.
+The project lead is the channel lead for the main channel — `NudgeChannelLead` routes to the project lead's session manager nudge when the channel is the default channel.
 
 Channel leads participate in normal idle shutdown (same timeout as coworkers). The `channel_lead_sessions` map is rebuilt at startup from session records and then maintained during runtime; `WakeReason` (in `src/daemon/wake_reason.rs`) captures why a session is being woken and provides formatting for both nudge messages and initial prompts. Typed variants (`TaskAssigned`, `TaskClaimed`, `SessionRecovery`, `ReviewAssigned`) carry structured data and generate rich messages (e.g., `ReviewAssigned` loads the `agents/reviewer-resume.md` template (a brief resume that references the system prompt and includes the code-review skill invocation)); the generic `Nudge` variant wraps freeform strings for health alerts and ops notifications. `UserMessage` and `Mention` both carry an optional `ThreadContext` (parent ID + channel name) so that nudge recipients receive `--thread`/`--channel` reply instructions when the triggering message is a thread reply.
 
@@ -910,22 +903,6 @@ The `workflow` module (`src/workflow.rs`) defines the `WorkflowEvent` enum:
 **Task event enrichment:** Task lifecycle events (`task.created`, `task.assigned`, `task.completed`) include `subject`, `description`, `thread_id`, and `message_id` fields. `thread_id` and `message_id` let workflow scripts post responses into the correct Slack/IRC thread. For `task.created`, `thread_id` defaults to the announcement message ID when no explicit `--thread-id` is given, so scripts always have a thread to reply in. Message events (`coworker.message`, `channel.message`) include `thread_id` and `message_id`. The pure decision functions in `dispatch.rs` obtain thread/message context via `DaemonPersistentState.task_thread_id_map` and `DaemonPersistentState.task_message_id_map` (populated from `DaemonPersistentState`). The webhook path in `mod.rs` passes context through `dispatch::TaskEventContext`.
 
 **Accessors:** `WorkflowEvent::channel() -> &str` and `WorkflowEvent::task_id() -> Option<&str>` provide typed access without deserializing JSON.
-
-## Headed Intercom RPC
-
-Headed wrappers are adapter-neutral shims around interactive agent processes.
-Each wrapper registers a session lease with the daemon and consumes queued
-messages through a poll+ack contract.
-
-**Endpoints:**
-- `headed.register` — Claim or refresh an adapter lease for a session (e.g. `lead`).
-- `headed.poll` — Read queued messages after a message ID.
-- `headed.ack` — Acknowledge delivery up to a message ID (advances queue head).
-- `headed.heartbeat` / `headed.unregister` — Maintain or release lease ownership.
-
-**DaemonState fields for intercom support:**
-- `headed_sessions: Mutex<HashMap<String, HeadedSessionState>>` — Per-session queue + lease.
-- `attached_coworkers: Mutex<HashMap<String, DateTime<Utc>>>` — Tracks interactive attach/detach state for headless coworkers. Keys are coworker names; values are the attach timestamp. Entries are added on `midtown agent attach`, removed on `midtown agent detach` or via `Effect::AutoDetachCoworker` (auto-detach after `ATTACH_TIMEOUT` = 10 min, to recover from crash/disconnect without detach).
 
 ## Coworker Questions (AskUserQuestion)
 

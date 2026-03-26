@@ -7,7 +7,6 @@
 //! - `rpc_channel` — channel post/read/create/archive/rename/list
 //! - `rpc_coworker` — coworker lifecycle (spawn, break, list, view, state, nudge)
 //! - `rpc_headless` — one-shot execution and snapshot
-//! - `rpc_headed` — headed wrapper intercom (register/poll/ack)
 //! - `rpc_prs` — PR data and operations (`prs.status`, `pr.review`, `pr.merge`)
 //! - `rpc_reminder` — reminder CRUD
 //! - `rpc_session` — session resolve/attach/detach/list
@@ -93,21 +92,6 @@ impl ParamExt for Option<&serde_json::Value> {
 // ============================================================================
 // Helper functions
 // ============================================================================
-
-/// Parse an optional auth provider from RPC params.
-///
-/// Defaults to Claude when the `provider` field is missing.
-fn parse_provider_param(
-    params: Option<&serde_json::Value>,
-) -> Result<crate::auth::AuthProvider, String> {
-    params
-        .and_then(|p| p.get("provider"))
-        .and_then(|v| v.as_str())
-        .map(str::parse::<crate::auth::AuthProvider>)
-        .transpose()
-        .map(|opt| opt.unwrap_or_default())
-        .map_err(|e| e.to_string())
-}
 
 /// Parse an optional auth provider from RPC params without applying a default.
 fn parse_optional_provider_param(
@@ -899,60 +883,6 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
                 state,
             )
             .await
-        }
-
-        // ---- Headed wrapper intercom ----
-        "headed.register" => {
-            let session = require_str!(params, "session", request.id);
-            let adapter_id = require_str!(params, "adapter_id", request.id);
-            let provider = match parse_provider_param(params) {
-                Ok(provider) => provider,
-                Err(msg) => return Response::error(request.id, RpcError::new(-32602, msg)),
-            };
-            super::rpc_headed::handle_register(request.id, session, adapter_id, provider, state)
-                .await
-        }
-
-        "headed.unregister" => {
-            let session = require_str!(params, "session", request.id);
-            let adapter_id = require_str!(params, "adapter_id", request.id);
-            super::rpc_headed::handle_unregister(request.id, session, adapter_id, state).await
-        }
-
-        "headed.heartbeat" => {
-            let session = require_str!(params, "session", request.id);
-            let adapter_id = require_str!(params, "adapter_id", request.id);
-            super::rpc_headed::handle_heartbeat(request.id, session, adapter_id, state).await
-        }
-
-        "headed.poll" => {
-            let session = require_str!(params, "session", request.id);
-            let adapter_id = require_str!(params, "adapter_id", request.id);
-            let after_id = params.u64_param("after_id").unwrap_or(0);
-            let limit = params.u64_param("limit").map(|v| v as usize);
-            super::rpc_headed::handle_poll(request.id, session, adapter_id, after_id, limit, state)
-                .await
-        }
-
-        "headed.ack" => {
-            let session = require_str!(params, "session", request.id);
-            let adapter_id = require_str!(params, "adapter_id", request.id);
-            let Some(msg_id) = params.u64_param("msg_id") else {
-                return Response::error(request.id, RpcError::invalid_params());
-            };
-            super::rpc_headed::handle_ack(request.id, session, adapter_id, msg_id, state).await
-        }
-
-        "headed.output" => {
-            let session = require_str!(params, "session", request.id);
-            let output = require_str!(params, "output", request.id);
-            super::rpc_headed::handle_output(request.id, session, output, state).await
-        }
-
-        "headed.enqueue" => {
-            let session = require_str!(params, "session", request.id);
-            let text = require_str!(params, "text", request.id);
-            super::rpc_headed::handle_enqueue(request.id, session, text, state).await
         }
 
         _ => {

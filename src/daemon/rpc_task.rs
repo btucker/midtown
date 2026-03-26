@@ -951,30 +951,7 @@ pub(crate) async fn deliver_task_prompt(
         false
     };
 
-    // Check if the coworker is attached (interactive terminal via `midtown agent attach`).
-    // Attached sessions have is_alive=false (headless process paused), but the session
-    // is actively used interactively. Route through headed intercom instead of resuming.
-    let is_attached = if let Some(ref name) = coworker_name {
-        state.attached_coworkers.lock().unwrap().contains_key(name)
-    } else {
-        false
-    };
-
-    if is_attached {
-        // Session is attached — deliver via headed intercom
-        let name = coworker_name.as_deref().unwrap_or("unknown");
-        state.enqueue_headed_nudge(name, message).await;
-
-        info!(
-            "Delivered prompt to attached session (coworker {}) for task !{}",
-            name, task_id
-        );
-        Ok(TaskPromptResult {
-            message: format!("Prompt delivered to {} (attached, task !{})", name, task_id),
-            action: "nudged_attached",
-            session_id,
-        })
-    } else if is_alive {
+    if is_alive {
         // Session is running — deliver via core nudge function
         let name = coworker_name.as_deref().unwrap_or("unknown");
         match super::effects::deliver_coworker_nudge(state, name, message, "task_prompt", "system")

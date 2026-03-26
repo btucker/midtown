@@ -128,10 +128,10 @@ pub mod launch;
 // Lightweight filesystem sandbox (sandbox-exec on macOS, bwrap on Linux)
 pub mod sandbox;
 
-// Platform abstraction for CLI argument construction (shared by headed + headless)
+// Platform abstraction for CLI argument construction (shared by interactive + headless)
 pub mod platform;
 
-// Platform-specific pre-launch hooks (shared by headed + headless launch paths)
+// Platform-specific pre-launch hooks (shared by interactive + headless launch paths)
 pub mod platform_launch;
 
 // API usage data (session + weekly utilization from Anthropic OAuth API)

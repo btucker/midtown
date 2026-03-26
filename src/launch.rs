@@ -107,7 +107,7 @@ pub struct LaunchConfig {
 ///
 /// Fresh Claude launches generate a stable session ID up front so Midtown can
 /// track the session before the CLI emits events. Codex's interactive CLI does
-/// not expose equivalent pre-assignment, so Codex headed launches always leave
+/// not expose equivalent pre-assignment, so Codex interactive launches always leave
 /// `session_id` as `None`.
 pub struct LaunchCommand {
     pub shell_command: String,
@@ -764,8 +764,8 @@ impl LaunchConfig {
 
     /// Build the Claude CLI argument vector.
     ///
-    /// Delegates to `crate::platform::build_claude_headed_args()` — the single
-    /// source of truth for headed CLI arg construction.
+    /// Delegates to `crate::platform::build_claude_interactive_args()` — the single
+    /// source of truth for interactive CLI arg construction.
     ///
     /// Returns `(args, session_id)` where `args` starts with `"claude"` and
     /// includes all flags, and `session_id` is `Some(uuid)` for fresh sessions.
@@ -777,7 +777,7 @@ impl LaunchConfig {
         prompt_file: &std::path::Path,
         initial_prompt_file: Option<&std::path::Path>,
     ) -> (Vec<String>, Option<String>) {
-        crate::platform::build_claude_headed_args(
+        crate::platform::build_claude_interactive_args(
             self,
             settings_file,
             prompt_file,
@@ -885,7 +885,7 @@ impl LaunchConfig {
             crate::platform::Platform::Codex => {
                 let system_prompt = self.render_system_prompt(project_name);
                 let initial_prompt = self.resolve_codex_initial_prompt(initial_prompt_file);
-                let (cli_args, session_id) = crate::platform::build_codex_headed_args(
+                let (cli_args, session_id) = crate::platform::build_codex_interactive_args(
                     self,
                     &system_prompt,
                     initial_prompt.as_deref(),

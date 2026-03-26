@@ -239,117 +239,6 @@ fn test_extract_review_note_pr_various_numbers() {
     );
 }
 
-#[tokio::test]
-async fn test_user_message_queues_headed_lead_nudge() {
-    let (state, _tmp, _guard) = make_test_state("midtown-test-rpc-channel-queue-user");
-    let adapter_id = "test-adapter-user";
-    state
-        .headed_register(
-            &state.project_name,
-            adapter_id,
-            crate::auth::AuthProvider::Claude,
-        )
-        .await
-        .expect("register headed adapter");
-
-    let response = handle_channel_post(
-        1_i64.into(),
-        "user",
-        "please check this",
-        None,
-        None,
-        &state,
-    )
-    .await;
-    assert!(response.error.is_none(), "channel.post should succeed");
-
-    let (messages, _capture) = state
-        .headed_poll(&state.project_name, adapter_id, 0, 10)
-        .await
-        .expect("poll headed queue");
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].kind, "nudge_text");
-    assert!(
-        messages[0].text.starts_with("user (channel-msg-id: ")
-            && messages[0].text.ends_with("): please check this"),
-        "nudge text should be 'user (channel-msg-id: <id>): please check this', got: {}",
-        messages[0].text
-    );
-    assert!(messages[0].submit);
-}
-
-#[tokio::test]
-async fn test_user_at_project_name_queues_single_nudge() {
-    let (state, _tmp, _guard) = make_test_state("midtown-test-rpc-channel-user-at-project");
-    let adapter_id = "test-adapter-user-at-project";
-    state
-        .headed_register(
-            &state.project_name,
-            adapter_id,
-            crate::auth::AuthProvider::Claude,
-        )
-        .await
-        .expect("register headed adapter");
-
-    let msg = format!("@{} please ack", state.project_name);
-    let response = handle_channel_post(1_i64.into(), "user", &msg, None, None, &state).await;
-    assert!(response.error.is_none(), "channel.post should succeed");
-
-    let (messages, _capture) = state
-        .headed_poll(&state.project_name, adapter_id, 0, 10)
-        .await
-        .expect("poll headed queue");
-
-    assert_eq!(
-        messages.len(),
-        1,
-        "user @project message should nudge lead exactly once"
-    );
-    assert_eq!(messages[0].kind, "nudge_text");
-    assert!(
-        messages[0].text.starts_with("user (channel-msg-id: "),
-        "expected user-message nudge format, got: {}",
-        messages[0].text
-    );
-}
-
-#[tokio::test]
-async fn test_coworker_at_lead_queues_headed_lead_nudge() {
-    let (state, _tmp, _guard) = make_test_state("midtown-test-rpc-channel-queue-coworker");
-    let adapter_id = "test-adapter-coworker";
-    state
-        .headed_register(
-            &state.project_name,
-            adapter_id,
-            crate::auth::AuthProvider::Claude,
-        )
-        .await
-        .expect("register headed adapter");
-
-    let response = handle_channel_post(
-        2_i64.into(),
-        "york",
-        "@lead need a review",
-        None,
-        None,
-        &state,
-    )
-    .await;
-    assert!(response.error.is_none(), "channel.post should succeed");
-
-    let (messages, _capture) = state
-        .headed_poll(&state.project_name, adapter_id, 0, 10)
-        .await
-        .expect("poll headed queue");
-    assert_eq!(messages.len(), 1);
-    assert!(
-        messages[0]
-            .text
-            .contains("york mentioned @midtown-test-rpc-channel-queue-coworker"),
-        "queue entry should summarize coworker @{{project_name}} mention"
-    );
-}
-
 #[test]
 fn test_parse_duration_seconds() {
     assert_eq!(parse_duration("30s"), Some(Duration::from_secs(30)));
@@ -390,19 +279,10 @@ fn test_parse_duration_invalid() {
 }
 
 /// Verify that a user message to a topic channel with no active channel lead
-/// succeeds without error and does NOT nudge the main lead.
+/// succeeds without error.
 #[tokio::test]
-async fn test_user_message_to_topic_channel_no_lead_no_main_nudge() {
+async fn test_user_message_to_topic_channel_no_lead_succeeds() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-topic-no-lead");
-    let adapter_id = "test-adapter-topic-no-lead";
-    state
-        .headed_register(
-            &state.project_name,
-            adapter_id,
-            crate::auth::AuthProvider::Claude,
-        )
-        .await
-        .expect("register headed adapter");
 
     // Post to a topic channel with no active channel lead
     let response = handle_channel_post(
@@ -415,68 +295,23 @@ async fn test_user_message_to_topic_channel_no_lead_no_main_nudge() {
     )
     .await;
     assert!(response.error.is_none(), "channel.post should succeed");
-
-    // Main lead should NOT be nudged for topic channel user messages
-    let (messages, _capture) = state
-        .headed_poll(&state.project_name, adapter_id, 0, 10)
-        .await
-        .expect("poll headed queue");
-    assert!(
-        messages.is_empty(),
-        "Main lead should not be nudged when user posts to a topic channel without a channel lead"
-    );
 }
 
-/// Verify that a user message to the main channel still nudges the main lead.
+/// Verify that a user message to the main channel succeeds.
 #[tokio::test]
-async fn test_user_message_to_main_channel_nudges_lead() {
+async fn test_user_message_to_main_channel_succeeds() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-main-channel-nudge");
-    let adapter_id = "test-adapter-main-nudge";
-    state
-        .headed_register(
-            &state.project_name,
-            adapter_id,
-            crate::auth::AuthProvider::Claude,
-        )
-        .await
-        .expect("register headed adapter");
 
     // Post to main channel (None = default channel)
     let response =
         handle_channel_post(2_i64.into(), "user", "hello main", None, None, &state).await;
     assert!(response.error.is_none(), "channel.post should succeed");
-
-    let (messages, _capture) = state
-        .headed_poll(&state.project_name, adapter_id, 0, 10)
-        .await
-        .expect("poll headed queue");
-    assert_eq!(
-        messages.len(),
-        1,
-        "Main lead should be nudged for main channel user messages"
-    );
-    assert!(
-        messages[0].text.starts_with("user (channel-msg-id: ")
-            && messages[0].text.ends_with("): hello main"),
-        "nudge text should be 'user (channel-msg-id: <id>): hello main', got: {}",
-        messages[0].text
-    );
 }
 
-/// Verify that a user message to the main channel nudges the lead EVEN when the user
-/// @mentions a specific coworker. The lead should always be informed of user messages.
+/// Verify that a user message to the main channel with a coworker @mention succeeds.
 #[tokio::test]
-async fn test_user_message_with_coworker_mention_still_nudges_lead() {
+async fn test_user_message_with_coworker_mention_succeeds() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-lead-nudge-despite-mention");
-    let adapter_id = "test-adapter-lead-nudge-mention";
-    state
-        .headed_register(
-            &state.project_name,
-            adapter_id,
-            crate::auth::AuthProvider::Claude,
-        )
-        .await
-        .expect("register headed adapter");
 
     // Post a message that @mentions a coworker (not @lead)
     let response = handle_channel_post(
@@ -489,41 +324,16 @@ async fn test_user_message_with_coworker_mention_still_nudges_lead() {
     )
     .await;
     assert!(response.error.is_none(), "channel.post should succeed");
-
-    let (messages, _capture) = state
-        .headed_poll(&state.project_name, adapter_id, 0, 10)
-        .await
-        .expect("poll headed queue");
-    assert_eq!(
-        messages.len(),
-        1,
-        "Lead should be nudged even when user @mentions a coworker"
-    );
-    assert!(
-        messages[0].text.starts_with("user (channel-msg-id: ")
-            && messages[0].text.ends_with("): @york can you check this?"),
-        "nudge text should be 'user (channel-msg-id: <id>): @york can you check this?', got: {}",
-        messages[0].text
-    );
 }
 
 /// Verify that a user message to a topic channel with an inactive session
-/// attempts to resume the channel lead (succeeds without error, no main lead nudge).
+/// attempts to resume the channel lead (succeeds without error).
 ///
 /// In the test environment, spawn_coworker will fail (no real worktrees), but the
-/// error is handled gracefully and the main lead is not nudged.
+/// error is handled gracefully.
 #[tokio::test]
 async fn test_user_message_to_topic_channel_inactive_lead_attempts_resume() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-topic-resume-lead");
-    let adapter_id = "test-adapter-topic-resume";
-    state
-        .headed_register(
-            &state.project_name,
-            adapter_id,
-            crate::auth::AuthProvider::Claude,
-        )
-        .await
-        .expect("register headed adapter");
 
     // Persist a saved session ID for the channel lead so the resume path is taken
     {
@@ -545,16 +355,6 @@ async fn test_user_message_to_topic_channel_inactive_lead_attempts_resume() {
     )
     .await;
     assert!(response.error.is_none(), "channel.post should succeed");
-
-    // Main lead should NOT be nudged (topic channel message)
-    let (messages, _capture) = state
-        .headed_poll(&state.project_name, adapter_id, 0, 10)
-        .await
-        .expect("poll headed queue");
-    assert!(
-        messages.is_empty(),
-        "Main lead should not be nudged when user posts to a topic channel"
-    );
 }
 
 /// Verify that channel.read with a channel parameter reads from the specified
@@ -767,15 +567,6 @@ async fn test_channel_read_with_last_parameter() {
 #[tokio::test]
 async fn test_fresh_spawn_registers_channel_lead_sessions() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-fresh-spawn-register");
-    let adapter_id = "test-adapter-fresh-spawn";
-    state
-        .headed_register(
-            &state.project_name,
-            adapter_id,
-            crate::auth::AuthProvider::Claude,
-        )
-        .await
-        .expect("register headed adapter");
 
     // No saved session ID — fresh spawn path will be taken.
     // Verify channel_lead_sessions is empty beforehand.
@@ -820,15 +611,6 @@ async fn test_fresh_spawn_registers_channel_lead_sessions() {
 #[tokio::test]
 async fn test_crash_loop_guard_skips_resume_when_headless_cleared() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-crash-loop-guard");
-    let adapter_id = "test-adapter-crash-loop";
-    state
-        .headed_register(
-            &state.project_name,
-            adapter_id,
-            crate::auth::AuthProvider::Claude,
-        )
-        .await
-        .expect("register headed adapter");
 
     // Set up the crash-loop scenario:
     // - channel_lead_sessions has a stale session ID
@@ -865,30 +647,11 @@ async fn test_crash_loop_guard_skips_resume_when_headless_cleared() {
     )
     .await;
     assert!(response.error.is_none(), "channel.post should succeed");
-
-    // Main lead should NOT be nudged (topic channel message)
-    let (messages, _capture) = state
-        .headed_poll(&state.project_name, adapter_id, 0, 10)
-        .await
-        .expect("poll headed queue");
-    assert!(
-        messages.is_empty(),
-        "Main lead should not be nudged for topic channel user messages"
-    );
 }
 
 #[tokio::test]
 async fn test_handle_channel_post_clears_stale_channel_lead_mapping_on_resume_failure() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-channel-lead-resume-failure");
-    let adapter_id = "test-adapter-channel-lead-resume-failure";
-    state
-        .headed_register(
-            &state.project_name,
-            adapter_id,
-            crate::auth::AuthProvider::Claude,
-        )
-        .await
-        .expect("register headed adapter");
 
     let channel_name = "multi-platform";
     let stale_session_id = "non-existent-session-id-xyz";
@@ -929,28 +692,13 @@ async fn test_handle_channel_post_clears_stale_channel_lead_mapping_on_resume_fa
 /// The user's message appeared to "reply to itself" because the lead echoed the content
 /// with the wrong thread ID, making the response appear in the wrong thread slot.
 ///
-/// Fix: pass `thread_parent_id` as `msg_id` in `WakeReason::UserMessage` so the lead
-/// uses `--thread parent_id` and creates a sibling reply in the correct thread.
+/// Verify that a user thread reply succeeds and is posted correctly.
 #[tokio::test]
-async fn test_user_thread_reply_nudge_uses_parent_id() {
+async fn test_user_thread_reply_succeeds() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-thread-reply-nudge-parent-id");
-    let adapter_id = "test-adapter-thread-reply-nudge";
-    state
-        .headed_register(
-            &state.project_name,
-            adapter_id,
-            crate::auth::AuthProvider::Claude,
-        )
-        .await
-        .expect("register headed adapter");
 
     // Post a parent message to get a valid thread_parent_id
     let parent_id = post_parent_message(&state, None).await;
-
-    // Drain the headed queue of any nudges from the parent post
-    let _ = state
-        .headed_poll(&state.project_name, adapter_id, 0, 10)
-        .await;
 
     // Post a user thread reply (simulating the user sending a reply from the thread panel)
     let response = handle_channel_post(
@@ -963,35 +711,6 @@ async fn test_user_thread_reply_nudge_uses_parent_id() {
     )
     .await;
     assert!(response.error.is_none(), "channel.post should succeed");
-
-    let (messages, _capture) = state
-        .headed_poll(&state.project_name, adapter_id, 0, 10)
-        .await
-        .expect("poll headed queue");
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].kind, "nudge_text");
-
-    // The nudge MUST use the parent's ID so the lead replies with --thread parent_id,
-    // creating a sibling reply in the correct thread. Using the reply's own UUID
-    // would cause the lead to create a nested reply invisible to the user.
-    // The nudge also includes --thread/--channel instructions after the message preview.
-    assert!(
-        messages[0]
-            .text
-            .contains(&format!("user (channel-msg-id: {})", parent_id)),
-        "nudge for thread reply should use parent_id, got: {}",
-        messages[0].text
-    );
-    assert!(
-        messages[0].text.contains("this is my thread reply"),
-        "nudge should contain the message content"
-    );
-    // Thread reply nudge should include thread instructions
-    assert!(
-        messages[0].text.contains("--thread"),
-        "thread reply nudge should include --thread instruction, got: {}",
-        messages[0].text
-    );
 }
 
 /// Verify that `clear_lead_respawn_cooldown` removes the lead entry from
@@ -1056,16 +775,7 @@ fn test_clear_lead_respawn_cooldown_noop_when_no_stop_time() {
 #[tokio::test]
 async fn test_user_message_with_dead_lead_clears_cooldown() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-dead-lead-clears-cooldown");
-    let adapter_id = "test-adapter-dead-lead-cooldown";
     let lead_key = state.project_name.to_lowercase();
-    state
-        .headed_register(
-            &state.project_name,
-            adapter_id,
-            crate::auth::AuthProvider::Claude,
-        )
-        .await
-        .expect("register headed adapter");
 
     // Simulate lead having been stopped 2 minutes ago (within 5-min cooldown)
     {
@@ -1688,23 +1398,9 @@ async fn test_dm_post_unknown_coworker_returns_error() {
 
 /// Posting to dm-<coworker> when a session is active routes via NudgeSession
 /// (not NudgeChannelLead), so the lead is NOT nudged.
-///
-/// Since `NudgeSession` fails gracefully when the headless session isn't live
-/// in tests, we verify the lead adapter receives NO messages (DM path was taken).
 #[tokio::test]
 async fn test_dm_post_active_coworker_does_not_nudge_lead() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-dm-active-coworker");
-
-    // Register the lead's headed adapter so we can verify it gets no nudge
-    let adapter_id = "test-dm-adapter";
-    state
-        .headed_register(
-            &state.project_name,
-            adapter_id,
-            crate::auth::AuthProvider::Claude,
-        )
-        .await
-        .expect("register headed adapter");
 
     // Register "amsterdam" as an active coworker via session record
     let coworker_session_id = "session-amsterdam-xyz";
@@ -1724,16 +1420,6 @@ async fn test_dm_post_active_coworker_does_not_nudge_lead() {
         response.error.is_none(),
         "DM to active coworker should succeed"
     );
-
-    // Lead should NOT be nudged — the DM was routed to the coworker's session
-    let (messages, _capture) = state
-        .headed_poll(&state.project_name, adapter_id, 0, 10)
-        .await
-        .expect("poll headed queue");
-    assert!(
-        messages.is_empty(),
-        "Lead should not receive nudge when user sends DM to an active coworker"
-    );
 }
 
 /// A non-user sender posting to a dm- channel goes through normally
@@ -1741,17 +1427,6 @@ async fn test_dm_post_active_coworker_does_not_nudge_lead() {
 #[tokio::test]
 async fn test_dm_post_from_coworker_is_not_blocked() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-dm-coworker-sender");
-
-    // Register the lead's headed adapter
-    let adapter_id = "test-dm-coworker-adapter";
-    state
-        .headed_register(
-            &state.project_name,
-            adapter_id,
-            crate::auth::AuthProvider::Claude,
-        )
-        .await
-        .expect("register headed adapter");
 
     // "amsterdam" posts to their own DM channel (replying to user)
     // No session registered — but coworker senders skip DM validation
@@ -2625,15 +2300,6 @@ async fn test_channel_read_thread_omits_reply_count() {
 #[tokio::test]
 async fn test_dead_fork_thread_reply_uses_resume_fallback() {
     let (state, _tmp, _guard) = make_test_state("midtown-test-dead-fork-resume-fallback");
-    let adapter_id = "test-adapter-dead-fork-resume";
-    state
-        .headed_register(
-            &state.project_name,
-            adapter_id,
-            crate::auth::AuthProvider::Claude,
-        )
-        .await
-        .expect("register headed adapter");
 
     // Post a parent message to create a valid thread anchor
     let parent_id = post_parent_message(&state, None).await;

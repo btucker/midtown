@@ -847,7 +847,7 @@ pub(crate) fn build_attach_launch_spec(
         _ => midtown::agents::coworker_system_prompt(name, &repo_name, None),
     };
 
-    // Build provider-specific headed CLI args.
+    // Build provider-specific interactive CLI args.
     match provider {
         midtown::auth::AuthProvider::Claude | midtown::auth::AuthProvider::Zai => {
             // Write system prompt to temp file
@@ -872,8 +872,11 @@ pub(crate) fn build_attach_launch_spec(
             cmd_parts.extend(cli_args);
         }
         midtown::auth::AuthProvider::Codex => {
-            let (cli_args, _) =
-                midtown::platform::build_codex_headed_args(&launch_config, &system_prompt, None);
+            let (cli_args, _) = midtown::platform::build_codex_interactive_args(
+                &launch_config,
+                &system_prompt,
+                None,
+            );
             cmd_parts.extend(cli_args);
         }
     }

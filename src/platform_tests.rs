@@ -1,7 +1,7 @@
 //! Tests for platform arg builders.
 //!
 //! These tests verify the single source of truth for CLI argument construction
-//! across headed (interactive) and headless (JSON streaming) launch paths.
+//! across interactive and headless (JSON streaming) launch paths.
 
 use super::*;
 use crate::auth::AuthProvider;
@@ -335,15 +335,15 @@ fn test_claude_headless_args_no_duplicate_flags() {
     );
 }
 
-// ── Headed args ───────────────────────────────────────────────────────
+// ── Interactive args ──────────────────────────────────────────────────
 
 #[test]
-fn test_claude_headed_args_fresh_has_session_id() {
+fn test_claude_interactive_args_fresh_has_session_id() {
     let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
     let settings = std::path::Path::new("/tmp/settings.json");
     let prompt = std::path::Path::new("/tmp/prompt.md");
 
-    let (args, session_id) = build_claude_headed_args(&config, settings, prompt, None);
+    let (args, session_id) = build_claude_interactive_args(&config, settings, prompt, None);
 
     assert_eq!(args[0], "claude", "First arg should be binary name");
     assert!(args.contains(&"--session-id".to_string()));
@@ -351,7 +351,7 @@ fn test_claude_headed_args_fresh_has_session_id() {
 }
 
 #[test]
-fn test_claude_headed_args_resume_has_continue() {
+fn test_claude_interactive_args_resume_has_continue() {
     let config = LaunchConfig {
         session_mode: SessionMode::Resume,
         ..LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None)
@@ -359,14 +359,14 @@ fn test_claude_headed_args_resume_has_continue() {
     let settings = std::path::Path::new("/tmp/settings.json");
     let prompt = std::path::Path::new("/tmp/prompt.md");
 
-    let (args, session_id) = build_claude_headed_args(&config, settings, prompt, None);
+    let (args, session_id) = build_claude_interactive_args(&config, settings, prompt, None);
 
     assert!(args.contains(&"--continue".to_string()));
     assert!(session_id.is_none());
 }
 
 #[test]
-fn test_claude_headed_args_resume_session_has_resume() {
+fn test_claude_interactive_args_resume_session_has_resume() {
     let config = LaunchConfig {
         session_mode: SessionMode::ResumeSession("abc-123".to_string()),
         ..LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None)
@@ -374,39 +374,39 @@ fn test_claude_headed_args_resume_session_has_resume() {
     let settings = std::path::Path::new("/tmp/settings.json");
     let prompt = std::path::Path::new("/tmp/prompt.md");
 
-    let (args, _) = build_claude_headed_args(&config, settings, prompt, None);
+    let (args, _) = build_claude_interactive_args(&config, settings, prompt, None);
 
     assert!(args.contains(&"--resume".to_string()));
     assert!(args.contains(&"abc-123".to_string()));
 }
 
 #[test]
-fn test_claude_headed_args_always_has_settings() {
+fn test_claude_interactive_args_always_has_settings() {
     let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
     let settings = std::path::Path::new("/tmp/settings.json");
     let prompt = std::path::Path::new("/tmp/prompt.md");
 
-    let (args, _) = build_claude_headed_args(&config, settings, prompt, None);
+    let (args, _) = build_claude_interactive_args(&config, settings, prompt, None);
 
     assert!(
         args.contains(&"--settings".to_string()),
-        "Headed sessions always include --settings"
+        "Interactive sessions always include --settings"
     );
 }
 
 #[test]
-fn test_claude_headed_args_always_has_system_prompt() {
+fn test_claude_interactive_args_always_has_system_prompt() {
     let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
     let settings = std::path::Path::new("/tmp/settings.json");
     let prompt = std::path::Path::new("/tmp/prompt.md");
 
-    let (args, _) = build_claude_headed_args(&config, settings, prompt, None);
+    let (args, _) = build_claude_interactive_args(&config, settings, prompt, None);
 
     assert!(args.contains(&"--append-system-prompt".to_string()));
 }
 
 #[test]
-fn test_claude_headed_args_initial_prompt_is_last() {
+fn test_claude_interactive_args_initial_prompt_is_last() {
     let config = LaunchConfig::coworker(
         "park",
         "myrepo",
@@ -418,7 +418,7 @@ fn test_claude_headed_args_initial_prompt_is_last() {
     let prompt = std::path::Path::new("/tmp/prompt.md");
     let initial = std::path::Path::new("/tmp/initial.txt");
 
-    let (args, _) = build_claude_headed_args(&config, settings, prompt, Some(initial));
+    let (args, _) = build_claude_interactive_args(&config, settings, prompt, Some(initial));
 
     let last = args.last().unwrap();
     assert!(
@@ -429,12 +429,12 @@ fn test_claude_headed_args_initial_prompt_is_last() {
 }
 
 #[test]
-fn test_claude_headed_args_has_common_flags() {
+fn test_claude_interactive_args_has_common_flags() {
     let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
     let settings = std::path::Path::new("/tmp/settings.json");
     let prompt = std::path::Path::new("/tmp/prompt.md");
 
-    let (args, _) = build_claude_headed_args(&config, settings, prompt, None);
+    let (args, _) = build_claude_interactive_args(&config, settings, prompt, None);
 
     assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
     assert!(args.contains(&"--model".to_string()));
@@ -451,7 +451,7 @@ fn test_codex_headless_args_is_app_server() {
 }
 
 #[test]
-fn test_codex_headed_args_has_resume() {
+fn test_codex_interactive_args_has_resume() {
     let config = LaunchConfig {
         name: "lead".to_string(),
         session_mode: SessionMode::ResumeSession("thread-123".to_string()),
@@ -474,7 +474,7 @@ fn test_codex_headed_args_has_resume() {
         icon: None,
         avatar_badge: None,
     };
-    let (args, session_id) = build_codex_headed_args(&config, "system prompt", None);
+    let (args, session_id) = build_codex_interactive_args(&config, "system prompt", None);
     assert_eq!(session_id, None);
     assert_eq!(args[0], "codex");
     assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
@@ -494,7 +494,7 @@ fn test_codex_headed_args_has_resume() {
 }
 
 #[test]
-fn test_codex_headed_args_omits_override_when_prompt_empty() {
+fn test_codex_interactive_args_omits_override_when_prompt_empty() {
     let config = LaunchConfig {
         name: "lead".to_string(),
         session_mode: SessionMode::ResumeSession("thread-123".to_string()),
@@ -517,14 +517,14 @@ fn test_codex_headed_args_omits_override_when_prompt_empty() {
         icon: None,
         avatar_badge: None,
     };
-    let (args, _) = build_codex_headed_args(&config, "", None);
+    let (args, _) = build_codex_interactive_args(&config, "", None);
     assert!(args.contains(&"resume".to_string()));
     assert!(args.contains(&"thread-123".to_string()));
     assert!(!args.contains(&"-c".to_string()));
 }
 
 #[test]
-fn test_codex_headed_args_resume_last_uses_last_without_model_override() {
+fn test_codex_interactive_args_resume_last_uses_last_without_model_override() {
     let config = LaunchConfig {
         name: "lead".to_string(),
         session_mode: SessionMode::Resume,
@@ -548,7 +548,7 @@ fn test_codex_headed_args_resume_last_uses_last_without_model_override() {
         avatar_badge: None,
     };
 
-    let (args, session_id) = build_codex_headed_args(&config, "system prompt", None);
+    let (args, session_id) = build_codex_interactive_args(&config, "system prompt", None);
 
     assert_eq!(session_id, None);
     assert!(args.contains(&"resume".to_string()));
@@ -560,7 +560,7 @@ fn test_codex_headed_args_resume_last_uses_last_without_model_override() {
 }
 
 #[test]
-fn test_codex_headed_args_fresh_uses_positional_prompt() {
+fn test_codex_interactive_args_fresh_uses_positional_prompt() {
     let config = LaunchConfig {
         name: "park".to_string(),
         session_mode: SessionMode::Fresh,
@@ -583,7 +583,8 @@ fn test_codex_headed_args_fresh_uses_positional_prompt() {
         icon: None,
         avatar_badge: None,
     };
-    let (args, session_id) = build_codex_headed_args(&config, "system prompt", Some("ship it"));
+    let (args, session_id) =
+        build_codex_interactive_args(&config, "system prompt", Some("ship it"));
     assert_eq!(session_id, None);
     assert_eq!(args[0], "codex");
     assert!(args.contains(&"--add-dir".to_string()));
