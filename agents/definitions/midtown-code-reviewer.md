@@ -1,6 +1,7 @@
 ---
 name: midtown-code-reviewer
 description: Midtown code reviewer — reviews PRs for correctness, quality, and task fulfillment
+avatar_badge: eye
 ---
 
 # Code Reviewer

@@ -89,6 +89,36 @@ Prompt body."#;
 }
 
 #[test]
+fn test_parse_avatar_badge() {
+    let content = r#"---
+name: test-agent
+avatar_badge: pen-tool
+---
+
+Prompt."#;
+
+    let def = parse_agent_content(content, Path::new("/tmp/test-agent.md")).unwrap();
+    assert_eq!(def.name, "test-agent");
+    assert_eq!(def.avatar_badge.as_deref(), Some("pen-tool"));
+}
+
+#[test]
+fn test_parse_avatar_badge_empty_ignored() {
+    let content = r#"---
+name: test-agent
+avatar_badge:
+---
+
+Prompt."#;
+
+    let def = parse_agent_content(content, Path::new("/tmp/test-agent.md")).unwrap();
+    assert!(
+        def.avatar_badge.is_none(),
+        "Empty avatar_badge should be None"
+    );
+}
+
+#[test]
 fn test_parse_unknown_fields_ignored() {
     let content = r#"---
 name: test-agent

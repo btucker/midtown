@@ -283,7 +283,7 @@ pub(super) async fn handle_auth_switch(
             let mut records = state.coworker_records.write().await;
             records.remove(name);
         }
-        state.broadcast_coworker_update(name, "stopped", None, None, None);
+        state.broadcast_coworker_update(name, "stopped", None, None, None, None);
     }
 
     // Capture reviewer + channel-lead role context before relaunch so role-aware

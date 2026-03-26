@@ -471,6 +471,7 @@ fn test_codex_headed_args_has_resume() {
         suppress_auto_output: false,
         color: None,
         icon: None,
+        avatar_badge: None,
     };
     let (args, session_id) = build_codex_headed_args(&config, "system prompt", None);
     assert_eq!(session_id, None);
@@ -513,6 +514,7 @@ fn test_codex_headed_args_omits_override_when_prompt_empty() {
         suppress_auto_output: false,
         color: None,
         icon: None,
+        avatar_badge: None,
     };
     let (args, _) = build_codex_headed_args(&config, "", None);
     assert!(args.contains(&"resume".to_string()));
@@ -542,6 +544,7 @@ fn test_codex_headed_args_resume_last_uses_last_without_model_override() {
         suppress_auto_output: false,
         color: None,
         icon: None,
+        avatar_badge: None,
     };
 
     let (args, session_id) = build_codex_headed_args(&config, "system prompt", None);
@@ -577,6 +580,7 @@ fn test_codex_headed_args_fresh_uses_positional_prompt() {
         suppress_auto_output: false,
         color: None,
         icon: None,
+        avatar_badge: None,
     };
     let (args, session_id) = build_codex_headed_args(&config, "system prompt", Some("ship it"));
     assert_eq!(session_id, None);

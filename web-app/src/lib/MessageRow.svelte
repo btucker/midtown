@@ -67,6 +67,7 @@ let displayColor = $derived(
 		getSenderColor(isForkWithParent ? forkParentLead : displayName, senderOverrides, channelName),
 );
 let senderIcon = $derived(senderCoworker?.icon);
+let senderBadge = $derived(senderCoworker?.avatar_badge);
 // For click navigation, always use msg.from (the actual session name) so
 // fork messages navigate to dm-<forkName>, not dm-<parentLeadName>.
 let clickName = $derived(msg.from);
@@ -156,6 +157,13 @@ let hidden = $derived(!showToolData && isToolOnly(msg));
           title={forkParentLead ? `Fork of ${forkParentLead}` : 'Fork session'}
         >
           <GitFork size={10} class="text-muted-foreground" />
+        </div>
+      {:else if senderBadge}
+        <div
+          class="absolute -bottom-1 -right-1 flex items-center justify-center w-4 h-4 rounded-full bg-background border border-border"
+          title={displayName}
+        >
+          <DynamicIcon name={senderBadge} size={10} class="text-muted-foreground" />
         </div>
       {/if}
     </div>

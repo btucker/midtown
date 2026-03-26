@@ -387,6 +387,9 @@ pub struct CoworkerStatusData {
     /// Lucide icon name for avatar (e.g., "shield", "database").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// Lucide icon name for avatar badge (e.g., "pen-tool", "eye").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_badge: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3074,6 +3077,7 @@ pub fn coworker_status_update(
     model: &str,
     color: Option<&str>,
     icon: Option<&str>,
+    avatar_badge: Option<&str>,
 ) -> WebUpdate {
     WebUpdate::CoworkerStatus(CoworkerStatusData {
         name: name.to_string(),
@@ -3087,6 +3091,7 @@ pub fn coworker_status_update(
         health: None,
         color: color.map(|s| s.to_string()),
         icon: icon.map(|s| s.to_string()),
+        avatar_badge: avatar_badge.map(|s| s.to_string()),
     })
 }
 
@@ -3114,6 +3119,7 @@ pub fn coworker_progress_update(
         health,
         color: None,
         icon: None,
+        avatar_badge: None,
     })
 }
 
@@ -3130,6 +3136,7 @@ pub fn broadcast_coworker_status(
         status,
         current_task,
         model,
+        None,
         None,
         None,
     ));

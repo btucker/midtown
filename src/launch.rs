@@ -98,6 +98,9 @@ pub struct LaunchConfig {
     /// Lucide icon name for avatar (e.g., "shield", "database").
     /// Persisted to SessionRecord at spawn time.
     pub icon: Option<String>,
+    /// Lucide icon name for avatar badge (e.g., "pen-tool", "eye").
+    /// Resolved from the agent definition's `avatar_badge` frontmatter field.
+    pub avatar_badge: Option<String>,
 }
 
 /// The shell command string and any pre-assigned provider session ID.
@@ -345,6 +348,7 @@ impl LaunchConfig {
             suppress_auto_output: false,
             color: None,
             icon: None,
+            avatar_badge: None,
         }
     }
 

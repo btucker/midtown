@@ -323,6 +323,7 @@ pub enum Effect {
         current_task: Option<String>,
         color: Option<String>,
         icon: Option<String>,
+        avatar_badge: Option<String>,
     },
     /// Record a cooldown entry (category + key).
     RecordCooldown { category: String, key: String },
@@ -1292,7 +1293,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
     let effects = dedup_nudge_effects(effects);
     for effect in effects {
         match effect {
-            Effect::SpawnCoworker(config) => {
+            Effect::SpawnCoworker(mut config) => {
+                // Resolve avatar_badge from agent definition if not already set
+                if config.avatar_badge.is_none()
+                    && let Ok(def) =
+                        crate::agent_definition::load_agent_definition(&config.agent_type)
+                {
+                    config.avatar_badge = def.avatar_badge;
+                }
                 let name = config.name.clone();
                 match state.spawn_coworker(&config).await {
                     Ok(_) => {
@@ -1546,6 +1554,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 current_task,
                 color,
                 icon,
+                avatar_badge,
             } => {
                 state.broadcast_coworker_update(
                     &name,
@@ -1553,6 +1562,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     current_task.as_deref(),
                     color.as_deref(),
                     icon.as_deref(),
+                    avatar_badge.as_deref(),
                 );
             }
             Effect::RecordCooldown { category, key } => {
@@ -1726,10 +1736,18 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
             Effect::SpawnCoworkerWithCallbacks {
-                config,
+                mut config,
                 on_success,
                 on_failure,
             } => {
+                // Resolve avatar_badge from agent definition if not already set
+                if config.avatar_badge.is_none()
+                    && let Ok(def) =
+                        crate::agent_definition::load_agent_definition(&config.agent_type)
+                {
+                    config.avatar_badge = def.avatar_badge;
+                }
+
                 // DM separators are posted by the caller in on_success effects,
                 // not here. For task-based spawns the separator is posted by
                 // SpawnForTask; for reviewer spawns it is included directly
@@ -1780,6 +1798,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 };
 
                 config.name = name.clone();
+
+                // Resolve avatar_badge from agent definition if not already set
+                if config.avatar_badge.is_none()
+                    && let Ok(def) =
+                        crate::agent_definition::load_agent_definition(&config.agent_type)
+                {
+                    config.avatar_badge = def.avatar_badge;
+                }
 
                 // 3. Spawn via state.spawn_coworker
                 match state.spawn_coworker(&config).await {
@@ -1837,12 +1863,19 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                     .load(&task_id)
                                     .ok()
                                     .map(|t| (t.color, t.icon));
+                                let session_badge = state
+                                    .persistent_state
+                                    .lock()
+                                    .await
+                                    .session_by_name(&name)
+                                    .and_then(|s| s.avatar_badge.clone());
                                 Effect::BroadcastCoworkerUpdate {
                                     name: name.clone(),
                                     status: "running".to_string(),
                                     current_task: None,
                                     color: task_avatar.as_ref().and_then(|(c, _)| c.clone()),
                                     icon: task_avatar.as_ref().and_then(|(_, i)| i.clone()),
+                                    avatar_badge: session_badge,
                                 }
                             },
                             Effect::post_to_ops(success_message),
@@ -3104,7 +3137,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     // persistent state.
                     let _ = shutdown_coworker_impl(&name, &reason, state).await;
 
-                    state.broadcast_coworker_update(&name, "stopped", None, None, None);
+                    state.broadcast_coworker_update(&name, "stopped", None, None, None, None);
                 } else {
                     // No name mapped — session may have already been partially
                     // cleaned up. Still mark SessionRecord as stopped

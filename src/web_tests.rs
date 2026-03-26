@@ -110,6 +110,7 @@ fn test_coworker_status_update_serialization() {
         health: None,
         color: None,
         icon: None,
+        avatar_badge: None,
     });
 
     let json = serde_json::to_string(&update).unwrap();
@@ -213,6 +214,7 @@ fn test_coworker_status_update_without_task() {
         health: None,
         color: None,
         icon: None,
+        avatar_badge: None,
     });
 
     let json = serde_json::to_string(&update).unwrap();
