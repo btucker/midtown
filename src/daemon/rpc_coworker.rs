@@ -215,6 +215,9 @@ pub(super) async fn handle_coworker_spawn(
     if let Some(m) = agent_def.as_ref().and_then(|d| d.model.clone()) {
         config.model = m;
     }
+    if let Some(badge) = agent_def.as_ref().and_then(|d| d.avatar_badge.clone()) {
+        config.avatar_badge = Some(badge);
+    }
 
     // Pre-spawn: ensure task worktree exists and register assignment
     if let Some((ref worktree_id, ref path)) = task_worktree {
@@ -251,7 +254,14 @@ pub(super) async fn handle_coworker_spawn(
     match state.spawn_coworker(&config).await {
         Ok(_) => {
             info!("Spawned coworker: {}", config.name);
-            state.broadcast_coworker_update(&config.name, "running", None, None, None, None);
+            state.broadcast_coworker_update(
+                &config.name,
+                "running",
+                None,
+                None,
+                None,
+                config.avatar_badge.as_deref(),
+            );
 
             // If --task was provided, execute task assignment effects and update
             // the task file on disk (same as dispatch + SpawnForTask do)

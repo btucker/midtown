@@ -280,7 +280,7 @@ This means `lead_provider` acts as a shared fallback for both the Project Lead a
 
 **Agent definition model overrides:** When `agent spawn --agent <name>` specifies an agent definition with a `model` field, the call-in handler (`rpc_coworker.rs`) resolves the auth_provider from the model alias via `provider_for_model_alias()` before building the `LaunchConfig`. This ensures the model and provider are consistent — without it, `spawn_coworker()` would silently normalize the model to match the caller's provider via `normalize_model_for_provider_role()`, defeating the agent definition's model intent.
 
-**Agent definitions** (`src/agent_definition.rs`): Markdown files with YAML frontmatter (name, description, model) and a system prompt body. Searched in `.claude/agents/{name}.md` (project-level) then `~/.claude/agents/{name}.md` (user-level). The parsed `AgentDefinition.model` feeds into provider resolution, and the body becomes the coworker's system prompt.
+**Agent definitions** (`src/agent_definition.rs`): Markdown files with YAML frontmatter (name, description, model, avatar_badge) and a system prompt body. Searched in `.claude/agents/{name}.md` (project-level) then `~/.claude/agents/{name}.md` (user-level). The parsed `AgentDefinition.model` feeds into provider resolution, and the body becomes the coworker's system prompt. The optional `avatar_badge` field specifies a Lucide icon name rendered as a small overlay on the worker's avatar in the web UI; it flows through `LaunchConfig` → `SessionRecord` → REST/WebSocket → frontend `MessageRow.svelte`.
 
 ## Channel Leads
 
