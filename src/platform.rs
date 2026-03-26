@@ -149,15 +149,13 @@ pub fn build_claude_headless_args(config: &HeadlessConfig) -> Vec<String> {
         fork_session,
         disallowed_tools,
         agent_name,
+        additional_dirs,
     } = config;
 
     let is_resume = resume_session_id.is_some();
     let is_fork = is_resume && *fork_session;
 
-    let mut args = build_claude_common_args(
-        model,
-        &[], // headless sessions don't use additional_dirs
-    );
+    let mut args = build_claude_common_args(model, additional_dirs);
 
     // Setting sources — skip for legacy fork-resume sessions because
     // --setting-sources is incompatible with --resume --fork-session in the
