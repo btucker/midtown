@@ -1414,10 +1414,10 @@ impl HeadlessSessionBackend {
         match self {
             Self::Claude => {
                 const MAX_STDERR_LINES: usize = 100;
-                let rx = session
-                    .stderr_rx
-                    .as_mut()
-                    .expect("missing claude stderr channel");
+                let rx = match session.stderr_rx.as_mut() {
+                    Some(rx) => rx,
+                    None => return Vec::new(),
+                };
                 let mut lines = Vec::new();
                 // Wait briefly for the background reader task to finish any
                 // in-progress read_line call (mirrors the old 10ms pipe timeout).
@@ -1987,10 +1987,7 @@ impl HeadlessSession {
     }
 
     async fn next_claude_event(&mut self) -> Option<StreamEvent> {
-        let rx = self
-            .stdout_rx
-            .as_mut()
-            .expect("missing claude stdout channel");
+        let rx = self.stdout_rx.as_mut()?;
         let event = rx.recv().await?;
         // Track session_id from init event (background task already filtered Unknown events).
         if let StreamEvent::System {

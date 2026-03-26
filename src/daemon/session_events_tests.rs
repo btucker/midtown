@@ -133,3 +133,41 @@ async fn forwarder_sends_stderr_lines() {
         other => panic!("expected Stderr, got {:?}", other),
     }
 }
+
+#[tokio::test]
+async fn forwarder_interleaves_stdout_and_stderr() {
+    let (agg_tx, mut agg_rx) = session_events::channel();
+    let (stdout_tx, stdout_rx) = mpsc::unbounded_channel();
+    let (stderr_tx, stderr_rx) = mpsc::unbounded_channel();
+
+    session_events::spawn_forwarder(
+        "test".to_string(),
+        "slot-1".to_string(),
+        stdout_rx,
+        stderr_rx,
+        agg_tx,
+    );
+
+    stdout_tx.send(StreamEvent::Unknown).unwrap();
+    stderr_tx.send("err1".to_string()).unwrap();
+    stdout_tx.send(StreamEvent::Unknown).unwrap();
+    drop(stdout_tx);
+    drop(stderr_tx);
+
+    let mut event_count = 0;
+    let mut stderr_count = 0;
+    let mut stopped = false;
+    while let Some(ev) = agg_rx.recv().await {
+        match ev {
+            SessionEvent::Event { .. } => event_count += 1,
+            SessionEvent::Stderr { .. } => stderr_count += 1,
+            SessionEvent::Stopped { .. } => {
+                stopped = true;
+                break;
+            }
+        }
+    }
+    assert_eq!(event_count, 2);
+    assert!(stderr_count >= 1);
+    assert!(stopped);
+}
