@@ -91,6 +91,13 @@ pub struct LaunchConfig {
     /// When `true`, inject a prompt override telling the lead that auto-posting
     /// is disabled. Only relevant for `midtown-channel-lead` agent types.
     pub suppress_auto_output: bool,
+    /// Avatar color override (CSS color string, e.g., "#ff5f5f").
+    /// Persisted to SessionRecord at spawn time so the REST endpoint
+    /// returns the correct color on page refresh.
+    pub color: Option<String>,
+    /// Lucide icon name for avatar (e.g., "shield", "database").
+    /// Persisted to SessionRecord at spawn time.
+    pub icon: Option<String>,
 }
 
 /// The shell command string and any pre-assigned provider session ID.
@@ -336,6 +343,8 @@ impl LaunchConfig {
             cwd_subdir: None,
             system_prompt_extra,
             suppress_auto_output: false,
+            color: None,
+            icon: None,
         }
     }
 
