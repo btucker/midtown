@@ -155,6 +155,33 @@ export async function fetchProjects(): Promise<Project[]> {
 	return [];
 }
 
+// Fetch the set of open thread IDs for a channel
+export async function fetchOpenThreads(channel: string): Promise<string[]> {
+	try {
+		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/open-threads`);
+		if (res.ok) {
+			const data = await res.json();
+			return data.threads || [];
+		}
+	} catch (err) {
+		console.warn("Failed to fetch open threads:", err);
+	}
+	return [];
+}
+
+// Persist the set of open thread IDs for a channel
+export async function setOpenThreads(channel: string, threads: string[]): Promise<void> {
+	try {
+		await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/open-threads`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ threads }),
+		});
+	} catch (err) {
+		console.warn("Failed to set open threads:", err);
+	}
+}
+
 // Fetch the list of available channels
 export async function fetchChannels(includeArchived = false): Promise<Channel[]> {
 	try {
@@ -226,33 +253,6 @@ export async function unarchiveChannel(channelName: string): Promise<{ ok: boole
 	} catch (err: unknown) {
 		console.error("Failed to unarchive channel:", err);
 		return { ok: false, error: (err as Error).message };
-	}
-}
-
-// Fetch the set of open thread IDs for a channel
-export async function fetchOpenThreads(channel: string): Promise<string[]> {
-	try {
-		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/open-threads`);
-		if (res.ok) {
-			const data = await res.json();
-			return data.threads || [];
-		}
-	} catch (err) {
-		console.warn("Failed to fetch open threads:", err);
-	}
-	return [];
-}
-
-// Persist the set of open thread IDs for a channel
-export async function setOpenThreads(channel: string, threads: string[]): Promise<void> {
-	try {
-		await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/open-threads`, {
-			method: "PUT",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ threads }),
-		});
-	} catch (err) {
-		console.warn("Failed to set open threads:", err);
 	}
 }
 
