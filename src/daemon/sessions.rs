@@ -12,9 +12,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::{DateTime, Datelike, TimeZone, Utc};
-use std::sync::Arc;
-
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent, shutdown_codex_runtime};
@@ -258,6 +256,9 @@ pub struct CoworkerSession {
     output_log: Option<std::fs::File>,
     /// Path to the output log file.
     output_log_path: PathBuf,
+    /// Recent stderr lines accumulated from the real-time event path.
+    /// Used for crash diagnostics in exit messages.
+    recent_stderr: Vec<String>,
 }
 
 impl CoworkerSession {
@@ -314,6 +315,7 @@ impl CoworkerSession {
             initial_prompt: None,
             output_log,
             output_log_path,
+            recent_stderr: Vec::new(),
         }
     }
 }
@@ -333,11 +335,8 @@ type TestIsAliveHook = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
 pub struct SessionManager {
     sessions: RwLock<HashMap<String, CoworkerSession>>,
     repo_name: String,
-    /// Signaled by background stdout reader tasks when any session produces output.
-    ///
-    /// The daemon's event loop awaits this alongside the drain interval tick,
-    /// enabling near-zero-latency output processing instead of polling.
-    drain_notify: Arc<Notify>,
+    /// Sender for the aggregated session event channel.
+    agg_tx: mpsc::UnboundedSender<super::session_events::SessionEvent>,
     #[cfg(test)]
     test_send_message_to_session_id_hook: std::sync::Mutex<Option<TestSendMessageToSessionIdHook>>,
     #[cfg(test)]
@@ -347,24 +346,19 @@ pub struct SessionManager {
 #[allow(dead_code)]
 impl SessionManager {
     /// Create a new empty session manager.
-    pub fn new(repo_name: String) -> Self {
+    pub fn new(
+        repo_name: String,
+        agg_tx: mpsc::UnboundedSender<super::session_events::SessionEvent>,
+    ) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
             repo_name,
-            drain_notify: Arc::new(Notify::new()),
+            agg_tx,
             #[cfg(test)]
             test_send_message_to_session_id_hook: std::sync::Mutex::new(None),
             #[cfg(test)]
             test_is_alive_hook: std::sync::Mutex::new(None),
         }
-    }
-
-    /// Returns a handle the event loop can `.notified().await` on.
-    ///
-    /// Wakes whenever any session's stdout reader produces output, allowing
-    /// the drain to run immediately instead of waiting for the next tick.
-    pub fn drain_notify(&self) -> Arc<Notify> {
-        Arc::clone(&self.drain_notify)
     }
 
     #[cfg(test)]
@@ -420,6 +414,7 @@ impl SessionManager {
                 initial_prompt: None,
                 output_log: None,
                 output_log_path: std::path::PathBuf::new(),
+                recent_stderr: Vec::new(),
             },
         );
     }
@@ -533,9 +528,7 @@ impl SessionManager {
         // No name-uniqueness check needed — slot_id is always unique (UUID).
         // Multiple sessions with the same name are now allowed (keyed by slot_id).
 
-        // Inject the drain notify so the stdout reader wakes the event loop.
-        let mut config = config.clone();
-        config.output_notify = Some(Arc::clone(&self.drain_notify));
+        let config = config.clone();
 
         // Spawn the headless process
         let mut session = HeadlessSession::spawn(&config)
@@ -577,6 +570,10 @@ impl SessionManager {
         let is_resume = config.resume_session_id.is_some();
         let has_initial_prompt = initial_prompt.is_some();
         let mut sessions = self.sessions.write().await;
+
+        // Take per-session receivers BEFORE moving session into CoworkerSession
+        let receivers = session.take_receivers();
+
         let mut cs = CoworkerSession::new(
             slot_id.to_string(),
             name.to_string(),
@@ -593,6 +590,18 @@ impl SessionManager {
             cs.has_pending_api_call = true;
             cs.last_event_at = Some(Utc::now());
         }
+
+        // Spawn aggregated forwarder if receivers are available
+        if let Some((stdout_rx, stderr_rx)) = receivers {
+            super::session_events::spawn_forwarder(
+                name.to_string(),
+                slot_id.to_string(),
+                stdout_rx,
+                stderr_rx,
+                self.agg_tx.clone(),
+            );
+        }
+
         sessions.insert(slot_id.to_string(), cs);
 
         if let Some(ref sid) = session_id {
@@ -637,10 +646,6 @@ impl SessionManager {
     ) -> Result<String, crate::Error> {
         let slot_id = uuid::Uuid::new_v4().to_string();
         let preassigned_session_id = config.session_id.clone();
-
-        // Inject the drain notify so the stdout reader wakes the event loop.
-        let mut config = config;
-        config.output_notify = Some(Arc::clone(&self.drain_notify));
 
         // Spawn the headless process
         let mut session = HeadlessSession::spawn(&config)
@@ -716,6 +721,10 @@ impl SessionManager {
 
         // Register in the sessions map so the event loop picks it up.
         let mut sessions = self.sessions.write().await;
+
+        // Take receivers AFTER init-event discovery but BEFORE moving session
+        let receivers = session.take_receivers();
+
         let mut cs = CoworkerSession::new(
             slot_id.clone(),
             name.to_string(),
@@ -724,6 +733,18 @@ impl SessionManager {
             Some(fork_session_id.clone()),
         );
         cs.is_resume = config.resume_session_id.is_some();
+
+        // Spawn aggregated forwarder if receivers are available
+        if let Some((stdout_rx, stderr_rx)) = receivers {
+            super::session_events::spawn_forwarder(
+                name.to_string(),
+                slot_id.clone(),
+                stdout_rx,
+                stderr_rx,
+                self.agg_tx.clone(),
+            );
+        }
+
         sessions.insert(slot_id, cs);
 
         info!(
@@ -1173,6 +1194,179 @@ impl SessionManager {
     /// each session's stdout, updates session metadata (session_id, cost,
     /// health flags), and returns events grouped by coworker name.
     ///
+    /// Update health flags on a session from a single stream event.
+    ///
+    /// This is the per-event equivalent of the health-flag updating logic
+    /// from `drain_events()`, called from the real-time event path.
+    pub async fn update_session_health(&self, slot_id: &str, event: &StreamEvent) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(cs) = sessions.get_mut(slot_id) {
+            cs.last_event_at = Some(Utc::now());
+
+            match event {
+                StreamEvent::System {
+                    subtype,
+                    session_id,
+                    ..
+                } if subtype == "init" => {
+                    cs.session_id = session_id.clone();
+                    cs.status = SessionStatus::Running;
+                    debug!(
+                        "Session '{}' initialized (session_id={:?})",
+                        cs.name, cs.session_id
+                    );
+                }
+                StreamEvent::Result {
+                    total_cost_usd,
+                    is_error,
+                    result,
+                    extra,
+                    usage,
+                    ..
+                } => {
+                    // A result event means the current API turn has completed
+                    // (success or error), so it's no longer pending.
+                    cs.has_pending_api_call = false;
+
+                    if let Some(cost) = total_cost_usd {
+                        cs.cost_usd = *cost;
+                    }
+                    if let Some(u) = usage {
+                        cs.input_tokens = u.input_tokens;
+                        cs.output_tokens = u.output_tokens;
+                    }
+                    if *is_error {
+                        // Check error type in priority order:
+                        // 1. Auth errors (require user intervention)
+                        // 2. Usage limits (have a reset time)
+                        // 3. Unrecoverable session errors (needs fresh restart)
+                        // 4. Generic API errors (transient)
+                        let error_msg = result.as_deref().unwrap_or("");
+                        let extra_str = extra.to_string();
+                        let combined = format!("{} {}", error_msg, extra_str);
+
+                        // Errors are mutually exclusive; always clear stale flags first.
+                        cs.has_usage_limit = false;
+                        cs.usage_limit_reset_at = None;
+                        cs.has_api_error = false;
+                        cs.has_auth_error = false;
+
+                        if is_auth_error(&combined) {
+                            cs.has_auth_error = true;
+                            warn!("Session '{}' hit auth error (OAuth token expired)", cs.name);
+                        } else if let Some(reset_time) = parse_usage_limit_reset_time(&combined) {
+                            cs.has_usage_limit = true;
+                            cs.usage_limit_reset_at = Some(reset_time);
+                            debug!(
+                                "Session '{}' hit usage limit, resets at {}",
+                                cs.name, reset_time
+                            );
+                        } else if is_stale_codex_session_error(&combined) {
+                            cs.has_tool_name_conflict = true;
+                            warn!(
+                                "Session '{}' hit stale Codex session/thread error — needs fresh restart",
+                                cs.name
+                            );
+                        } else if is_context_exhausted_error(&combined) {
+                            cs.has_tool_name_conflict = true;
+                            warn!(
+                                "Session '{}' hit context exhaustion ('prompt is too long') — needs fresh restart",
+                                cs.name
+                            );
+                        } else {
+                            // Generic API error (not usage limit or auth)
+                            cs.has_api_error = true;
+                        }
+                    } else {
+                        // Successful result means previous transient session error
+                        // flags have recovered and must not stay sticky.
+                        cs.has_usage_limit = false;
+                        cs.usage_limit_reset_at = None;
+                        cs.has_api_error = false;
+                        cs.has_auth_error = false;
+                    }
+                }
+                StreamEvent::Assistant { message, .. } => {
+                    cs.has_pending_api_call = false;
+                    let (pending, subagent) = extract_tool_state_from_assistant(message);
+                    if pending {
+                        cs.has_pending_tool = true;
+                    }
+                    if let Some(is_subagent) = subagent {
+                        cs.has_running_subagent = is_subagent;
+                    }
+                }
+                StreamEvent::User { message, .. } => {
+                    if has_tool_result(message) {
+                        cs.has_pending_tool = false;
+                        cs.has_running_subagent = false;
+                        // Tool result processed — model is now making an API call
+                        // (possibly with extended thinking). No events will arrive
+                        // until the assistant response begins; exempt from stuck detection.
+                        cs.has_pending_api_call = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Handle a stderr line from a session: accumulate for crash diagnostics
+    /// and check for unrecoverable errors.
+    pub async fn handle_stderr_line(&self, slot_id: &str, line: &str) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(cs) = sessions.get_mut(slot_id) {
+            // Accumulate for crash diagnostics (cap at 50 lines to bound memory)
+            if cs.recent_stderr.len() >= 50 {
+                cs.recent_stderr.remove(0);
+            }
+            cs.recent_stderr.push(line.to_string());
+
+            if !cs.has_tool_name_conflict && line.contains("Tool names must be unique") {
+                warn!(
+                    "Session '{}' hit 'Tool names must be unique' error",
+                    cs.name
+                );
+                cs.has_tool_name_conflict = true;
+            }
+        }
+    }
+
+    /// Take accumulated stderr lines for a session (drains them).
+    pub async fn take_recent_stderr(&self, slot_id: &str) -> Vec<String> {
+        let mut sessions = self.sessions.write().await;
+        if let Some(cs) = sessions.get_mut(slot_id) {
+            std::mem::take(&mut cs.recent_stderr)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Log a stream event to the session's output log file (async, non-blocking).
+    pub async fn log_event(&self, slot_id: &str, event: &StreamEvent) {
+        let sessions = self.sessions.read().await;
+        if let Some(cs) = sessions.get(slot_id)
+            && cs.output_log.is_some()
+        {
+            let log_path = cs.output_log_path.clone();
+            let json = serde_json::to_string(event).ok();
+            drop(sessions);
+            if let Some(json) = json {
+                tokio::task::spawn_blocking(move || {
+                    use std::io::Write;
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&log_path)
+                    {
+                        let _ = writeln!(file, "{}", json);
+                        let _ = file.flush();
+                    }
+                });
+            }
+        }
+    }
+
     /// Also detects sessions that have exited: returns their names in the
     /// second tuple element along with stderr lines from the exited sessions
     /// in the third tuple element (as a HashMap<name, Vec<stderr_lines>>).
@@ -1860,7 +2054,8 @@ pub fn format_events_as_rich_text<'a>(lines: impl Iterator<Item = &'a str>) -> S
 
 impl Default for SessionManager {
     fn default() -> Self {
-        Self::new(String::new())
+        let (agg_tx, _agg_rx) = mpsc::unbounded_channel();
+        Self::new(String::new(), agg_tx)
     }
 }
 

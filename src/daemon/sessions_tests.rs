@@ -1,5 +1,10 @@
 use super::*;
 
+fn test_session_manager() -> SessionManager {
+    let (agg_tx, _agg_rx) = tokio::sync::mpsc::unbounded_channel();
+    SessionManager::new("test-repo".to_string(), agg_tx)
+}
+
 #[test]
 fn test_is_auth_error_detects_oauth_expired() {
     let msg = "Error: OAuth token has expired";
@@ -105,38 +110,39 @@ async fn insert_test_session(sm: &SessionManager, name: &str, status: SessionSta
             is_resume: false,
             output_log: None,
             output_log_path: PathBuf::new(),
+            recent_stderr: Vec::new(),
         },
     );
 }
 
 #[test]
 fn test_session_manager_default() {
-    let _sm = SessionManager::new("test-repo".to_string());
+    let _sm = test_session_manager();
 }
 
 #[tokio::test]
 async fn test_send_message_no_session() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
     let result = sm.send_message("nonexistent", "hello").await;
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn test_shutdown_no_session() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
     let result = sm.shutdown("nonexistent").await;
     assert!(result.is_err());
 }
 
 #[tokio::test]
 async fn test_is_alive_no_session() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
     assert!(!sm.is_alive("nonexistent").await);
 }
 
 #[tokio::test]
 async fn test_drain_events_empty() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
     let (events, stopped, stderr_by_name) = sm.drain_events().await;
     assert!(events.is_empty());
     assert!(stopped.is_empty());
@@ -145,21 +151,21 @@ async fn test_drain_events_empty() {
 
 #[tokio::test]
 async fn test_list_names_empty() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
     let names = sm.list_names().await;
     assert!(names.is_empty());
 }
 
 #[tokio::test]
 async fn test_collect_health_empty() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
     let health = sm.collect_health().await;
     assert!(health.is_empty());
 }
 
 #[tokio::test]
 async fn test_is_nudgeable_rejects_starting_session() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
     insert_test_session(&sm, "madison", SessionStatus::Starting).await;
     sm.set_test_is_alive_hook(Some(std::sync::Arc::new(|name: &str| {
         name.eq_ignore_ascii_case("madison")
@@ -173,7 +179,7 @@ async fn test_is_nudgeable_rejects_starting_session() {
 
 #[tokio::test]
 async fn test_list_alive_names_excludes_stopped() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
 
     // Insert a running session and a stopped session
     insert_test_session(&sm, "madison", SessionStatus::Running).await;
@@ -201,14 +207,14 @@ async fn test_list_alive_names_excludes_stopped() {
 
 #[tokio::test]
 async fn test_list_alive_names_empty() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
     let names = sm.list_alive_names().await;
     assert!(names.is_empty());
 }
 
 #[tokio::test]
 async fn test_reconcile_catches_no_handle_sessions() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
 
     // Insert a session with Running status but no handle (session: None)
     // This simulates the inconsistent state where a session handle is lost
@@ -235,7 +241,7 @@ async fn test_reconcile_catches_no_handle_sessions() {
 
 #[tokio::test]
 async fn test_reconcile_skips_already_stopped() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
 
     insert_test_session(&sm, "park", SessionStatus::Stopped).await;
 
@@ -248,7 +254,7 @@ async fn test_reconcile_skips_already_stopped() {
 
 #[tokio::test]
 async fn test_reconcile_empty() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
     let (stopped, _stderr_map) = sm.reconcile_process_health().await;
     assert!(stopped.is_empty());
 }
@@ -260,7 +266,7 @@ async fn test_spawn_with_session_id_sets_session_id_immediately() {
     // on the CoworkerSession, not left as None waiting for an init event that
     // will never arrive for resumed sessions.
 
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
     let known_session_id = "test-session-id-123";
     let slot_id = "test-slot-id";
     let name = "madison";
@@ -299,6 +305,7 @@ async fn test_spawn_with_session_id_sets_session_id_immediately() {
                 is_resume: false,
                 output_log: None,
                 output_log_path: PathBuf::new(),
+                recent_stderr: Vec::new(),
             },
         );
     }
@@ -343,6 +350,7 @@ fn test_select_slot_for_session_id_prefers_live_session() {
             is_resume: false,
             output_log: None,
             output_log_path: PathBuf::new(),
+            recent_stderr: Vec::new(),
         },
     );
     sessions.insert(
@@ -370,6 +378,7 @@ fn test_select_slot_for_session_id_prefers_live_session() {
             is_resume: false,
             output_log: None,
             output_log_path: PathBuf::new(),
+            recent_stderr: Vec::new(),
         },
     );
     sessions.insert(
@@ -397,6 +406,7 @@ fn test_select_slot_for_session_id_prefers_live_session() {
             is_resume: false,
             output_log: None,
             output_log_path: PathBuf::new(),
+            recent_stderr: Vec::new(),
         },
     );
 
@@ -464,7 +474,7 @@ fn test_usage_limit_reset_time_in_future() {
 
 #[tokio::test]
 async fn test_graceful_shutdown_all_empty_returns_zero() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
     let count = sm
         .graceful_shutdown_all(std::time::Duration::from_secs(1))
         .await;
@@ -473,7 +483,7 @@ async fn test_graceful_shutdown_all_empty_returns_zero() {
 
 #[tokio::test]
 async fn test_graceful_shutdown_all_marks_sessions_stopped() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
     insert_test_session(&sm, "madison", SessionStatus::Running).await;
     insert_test_session(&sm, "park", SessionStatus::Running).await;
 
@@ -503,7 +513,7 @@ async fn test_graceful_shutdown_all_marks_sessions_stopped() {
 /// across daemon restarts.
 #[tokio::test]
 async fn test_graceful_shutdown_all_preserves_session_info() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
 
     // Insert a session with a known session_id (simulating an active coworker)
     {
@@ -534,6 +544,7 @@ async fn test_graceful_shutdown_all_preserves_session_info() {
                 is_resume: false,
                 output_log: None,
                 output_log_path: PathBuf::new(),
+                recent_stderr: Vec::new(),
             },
         );
     }
@@ -561,7 +572,7 @@ async fn test_graceful_shutdown_all_preserves_session_info() {
 /// of the coworker's actual mission prompt.
 #[tokio::test]
 async fn test_collect_session_info_preserves_initial_prompt() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
 
     {
         let mut sessions = sm.sessions.write().await;
@@ -591,6 +602,7 @@ async fn test_collect_session_info_preserves_initial_prompt() {
                 is_resume: false,
                 output_log: None,
                 output_log_path: PathBuf::new(),
+                recent_stderr: Vec::new(),
             },
         );
     }
@@ -613,7 +625,7 @@ async fn test_collect_session_info_preserves_initial_prompt() {
 /// "This is a fresh session restart..." wrapper.
 #[tokio::test]
 async fn test_set_canonical_initial_prompt_overrides_decorated_prompt() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
 
     // Insert a session with a decorated prompt (what session clear produces)
     {
@@ -646,6 +658,7 @@ async fn test_set_canonical_initial_prompt_overrides_decorated_prompt() {
                 is_resume: false,
                 output_log: None,
                 output_log_path: PathBuf::new(),
+                recent_stderr: Vec::new(),
             },
         );
     }
@@ -806,7 +819,7 @@ fn test_format_events_ignores_non_jsonl_lines() {
 /// set_canonical_initial_prompt should be a no-op for unknown session names.
 #[tokio::test]
 async fn test_set_canonical_initial_prompt_noop_for_unknown_name() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
 
     // Should not panic or error
     sm.set_canonical_initial_prompt("nonexistent", Some("prompt".to_string()))
@@ -817,7 +830,7 @@ async fn test_set_canonical_initial_prompt_noop_for_unknown_name() {
 /// no prompt was set (no-prompt coworkers should not have phantom prompt values).
 #[tokio::test]
 async fn test_collect_session_info_preserves_none_initial_prompt() {
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
 
     {
         let mut sessions = sm.sessions.write().await;
@@ -847,6 +860,7 @@ async fn test_collect_session_info_preserves_none_initial_prompt() {
                 is_resume: false,
                 output_log: None,
                 output_log_path: PathBuf::new(),
+                recent_stderr: Vec::new(),
             },
         );
     }
@@ -1040,7 +1054,7 @@ async fn test_get_output_with_path_returns_byte_offset() {
 
     // Build a SessionManager pointing at a fake repo, then inject a session
     // whose output_log_path points at our temp file.
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
     {
         let mut sessions = sm.sessions.write().await;
         let slot_id = uuid::Uuid::new_v4().to_string();
@@ -1069,6 +1083,7 @@ async fn test_get_output_with_path_returns_byte_offset() {
                 is_resume: false,
                 output_log: None,
                 output_log_path: log_path.clone(),
+                recent_stderr: Vec::new(),
             },
         );
     }
@@ -1097,7 +1112,7 @@ async fn test_get_output_with_path_empty_file_returns_zero_offset() {
     let log_path = dir.path().join("empty.jsonl");
     std::fs::File::create(&log_path).unwrap(); // empty file
 
-    let sm = SessionManager::new("test-repo".to_string());
+    let sm = test_session_manager();
     {
         let mut sessions = sm.sessions.write().await;
         let slot_id = uuid::Uuid::new_v4().to_string();
@@ -1126,6 +1141,7 @@ async fn test_get_output_with_path_empty_file_returns_zero_offset() {
                 is_resume: false,
                 output_log: None,
                 output_log_path: log_path.clone(),
+                recent_stderr: Vec::new(),
             },
         );
     }
@@ -1135,13 +1151,4 @@ async fn test_get_output_with_path_empty_file_returns_zero_offset() {
         .await
         .expect("should return Some for empty file");
     assert_eq!(offset, 0, "empty file must yield offset 0");
-}
-
-#[test]
-fn test_drain_notify_returns_shared_handle() {
-    let sm = SessionManager::new("test-repo".to_string());
-    let n1 = sm.drain_notify();
-    let n2 = sm.drain_notify();
-    // Both should point to the same Notify (same Arc allocation).
-    assert!(std::sync::Arc::ptr_eq(&n1, &n2));
 }

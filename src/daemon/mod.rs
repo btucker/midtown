@@ -29,6 +29,10 @@ mod rpc_session;
 mod rpc_status;
 mod rpc_task;
 mod rpc_workflow;
+pub(crate) mod session_events;
+#[path = "session_events_tests.rs"]
+#[cfg(test)]
+mod session_events_tests;
 pub(crate) mod sessions;
 #[allow(dead_code)]
 pub(crate) mod sidecar;
@@ -1229,6 +1233,7 @@ impl DaemonState {
         push_manager: Option<std::sync::Arc<crate::push::PushManager>>,
         default_branch: String,
         shutdown_tx: broadcast::Sender<()>,
+        session_agg_tx: tokio::sync::mpsc::UnboundedSender<session_events::SessionEvent>,
     ) -> crate::Result<Self> {
         let dir_key = paths.dir_key();
         let project_name = paths.project_name().to_string();
@@ -1332,7 +1337,10 @@ impl DaemonState {
             headless_health_generation: std::sync::atomic::AtomicU64::new(0),
             health_derived_cache: std::sync::Mutex::new(None),
             attached_coworkers: std::sync::Mutex::new(HashMap::new()),
-            session_manager: sessions::SessionManager::new(session_manager_repo_name),
+            session_manager: sessions::SessionManager::new(
+                session_manager_repo_name,
+                session_agg_tx,
+            ),
             rpc_response_cache: Mutex::new(HashMap::new()),
             prs_cache: rpc_prs::PrsCache::new(),
             pr_review_negative_cache: std::sync::Mutex::new(HashMap::new()),
@@ -3063,6 +3071,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     // Set up shutdown signal handler (created before state so it can be shared)
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
+    // Create the aggregated session event channel. The receiver stays local
+    // to the event loop (mpsc::UnboundedReceiver is !Sync, so it cannot live
+    // inside Arc<DaemonState>). The sender is passed into DaemonState for use
+    // by SessionManager when spawning forwarder tasks.
+    let (session_agg_tx, mut session_agg_rx) = session_events::channel();
+
     // Create daemon state (pass channel and web updates sender so messages
     // are broadcast to WebSocket clients in real-time)
     let state = Arc::new(DaemonState::new(
@@ -3076,6 +3090,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
         shared_push_manager,
         default_branch,
         shutdown_tx.clone(),
+        session_agg_tx,
     )?);
     info!(
         "Max in-progress tasks limit: {}",
@@ -3247,14 +3262,12 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     }
     orphan_process_interval.tick().await;
 
-    // Timer for draining headless session events (every 500ms).
-    // Must be fast to prevent stdout pipe buffer (64KB) from filling up,
-    // which would block coworker processes and cause silent hangs.
-    // The drain_notify provides event-driven wakeup for near-zero latency
-    // when sessions produce output; the interval tick remains as a fallback.
-    let mut session_drain_interval = interval(std::time::Duration::from_millis(500));
-    session_drain_interval.tick().await;
-    let session_drain_notify = state.session_manager.drain_notify();
+    // Timer for session health checks (every 5 seconds).
+    // Event processing is now real-time via the session_agg_rx select! branch.
+    // This interval only runs plugin health, health snapshot refresh, and
+    // defense-in-depth process reconciliation.
+    let mut session_health_interval = interval(std::time::Duration::from_secs(5));
+    session_health_interval.tick().await;
 
     // Timer for flushing batched CI notifications (check every 5 seconds).
     // The actual flush delay is 15 seconds from the oldest buffered item.
@@ -3759,300 +3772,47 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 }
             }
 
-            // Drain events from headless sessions to prevent stdout buffer filling up.
-            // Also detects process exits and updates health state for the snapshot.
-            // Wakes on EITHER: (a) event-driven notify from stdout reader, or
-            // (b) fallback interval tick (catches edge cases like process exit).
-            _ = async {
-                tokio::select! {
-                    _ = session_drain_notify.notified() => {},
-                    _ = session_drain_interval.tick() => {},
+            // Real-time session event processing via aggregated channel.
+            Some(first_event) = session_agg_rx.recv() => {
+                // Batch drain: grab any other events already buffered
+                let mut batch = vec![first_event];
+                while let Ok(ev) = session_agg_rx.try_recv() {
+                    batch.push(ev);
                 }
-            } => {
-                // Check plugin daemon health and ensure it's running if plugins exist.
+                handle_session_event_batch(batch, &state).await;
+            }
+
+            // Periodic health checks and process reconciliation.
+            // Event processing is now real-time via the session_agg_rx branch above.
+            _ = session_health_interval.tick() => {
+                // Plugin health
                 state.plugin_daemon.check_health().await;
                 if state.plugin_daemon.has_plugins() {
                     state.plugin_daemon.ensure_running().await;
                 }
 
-                let (events, stopped, mut stderr_by_name) = state.session_manager.drain_events().await;
-
-                // Update health state from SessionManager (used by snapshot for decision functions)
+                // Refresh health snapshot for decision functions
                 let health = state.session_manager.collect_health().await;
                 {
                     let mut hh = state.headless_health.write().unwrap();
                     *hh = health;
                 }
-                state
-                    .headless_health_generation
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                state.headless_health_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-                // Log headless events at debug level for diagnostics.
-                // Also backfill session_id in persistent state when init events arrive.
-                let mut needs_persist_save = false;
-                for (name, session_events) in &events {
-                    for event in session_events {
-                        debug!(coworker = %name, event = ?event, "headless session event");
-
-                        // Backfill session_id on init event for freshly spawned sessions
-                        if let crate::headless::StreamEvent::System {
-                            subtype,
-                            session_id: Some(sid),
-                            ..
-                        } = event
-                            && subtype == "init"
-                            && !sid.is_empty()
-                        {
-                            let mut ps = state.persistent_state.lock().await;
-                            // Look up the previous session_id from the SessionRecord.
-                            let previous_sid = ps
-                                .session_by_name(name.as_str())
-                                .map(|r| r.session_id.clone())
-                                .unwrap_or_default();
-                            // Also backfill channel_lead_sessions for channel lead sessions.
-                            // Channel leads use the channel name directly as their session name,
-                            // so we can look up the key directly in channel_lead_sessions.
-                            if let Some(stored_id) =
-                                ps.channel_lead_sessions.get_mut(name.as_str())
-                                && (stored_id.is_empty() || stored_id != sid)
-                            {
-                                info!(
-                                    "Backfilling channel lead session_id for '{}': {}",
-                                    name, sid
-                                );
-                                *stored_id = sid.clone();
-                                needs_persist_save = true;
-                            }
-                            // If this session had a provisional ID, migrate persistent/session maps
-                            // to the real ID emitted by init.
-                            let mut migrated_record = None;
-                            if previous_sid != *sid
-                                && !previous_sid.is_empty()
-                                && let Some(old_record) = ps.sessions.remove(&previous_sid)
-                            {
-                                let mut updated = old_record;
-                                updated.session_id = sid.clone();
-                                updated.is_running = true;
-                                migrated_record = Some(updated);
-                                needs_persist_save = true;
-                            }
-                            // Ensure a SessionRecord exists for this session.
-                            // For spawned sessions, the record already exists from spawn_coworker().
-                            // For migrated sessions (provisional → real ID), re-insert under the new key.
-                            // The else branch is a rare fallback for sessions without a pre-existing record.
-                            if let Some(record) = migrated_record {
-                                if let std::collections::hash_map::Entry::Vacant(entry) =
-                                    ps.sessions.entry(sid.clone())
-                                {
-                                    entry.insert(record);
-                                    needs_persist_save = true;
-                                }
-                            } else if let std::collections::hash_map::Entry::Vacant(entry) =
-                                ps.sessions.entry(sid.clone())
-                            {
-                                // Fallback: create a minimal SessionRecord for sessions that
-                                // weren't created via spawn_coworker() (e.g., externally started
-                                // sessions or very old daemon state).
-                                entry.insert(crate::daemon::state::SessionRecord {
-                                    session_id: sid.clone(),
-                                    name: name.to_string(),
-                                    is_running: true,
-                                    created_at: chrono::Utc::now(),
-                                    last_active: chrono::Utc::now(),
-                                    ..Default::default()
-                                });
-                                needs_persist_save = true;
-                            }
-                            // SessionRecord is the single source of truth — no
-                            // reverse maps to update.
-                        }
-                    }
-                }
-                if needs_persist_save {
-                    let ps = state.persistent_state.lock().await;
-                    if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                        warn!("Failed to save persistent state after session_id backfill: {}", e);
-                    }
-                }
-
-                // Process lead, channel lead, and coworker text output.
-                // Routes through Effect pipeline to maintain architecture consistency.
-                // All functions need channel_lead_sessions — acquire the lock once.
-                let (lead_effects, coworker_effects) = {
-                    let ps = state.persistent_state.lock().await;
-                    // Derive fork_bound_channels from SessionRecord (fork sessions
-                    // that are channel leads with a bound thread).
-                    let fork_bound_channels: HashMap<String, String> = ps
-                        .sessions
-                        .values()
-                        .filter(|s| s.is_fork_session() && s.channel.is_some())
-                        .map(|s| (s.name.clone(), s.channel.clone().unwrap()))
-                        .collect();
-                    // Collect channels where show_full_lead_output is disabled.
-                    let suppress_auto_output_channels: HashSet<String> = ps
-                        .channel_settings
-                        .iter()
-                        .filter(|(_, s)| !s.show_full_lead_output)
-                        .map(|(name, _)| name.clone())
-                        .collect();
-                    let lead_effects = stream::process_lead_output(
-                        &events,
-                        &ps.channel_lead_sessions,
-                        &state.project_name,
-                        &fork_bound_channels,
-                        &suppress_auto_output_channels,
-                    );
-
-                    // Only agents without a native home channel get DM mirrors.
-                    // Root leads and fork sessions already stream to their real
-                    // channel / bound thread, so a dm-* copy is duplicate noise.
-                    let dm_agent_names = dm_mirror_agent_names(
-                        &ps.sessions,
-                        &ps.channel_lead_sessions,
-                        &state.project_name,
-                    );
-                    let coworker_effects =
-                        stream::process_agent_output(&events, &dm_agent_names);
-
-                    (lead_effects, coworker_effects)
-                };
-                effects::execute_effects(lead_effects, &state).await;
-                effects::execute_effects(coworker_effects, &state).await;
-
-                // Defense-in-depth: check process liveness via try_wait() to catch
-                // sessions where the process exited but drain_events didn't detect it
-                // (e.g., pipe buffering issues, partial reads, timing races).
+                // Defense-in-depth: reconcile process liveness
                 let (reconciled, reconciled_stderr) =
                     state.session_manager.reconcile_process_health().await;
-                let mut all_stopped: Vec<String> = stopped;
                 if !reconciled.is_empty() {
                     warn!(
-                        "Process reconciliation found {} dead session(s) missed by drain_events: {:?}",
-                        reconciled.len(),
-                        reconciled
+                        "Process reconciliation found {} dead session(s): {:?}",
+                        reconciled.len(), reconciled
                     );
-                    all_stopped.extend(reconciled);
-                    // Merge reconciled stderr into the main stderr map so crash
-                    // diagnostics are included in exit messages.
-                    stderr_by_name.extend(reconciled_stderr);
-                }
-
-                // Handle stopped sessions: deregister, record stop time, post to channel
-                for name in all_stopped {
-                    warn!("Headless session '{}' exited unexpectedly", name);
-
-                    // Check if this was a failed resume attempt BEFORE removing
-                    // the session (remove deletes it from the map).
-                    // SAFETY: This check must happen before any cleanup operations
-                    // that could remove the session from the map. All daemon event
-                    // handling is single-threaded, so no concurrent remove() is possible.
-                    let failed_resume = state.session_manager.was_failed_resume(&name).await;
-
-                    // Capture session_id BEFORE cleanup (cleanup removes session record).
-                    let session_id_for_cleanup = {
-                        let ps = state.persistent_state.lock().await;
-                        ps.session_by_name(&name).map(|r| r.session_id.clone())
-                    };
-
-                    // Remove from session manager tracking (session-death-specific:
-                    // shutdown path uses session_manager.shutdown() instead)
-                    state.session_manager.remove(&name).await;
-                    // Clean up all transient coworker state (shared with shutdown path).
-                    // Releases dead coworker worktree binding so immediate
-                    // respawn can continue.
-                    state.cleanup_dead_coworker_state(&name).await;
-
-                    // Only clear session_id when the resume itself failed
-                    // (session died within 30s of a resume spawn). This means
-                    // the session data doesn't exist on disk and retrying the
-                    // same session_id would loop. Sessions that ran longer
-                    // likely have valid data on disk — keep their session_id
-                    // so the next spawn can try to resume them.
-                    if failed_resume {
-                        let mut ps = state.persistent_state.lock().await;
-                        // Clear stale session_id from SessionRecord so the next spawn
-                        // doesn't attempt to resume a session that failed immediately.
-                        if let Some(ref sid) = session_id_for_cleanup
-                            && let Some(record) = ps.sessions.get_mut(sid)
-                        {
-                            if !record.session_id.is_empty() {
-                                info!(
-                                    "Clearing stale session_id for '{}' after failed resume (was: {})",
-                                    name, record.session_id
-                                );
-                                record.session_id.clear();
-                            }
-                            // Clear task binding to prevent dispatch crash-loop.
-                            // Without this, session_task_map rebuilds the stale task->session link on
-                            // the next tick and dispatch re-attempts resume indefinitely.
-                            if let Some(task_id) = record.task_id.take() {
-                                info!(
-                                    "Clearing task !{} from failed-resume session {}",
-                                    task_id, sid
-                                );
-                            }
-                            // Channel leads are long-lived — keep resume_on_startup=true
-                            // so they're always eligible for resume and never GC'd.
-                            if record.agent_type != "midtown-channel-lead" {
-                                record.resume_on_startup = false;
-                            }
-                        }
-                        // For channel lead sessions: clear the stale session ID but
-                        // preserve the key in channel_lead_sessions so
-                        // ensure_channel_leads_alive knows this channel still needs a
-                        // lead and will emit RespawnChannelLead on the next tick.
-                        if let Some(stored_id) = ps.channel_lead_sessions.get(name.as_str()) {
-                            if !stored_id.is_empty() {
-                                info!(
-                                    "Clearing stale channel_lead_sessions ID for '{}' after failed resume (was: {})",
-                                    name, stored_id
-                                );
-                            }
-                            ps.channel_lead_sessions
-                                .insert(name.to_string(), String::new());
-                        }
-                        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                            warn!("Failed to save persistent state after clearing session_id: {}", e);
-                        }
-                    }
-
-                    // Dead forks stay dead — no auto-respawn. The SessionRecord
-                    // is already marked is_running=false by cleanup_coworker_state.
-                    // Thread replies to dead forks will fall through to the channel lead.
-                    {
-                        // Determine session role for the exit message
-                        let is_lead = helpers::is_project_lead(&name, &state.project_name);
-                        let session_role = if is_lead {
-                            "Lead"
-                        } else if state
-                            .persistent_state
-                            .lock()
-                            .await
-                            .channel_lead_sessions
-                            .contains_key(&name)
-                        {
-                            "Channel lead"
-                        } else {
-                            "Coworker"
-                        };
-
-                        // Format message with stderr
-                        let message_text = helpers::format_unexpected_exit_message(
-                            session_role,
-                            &name,
-                            stderr_by_name.get(&name).map(|v| v.as_slice()),
-                        );
-
-                        // All exit messages go to #ops (operational noise).
-                        let msg = crate::message::Message::for_channel(
-                            constants::OPS_CHANNEL,
-                            "midtown",
-                            message_text,
-                            crate::message::MessageType::Text,
-                        );
-                        if let Err(e) = state.send_and_broadcast_async(&msg).await {
-                            warn!("Failed to post session exit message for {}: {}", name, e);
-                        }
+                    for name in &reconciled {
+                        let stderr_lines = reconciled_stderr
+                            .get(name)
+                            .cloned()
+                            .unwrap_or_default();
+                        handle_session_stopped(name, &stderr_lines, &state).await;
                     }
                 }
             }
@@ -4294,6 +4054,349 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
     } else {
         info!("Daemon stopped");
         Ok(DaemonExitStatus::Shutdown)
+    }
+}
+
+// ─── Real-time Session Event Helpers ──────────────────────────────────────
+//
+// These free functions process events received from the aggregated session
+// event channel (session_agg_rx). They are called from the select! branch
+// in the main event loop.
+
+/// Process a batch of session events received from the aggregated channel.
+///
+/// Groups events by session name, updates health flags, logs events,
+/// processes effects (backfill, lead/coworker output), and handles stopped sessions.
+async fn handle_session_event_batch(
+    batch: Vec<session_events::SessionEvent>,
+    state: &Arc<DaemonState>,
+) {
+    use crate::headless::StreamEvent;
+
+    let mut events_by_name: HashMap<String, Vec<StreamEvent>> = HashMap::new();
+    let mut stopped_sessions: Vec<(String, String)> = Vec::new(); // (name, slot_id)
+
+    for session_event in batch {
+        match session_event {
+            session_events::SessionEvent::Event {
+                name,
+                slot_id,
+                event,
+            } => {
+                debug!(coworker = %name, event = ?event, "session event (realtime)");
+                state
+                    .session_manager
+                    .update_session_health(&slot_id, &event)
+                    .await;
+                state.session_manager.log_event(&slot_id, &event).await;
+                events_by_name.entry(name).or_default().push(event);
+            }
+            session_events::SessionEvent::Stderr {
+                name: _,
+                slot_id,
+                line,
+            } => {
+                state
+                    .session_manager
+                    .handle_stderr_line(&slot_id, &line)
+                    .await;
+            }
+            session_events::SessionEvent::Stopped { name, slot_id } => {
+                stopped_sessions.push((name, slot_id));
+            }
+        }
+    }
+
+    // Update health snapshot after processing events so decision functions
+    // see the latest state.
+    let health = state.session_manager.collect_health().await;
+    {
+        let mut hh = state.headless_health.write().unwrap();
+        *hh = health;
+    }
+    state
+        .headless_health_generation
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    // Process events through the effects pipeline (same logic as old drain branch)
+    if !events_by_name.is_empty() {
+        process_session_events_batch(&events_by_name, state).await;
+    }
+
+    // Handle stopped sessions (collect accumulated stderr for crash diagnostics)
+    for (name, slot_id) in stopped_sessions {
+        let stderr_lines = state.session_manager.take_recent_stderr(&slot_id).await;
+        handle_session_stopped(&name, &stderr_lines, state).await;
+    }
+}
+
+/// Process a batch of session events through the effects pipeline.
+///
+/// Handles session_id backfill on init events and routes lead/coworker output
+/// through the Effect system.
+async fn process_session_events_batch(
+    events: &HashMap<String, Vec<crate::headless::StreamEvent>>,
+    state: &Arc<DaemonState>,
+) {
+    // 1. Backfill session_id on init events for freshly spawned sessions
+    let mut needs_persist_save = false;
+    for (name, session_events) in events {
+        for event in session_events {
+            // Backfill session_id on init event for freshly spawned sessions
+            if let crate::headless::StreamEvent::System {
+                subtype,
+                session_id: Some(sid),
+                ..
+            } = event
+                && subtype == "init"
+                && !sid.is_empty()
+            {
+                let mut ps = state.persistent_state.lock().await;
+                // Look up the previous session_id from the SessionRecord.
+                let previous_sid = ps
+                    .session_by_name(name.as_str())
+                    .map(|r| r.session_id.clone())
+                    .unwrap_or_default();
+                // Also backfill channel_lead_sessions for channel lead sessions.
+                // Channel leads use the channel name directly as their session name,
+                // so we can look up the key directly in channel_lead_sessions.
+                if let Some(stored_id) = ps.channel_lead_sessions.get_mut(name.as_str())
+                    && (stored_id.is_empty() || stored_id != sid)
+                {
+                    info!(
+                        "Backfilling channel lead session_id for '{}': {}",
+                        name, sid
+                    );
+                    *stored_id = sid.clone();
+                    needs_persist_save = true;
+                }
+                // If this session had a provisional ID, migrate persistent/session maps
+                // to the real ID emitted by init.
+                let mut migrated_record = None;
+                if previous_sid != *sid
+                    && !previous_sid.is_empty()
+                    && let Some(old_record) = ps.sessions.remove(&previous_sid)
+                {
+                    let mut updated = old_record;
+                    updated.session_id = sid.clone();
+                    updated.is_running = true;
+                    migrated_record = Some(updated);
+                    needs_persist_save = true;
+                }
+                // Ensure a SessionRecord exists for this session.
+                // For spawned sessions, the record already exists from spawn_coworker().
+                // For migrated sessions (provisional -> real ID), re-insert under the new key.
+                // The else branch is a rare fallback for sessions without a pre-existing record.
+                if let Some(record) = migrated_record {
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        ps.sessions.entry(sid.clone())
+                    {
+                        entry.insert(record);
+                        needs_persist_save = true;
+                    }
+                } else if let std::collections::hash_map::Entry::Vacant(entry) =
+                    ps.sessions.entry(sid.clone())
+                {
+                    // Fallback: create a minimal SessionRecord for sessions that
+                    // weren't created via spawn_coworker() (e.g., externally started
+                    // sessions or very old daemon state).
+                    entry.insert(crate::daemon::state::SessionRecord {
+                        session_id: sid.clone(),
+                        name: name.to_string(),
+                        is_running: true,
+                        created_at: chrono::Utc::now(),
+                        last_active: chrono::Utc::now(),
+                        ..Default::default()
+                    });
+                    needs_persist_save = true;
+                }
+                // SessionRecord is the single source of truth — no
+                // reverse maps to update.
+            }
+        }
+    }
+    if needs_persist_save {
+        let ps = state.persistent_state.lock().await;
+        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+            warn!(
+                "Failed to save persistent state after session_id backfill: {}",
+                e
+            );
+        }
+    }
+
+    // 2. Process lead, channel lead, and coworker text output.
+    // Routes through Effect pipeline to maintain architecture consistency.
+    // All functions need channel_lead_sessions — acquire the lock once.
+    let (lead_effects, coworker_effects) = {
+        let ps = state.persistent_state.lock().await;
+        // Derive fork_bound_channels from SessionRecord (fork sessions
+        // that are channel leads with a bound thread).
+        let fork_bound_channels: HashMap<String, String> = ps
+            .sessions
+            .values()
+            .filter(|s| s.is_fork_session() && s.channel.is_some())
+            .map(|s| (s.name.clone(), s.channel.clone().unwrap()))
+            .collect();
+        // Collect channels where show_full_lead_output is disabled.
+        let suppress_auto_output_channels: HashSet<String> = ps
+            .channel_settings
+            .iter()
+            .filter(|(_, s)| !s.show_full_lead_output)
+            .map(|(name, _)| name.clone())
+            .collect();
+        let lead_effects = stream::process_lead_output(
+            events,
+            &ps.channel_lead_sessions,
+            &state.project_name,
+            &fork_bound_channels,
+            &suppress_auto_output_channels,
+        );
+
+        // Only agents without a native home channel get DM mirrors.
+        // Root leads and fork sessions already stream to their real
+        // channel / bound thread, so a dm-* copy is duplicate noise.
+        let dm_agent_names =
+            dm_mirror_agent_names(&ps.sessions, &ps.channel_lead_sessions, &state.project_name);
+        let coworker_effects = stream::process_agent_output(events, &dm_agent_names);
+
+        (lead_effects, coworker_effects)
+    };
+    effects::execute_effects(lead_effects, state).await;
+    effects::execute_effects(coworker_effects, state).await;
+}
+
+/// Handle a single stopped session: cleanup, deregister, post exit message.
+///
+/// Extracted from the old drain branch's stopped-session loop. Handles
+/// failed resume detection, session_id clearing, and channel posting.
+async fn handle_session_stopped(name: &str, stderr_lines: &[String], state: &Arc<DaemonState>) {
+    warn!("Headless session '{}' exited (realtime)", name);
+    if !stderr_lines.is_empty() {
+        warn!(
+            "Session '{}' stderr ({} lines):\n{}",
+            name,
+            stderr_lines.len(),
+            stderr_lines.join("\n")
+        );
+    }
+
+    // Check if this was a failed resume attempt BEFORE removing
+    // the session (remove deletes it from the map).
+    // SAFETY: This check must happen before any cleanup operations
+    // that could remove the session from the map. All daemon event
+    // handling is single-threaded, so no concurrent remove() is possible.
+    let failed_resume = state.session_manager.was_failed_resume(name).await;
+
+    // Capture session_id BEFORE cleanup (cleanup removes session record).
+    let session_id_for_cleanup = {
+        let ps = state.persistent_state.lock().await;
+        ps.session_by_name(name).map(|r| r.session_id.clone())
+    };
+
+    // Remove from session manager tracking (session-death-specific:
+    // shutdown path uses session_manager.shutdown() instead)
+    state.session_manager.remove(name).await;
+    // Clean up all transient coworker state (shared with shutdown path).
+    // Releases dead coworker worktree binding so immediate
+    // respawn can continue.
+    state.cleanup_dead_coworker_state(name).await;
+
+    // Only clear session_id when the resume itself failed
+    // (session died within 30s of a resume spawn). This means
+    // the session data doesn't exist on disk and retrying the
+    // same session_id would loop. Sessions that ran longer
+    // likely have valid data on disk — keep their session_id
+    // so the next spawn can try to resume them.
+    if failed_resume {
+        let mut ps = state.persistent_state.lock().await;
+        // Clear stale session_id from SessionRecord so the next spawn
+        // doesn't attempt to resume a session that failed immediately.
+        if let Some(ref sid) = session_id_for_cleanup
+            && let Some(record) = ps.sessions.get_mut(sid)
+        {
+            if !record.session_id.is_empty() {
+                info!(
+                    "Clearing stale session_id for '{}' after failed resume (was: {})",
+                    name, record.session_id
+                );
+                record.session_id.clear();
+            }
+            // Clear task binding to prevent dispatch crash-loop.
+            // Without this, session_task_map rebuilds the stale task->session link on
+            // the next tick and dispatch re-attempts resume indefinitely.
+            if let Some(task_id) = record.task_id.take() {
+                info!(
+                    "Clearing task !{} from failed-resume session {}",
+                    task_id, sid
+                );
+            }
+            // Channel leads are long-lived — keep resume_on_startup=true
+            // so they're always eligible for resume and never GC'd.
+            if record.agent_type != "midtown-channel-lead" {
+                record.resume_on_startup = false;
+            }
+        }
+        // For channel lead sessions: clear the stale session ID but
+        // preserve the key in channel_lead_sessions so
+        // ensure_channel_leads_alive knows this channel still needs a
+        // lead and will emit RespawnChannelLead on the next tick.
+        if let Some(stored_id) = ps.channel_lead_sessions.get(name) {
+            if !stored_id.is_empty() {
+                info!(
+                    "Clearing stale channel_lead_sessions ID for '{}' after failed resume (was: {})",
+                    name, stored_id
+                );
+            }
+            ps.channel_lead_sessions
+                .insert(name.to_string(), String::new());
+        }
+        if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+            warn!(
+                "Failed to save persistent state after clearing session_id: {}",
+                e
+            );
+        }
+    }
+
+    // Dead forks stay dead — no auto-respawn. The SessionRecord
+    // is already marked is_running=false by cleanup_coworker_state.
+    // Thread replies to dead forks will fall through to the channel lead.
+    {
+        // Determine session role for the exit message
+        let is_lead = helpers::is_project_lead(name, &state.project_name);
+        let session_role = if is_lead {
+            "Lead"
+        } else if state
+            .persistent_state
+            .lock()
+            .await
+            .channel_lead_sessions
+            .contains_key(name)
+        {
+            "Channel lead"
+        } else {
+            "Coworker"
+        };
+
+        // Format message with accumulated stderr from realtime path
+        let stderr_ref = if stderr_lines.is_empty() {
+            None
+        } else {
+            Some(stderr_lines)
+        };
+        let message_text = helpers::format_unexpected_exit_message(session_role, name, stderr_ref);
+
+        // All exit messages go to #ops (operational noise).
+        let msg = crate::message::Message::for_channel(
+            constants::OPS_CHANNEL,
+            "midtown",
+            message_text,
+            crate::message::MessageType::Text,
+        );
+        if let Err(e) = state.send_and_broadcast_async(&msg).await {
+            warn!("Failed to post session exit message for {}: {}", name, e);
+        }
     }
 }
 

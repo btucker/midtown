@@ -598,6 +598,7 @@ fn make_test_state(
     let cm = crate::coworker::CoworkerManager::new(wm);
     let channel_router = crate::ChannelRouter::new(project_dir.path(), "midtown");
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let (session_agg_tx, _session_agg_rx) = crate::daemon::session_events::channel();
     let state = super::super::DaemonState::new(
         "/tmp/rpc-task-test.sock".into(),
         cm,
@@ -609,6 +610,7 @@ fn make_test_state(
         None,
         "main".to_string(),
         shutdown_tx,
+        session_agg_tx,
     )
     .expect("daemon state");
 

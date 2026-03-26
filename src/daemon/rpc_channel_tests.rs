@@ -43,6 +43,7 @@ fn make_test_state(
 
     let channel_router = crate::ChannelRouter::new(&base_dir, repo_name);
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let (session_agg_tx, _session_agg_rx) = crate::daemon::session_events::channel();
     let state = DaemonState::new(
         "/tmp/test.sock".into(),
         cm,
@@ -54,6 +55,7 @@ fn make_test_state(
         None,
         "main".to_string(),
         shutdown_tx,
+        session_agg_tx,
     )
     .expect("daemon state");
     (state, temp_dir, _guard)

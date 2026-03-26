@@ -1414,10 +1414,10 @@ impl HeadlessSessionBackend {
         match self {
             Self::Claude => {
                 const MAX_STDERR_LINES: usize = 100;
-                let rx = session
-                    .stderr_rx
-                    .as_mut()
-                    .expect("missing claude stderr channel");
+                let rx = match session.stderr_rx.as_mut() {
+                    Some(rx) => rx,
+                    None => return Vec::new(),
+                };
                 let mut lines = Vec::new();
                 // Wait briefly for the background reader task to finish any
                 // in-progress read_line call (mirrors the old 10ms pipe timeout).
@@ -1961,6 +1961,22 @@ impl HeadlessSession {
         Ok(())
     }
 
+    /// Take ownership of the stdout and stderr receivers.
+    ///
+    /// After this call, `next_event()` and `drain_stderr()` will no longer work
+    /// on this session (the receivers are moved to the forwarder). Returns None
+    /// if receivers were already taken or not available (e.g., Codex backend).
+    pub fn take_receivers(
+        &mut self,
+    ) -> Option<(
+        mpsc::UnboundedReceiver<StreamEvent>,
+        mpsc::UnboundedReceiver<String>,
+    )> {
+        let stdout = self.stdout_rx.take()?;
+        let stderr = self.stderr_rx.take()?;
+        Some((stdout, stderr))
+    }
+
     /// Read the next streaming event from the session.
     ///
     /// Returns `None` when the process exits (stdout closes).
@@ -1971,10 +1987,7 @@ impl HeadlessSession {
     }
 
     async fn next_claude_event(&mut self) -> Option<StreamEvent> {
-        let rx = self
-            .stdout_rx
-            .as_mut()
-            .expect("missing claude stdout channel");
+        let rx = self.stdout_rx.as_mut()?;
         let event = rx.recv().await?;
         // Track session_id from init event (background task already filtered Unknown events).
         if let StreamEvent::System {
