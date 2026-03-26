@@ -4,7 +4,7 @@ import Check from "@lucide/svelte/icons/check";
 import GripVertical from "@lucide/svelte/icons/grip-vertical";
 import X from "@lucide/svelte/icons/x";
 import { SvelteSet } from "svelte/reactivity";
-import { dndzone } from "svelte-dnd-action";
+import { type DndEvent, dndzone } from "svelte-dnd-action";
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
 import {
 	closeThread,
@@ -47,6 +47,7 @@ import {
 } from "./store.ts";
 import TaskList from "./TaskList.svelte";
 import ThreadList from "./ThreadList.svelte";
+import type { Channel } from "./types.ts";
 
 const sidebar = useSidebar();
 
@@ -94,15 +95,16 @@ $: orderedChannels = (() => {
 })();
 
 // svelte-dnd-action needs items with `id` fields
-$: dndChannelItems = orderedChannels.map((ch) => ({ ...ch, id: ch.name }));
+type DndChannelItem = Channel & { id: string };
+$: dndChannelItems = orderedChannels.map((ch): DndChannelItem => ({ ...ch, id: ch.name }));
 
-function handleDndConsider(e: CustomEvent) {
+function handleDndConsider(e: CustomEvent<DndEvent<DndChannelItem>>) {
 	dndChannelItems = e.detail.items;
 }
 
-function handleDndFinalize(e: CustomEvent) {
+function handleDndFinalize(e: CustomEvent<DndEvent<DndChannelItem>>) {
 	dndChannelItems = e.detail.items;
-	channelOrder.set(dndChannelItems.map((item: { name: string }) => item.name));
+	channelOrder.set(dndChannelItems.map((item) => item.name));
 }
 
 $: forkNames = new Set(Object.values($threadForkOwners));
@@ -692,6 +694,13 @@ function handleKeyDown(event) {
   /* Show drag handle on hover of the parent channel row */
   :global(.channel-row:hover) .drag-handle {
     opacity: 1;
+  }
+
+  /* On touch devices (no hover), always show drag handle so users can drag */
+  @media (hover: none) {
+    .drag-handle {
+      opacity: 0.5;
+    }
   }
 
 </style>
