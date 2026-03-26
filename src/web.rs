@@ -1346,12 +1346,22 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                         // Health defaults to green (fallback can't access HeadlessHealth)
                         let health = "green";
 
+                        // Look up color/icon from persisted SessionRecord
+                        let (color, icon) = persistent_state
+                            .sessions
+                            .values()
+                            .find(|s| s.name == cw.name)
+                            .map(|s| (s.color.as_deref(), s.icon.as_deref()))
+                            .unwrap_or((None, None));
+
                         Some(serde_json::json!({
                             "name": cw.name,
                             "task_id": display_task_id,
                             "phase": phase,
                             "pr_number": pr_number,
                             "health": health,
+                            "color": color,
+                            "icon": icon,
                         }))
                     })
                     .collect()
