@@ -149,43 +149,49 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
     // Get coworkers with their details, looking up current task from task storage.
     // Exclude the lead session via is_project_lead() — covers both the canonical
     // repo-name session and legacy sessions that used the literal "lead" name.
-    let coworkers: Vec<serde_json::Value> = state
+    let mut coworkers = Vec::new();
+    for cw in state
         .coworkers
         .list()
         .iter()
         .filter(|cw| !super::helpers::is_project_lead(&cw.name, &state.project_name))
-        .map(|cw| {
-            // Look up current task from task storage (case-insensitive)
-            let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
-            // Look up token usage from session manager
-            let (input_tokens, output_tokens) =
-                token_usage.get(&cw.name).copied().unwrap_or((0, 0));
-            // Get live workflow phase and task_id from coworker_records
-            let record = coworker_records.get(&cw.name);
-            let workflow_phase = record.and_then(|r| r.workflow_phase);
-            let record_task_id = record.and_then(|r| r.task_id);
-            // Find PR number for this coworker (priority: task file > reviewer > worktree)
-            let pr_number = resolve_pr_number(
-                record_task_id,
-                &cw.name,
-                &task_pr_map,
-                &reviewer_pr_map,
-                &worktree_pr_map,
-            );
-            serde_json::json!({
-                "name": cw.name,
-                "status": cw.status.to_string(),
-                "current_task": current_task,
-                "started_at": cw.started_at.to_rfc3339(),
-                "provider": cw.provider.as_str(),
-                "profile": cw.profile,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "phase": workflow_phase.map(|p| p.abbreviation()),
-                "pr_number": pr_number,
-            })
-        })
-        .collect();
+    {
+        let status = match state.session_manager.status_for_name(&cw.name).await {
+            Some(crate::daemon::sessions::SessionStatus::Starting) => "starting".to_string(),
+            Some(crate::daemon::sessions::SessionStatus::Running) => "running".to_string(),
+            Some(crate::daemon::sessions::SessionStatus::Stopped) => "stopped".to_string(),
+            None => cw.status.to_string(),
+        };
+
+        // Look up current task from task storage (case-insensitive)
+        let current_task = coworker_tasks.get(&cw.name.to_lowercase()).cloned();
+        // Look up token usage from session manager
+        let (input_tokens, output_tokens) = token_usage.get(&cw.name).copied().unwrap_or((0, 0));
+        // Get live workflow phase and task_id from coworker_records
+        let record = coworker_records.get(&cw.name);
+        let workflow_phase = record.and_then(|r| r.workflow_phase);
+        let record_task_id = record.and_then(|r| r.task_id);
+        // Find PR number for this coworker (priority: task file > reviewer > worktree)
+        let pr_number = resolve_pr_number(
+            record_task_id,
+            &cw.name,
+            &task_pr_map,
+            &reviewer_pr_map,
+            &worktree_pr_map,
+        );
+        coworkers.push(serde_json::json!({
+            "name": cw.name,
+            "status": status,
+            "current_task": current_task,
+            "started_at": cw.started_at.to_rfc3339(),
+            "provider": cw.provider.as_str(),
+            "profile": cw.profile,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "phase": workflow_phase.map(|p| p.abbreviation()),
+            "pr_number": pr_number,
+        }));
+    }
 
     let (coworkers, active_coworker_count) =
         tag_channel_leads_and_count(coworkers, &channel_lead_names);
@@ -383,6 +389,7 @@ fn tag_channel_leads_and_count(
             !cw.get("is_channel_lead")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
+                && cw.get("status").and_then(|v| v.as_str()) == Some("running")
         })
         .count();
     (coworkers, active_count)

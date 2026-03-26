@@ -160,7 +160,7 @@ pub fn is_lead_branch(branch: &str) -> bool {
 /// Resolution order:
 /// 1. Role-specific `*_model` from config (e.g., `coworker_model = "large"`)
 /// 2. `execution.default_model` from config (e.g., `default_model = "large"`)
-/// 3. Hardcoded default via `default_model_for_provider_role()` (sonnet for coworkers, opus for leads)
+/// 3. Hardcoded default via `default_model_for_provider_role()`
 ///
 /// The returned string is already normalized for the provider (e.g., "large" → "opus" for Claude).
 /// All spawn paths should use this instead of calling `default_model_for_provider_role()` directly.
@@ -178,13 +178,13 @@ pub fn resolve_model_for_role(
 /// Default model alias for an agent type/provider pair.
 ///
 /// Claude/z.ai use "sonnet" for coworker/channel-lead and "opus" for lead/reviewer.
-/// Codex uses "gpt-5-codex" for all roles.
+/// Codex uses "gpt-5.4" for all roles.
 pub fn default_model_for_provider_role(
     provider: crate::auth::AuthProvider,
     agent_type: &str,
 ) -> &'static str {
     match provider {
-        crate::auth::AuthProvider::Codex => "gpt-5-codex",
+        crate::auth::AuthProvider::Codex => "gpt-5.4",
         crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => match agent_type {
             "midtown-project-lead" | "midtown-code-reviewer" => "opus",
             _ => "sonnet",
@@ -225,8 +225,8 @@ pub fn normalize_model_for_provider_role(
             }
         }
         crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {
-            // Codex aliases are not valid in Claude/z.ai.
-            if lower.contains("codex") {
+            // OpenAI/Codex model aliases are not valid in Claude/z.ai.
+            if is_openai_model_alias(&lower) {
                 default_model.to_string()
             } else {
                 trimmed.to_string()
@@ -256,7 +256,7 @@ fn normalize_size_alias_for_provider(
         crate::auth::AuthProvider::Codex => match size {
             "small" => "gpt-5.1-codex-mini",
             "medium" => "gpt-5.3-codex-spark",
-            "large" => "gpt-5.3-codex",
+            "large" => "gpt-5.4",
             _ => unreachable!(),
         },
     };
@@ -266,7 +266,7 @@ fn normalize_size_alias_for_provider(
 /// Infer the auth provider for a model alias.
 ///
 /// Returns `Some(provider)` when the alias is unambiguously associated with a
-/// single provider (e.g., "opus" → Claude, "gpt-5-codex" → Codex).
+/// single provider (e.g., "opus" → Claude, "gpt-5.4" → Codex).
 /// Returns `None` for provider-agnostic size aliases ("small", "medium", "large")
 /// or unknown model names, in which case the caller should keep the current provider.
 ///
@@ -289,15 +289,20 @@ pub fn provider_for_model_alias(model: &str) -> Option<crate::auth::AuthProvider
     }
 
     // Codex model aliases
-    if lower.contains("codex")
-        || lower.starts_with("gpt-")
-        || lower.starts_with("o3")
-        || lower.starts_with("o4")
-    {
+    if is_openai_model_alias(&lower) {
         return Some(crate::auth::AuthProvider::Codex);
     }
 
     None
+}
+
+fn is_openai_model_alias(lower_model: &str) -> bool {
+    lower_model.contains("codex")
+        || lower_model.starts_with("gpt-")
+        || lower_model
+            .as_bytes()
+            .get(0..2)
+            .is_some_and(|prefix| prefix[0] == b'o' && prefix[1].is_ascii_digit())
 }
 
 /// Check if a PR is authored by the lead (repo owner).

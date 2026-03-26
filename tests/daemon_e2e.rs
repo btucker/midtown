@@ -40,6 +40,42 @@ fn cleanup_profile_dirs(paths: &[PathBuf]) {
     }
 }
 
+fn channel_contains_message(fixture: &DaemonTestHarness, channel: &str, substring: &str) -> bool {
+    let response = fixture.rpc_call(
+        "channel.read",
+        Some(serde_json::json!({
+            "channel": channel,
+            "all": true
+        })),
+    );
+
+    response
+        .and_then(|resp| resp["result"]["messages"].as_array().cloned())
+        .is_some_and(|messages| {
+            messages.iter().any(|m| {
+                m["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains(substring))
+            })
+        })
+}
+
+fn wait_for_channel_message(
+    fixture: &DaemonTestHarness,
+    channel: &str,
+    substring: &str,
+    timeout_ms: u64,
+) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed().as_millis() < timeout_ms as u128 {
+        if channel_contains_message(fixture, channel, substring) {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    false
+}
+
 /// Create a DaemonTestHarness configured for daemon e2e tests.
 ///
 /// Uses a short XDG_STATE_HOME under /tmp to avoid UNIX socket path-length
@@ -1245,6 +1281,92 @@ fn test_daemon_rpc_auth_switch_codex_relaunches_codex_sessions() {
     );
 
     cleanup_profile_dirs(&cleanup_paths);
+}
+
+/// Test that a real Codex coworker replies in its DM channel for both startup and nudges.
+#[test]
+#[ignore] // Requires built binary, local Codex auth, and live codex app-server
+fn test_daemon_codex_coworker_replies_in_dm_channel() {
+    let mut fixture = match create_daemon_fixture() {
+        Some(f) => f,
+        None => return,
+    };
+
+    if !fixture.start_daemon() {
+        return;
+    }
+
+    let provider = midtown::auth::AuthProvider::Codex;
+    let profile_dir = midtown::auth::current_profile_dir_for(provider);
+    if !profile_dir.exists() {
+        eprintln!("Skipping: no Codex profile dir at {:?}", profile_dir);
+        return;
+    }
+
+    let initial_token = format!("MIDTOWN-CODEX-E2E-INITIAL-{}", fixture.repo_name);
+    let nudge_token = format!("MIDTOWN-CODEX-E2E-NUDGE-{}", fixture.repo_name);
+
+    let spawn_response = fixture.rpc_call(
+        "coworker.spawn",
+        Some(serde_json::json!({
+            "provider": "codex",
+            "prompt": format!(
+                "This is a Midtown E2E smoke test. Reply with one short sentence that includes the exact token {}.",
+                initial_token
+            )
+        })),
+    );
+    assert!(
+        spawn_response.is_some(),
+        "Should receive response from coworker.spawn"
+    );
+    let spawn_response = spawn_response.unwrap();
+    assert!(
+        spawn_response["error"].is_null(),
+        "codex coworker.spawn should succeed: {:?}",
+        spawn_response["error"]
+    );
+
+    let coworker_name = spawn_response["result"]["coworkers"][0]["name"]
+        .as_str()
+        .expect("spawn response should include coworker name")
+        .to_string();
+    let dm_channel = format!("dm-{}", coworker_name);
+
+    assert!(
+        wait_for_channel_message(&fixture, &dm_channel, &initial_token, 90_000),
+        "Expected initial Codex response containing {} in {}",
+        initial_token,
+        dm_channel
+    );
+
+    let nudge_response = fixture.rpc_call(
+        "coworker.nudge",
+        Some(serde_json::json!({
+            "name": coworker_name,
+            "message": format!(
+                "Reply with one short sentence that includes the exact token {}.",
+                nudge_token
+            )
+        })),
+    );
+    assert!(
+        nudge_response.is_some(),
+        "Should receive response from coworker.nudge"
+    );
+    let nudge_response = nudge_response.unwrap();
+    assert!(
+        nudge_response["error"].is_null(),
+        "coworker.nudge should succeed: {:?}",
+        nudge_response["error"]
+    );
+
+    assert!(
+        wait_for_channel_message(&fixture, &dm_channel, &nudge_token, 90_000),
+        "Expected nudged Codex response containing {} in {}",
+        nudge_token,
+        dm_channel
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -3046,8 +3168,8 @@ fn test_daemon_accepts_valid_model_format_on_create() {
         "claude/opus",
         "claude/sonnet",
         "claude/haiku",
-        "codex/o3",
-        "codex/o4-mini",
+        "codex/gpt-5.4",
+        "codex/gpt-5.3-codex-spark",
     ];
 
     for (idx, valid_model) in valid_formats.iter().enumerate() {

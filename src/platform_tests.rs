@@ -43,10 +43,10 @@ fn test_binary_name_codex() {
 
 #[test]
 fn test_codex_common_args_include_bypass_and_model() {
-    let args = build_codex_common_args(Some("gpt-5.3-codex"), &[]);
+    let args = build_codex_common_args(Some("gpt-5.4"), &[]);
     assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
     assert!(args.contains(&"--model".to_string()));
-    assert!(args.contains(&"gpt-5.3-codex".to_string()));
+    assert!(args.contains(&"gpt-5.4".to_string()));
 }
 
 // ── Common args ───────────────────────────────────────────────────────
@@ -458,7 +458,7 @@ fn test_codex_headed_args_has_resume() {
         additional_dirs: vec![],
         pr_number: None,
         working_dir: None,
-        model: "gpt-5.3-codex".to_string(),
+        model: "gpt-5.4".to_string(),
         channel: None,
         auth_profile_dir: None,
         auth_provider: AuthProvider::Codex,
@@ -498,7 +498,7 @@ fn test_codex_headed_args_omits_override_when_prompt_empty() {
         additional_dirs: vec![],
         pr_number: None,
         working_dir: None,
-        model: "gpt-5.3-codex".to_string(),
+        model: "gpt-5.4".to_string(),
         channel: None,
         auth_profile_dir: None,
         auth_provider: AuthProvider::Codex,
@@ -525,7 +525,7 @@ fn test_codex_headed_args_resume_last_uses_last_without_model_override() {
         additional_dirs: vec![],
         pr_number: None,
         working_dir: None,
-        model: "gpt-5.3-codex".to_string(),
+        model: "gpt-5.4".to_string(),
         channel: None,
         auth_profile_dir: None,
         auth_provider: AuthProvider::Codex,

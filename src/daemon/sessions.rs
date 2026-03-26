@@ -408,6 +408,27 @@ impl SessionManager {
         );
     }
 
+    /// Update health flags on the best test session slot for `name`.
+    #[cfg(test)]
+    pub(super) async fn set_test_session_health_flags(
+        &self,
+        name: &str,
+        has_usage_limit: bool,
+        has_auth_error: bool,
+        has_tool_name_conflict: bool,
+    ) {
+        let mut sessions = self.sessions.write().await;
+        let Some(slot_id) = Self::select_slot_for_name(&sessions, name, false) else {
+            panic!("No test session found for '{}'", name);
+        };
+        let cs = sessions
+            .get_mut(&slot_id)
+            .expect("selected test session slot must exist");
+        cs.has_usage_limit = has_usage_limit;
+        cs.has_auth_error = has_auth_error;
+        cs.has_tool_name_conflict = has_tool_name_conflict;
+    }
+
     fn is_session_live(cs: &CoworkerSession) -> bool {
         cs.session.is_some() && cs.status != SessionStatus::Stopped
     }
@@ -1042,6 +1063,11 @@ impl SessionManager {
     }
 
     /// Check if a coworker has a running session (by name).
+    ///
+    /// Unlike [`is_nudgeable`](Self::is_nudgeable), this only checks whether the
+    /// process is live — it does not consider error flags (usage limits, auth
+    /// errors, tool-name conflicts) that would make the session unable to
+    /// accept new input.
     pub async fn is_alive(&self, name: &str) -> bool {
         #[cfg(test)]
         {
@@ -1058,6 +1084,63 @@ impl SessionManager {
         sessions
             .values()
             .any(|cs| cs.name == name && Self::is_session_live(cs))
+    }
+
+    /// Returns true when a session is both live and safe to accept new nudges.
+    ///
+    /// Sessions with usage/auth/context-corruption failures keep a live process
+    /// handle, but sending more input to them only black-holes user messages.
+    pub async fn is_nudgeable(&self, name: &str) -> bool {
+        #[cfg(test)]
+        {
+            let hook = {
+                self.test_is_alive_hook
+                    .lock()
+                    .expect("is_alive hook mutex poisoned")
+                    .clone()
+            };
+            if let Some(hook) = hook {
+                if !hook(name) {
+                    return false;
+                }
+                let sessions = self.sessions.read().await;
+                // When the alive hook returns true but no session slot exists,
+                // return true for backward compatibility with tests that only
+                // set up the is_alive hook without populating session slots.
+                // This matches the is_alive hook pattern where hook(name)==true
+                // means "treat as alive" regardless of session state.
+                let Some(slot_id) = Self::select_slot_for_name(&sessions, name, false) else {
+                    return true;
+                };
+                let Some(cs) = sessions.get(&slot_id) else {
+                    return false;
+                };
+                return cs.status == SessionStatus::Running
+                    && !cs.has_usage_limit
+                    && !cs.has_auth_error
+                    && !cs.has_tool_name_conflict;
+            }
+        }
+
+        let sessions = self.sessions.read().await;
+        let Some(slot_id) = Self::select_slot_for_name(&sessions, name, true) else {
+            return false;
+        };
+        let Some(cs) = sessions.get(&slot_id) else {
+            return false;
+        };
+        cs.status == SessionStatus::Running
+            && !cs.has_usage_limit
+            && !cs.has_auth_error
+            && !cs.has_tool_name_conflict
+    }
+
+    /// Get the current session lifecycle status for a coworker (if tracked).
+    pub async fn status_for_name(&self, name: &str) -> Option<SessionStatus> {
+        let sessions = self.sessions.read().await;
+        let slot_id = Self::select_slot_for_name(&sessions, name, true)
+            .or_else(|| Self::select_slot_for_name(&sessions, name, false))?;
+        sessions.get(&slot_id).map(|cs| cs.status)
     }
 
     /// Drain events from all sessions and update health state.

@@ -63,7 +63,7 @@ fn generate_active_form(subject: &str) -> String {
 /// Validate model format: must be "provider/model" with exactly one slash
 /// and a supported provider.
 ///
-/// Valid examples: "claude/opus", "claude/sonnet", "codex/o3", "codex/o4-mini"
+/// Valid examples: "claude/opus", "claude/sonnet", "codex/gpt-5.4", "codex/gpt-5.3-codex-spark"
 /// Invalid: "claude-opus" (no slash), "claude/opus/extra" (multiple slashes),
 ///          "/opus" (empty provider), "claude/" (empty model),
 ///          "unknown/opus" (unsupported provider)

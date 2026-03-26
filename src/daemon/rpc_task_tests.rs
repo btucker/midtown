@@ -73,8 +73,8 @@ fn test_validate_model_format_valid() {
     assert!(validate_model_format("claude/opus").is_ok());
     assert!(validate_model_format("claude/sonnet").is_ok());
     assert!(validate_model_format("claude/haiku").is_ok());
-    assert!(validate_model_format("codex/o3").is_ok());
-    assert!(validate_model_format("codex/o4-mini").is_ok());
+    assert!(validate_model_format("codex/gpt-5.4").is_ok());
+    assert!(validate_model_format("codex/gpt-5.3-codex-spark").is_ok());
 }
 
 #[test]

@@ -261,6 +261,19 @@ async fn test_execute_effects_nudge_channel_lead_uses_stored_session_id() {
             .insert(channel.clone(), stored_session_id.clone());
     }
 
+    // Register the channel lead session as Running so is_nudgeable() returns true.
+    let session_name = crate::launch::channel_lead_session_name(&channel);
+    state
+        .session_manager
+        .insert_test_session(
+            &session_name,
+            crate::daemon::sessions::SessionStatus::Running,
+        )
+        .await;
+    state
+        .session_manager
+        .set_test_is_alive_hook(Some(std::sync::Arc::new(|_| true)));
+
     let observed_session_ids = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let observed_for_hook = observed_session_ids.clone();
     let message_for_hook = message.clone();
@@ -2444,21 +2457,31 @@ async fn test_nudge_channel_lead_dm_channel_lead_uses_stored_session() {
     let channel_lead_name = "auth";
     let session_id = "sess-auth-lead-1".to_string();
 
-    // Register ONLY in channel_lead_sessions (not name_to_session).
-    // This simulates a channel lead whose session is not currently active in
-    // the name_to_session map — the DM nudge should fall through the active-session
-    // check and then detect the channel lead via channel_lead_sessions, delegating
-    // to the existing channel lead resume/spawn machinery.
+    // Register in channel_lead_sessions and make the channel lead nudgeable.
+    // The DM nudge falls through the active-session check (no session in
+    // name_to_session for the DM agent), detects the channel lead via
+    // channel_lead_sessions, and re-emits NudgeChannelLead for "auth".
+    // The non-DM path then needs is_nudgeable("auth") to be true.
     {
         let mut ps = state.persistent_state.lock().await;
         ps.channel_lead_sessions
             .insert(channel_lead_name.to_string(), session_id.clone());
     }
 
-    // The hook captures send_message_to_session_id calls — should be empty since
-    // there is no active session (name_to_session is empty). The channel lead
-    // fallback re-emits NudgeChannelLead with the topic channel name, which goes
-    // through the non-DM branch and uses channel_lead_sessions to find the session.
+    // Register the channel lead session as Running so is_nudgeable() returns true
+    // when the re-emitted NudgeChannelLead goes through the non-DM path.
+    state
+        .session_manager
+        .insert_test_session(
+            channel_lead_name,
+            crate::daemon::sessions::SessionStatus::Running,
+        )
+        .await;
+    state
+        .session_manager
+        .set_test_is_alive_hook(Some(std::sync::Arc::new(|_| true)));
+
+    // The hook captures send_message_to_session_id calls.
     let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
     let observed_for_hook = observed.clone();
     state

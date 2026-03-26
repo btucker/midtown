@@ -440,7 +440,7 @@ pub(super) async fn handle_channel_post(
             // cooldown so ensure_channel_leads_alive respawns it on the next tick.
             // This mirrors the main lead's expedite_lead_respawn_on_user_message.
             let session_name = crate::launch::channel_lead_session_name(channel_name);
-            let channel_lead_is_dead = !state.session_manager.is_alive(&session_name).await
+            let channel_lead_is_dead = !state.session_manager.is_nudgeable(&session_name).await
                 && !state
                     .attached_coworkers
                     .lock()
@@ -555,7 +555,10 @@ pub(super) async fn handle_channel_post(
             // so the user isn't left in silence. We check both headless (session_manager)
             // and interactive (attached_coworkers) paths — if either is live, the lead
             // is reachable and we skip the expedite.
-            let lead_is_dead = !state.session_manager.is_alive(&state.project_name).await
+            let lead_is_dead = !state
+                .session_manager
+                .is_nudgeable(&state.project_name)
+                .await
                 && !state
                     .attached_coworkers
                     .lock()

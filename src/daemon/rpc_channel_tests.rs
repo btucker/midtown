@@ -1141,6 +1141,127 @@ async fn test_user_message_in_topic_channel_clears_channel_lead_cooldown() {
     );
 }
 
+/// A channel lead with a live process handle but a usage-limit screen is not
+/// actually able to respond. User messages must still clear its respawn
+/// cooldown so recovery can happen immediately.
+#[tokio::test]
+async fn test_user_message_in_topic_channel_usage_limited_lead_clears_channel_lead_cooldown() {
+    use super::super::sessions::SessionStatus;
+
+    let (state, _tmp, _guard) =
+        make_test_state("midtown-test-topic-channel-lead-usage-limit-cooldown");
+
+    let channel_name = "ops";
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert(channel_name.to_string(), "sess-ops-usage-limit".to_string());
+        ps.save_for_repo(state.paths.dir_key()).unwrap();
+    }
+
+    state
+        .session_manager
+        .insert_test_session(channel_name, SessionStatus::Running)
+        .await;
+    state
+        .session_manager
+        .set_test_session_health_flags(channel_name, true, false, false)
+        .await;
+    state
+        .session_manager
+        .set_test_is_alive_hook(Some(std::sync::Arc::new(move |name: &str| {
+            name.eq_ignore_ascii_case(channel_name)
+        })));
+
+    {
+        let mut stop_times = state.coworker_stop_times.write().unwrap();
+        stop_times.insert(
+            channel_name.to_string(),
+            chrono::Utc::now() - chrono::Duration::minutes(2),
+        );
+    }
+
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "hello ops channel",
+        Some(channel_name),
+        None,
+        &state,
+    )
+    .await;
+    assert!(response.error.is_none(), "channel.post should succeed");
+
+    let stop_times = state.coworker_stop_times.read().unwrap();
+    assert!(
+        !stop_times.contains_key(channel_name),
+        "Usage-limited channel lead should be treated as dead for cooldown clearing"
+    );
+}
+
+/// If the stored channel lead session is usage-limited, channel.post must not
+/// treat a direct send as success — it should skip the stale session and fall
+/// through to resume/spawn recovery logic instead.
+#[tokio::test]
+async fn test_user_message_to_topic_channel_skips_direct_nudge_for_usage_limited_lead() {
+    use super::super::sessions::SessionStatus;
+
+    let (state, _tmp, _guard) = make_test_state("midtown-test-topic-lead-usage-limit-nudge");
+    let channel_name = "ops";
+    let send_attempts = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.channel_lead_sessions
+            .insert(channel_name.to_string(), "sess-ops-usage-limit".to_string());
+        ps.save_for_repo(state.paths.dir_key()).unwrap();
+    }
+
+    state
+        .session_manager
+        .insert_test_session(channel_name, SessionStatus::Running)
+        .await;
+    state
+        .session_manager
+        .set_test_session_health_flags(channel_name, true, false, false)
+        .await;
+    state
+        .session_manager
+        .set_test_is_alive_hook(Some(std::sync::Arc::new(move |name: &str| {
+            name.eq_ignore_ascii_case(channel_name)
+        })));
+
+    {
+        let send_attempts = send_attempts.clone();
+        state
+            .session_manager
+            .set_test_send_message_to_session_id_hook(Some(std::sync::Arc::new(
+                move |_session_id: &str, _message: &str| {
+                    *send_attempts.lock().unwrap() += 1;
+                    Ok(())
+                },
+            )));
+    }
+
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "need ops help",
+        Some(channel_name),
+        None,
+        &state,
+    )
+    .await;
+    assert!(response.error.is_none(), "channel.post should succeed");
+
+    assert_eq!(
+        *send_attempts.lock().unwrap(),
+        0,
+        "Usage-limited channel lead should not receive a direct nudge"
+    );
+}
+
 /// Verify that channel.create creates a new channel successfully.
 #[tokio::test]
 async fn test_handle_channel_create_new_channel() {

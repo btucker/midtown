@@ -73,7 +73,7 @@ fn codex_state_strategy() -> impl Strategy<Value = CodexProtocolState> {
                     fork_session: false,
                     allow_tools: true,
                     model: if model.is_empty() {
-                        "gpt-5.3-codex".to_string()
+                        "gpt-5.4".to_string()
                     } else {
                         model
                     },
@@ -307,7 +307,7 @@ proptest! {
         model in ascii_string(24),
         system_prompt in ascii_string(64),
     ) {
-        let model = if model.is_empty() { "gpt-5.3-codex".to_string() } else { model };
+        let model = if model.is_empty() { "gpt-5.4".to_string() } else { model };
 
         let (method, params) = codex_thread_init_request(
             resume_thread_id.as_deref(),
@@ -359,7 +359,7 @@ proptest! {
             resume_thread_id: None,
             fork_session: false,
             allow_tools: true,
-            model: "gpt-5.3-codex".to_string(),
+            model: "gpt-5.4".to_string(),
             cwd: None,
             system_prompt: String::new(),
             output_schema: None,

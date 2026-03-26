@@ -42,7 +42,6 @@ fn attach_launch_options<'a>(
         channel,
     }
 }
-
 // ── Target normalization ──────────────────────────────────────────────
 
 #[test]
