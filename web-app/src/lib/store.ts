@@ -205,6 +205,11 @@ export const isWideScreen = writable<boolean>(false);
 // Whether to show archived channels in the channel list (default: false)
 export const showArchivedChannels = writable<boolean>(false);
 
+// User-defined channel display order. Stores channel names in the preferred order.
+// Channels not in this list appear at the end in their default (server) order.
+export const channelOrder = writable<string[]>(loadFromLocalStorage("midtown_channel_order", []));
+channelOrder.subscribe((v) => debouncedSaveToLocalStorage("midtown_channel_order", v));
+
 // Active tab per channel: { [channelName]: 'messages' | 'prs' | 'notes' | 'settings' }
 // Keyed by channel name so switching channels preserves tab position.
 export const activeChannelTab = writable<Record<string, ChannelTab>>({});
