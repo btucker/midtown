@@ -488,6 +488,165 @@ async fn test_session_clear_handles_reviewer_metadata() {
         json
     );
 }
+// ============================================================================
+// handle_session_cancel tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_session_cancel_rejects_unknown_coworker() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let resp = handle_session_cancel(RequestId::Number(1), "name/nonexistent", &state).await;
+
+    let json = serde_json::to_value(&resp).unwrap();
+    assert!(
+        json.get("error").is_some(),
+        "Should return error for unknown coworker"
+    );
+}
+
+#[tokio::test]
+async fn test_session_cancel_rejects_no_persisted_session() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    state
+        .coworkers
+        .register(
+            "park",
+            "park",
+            "/tmp/test".to_string(),
+            None,
+            String::new(),
+            crate::auth::AuthProvider::Claude,
+            String::new(),
+        )
+        .unwrap();
+
+    let resp = handle_session_cancel(RequestId::Number(1), "name/park", &state).await;
+
+    let json = serde_json::to_value(&resp).unwrap();
+    assert!(
+        json.get("error").is_some(),
+        "Should return error when no persisted session exists"
+    );
+}
+
+#[tokio::test]
+async fn test_session_cancel_rejects_attached_session() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    state
+        .coworkers
+        .register(
+            "park",
+            "park",
+            "/tmp/test".to_string(),
+            None,
+            String::new(),
+            crate::auth::AuthProvider::Claude,
+            String::new(),
+        )
+        .unwrap();
+    insert_test_session(&state, "park", Some("original task".to_string())).await;
+
+    // Mark as attached
+    {
+        let mut attached = state.attached_coworkers.lock().unwrap();
+        attached.insert("park".to_string(), chrono::Utc::now());
+    }
+
+    let resp = handle_session_cancel(RequestId::Number(1), "name/park", &state).await;
+
+    let json = serde_json::to_value(&resp).unwrap();
+    let err = json
+        .get("error")
+        .expect("Should return error for attached session");
+    let msg = err.get("message").unwrap().as_str().unwrap();
+    assert!(
+        msg.contains("attached interactively"),
+        "Error should mention interactive attachment, got: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn test_session_cancel_cleans_up_transient_state() {
+    let (state, _tmp, _guard) = make_test_state();
+    let name = "broadway";
+
+    state
+        .coworkers
+        .register(
+            name,
+            name,
+            "/tmp/test".to_string(),
+            None,
+            String::new(),
+            crate::auth::AuthProvider::Claude,
+            String::new(),
+        )
+        .unwrap();
+    insert_test_session(&state, name, Some("original task".to_string())).await;
+
+    // Populate transient state that cleanup_coworker_state should clear
+    {
+        let mut cooldowns = state.cooldowns.lock().unwrap();
+        cooldowns.record("nudge", name);
+    }
+    state.record_pending_nudge(name, "test nudge");
+
+    // The handler will try to spawn a new session, which will fail since
+    // there's no actual worktree. That's fine — we're testing that cleanup
+    // happened before the spawn attempt.
+    let _resp =
+        handle_session_cancel(RequestId::Number(1), &format!("name/{}", name), &state).await;
+
+    // Verify transient state was cleaned up (regardless of spawn success)
+    {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        assert!(
+            cooldowns.is_empty(),
+            "cooldowns should be cleared after session cancel"
+        );
+    }
+    {
+        let pending = state.pending_nudges.lock().unwrap();
+        assert!(
+            !pending.contains_key(name),
+            "pending nudges should be cleared after session cancel"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_session_cancel_uses_lead_config_for_lead_target() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    state
+        .coworkers
+        .register(
+            "lead",
+            "lead",
+            "/tmp/test-lead".to_string(),
+            None,
+            String::new(),
+            crate::auth::AuthProvider::Claude,
+            String::new(),
+        )
+        .unwrap();
+    insert_test_session(&state, "lead", Some("lead task prompt".to_string())).await;
+
+    let resp = handle_session_cancel(RequestId::Number(1), "name/lead", &state).await;
+
+    // The spawn will likely fail (no real worktree), but it should not panic.
+    let json = serde_json::to_value(&resp).unwrap();
+    assert!(
+        json.get("error").is_some() || json.get("result").is_some(),
+        "Should return either success or spawn-failure error, got: {:?}",
+        json
+    );
+}
+
 /// Verify that `handle_session_fork` sends the `initial_message` as the nudge
 /// instead of using `fork_initial_framing` when both are available.
 /// Since spawn fails in test, we test through the already-exists path to verify

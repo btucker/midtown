@@ -459,6 +459,12 @@ pub enum ClientMessage {
         thread_parent_id: String,
         channel: String,
     },
+    /// Cancel the lead session's in-flight request (kill + resume)
+    #[serde(rename = "cancel_lead")]
+    CancelLead {
+        /// Channel name — used to resolve project lead vs channel lead
+        channel: String,
+    },
 }
 
 /// Create the web server router
@@ -2990,6 +2996,28 @@ async fn handle_client_message(text: &str, state: &Arc<WebState>) -> Result<(), 
             .await
             .map_err(|e| format!("spawn_blocking panic in get_thread_ownership: {}", e))?
             .map_err(|e: String| e)?;
+        }
+        ClientMessage::CancelLead { channel } => {
+            // Resolve the target session name: for the project channel, cancel the
+            // project lead (named after the project); for topic channels, cancel the
+            // channel lead (named after the channel).
+            let target = if channel == state.config.project_name {
+                state.config.project_name.clone()
+            } else {
+                channel.clone()
+            };
+            let repo = state.config.dir_key.clone();
+            tokio::task::spawn_blocking(move || {
+                daemon_rpc_call(
+                    &repo,
+                    "session.cancel",
+                    serde_json::json!({ "target": target }),
+                )
+            })
+            .await
+            .map_err(|e| format!("spawn_blocking panic in cancel_lead: {}", e))?
+            .map_err(|e: String| e)?;
+            info!("Cancel+resume requested for lead in #{}", channel);
         }
     }
 
