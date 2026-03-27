@@ -2901,6 +2901,13 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<WebState>>) ->
     ws.on_upgrade(|socket| handle_websocket(socket, state))
 }
 
+/// How often to send WebSocket ping frames
+const WS_PING_INTERVAL: Duration = Duration::from_secs(30);
+/// How long to wait for a pong reply before considering the connection dead
+const WS_PONG_TIMEOUT: Duration = Duration::from_secs(10);
+/// Timeout for individual WebSocket send operations
+const WS_SEND_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Handle an individual WebSocket connection
 async fn handle_websocket(socket: WebSocket, state: Arc<WebState>) {
     let (mut sender, mut receiver) = socket.split();
@@ -2913,8 +2920,16 @@ async fn handle_websocket(socket: WebSocket, state: Arc<WebState>) {
     // Create a channel for sending error messages back to the client
     let (error_tx, mut error_rx) = tokio::sync::mpsc::channel::<String>(10);
 
-    // Spawn task to forward broadcast updates and error messages to this client
+    // Shared pong timestamp: updated by receive loop, read by send task
+    let last_pong = Arc::new(Mutex::new(Instant::now()));
+    let last_pong_send = last_pong.clone();
+
+    // Spawn task to forward broadcast updates, error messages, and pings to this client
     let send_task = tokio::spawn(async move {
+        let mut ping_interval = tokio::time::interval(WS_PING_INTERVAL);
+        ping_interval.tick().await; // consume the immediate first tick
+        let disconnect_reason;
+
         loop {
             tokio::select! {
                 update = updates_rx.recv() => {
@@ -2928,11 +2943,29 @@ async fn handle_websocket(socket: WebSocket, state: Arc<WebState>) {
                                 }
                             };
 
-                            if sender.send(WsMessage::Text(json.into())).await.is_err() {
-                                break;
+                            match tokio::time::timeout(
+                                WS_SEND_TIMEOUT,
+                                sender.send(WsMessage::Text(json.into())),
+                            ).await {
+                                Ok(Ok(())) => {}
+                                Ok(Err(e)) => {
+                                    disconnect_reason = format!("send error: {e}");
+                                    break;
+                                }
+                                Err(_) => {
+                                    disconnect_reason = "send timeout".to_string();
+                                    break;
+                                }
                             }
                         }
-                        Err(_) => break,
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            warn!("WebSocket broadcast lagged, skipped {n} messages");
+                            continue;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            disconnect_reason = "broadcast channel closed".to_string();
+                            break;
+                        }
                     }
                 }
                 error_msg = error_rx.recv() => {
@@ -2947,15 +2980,46 @@ async fn handle_websocket(socket: WebSocket, state: Arc<WebState>) {
                                 }
                             };
 
-                            if sender.send(WsMessage::Text(json.into())).await.is_err() {
-                                break;
+                            match tokio::time::timeout(
+                                WS_SEND_TIMEOUT,
+                                sender.send(WsMessage::Text(json.into())),
+                            ).await {
+                                Ok(Ok(())) => {}
+                                Ok(Err(e)) => {
+                                    disconnect_reason = format!("send error: {e}");
+                                    break;
+                                }
+                                Err(_) => {
+                                    disconnect_reason = "send timeout".to_string();
+                                    break;
+                                }
                             }
                         }
-                        None => break,
+                        None => {
+                            disconnect_reason = "error channel closed".to_string();
+                            break;
+                        }
+                    }
+                }
+                _ = ping_interval.tick() => {
+                    // Check if we've received a pong recently enough
+                    let elapsed = last_pong_send.lock().unwrap().elapsed();
+                    if elapsed > WS_PING_INTERVAL + WS_PONG_TIMEOUT {
+                        disconnect_reason = format!(
+                            "pong timeout (last pong {}s ago)",
+                            elapsed.as_secs()
+                        );
+                        break;
+                    }
+                    if sender.send(WsMessage::Ping(vec![].into())).await.is_err() {
+                        disconnect_reason = "ping send error".to_string();
+                        break;
                     }
                 }
             }
         }
+
+        info!("WebSocket send task ending: {disconnect_reason}");
     });
 
     // Handle incoming messages from client
@@ -2972,9 +3036,15 @@ async fn handle_websocket(socket: WebSocket, state: Arc<WebState>) {
                     }
                 }
             }
-            Ok(WsMessage::Close(_)) => break,
+            Ok(WsMessage::Pong(_)) => {
+                *last_pong.lock().unwrap() = Instant::now();
+            }
+            Ok(WsMessage::Close(_)) => {
+                info!("WebSocket client sent close frame");
+                break;
+            }
             Err(e) => {
-                debug!("WebSocket error: {}", e);
+                info!("WebSocket receive error: {}", e);
                 break;
             }
             _ => {}

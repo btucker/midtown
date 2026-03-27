@@ -112,6 +112,19 @@ let ws: WebSocket | null = null;
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 let statusPollInterval: ReturnType<typeof setInterval> | null = null;
 let usagePollInterval: ReturnType<typeof setInterval> | null = null;
+let staleCheckInterval: ReturnType<typeof setInterval> | null = null;
+let lastMessageTimestamp = 0;
+let reconnectAttempts = 0;
+
+const STALE_CONNECTION_MS = 45_000;
+const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
+
+function getReconnectDelay(): number {
+	const baseDelay = RECONNECT_DELAYS[Math.min(reconnectAttempts, RECONNECT_DELAYS.length - 1)];
+	// Add ±20% jitter
+	const jitter = baseDelay * 0.2 * (Math.random() * 2 - 1);
+	return baseDelay + jitter;
+}
 
 // Unique key for the bulk (all-channels) fetchHistory request. Using a Symbol
 // avoids collisions with real channel names in the AbortController map.
@@ -648,6 +661,8 @@ export function connectWebSocket(): void {
 	ws.onopen = () => {
 		console.log("WebSocket connected");
 		connected.set(true);
+		reconnectAttempts = 0;
+		lastMessageTimestamp = Date.now();
 
 		// Always fetch history on connect/reconnect to ensure we have all messages.
 		// This covers: initial page load, reconnection after network loss,
@@ -657,6 +672,15 @@ export function connectWebSocket(): void {
 			clearTimeout(reconnectTimeout);
 			reconnectTimeout = null;
 		}
+
+		// Start stale connection detection
+		if (staleCheckInterval) clearInterval(staleCheckInterval);
+		staleCheckInterval = setInterval(() => {
+			if (ws && Date.now() - lastMessageTimestamp > STALE_CONNECTION_MS) {
+				console.warn("WebSocket stale — no message in 45s, forcing reconnect");
+				ws.close();
+			}
+		}, STALE_CONNECTION_MS);
 
 		// Fetch history for all channels (main bulk load) to catch up on missed messages.
 		fetchHistory();
@@ -674,8 +698,15 @@ export function connectWebSocket(): void {
 	ws.onclose = () => {
 		console.log("WebSocket disconnected");
 		connected.set(false);
-		// Auto-reconnect after 3 seconds
-		reconnectTimeout = setTimeout(connectWebSocket, 3000);
+		if (staleCheckInterval) {
+			clearInterval(staleCheckInterval);
+			staleCheckInterval = null;
+		}
+		// Auto-reconnect with exponential backoff + jitter
+		const delay = getReconnectDelay();
+		reconnectAttempts++;
+		console.log(`Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttempts})`);
+		reconnectTimeout = setTimeout(connectWebSocket, delay);
 	};
 
 	ws.onerror = (err) => {
@@ -683,6 +714,7 @@ export function connectWebSocket(): void {
 	};
 
 	ws.onmessage = (event) => {
+		lastMessageTimestamp = Date.now();
 		try {
 			const update = JSON.parse(event.data);
 			handleUpdate(update);
@@ -690,6 +722,14 @@ export function connectWebSocket(): void {
 			console.error("Failed to parse message:", err);
 		}
 	};
+}
+
+// Reconnect if the WebSocket is not currently open (e.g., after visibility resume)
+export function reconnectIfNeeded(): void {
+	if (!ws || ws.readyState !== WebSocket.OPEN) {
+		console.log("WebSocket not open, reconnecting");
+		connectWebSocket();
+	}
 }
 
 // Callbacks for handling error responses from the server
