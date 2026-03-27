@@ -2624,6 +2624,159 @@ async fn test_nudge_channel_lead_dm_channel_lead_uses_stored_session() {
         "should use the stored channel lead session_id"
     );
 }
+
+#[tokio::test]
+async fn test_nudge_channel_lead_dm_system_nudge_posts_to_dm_channel() {
+    let (state, project_dir, _guard) = make_workflow_test_state("myrepo");
+    let coworker_name = "columbus";
+    let channel_name = format!("dm-{}", coworker_name);
+    let session_id = "sess-columbus-1".to_string();
+
+    // Register the coworker as active
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            session_id.clone(),
+            crate::daemon::state::SessionRecord {
+                session_id: session_id.clone(),
+                name: coworker_name.to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    // Hook: stdin delivery succeeds
+    state
+        .session_manager
+        .set_test_send_message_to_session_id_hook(Some(std::sync::Arc::new(|_sid, _msg| Ok(()))));
+
+    // Use a system nudge (Nudge variant), NOT DmFromUser
+    execute_effects(
+        vec![Effect::NudgeChannelLead {
+            channel_name: channel_name.clone(),
+            reason: crate::daemon::wake_reason::WakeReason::Nudge {
+                message: "Stale note reminder: check task !42".to_string(),
+            },
+        }],
+        &state,
+    )
+    .await;
+
+    // The system nudge should appear in the DM channel history
+    let messages = read_channel_messages(&project_dir, &channel_name);
+    assert_eq!(
+        messages.len(),
+        1,
+        "system nudge should be posted to DM channel"
+    );
+    assert_eq!(
+        messages[0]["type"].as_str(),
+        Some("nudge"),
+        "message type should be nudge"
+    );
+    assert!(
+        messages[0]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Stale note reminder"),
+        "nudge content should be in the DM channel message"
+    );
+}
+
+#[tokio::test]
+async fn test_nudge_channel_lead_dm_from_user_skips_dm_post() {
+    let (state, project_dir, _guard) = make_workflow_test_state("myrepo");
+    let coworker_name = "columbus";
+    let channel_name = format!("dm-{}", coworker_name);
+    let session_id = "sess-columbus-1".to_string();
+
+    // Register the coworker as active
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            session_id.clone(),
+            crate::daemon::state::SessionRecord {
+                session_id: session_id.clone(),
+                name: coworker_name.to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    state
+        .session_manager
+        .set_test_send_message_to_session_id_hook(Some(std::sync::Arc::new(|_sid, _msg| Ok(()))));
+
+    // DmFromUser: rpc_channel.rs already posted to the DM channel, so
+    // NudgeChannelLead should NOT double-post.
+    execute_effects(
+        vec![Effect::NudgeChannelLead {
+            channel_name: channel_name.clone(),
+            reason: crate::daemon::wake_reason::WakeReason::DmFromUser {
+                content: "hey columbus".to_string(),
+                msg_id: "msg-dm-skip-001".to_string(),
+                coworker_name: coworker_name.to_string(),
+            },
+        }],
+        &state,
+    )
+    .await;
+
+    let messages = read_channel_messages(&project_dir, &channel_name);
+    assert!(
+        messages.is_empty(),
+        "DmFromUser should NOT be double-posted to the DM channel"
+    );
+}
+
+#[tokio::test]
+async fn test_nudge_channel_lead_dm_fork_skips_dm_post() {
+    let (state, project_dir, _guard) = make_workflow_test_state("myrepo");
+    let fork_name = "research-fork";
+    let channel_name = format!("dm-{}", fork_name);
+    let session_id = "sess-fork-1".to_string();
+
+    // Register the fork as an active fork session (bound_thread_id + channel-lead agent type)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            session_id.clone(),
+            crate::daemon::state::SessionRecord {
+                session_id: session_id.clone(),
+                name: fork_name.to_string(),
+                is_running: true,
+                agent_type: "midtown-channel-lead".to_string(),
+                bound_thread_id: Some("thread-123".to_string()),
+                ..Default::default()
+            },
+        );
+    }
+
+    state
+        .session_manager
+        .set_test_send_message_to_session_id_hook(Some(std::sync::Arc::new(|_sid, _msg| Ok(()))));
+
+    // System nudge to a fork session — should NOT post to DM channel
+    execute_effects(
+        vec![Effect::NudgeChannelLead {
+            channel_name: channel_name.clone(),
+            reason: crate::daemon::wake_reason::WakeReason::Nudge {
+                message: "health check".to_string(),
+            },
+        }],
+        &state,
+    )
+    .await;
+
+    let messages = read_channel_messages(&project_dir, &channel_name);
+    assert!(
+        messages.is_empty(),
+        "fork sessions should NOT get DM channel posts"
+    );
+}
+
 // ── format_workflow_state_summary tests ──────────────────────────────
 
 #[test]

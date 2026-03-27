@@ -3200,6 +3200,34 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     }
 
                     if nudge_delivered {
+                        // Post to DM channel for observability (same pattern as
+                        // send_session_nudge). Skip DmFromUser — the user's message
+                        // is already in the DM channel (written by rpc_channel.rs).
+                        if !reason.already_in_dm_channel() {
+                            let is_fork = {
+                                let ps = state.persistent_state.lock().await;
+                                ps.session_by_name(agent_name)
+                                    .is_some_and(|s| s.is_fork_session())
+                            };
+                            if !is_fork {
+                                Box::pin(execute_effects(
+                                    vec![Effect::PostToChannel {
+                                        sender: reason.sender().to_owned(),
+                                        message: msg,
+                                        channel: Some(channel_name.clone()),
+                                        auto_output: false,
+                                        message_type: Some(crate::message::MessageType::Nudge),
+                                        nudge_type: Some(reason.nudge_type().to_owned()),
+                                        tool_data: None,
+                                        provider: None,
+                                        tool_use_id: None,
+                                        parent_tool_use_id: None,
+                                    }],
+                                    state,
+                                ))
+                                .await;
+                            }
+                        }
                         continue;
                     }
 
