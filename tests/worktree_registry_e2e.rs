@@ -10,242 +10,54 @@
 //! Run with: `cargo test --test worktree_registry_e2e -- --ignored --test-threads=1`
 
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
-/// Counter for unique test names across tests.
-static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+mod common;
 
-/// Generate a unique test repo name to avoid conflicts.
-fn test_repo_name() -> String {
-    let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    format!("worktree-e2e-test-{}-{}", std::process::id(), counter)
-}
+use common::{DaemonHarnessOptions, DaemonTestHarness};
 
 /// Test fixture for worktree registry E2E tests.
 ///
-/// Creates an isolated environment with a fake git repo and manages
-/// daemon lifecycle. Based on the pattern from effect_verification_e2e.rs.
+/// Wraps DaemonTestHarness and adds worktree-specific helpers.
 struct WorktreeTestFixture {
-    /// Temporary directory containing the test repo
-    temp_dir: PathBuf,
-    /// Project directory under ~/.midtown/projects/<name>/
-    project_dir: PathBuf,
+    harness: DaemonTestHarness,
     /// Worktree directory under ~/.midtown/projects/<name>/worktrees/
     worktree_dir: PathBuf,
-    /// Repository name (used for socket path derivation)
-    repo_name: String,
-    /// Path to the daemon socket
-    socket_path: PathBuf,
-    /// Daemon process handle (if started)
-    daemon_process: Option<std::process::Child>,
+}
+
+impl Deref for WorktreeTestFixture {
+    type Target = DaemonTestHarness;
+    fn deref(&self) -> &DaemonTestHarness {
+        &self.harness
+    }
+}
+
+impl DerefMut for WorktreeTestFixture {
+    fn deref_mut(&mut self) -> &mut DaemonTestHarness {
+        &mut self.harness
+    }
 }
 
 impl WorktreeTestFixture {
     /// Create a new test fixture with a fake git repository.
     fn new() -> Option<Self> {
-        let repo_name = test_repo_name();
-        let temp_dir = std::env::temp_dir().join(&repo_name);
-
-        // Clean up any previous test data
-        let _ = fs::remove_dir_all(&temp_dir);
-        fs::create_dir_all(&temp_dir).ok()?;
-
-        // Initialize a git repository (daemon requires this)
-        let status = Command::new("git")
-            .args(["init"])
-            .current_dir(&temp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .ok()?;
-        if !status.success() {
-            return None;
-        }
-
-        // Configure git user for this repo
-        Command::new("git")
-            .args(["config", "user.name", "Test User"])
-            .current_dir(&temp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .ok()?;
-        Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(&temp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .ok()?;
-
-        // Create an initial commit (required for worktree creation)
-        fs::write(temp_dir.join("README.md"), "# Test repo\n").ok()?;
-        Command::new("git")
-            .args(["add", "."])
-            .current_dir(&temp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .ok()?;
-        Command::new("git")
-            .args(["commit", "-m", "Initial commit"])
-            .current_dir(&temp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .ok()?;
-
-        // Compute socket path (matches midtown::paths)
-        let state_dir = std::env::var("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join(".local")
-                    .join("state")
-            });
-        let socket_path = state_dir
-            .join("midtown")
-            .join(&repo_name)
-            .join("daemon.sock");
-
-        let project_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".midtown")
-            .join("projects")
-            .join(&repo_name);
+        let harness = DaemonTestHarness::new("worktree-e2e-test", DaemonHarnessOptions::default())?;
 
         let worktree_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(".midtown")
             .join("projects")
-            .join(&repo_name)
+            .join(&harness.repo_name)
             .join("worktrees");
 
-        // Ensure parent directories exist
-        if let Some(parent) = socket_path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        if let Some(parent) = project_dir.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-
         Some(Self {
-            temp_dir,
-            project_dir,
+            harness,
             worktree_dir,
-            repo_name,
-            socket_path,
-            daemon_process: None,
         })
-    }
-
-    /// Start the daemon process.
-    ///
-    /// Returns true if the daemon started successfully and the socket is available.
-    fn start_daemon(&mut self) -> bool {
-        // Check for pre-built binary (CI builds before running tests)
-        let release_binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("release")
-            .join("midtown");
-        let debug_binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("debug")
-            .join("midtown");
-
-        let binary_path = if release_binary.exists() {
-            release_binary
-        } else if debug_binary.exists() {
-            eprintln!("Warning: Using debug binary - timing may not match production");
-            debug_binary
-        } else {
-            eprintln!("Skipping: No midtown binary found. Run 'cargo build --release' first.");
-            return false;
-        };
-
-        // Remove stale socket if present
-        let _ = fs::remove_file(&self.socket_path);
-
-        // Start the daemon process
-        let child = Command::new(&binary_path)
-            .arg("daemon")
-            .arg("--workdir")
-            .arg(&self.temp_dir)
-            .current_dir(&self.temp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            // Disable webhook to avoid port conflicts in tests
-            .env("MIDTOWN_WEBHOOK_PORT", "0")
-            // Disable chat monitor for cleaner tests
-            .env("MIDTOWN_CHAT_MONITOR", "0")
-            .spawn();
-
-        match child {
-            Ok(c) => {
-                self.daemon_process = Some(c);
-
-                // Wait for socket to become available (up to 60 seconds)
-                for _ in 0..300 {
-                    thread::sleep(Duration::from_millis(200));
-                    if self.socket_path.exists() && UnixStream::connect(&self.socket_path).is_ok() {
-                        return true;
-                    }
-                }
-                eprintln!("Daemon socket did not become available");
-                false
-            }
-            Err(e) => {
-                eprintln!("Failed to spawn daemon: {}", e);
-                false
-            }
-        }
-    }
-
-    /// Connect to the daemon socket.
-    fn connect(&self) -> Option<UnixStream> {
-        UnixStream::connect(&self.socket_path).ok()
-    }
-
-    /// Send an RPC request and receive the response.
-    fn rpc_call(
-        &self,
-        method: &str,
-        params: Option<serde_json::Value>,
-    ) -> Option<serde_json::Value> {
-        let mut stream = self.connect()?;
-
-        // Set read timeout to detect hangs
-        stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
-            .ok()?;
-
-        // Build JSON-RPC request
-        let request = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-            "id": 1
-        });
-
-        // Send request
-        let request_line = format!("{}\n", request);
-        stream.write_all(request_line.as_bytes()).ok()?;
-        stream.flush().ok()?;
-
-        // Read response
-        let mut reader = BufReader::new(&stream);
-        let mut response_line = String::new();
-        reader.read_line(&mut response_line).ok()?;
-
-        // Parse response
-        serde_json::from_str(&response_line).ok()
     }
 
     /// Get the path to a task worktree directory.
@@ -255,7 +67,7 @@ impl WorktreeTestFixture {
 
     /// List active coworkers via daemon RPC.
     fn list_coworkers(&self) -> Vec<String> {
-        let response = self.rpc_call("coworker.list", None);
+        let response = self.harness.rpc_call("coworker.list", None);
         match response {
             Some(resp) => resp["result"]["coworkers"]
                 .as_array()
@@ -267,58 +79,6 @@ impl WorktreeTestFixture {
                 .unwrap_or_default(),
             None => vec![],
         }
-    }
-
-    /// Stop the daemon gracefully.
-    fn stop_daemon(&mut self) {
-        // First try RPC shutdown
-        if let Some(mut stream) = self.connect() {
-            let request = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "shutdown",
-                "id": 999
-            });
-            let request_line = format!("{}\n", request);
-            let _ = stream.write_all(request_line.as_bytes());
-            let _ = stream.flush();
-            thread::sleep(Duration::from_millis(100));
-        }
-
-        // Kill the process if still running
-        if let Some(ref mut child) = self.daemon_process {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        self.daemon_process = None;
-
-        // Final fallback: pkill
-        let pattern = format!("midtown daemon.*{}", self.repo_name);
-        let _ = Command::new("pkill")
-            .args(["-f", &pattern])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-}
-
-impl Drop for WorktreeTestFixture {
-    fn drop(&mut self) {
-        self.stop_daemon();
-
-        // Clean up socket file and its parent directory
-        let _ = fs::remove_file(&self.socket_path);
-        if let Some(parent) = self.socket_path.parent() {
-            let _ = fs::remove_dir(parent);
-        }
-
-        // Clean up the entire project directory
-        let _ = fs::remove_dir_all(&self.project_dir);
-
-        // Clean up worktree directory
-        let _ = fs::remove_dir_all(&self.worktree_dir);
-
-        // Clean up temp directory (the fake git repo)
-        let _ = fs::remove_dir_all(&self.temp_dir);
     }
 }
 
