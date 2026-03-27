@@ -1330,6 +1330,7 @@ fn make_pr_context_with_task(pr_number: u64, task_id: &str) -> PrContext {
     PrContext {
         pr_task_associations,
         task_channel: std::collections::HashMap::new(),
+        task_thread_id: std::collections::HashMap::new(),
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -1341,6 +1342,30 @@ fn make_pr_context_empty() -> PrContext {
     PrContext {
         pr_task_associations: std::collections::HashMap::new(),
         task_channel: std::collections::HashMap::new(),
+        task_thread_id: std::collections::HashMap::new(),
+        has_active_reviewer: false,
+        channel_workflows: std::collections::HashMap::new(),
+        lead_driven_channels: std::collections::HashSet::new(),
+    }
+}
+
+/// Helper to create a PrContext with task, channel, and thread_id set.
+fn make_pr_context_with_task_thread(
+    pr_number: u64,
+    task_id: &str,
+    channel: &str,
+    thread_id: &str,
+) -> PrContext {
+    let mut pr_task_associations = std::collections::HashMap::new();
+    pr_task_associations.insert(pr_number, task_id.to_string());
+    let mut task_channel = std::collections::HashMap::new();
+    task_channel.insert(task_id.to_string(), channel.to_string());
+    let mut task_thread_id = std::collections::HashMap::new();
+    task_thread_id.insert(task_id.to_string(), thread_id.to_string());
+    PrContext {
+        pr_task_associations,
+        task_channel,
+        task_thread_id,
         has_active_reviewer: false,
         channel_workflows: std::collections::HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -1742,6 +1767,136 @@ fn test_reconcile_orphaned_prs_completed_task_does_not_suppress() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// review_feedback_thread_post tests
+// ---------------------------------------------------------------------------
+
+/// Review comment on a task-linked PR with thread_id produces a channel thread post.
+#[test]
+fn review_feedback_thread_post_produces_post_for_review_comment() {
+    let ctx = make_pr_context_with_task_thread(42, "100", "backend", "msg-abc");
+    let effect = review_feedback_thread_post(42, PrIssueType::ReviewComment, "alice", &ctx);
+    assert!(effect.is_some(), "Should produce a thread post effect");
+    if let Some(Effect::PostToChannel {
+        channel,
+        thread_id,
+        message,
+        sender,
+        ..
+    }) = effect
+    {
+        assert_eq!(channel.as_deref(), Some("backend"));
+        assert_eq!(thread_id.as_deref(), Some("msg-abc"));
+        assert_eq!(sender, "midtown");
+        assert!(
+            message.contains("PR #42"),
+            "Message should mention PR number"
+        );
+        assert!(message.contains("alice"), "Message should mention actor");
+        assert!(
+            message.contains("review comment"),
+            "Message should mention issue type"
+        );
+    }
+}
+
+/// Formal review (changes_requested) on a task-linked PR produces a channel thread post.
+#[test]
+fn review_feedback_thread_post_produces_post_for_changes_requested() {
+    let ctx = make_pr_context_with_task_thread(55, "200", "frontend", "msg-def");
+    let effect = review_feedback_thread_post(55, PrIssueType::ChangesRequested, "bob", &ctx);
+    assert!(
+        effect.is_some(),
+        "Should produce a thread post for changes_requested"
+    );
+    if let Some(Effect::PostToChannel {
+        thread_id, message, ..
+    }) = effect
+    {
+        assert_eq!(thread_id.as_deref(), Some("msg-def"));
+        assert!(message.contains("changes requested"));
+    }
+}
+
+/// Approved review on a task-linked PR produces a channel thread post.
+#[test]
+fn review_feedback_thread_post_produces_post_for_approved() {
+    let ctx = make_pr_context_with_task_thread(60, "300", "backend", "msg-ghi");
+    let effect = review_feedback_thread_post(60, PrIssueType::Approved, "carol", &ctx);
+    assert!(
+        effect.is_some(),
+        "Should produce a thread post for approved"
+    );
+    if let Some(Effect::PostToChannel { message, .. }) = effect {
+        assert!(message.contains("approved"));
+        assert!(message.contains("carol"));
+    }
+}
+
+/// Non-review issue types (e.g., CiFailed, MergeConflict) should NOT produce thread posts.
+#[test]
+fn review_feedback_thread_post_skips_non_review_types() {
+    let ctx = make_pr_context_with_task_thread(42, "100", "backend", "msg-abc");
+    assert!(
+        review_feedback_thread_post(42, PrIssueType::CiFailed, "ci-bot", &ctx).is_none(),
+        "CiFailed should not produce a thread post"
+    );
+    assert!(
+        review_feedback_thread_post(42, PrIssueType::MergeConflict, "git", &ctx).is_none(),
+        "MergeConflict should not produce a thread post"
+    );
+}
+
+/// PR with no task association should not produce a thread post.
+#[test]
+fn review_feedback_thread_post_skips_no_task() {
+    let ctx = make_pr_context_empty();
+    assert!(
+        review_feedback_thread_post(42, PrIssueType::ReviewComment, "alice", &ctx).is_none(),
+        "No task association should produce no thread post"
+    );
+}
+
+/// Task with no thread_id set should not produce a thread post.
+#[test]
+fn review_feedback_thread_post_skips_no_thread_id() {
+    let ctx = make_pr_context_with_task(42, "100");
+    assert!(
+        review_feedback_thread_post(42, PrIssueType::ReviewComment, "alice", &ctx).is_none(),
+        "No thread_id should produce no thread post"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// post_to_task_thread constructor test
+// ---------------------------------------------------------------------------
+
+#[test]
+fn post_to_task_thread_constructor() {
+    let effect = Effect::post_to_task_thread(
+        "Test message",
+        "backend".to_string(),
+        "thread-1".to_string(),
+    );
+    if let Effect::PostToChannel {
+        sender,
+        message,
+        channel,
+        thread_id,
+        auto_output,
+        ..
+    } = effect
+    {
+        assert_eq!(sender, "midtown");
+        assert_eq!(message, "Test message");
+        assert_eq!(channel.as_deref(), Some("backend"));
+        assert_eq!(thread_id.as_deref(), Some("thread-1"));
+        assert!(!auto_output);
+    } else {
+        panic!("Expected PostToChannel effect");
+    }
+}
+
 /// When a previously-nudged PR is found linked via `github_open_pr_task_ids`,
 /// `ClearOrphanedPrLeadNudge` should be emitted so re-nudging is possible if
 /// the link later disappears.
@@ -1810,6 +1965,7 @@ fn action_to_effects_task_prompt_tracked_for_cross_tick_dedup() {
     let ctx = PrContext {
         pr_task_associations,
         task_channel: HashMap::new(),
+        task_thread_id: HashMap::new(),
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -3037,6 +3193,7 @@ fn make_pr_context_with_channel(pr_number: u64, task_id: &str, channel: &str) ->
     PrContext {
         pr_task_associations,
         task_channel,
+        task_thread_id: HashMap::new(),
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -3485,7 +3642,12 @@ async fn pr_approved_not_suppressed_when_review_cached() {
     // Build PrContext — should detect cached review and NOT flag active reviewer
     let ctx = {
         let ps = state.persistent_state.lock().await;
-        PrContext::from_persistent_state(&ps, pr_number, std::collections::HashMap::new())
+        PrContext::from_persistent_state(
+            &ps,
+            pr_number,
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+        )
     };
 
     assert!(
@@ -4654,6 +4816,7 @@ fn log_pr_decision_writes_valid_jsonl() {
     let ctx = PrContext {
         pr_task_associations: HashMap::from([(42, "7".to_string())]),
         task_channel: HashMap::from([("7".to_string(), "installer".to_string())]),
+        task_thread_id: HashMap::new(),
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -4723,6 +4886,7 @@ fn log_pr_decision_appends_multiple_entries() {
     let ctx = PrContext {
         pr_task_associations: HashMap::new(),
         task_channel: HashMap::new(),
+        task_thread_id: HashMap::new(),
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: std::collections::HashSet::new(),
@@ -5955,6 +6119,7 @@ fn make_empty_pr_context() -> PrContext {
     PrContext {
         pr_task_associations: HashMap::new(),
         task_channel: HashMap::new(),
+        task_thread_id: HashMap::new(),
         has_active_reviewer: false,
         channel_workflows: HashMap::new(),
         lead_driven_channels: HashSet::new(),

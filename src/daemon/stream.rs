@@ -185,6 +185,7 @@ fn push_lead_output_effects(
             provider: None,
             tool_use_id: None,
             parent_tool_use_id: None,
+            thread_id: None,
         });
     }
     append_tool_data_effects(effects, session_events, sender, channel);
@@ -219,6 +220,7 @@ fn append_tool_data_effects(
         provider: None,
         tool_use_id: None,
         parent_tool_use_id: None,
+        thread_id: None,
     });
 }
 
@@ -579,6 +581,7 @@ pub fn process_agent_output(
                     provider: provider.clone(),
                     tool_use_id: None,
                     parent_tool_use_id: None,
+                    thread_id: None,
                 });
             }
 
@@ -628,6 +631,7 @@ pub fn process_agent_output(
                     provider: provider.clone(),
                     tool_use_id,
                     parent_tool_use_id: None,
+                    thread_id: None,
                 });
             }
 
@@ -646,6 +650,7 @@ pub fn process_agent_output(
                         provider: provider.clone(),
                         tool_use_id: None,
                         parent_tool_use_id: Some(parent_id.clone()),
+                        thread_id: None,
                     });
                 }
             }
@@ -665,6 +670,7 @@ pub fn process_agent_output(
                     provider: provider.clone(),
                     tool_use_id: None,
                     parent_tool_use_id: Some(parent_id),
+                    thread_id: None,
                 });
             }
         }

@@ -338,4 +338,137 @@ mod tests {
             "inline 'reviewed by' in prose should not be treated as a review"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // review_feedback_thread_post tests (!2598)
+    // -----------------------------------------------------------------------
+
+    use super::super::{PrContext, review_feedback_thread_post};
+    use crate::daemon::effects::Effect;
+    use crate::daemon::trackers::PrIssueType;
+    use std::collections::HashMap;
+
+    fn make_ctx_with_task_thread(
+        pr_number: u64,
+        task_id: &str,
+        channel: &str,
+        thread_id: Option<&str>,
+    ) -> PrContext {
+        let mut pr_task_associations = HashMap::new();
+        pr_task_associations.insert(pr_number, task_id.to_string());
+
+        let mut task_channel = HashMap::new();
+        task_channel.insert(task_id.to_string(), channel.to_string());
+
+        let mut task_thread_id = HashMap::new();
+        if let Some(tid) = thread_id {
+            task_thread_id.insert(task_id.to_string(), tid.to_string());
+        }
+
+        PrContext {
+            pr_task_associations,
+            task_channel,
+            task_thread_id,
+            has_active_reviewer: false,
+            channel_workflows: HashMap::new(),
+            lead_driven_channels: std::collections::HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn test_review_feedback_thread_post_review_comment() {
+        let ctx = make_ctx_with_task_thread(42, "100", "daemon-core", Some("msg-abc"));
+        let effect = review_feedback_thread_post(42, PrIssueType::ReviewComment, "alice", &ctx);
+        assert!(
+            effect.is_some(),
+            "should produce a thread post for ReviewComment"
+        );
+
+        let effect = effect.unwrap();
+        match effect {
+            Effect::PostToChannel {
+                sender,
+                message,
+                channel,
+                thread_id,
+                ..
+            } => {
+                assert_eq!(sender, "midtown");
+                assert!(message.contains("PR #42"));
+                assert!(message.contains("alice"));
+                assert!(message.contains("review comment"));
+                assert_eq!(channel, Some("daemon-core".to_string()));
+                assert_eq!(thread_id, Some("msg-abc".to_string()));
+            }
+            _ => panic!("Expected PostToChannel, got {:?}", effect),
+        }
+    }
+
+    #[test]
+    fn test_review_feedback_thread_post_changes_requested() {
+        let ctx = make_ctx_with_task_thread(42, "100", "daemon-core", Some("msg-abc"));
+        let effect = review_feedback_thread_post(42, PrIssueType::ChangesRequested, "bob", &ctx);
+        assert!(effect.is_some());
+
+        match effect.unwrap() {
+            Effect::PostToChannel { message, .. } => {
+                assert!(message.contains("changes requested"));
+                assert!(message.contains("bob"));
+            }
+            _ => panic!("Expected PostToChannel"),
+        }
+    }
+
+    #[test]
+    fn test_review_feedback_thread_post_approved() {
+        let ctx = make_ctx_with_task_thread(42, "100", "daemon-core", Some("msg-abc"));
+        let effect = review_feedback_thread_post(42, PrIssueType::Approved, "carol", &ctx);
+        assert!(effect.is_some());
+
+        match effect.unwrap() {
+            Effect::PostToChannel { message, .. } => {
+                assert!(message.contains("approved"));
+                assert!(message.contains("carol"));
+            }
+            _ => panic!("Expected PostToChannel"),
+        }
+    }
+
+    #[test]
+    fn test_review_feedback_thread_post_skips_non_review_types() {
+        let ctx = make_ctx_with_task_thread(42, "100", "daemon-core", Some("msg-abc"));
+        assert!(
+            review_feedback_thread_post(42, PrIssueType::CiFailed, "alice", &ctx).is_none(),
+            "should not post for CiFailed"
+        );
+        assert!(
+            review_feedback_thread_post(42, PrIssueType::MergeConflict, "alice", &ctx).is_none(),
+            "should not post for MergeConflict"
+        );
+    }
+
+    #[test]
+    fn test_review_feedback_thread_post_no_task_linked() {
+        let ctx = PrContext {
+            pr_task_associations: HashMap::new(),
+            task_channel: HashMap::new(),
+            task_thread_id: HashMap::new(),
+            has_active_reviewer: false,
+            channel_workflows: HashMap::new(),
+            lead_driven_channels: std::collections::HashSet::new(),
+        };
+        assert!(
+            review_feedback_thread_post(42, PrIssueType::ReviewComment, "alice", &ctx).is_none(),
+            "should return None when no task is linked"
+        );
+    }
+
+    #[test]
+    fn test_review_feedback_thread_post_no_thread_id() {
+        let ctx = make_ctx_with_task_thread(42, "100", "daemon-core", None);
+        assert!(
+            review_feedback_thread_post(42, PrIssueType::ReviewComment, "alice", &ctx).is_none(),
+            "should return None when task has no thread_id"
+        );
+    }
 }
