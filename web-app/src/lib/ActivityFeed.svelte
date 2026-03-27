@@ -13,6 +13,7 @@ import {
 	userSenderName,
 } from "./store.ts";
 import TaskRow from "./TaskRow.svelte";
+import { groupTasksByParent } from "./taskGrouping.ts";
 import type { NeedsAttentionItem, Task, TrackedThread } from "./types.ts";
 
 interface Props {
@@ -79,9 +80,11 @@ const reviewerByTaskId = $derived.by(() => {
 	return map;
 });
 
-const activeTasks = $derived([
+// All tasks including completed, so children of active parents show as filled segments
+const allTasks = $derived([
 	...$kanbanData.inProgress.map((t) => ({ ...t, status: "in_progress" as const })),
 	...$kanbanData.backlog.map((t) => ({ ...t, status: "pending" as const })),
+	...($kanbanData.completedTasks || []).map((t) => ({ ...t, status: "completed" as const })),
 ]);
 
 function taskSortKey(task: Task): number {
@@ -90,7 +93,11 @@ function taskSortKey(task: Task): number {
 	return 2;
 }
 
-const sortedActiveTasks = $derived([...activeTasks].sort((a, b) => taskSortKey(a) - taskSortKey(b)));
+// Group by parent, filter out completed parents, then sort
+const groupedActiveTasks = $derived.by(() => {
+	const groups = groupTasksByParent(allTasks);
+	return groups.filter((g) => g.task.status !== "completed").sort((a, b) => taskSortKey(a.task) - taskSortKey(b.task));
+});
 
 const cwMap = $derived(new Map($coworkers.map((cw) => [cw.name, cw])));
 
@@ -183,10 +190,11 @@ function handleAttentionClick(item: NeedsAttentionItem) {
   {/if}
 
   <!-- ── Active tasks ─────────────────────────────────────────────────── -->
-  {#if sortedActiveTasks.length > 0}
-    {#each sortedActiveTasks as task (task.id)}
+  {#if groupedActiveTasks.length > 0}
+    {#each groupedActiveTasks as { task, children } (task.id)}
       {@const cw = task.owner ? cwMap.get(task.owner) ?? null : null}
       {@const reviewInfo = reviewerByTaskId.get(String(task.id))}
+      {@const childReviewer = !reviewInfo?.reviewer ? children.find((c) => /review/i.test(c.subject))?.owner : undefined}
       {@const channelLabel = getChannelLabel(task)}
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -197,7 +205,8 @@ function handleAttentionClick(item: NeedsAttentionItem) {
         <TaskRow
           {task}
           {cw}
-          reviewer={reviewInfo?.reviewer ?? null}
+          {children}
+          reviewer={reviewInfo?.reviewer ?? childReviewer}
           reviewPosted={reviewInfo?.reviewPosted ?? false}
           variant="row"
           onclick={() => handleTaskClick(task)}

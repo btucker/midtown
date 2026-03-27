@@ -29,14 +29,14 @@ const rolledUpStatus = $derived.by(() => {
 	if (isCard || children.length === 0) return task.status;
 	const all = [task, ...children];
 	if (all.some((t) => t.status === "in_progress")) return "in_progress";
-	if (all.every((t) => t.status === "done")) return "done";
+	if (all.every((t) => t.status === "completed")) return "completed";
 	return task.status;
 });
 const isActive = $derived(rolledUpStatus === "in_progress");
 const isBlocked = $derived(task.blocked_by?.length > 0);
 
 // Card-only: auto-derive coworker/reviewer from stores
-const cwMap = $derived(isCard ? new Map($coworkers.map((c) => [c.name, c])) : null);
+const cwMap = $derived(isCard || children.length > 0 ? new Map($coworkers.map((c) => [c.name, c])) : null);
 const relatedPr = $derived(isCard ? $kanbanData.review.find((pr) => String(pr.task_id) === String(task.id)) : null);
 const effectiveCw = $derived(isCard ? (task.owner ? (cwMap?.get(task.owner) ?? null) : null) : cw);
 const effectiveReviewer = $derived(isCard ? (relatedPr?.reviewer ?? null) : reviewer);
@@ -51,7 +51,7 @@ const prUrl = $derived(
 const descriptionHtml = $derived(isCard && task.description ? renderContent(task.description) : "");
 
 function statusBarColor(status, owner, colorOverride) {
-	if (status === "done") return "hsl(var(--accent-green, 145 40% 38%))";
+	if (status === "completed") return "hsl(var(--accent-green, 145 40% 38%))";
 	if (status !== "in_progress") return "hsl(var(--muted-foreground) / 0.3)";
 	if (colorOverride) return colorOverride;
 	if (owner) return getSenderColor(owner);
@@ -70,6 +70,24 @@ function lifecycleSegments(cwProgress, reviewer, reviewPosted, ownerColor, revie
 		segments.push({ width: 20, color: reviewerColor });
 	}
 	return segments;
+}
+
+function childSegments(children, cwMap) {
+	const sliceWidth = 100 / children.length;
+	return children.map((child) => {
+		const childCw = child.owner ? cwMap?.get(child.owner) : null;
+		const color =
+			child.color || childCw?.color || (child.owner ? getSenderColor(child.owner) : "hsl(var(--muted-foreground))");
+		let fill = 0;
+		if (child.status === "completed") {
+			fill = 1;
+		} else if (child.status === "in_progress") {
+			fill = childCw?.progress != null ? childCw.progress / 100 : 0.5;
+		} else {
+			fill = 0;
+		}
+		return { width: sliceWidth * fill, maxWidth: sliceWidth, color };
+	});
 }
 
 function handleDescriptionClick(e) {
@@ -104,10 +122,10 @@ function handleDescriptionClick(e) {
   <div class="flex-1 min-w-0 flex flex-col gap-[3px]">
     {#if isCard}
       <span class="shrink-0 font-semibold text-[0.65rem] {isActive ? 'opacity-80' : 'opacity-60'}">!{task.id}</span>
-      <span>{#if task.status === 'done'}<span class="text-[hsl(var(--accent-green))]">✓ </span>{/if}{task.subject}</span>
+      <span>{#if task.status === 'completed'}<span class="text-[hsl(var(--accent-green))]">✓ </span>{/if}{task.subject}</span>
     {:else}
       <div class="flex items-center gap-1">
-        <span class="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{#if rolledUpStatus === 'done'}<span class="text-[hsl(var(--accent-green))]">✓ </span>{/if}{task.subject}</span>
+        <span class="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{#if rolledUpStatus === 'completed'}<span class="text-[hsl(var(--accent-green))]">✓ </span>{/if}{task.subject}</span>
         {#if isBlocked}
           <span class="shrink-0 text-[0.62rem] text-[hsl(var(--status-amber))] opacity-85" title="Blocked by !{task.blocked_by[0]}">⧗ !{task.blocked_by[0]}</span>
         {/if}
@@ -116,16 +134,36 @@ function handleDescriptionClick(e) {
         {/if}
       </div>
     {/if}
-    {#if isActive && task.owner}
-      {@const progress = effectiveCw?.progress ?? 0}
-      {@const color = ownerColor || getSenderColor(task.owner)}
-      <div class="h-[3px] rounded-full overflow-hidden mt-1" style="background: {color}; opacity: 0.15;">
-        {#if progress > 0}
-          <div
-            class="h-full rounded-full transition-[width] duration-500 ease-in-out"
-            style="width: {progress}%; background: {color}; opacity: 1;"
-          ></div>
-        {/if}
+    {#if !isCard && children.length > 0}
+      {@const segments = childSegments(children, cwMap)}
+      {@const doneCount = children.filter((c) => c.status === "completed").length}
+      <div class="flex items-center gap-1.5 pr-0.5">
+        <div class="flex-1 h-[3px] bg-sidebar-accent rounded-sm overflow-hidden flex">
+          {#each segments as seg}
+            <div
+              class="h-full transition-[width] duration-500 ease-in-out"
+              style="width: {seg.width}%; max-width: {seg.maxWidth}%; background: {seg.color}"
+            ></div>
+            {#if seg.maxWidth > seg.width}
+              <div style="width: {seg.maxWidth - seg.width}%"></div>
+            {/if}
+          {/each}
+        </div>
+        <span class="shrink-0 text-[0.6rem] text-[hsl(var(--accent-teal))] tabular-nums">{doneCount}/{children.length}</span>
+      </div>
+    {:else if isActive && (hasProgress || effectiveReviewer) && task.owner}
+      {@const segments = lifecycleSegments(effectiveCw?.progress ?? 0, effectiveReviewer, effectiveReviewPosted, ownerColor || getSenderColor(task.owner), effectiveReviewer ? getSenderColor(effectiveReviewer) : null)}
+      {@const totalPct = Math.round(segments.reduce((sum, s) => sum + s.width, 0))}
+      <div class="flex items-center gap-1.5 pr-0.5">
+        <div class="flex-1 h-[3px] bg-sidebar-accent rounded-sm overflow-hidden flex">
+          {#each segments as seg}
+            <div
+              class="h-full transition-[width] duration-500 ease-in-out"
+              style="width: {seg.width}%; background: {seg.color}"
+            ></div>
+          {/each}
+        </div>
+        <span class="shrink-0 text-[0.6rem] text-[hsl(var(--accent-teal))] tabular-nums">{totalPct}%</span>
       </div>
     {/if}
 
