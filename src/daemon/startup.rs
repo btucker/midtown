@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::process::check_cmd_output;
+use crate::process::{check_cmd_output, parse_json_warn};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -192,19 +192,11 @@ pub fn check_claude_auth_status(repo_name: &str) {
         }
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
     // Parse JSON output: {"loggedIn": true/false, "email": "..."}
-    let json: serde_json::Value = match serde_json::from_str(stdout.trim()) {
-        Ok(v) => v,
-        Err(e) => {
-            warn!(
-                "Failed to parse `claude auth status` output: {}. Raw: {}",
-                e,
-                stdout.trim()
-            );
-            return;
-        }
+    let Some(json) =
+        parse_json_warn::<serde_json::Value>(&output.stdout, "parse `claude auth status` output")
+    else {
+        return;
     };
 
     let logged_in = json.bool_or("loggedIn", false);

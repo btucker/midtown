@@ -7,7 +7,7 @@
 //! Also detects and cleans up orphaned `gh webhook forward` processes from
 //! previous daemon runs that weren't properly shut down.
 
-use crate::process::check_cmd_output;
+use crate::process::{check_cmd_output, cmd_stdout, is_pid_alive, parse_json_warn};
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
@@ -140,20 +140,18 @@ pub(super) async fn webhook_forwarder_watchdog(
 
 /// Get the GitHub repo name (owner/repo) from the current directory.
 fn get_github_repo_name() -> Option<String> {
-    std::process::Command::new("gh")
-        .args([
-            "repo",
-            "view",
-            "--json",
-            "nameWithOwner",
-            "-q",
-            ".nameWithOwner",
-        ])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
+    cmd_stdout(
+        std::process::Command::new("gh")
+            .args([
+                "repo",
+                "view",
+                "--json",
+                "nameWithOwner",
+                "-q",
+                ".nameWithOwner",
+            ])
+            .output(),
+    )
 }
 
 /// Ensure the gh-webhook extension is installed.
@@ -212,13 +210,10 @@ fn delete_stale_github_webhooks(repo: &str) -> bool {
         return false;
     };
 
-    let body = String::from_utf8_lossy(&output.stdout);
-    let hooks: Vec<serde_json::Value> = match serde_json::from_str(&body) {
-        Ok(v) => v,
-        Err(e) => {
-            warn!("Failed to parse webhooks response: {}", e);
-            return false;
-        }
+    let Some(hooks) =
+        parse_json_warn::<Vec<serde_json::Value>>(&output.stdout, "parse webhooks response")
+    else {
+        return false;
     };
 
     let mut deleted = false;
@@ -285,7 +280,7 @@ fn cleanup_orphaned_webhook_forwarders(repo: &str) {
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         // Check if still running and force kill if needed
-        if is_process_running(pid) {
+        if is_pid_alive(pid) {
             debug!("Process {} still running, sending SIGKILL", pid);
             let _ = std::process::Command::new("kill")
                 .args(["-9", &pid.to_string()])
@@ -346,14 +341,4 @@ fn find_gh_webhook_forward_pids_via_ps(repo: &str) -> Vec<u32> {
             line.split_whitespace().nth(1)?.parse::<u32>().ok()
         })
         .collect()
-}
-
-/// Check if a process is still running.
-fn is_process_running(pid: u32) -> bool {
-    // kill -0 checks if process exists without sending a signal
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
 }

@@ -706,21 +706,20 @@ impl DaemonState {
         }
 
         // Slow path: fetch from GitHub API and cache
-        let full_name = std::process::Command::new("gh")
-            .current_dir(repo_path)
-            .args([
-                "repo",
-                "view",
-                "--json",
-                "nameWithOwner",
-                "--jq",
-                ".nameWithOwner",
-            ])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default();
+        let full_name = crate::process::cmd_stdout(
+            std::process::Command::new("gh")
+                .current_dir(repo_path)
+                .args([
+                    "repo",
+                    "view",
+                    "--json",
+                    "nameWithOwner",
+                    "--jq",
+                    ".nameWithOwner",
+                ])
+                .output(),
+        )
+        .unwrap_or_default();
 
         let mut cache = self.repo_name_cache.write().unwrap();
         cache.insert(repo_path.to_path_buf(), full_name.clone());

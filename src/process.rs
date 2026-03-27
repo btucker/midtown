@@ -46,6 +46,59 @@ pub fn check_cmd_output(
     }
 }
 
+/// Check command output, returning `Result<Output, String>` for callers that
+/// propagate errors instead of logging them.
+///
+/// Like [`check_cmd_output`] but returns `Err(message)` instead of logging:
+/// - Spawn/IO error → `Err(error.to_string())`
+/// - Non-zero exit → `Err(trimmed stderr)`
+///
+/// Useful for `gh api` wrappers and RPC handlers where the caller decides how
+/// to handle failures.
+pub fn check_cmd_result(
+    output: std::io::Result<std::process::Output>,
+) -> Result<std::process::Output, String> {
+    match output {
+        Ok(out) if out.status.success() => Ok(out),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            Err(stderr.trim().to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Extract trimmed stdout from a successful command, discarding errors silently.
+///
+/// Equivalent to `.ok().filter(|o| o.status.success()).map(|o| lossy_stdout)`.
+/// Returns `None` on spawn error, non-zero exit, or empty output.
+pub fn cmd_stdout(output: std::io::Result<std::process::Output>) -> Option<String> {
+    let out = output.ok().filter(|o| o.status.success())?;
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// Parse JSON from command stdout, logging a warning on failure.
+///
+/// Converts stdout bytes to a lossy UTF-8 string, trims whitespace, and
+/// deserializes via `serde_json`. On parse error, logs the error and a
+/// truncated preview of the raw output for debugging.
+pub fn parse_json_warn<T: serde::de::DeserializeOwned>(stdout: &[u8], context: &str) -> Option<T> {
+    let raw = String::from_utf8_lossy(stdout);
+    match serde_json::from_str::<T>(raw.trim()) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            let preview = if raw.len() > 200 {
+                format!("{}...", &raw[..200])
+            } else {
+                raw.to_string()
+            };
+            warn!("Failed to {}: {}. Raw: {}", context, e, preview.trim());
+            None
+        }
+    }
+}
+
 /// Check if a process is still alive.
 pub fn is_pid_alive(pid: u32) -> bool {
     Command::new("kill")
