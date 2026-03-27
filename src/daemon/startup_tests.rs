@@ -969,3 +969,38 @@ async fn test_clear_stale_running_sessions_skips_already_stopped() {
         "Already-stopped session should remain stopped"
     );
 }
+
+/// Regression test: a code-author session named after the repo (e.g., "midtown")
+/// should NOT be recovered as the project lead. It should be treated as a regular
+/// coworker with its task context preserved.
+#[tokio::test]
+async fn test_recover_worker_named_same_as_repo_not_treated_as_lead() {
+    let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
+    {
+        let mut state = persistent_state.lock().await;
+        // A code-author worker that happens to be named "test-repo" (same as the repo)
+        let mut record = test_session_record("sess-worker", "test-repo", "midtown-code-author");
+        record.task_id = Some("2576".to_string());
+        record.channel = Some("test-repo".to_string());
+        state.sessions.insert("sess-worker".to_string(), record);
+    }
+
+    let (effects, recovered_ids) =
+        recover_from_session_records(&persistent_state, "test-repo").await;
+
+    assert_eq!(effects.len(), 1);
+    assert!(recovered_ids.contains("sess-worker"));
+    match &effects[0] {
+        Effect::ResumeCoworker { name, config, .. } => {
+            assert_eq!(name, "test-repo");
+            // The key assertion: it should have the task context, NOT be a lead
+            assert_eq!(config.agent_type, "midtown-code-author");
+            assert!(
+                config.task_id.as_deref() == Some("2576"),
+                "Should preserve task_id, got {:?}",
+                config.task_id
+            );
+        }
+        other => panic!("Expected ResumeCoworker, got {:?}", other),
+    }
+}
