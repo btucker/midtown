@@ -19,9 +19,7 @@ import {
 	activeProject,
 	channels,
 	messagesByChannel,
-	openThreads,
 	threadData,
-	threadUnreadCounts,
 	trackedThreads,
 	userSenderName,
 } from "./store.ts";
@@ -877,8 +875,6 @@ describe("handleUpdate — auto-track threads when someone replies to user messa
 
 	beforeEach(() => {
 		trackedThreads.set({});
-		openThreads.set({});
-		threadUnreadCounts.set({});
 		threadData.set(null);
 		userSenderName.set("user");
 		messagesByChannel.set({
@@ -940,7 +936,8 @@ describe("handleUpdate — auto-track threads when someone replies to user messa
 		expect(tracked[parentId].replyCount).toBe(2);
 	});
 
-	it("increments unread count on the first auto-tracked reply", () => {
+	it("tracks thread with recent lastActivity on auto-tracked reply", () => {
+		const before = new Date().toISOString();
 		handleUpdate({
 			type: "channel_message",
 			data: {
@@ -953,8 +950,9 @@ describe("handleUpdate — auto-track threads when someone replies to user messa
 			},
 		});
 
-		const unreads = get(threadUnreadCounts);
-		expect(unreads[parentId]).toBe(1);
+		const tracked = get(trackedThreads);
+		expect(tracked[parentId]).toBeDefined();
+		expect(tracked[parentId].lastActivity >= before).toBe(true);
 	});
 
 	it("does not auto-track when the parent message is not from the user", () => {
@@ -993,8 +991,7 @@ describe("handleUpdate — auto-track threads when someone replies to user messa
 		expect(tracked[parentId]).toBeUndefined();
 	});
 
-	it("reopens thread in openThreads when a new message arrives for a tracked thread not in openThreads", () => {
-		// Pre-track the thread so the reopen logic can find it
+	it("updates lastActivity on existing tracked thread when new reply arrives", () => {
 		trackedThreads.set({
 			[parentId]: {
 				channelName: "web",
@@ -1003,9 +1000,8 @@ describe("handleUpdate — auto-track threads when someone replies to user messa
 				replyCount: 0,
 			},
 		});
-		// openThreads has an entry for "web" but does NOT include parentId
-		openThreads.set({ web: new Set() });
 
+		const before = new Date().toISOString();
 		handleUpdate({
 			type: "channel_message",
 			data: {
@@ -1018,8 +1014,9 @@ describe("handleUpdate — auto-track threads when someone replies to user messa
 			},
 		});
 
-		const ot = get(openThreads);
-		expect(ot.web?.has(parentId)).toBe(true);
+		const tracked = get(trackedThreads);
+		expect(tracked[parentId].lastActivity >= before).toBe(true);
+		expect(tracked[parentId].replyCount).toBe(1);
 	});
 
 	it("auto-tracks when parent from matches userSenderName (custom display name)", () => {
