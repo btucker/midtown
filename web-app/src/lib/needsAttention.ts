@@ -99,12 +99,14 @@ export function computeAttentionItems(opts: {
 		}
 	}
 
-	// 2. Completed tasks
+	// 2. Completed tasks — only show if the owning coworker is still known
+	// (filters out old historical completions)
 	for (const task of opts.tasks) {
 		if (task.status !== "completed") continue;
 		const id = `task:${task.id}`;
 
 		const cw = opts.coworkers.find((c) => c.name === task.owner);
+		if (!cw) continue; // No active coworker = old task, skip
 		const channel = task.channel || opts.mainChannel;
 
 		items.push({

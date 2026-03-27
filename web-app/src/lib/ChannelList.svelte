@@ -4,7 +4,16 @@ import GripVertical from "@lucide/svelte/icons/grip-vertical";
 import { type DndEvent, dndzone } from "svelte-dnd-action";
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
 import ActivityFeed from "./ActivityFeed.svelte";
-import { closeThread, fetchChannels, fetchHistory, getApiBase, markRead, openThread, pushNavState } from "./api.ts";
+import {
+	closeThread,
+	fetchChannels,
+	fetchHistory,
+	getApiBase,
+	markRead,
+	openTaskThread,
+	openThread,
+	pushNavState,
+} from "./api.ts";
 import { computeVisibleDmChannels, getDisplayableDmChannels } from "./channelUtils.ts";
 import {
 	activeChannel,
@@ -134,6 +143,16 @@ function handleActivityItemClick(item: { threadId?: string; taskId?: number; cha
 		const msg = parentMsg || { id: item.threadId ?? "", from: "", content: "", timestamp: "" };
 		openThread(msg, item.channel);
 		sidebar.setOpenMobile(false);
+	} else if (item.taskId) {
+		// Find the task and open its thread
+		const allTasks = [...$kanbanData.inProgress, ...$kanbanData.backlog, ...($kanbanData.completedTasks || [])];
+		const task = allTasks.find((t) => t.id === item.taskId);
+		if (task) {
+			openTaskThread(task, item.channel);
+			sidebar.setOpenMobile(false);
+		} else {
+			selectChannel(item.channel);
+		}
 	} else {
 		selectChannel(item.channel);
 	}

@@ -115,6 +115,7 @@ describe("computeAttentionItems", () => {
 	it("returns completed tasks with status 'completed' (not 'done')", () => {
 		const items = computeAttentionItems({
 			...baseOpts,
+			coworkers: [{ name: "ghost-town" }],
 			tasks: [
 				{ id: 1, subject: "Fix bug", status: "completed", owner: "ghost-town", channel: "web" },
 				{ id: 2, subject: "Pending task", status: "pending", owner: "ghost-town" },
@@ -252,6 +253,7 @@ describe("computeAttentionItems", () => {
 		const threadId = "msg-789";
 		const items = computeAttentionItems({
 			...baseOpts,
+			coworkers: [{ name: "ghost-town" }],
 			tasks: [{ id: 1, subject: "Old completed", status: "completed", owner: "ghost-town" }],
 			trackedThreads: {
 				[threadId]: {
