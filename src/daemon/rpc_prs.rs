@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, error, info, warn};
 
+use crate::json_ext::ValueExt;
 use crate::rpc::{RequestId, Response, RpcError};
 
 use super::DaemonState;
@@ -274,13 +275,9 @@ fn fetch_prs_all(
             nodes
                 .iter()
                 .filter_map(|pr| {
-                    let number = pr.get("number").and_then(|v| v.as_u64())?;
+                    let number = pr.u64_field("number")?;
 
-                    let title = pr
-                        .get("title")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                    let title = pr.str_or("title", "").to_string();
 
                     let github_author = pr
                         .pointer("/author/login")
@@ -288,15 +285,14 @@ fn fetch_prs_all(
                         .unwrap_or("unknown")
                         .to_string();
 
-                    let body = pr.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                    let body = pr.str_or("body", "");
                     let author = extract_coworker_from_pr_body(body).unwrap_or(github_author);
 
-                    let created_at = pr.get("createdAt").and_then(|v| v.as_str()).unwrap_or("");
+                    let created_at = pr.str_or("createdAt", "");
 
                     // Check for merge conflicts
                     let has_conflicts = pr
-                        .get("mergeable")
-                        .and_then(|v| v.as_str())
+                        .str_field("mergeable")
                         .map(|s| s == "CONFLICTING")
                         .unwrap_or(false);
 
@@ -367,17 +363,9 @@ fn parse_merged_prs(
             nodes
                 .iter()
                 .filter_map(|pr| {
-                    let number = pr.get("number").and_then(|v| v.as_u64())?;
-                    let title = pr
-                        .get("title")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let merged_at = pr
-                        .get("mergedAt")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                    let number = pr.u64_field("number")?;
+                    let title = pr.str_or("title", "").to_string();
+                    let merged_at = pr.str_or("mergedAt", "").to_string();
                     Some(serde_json::json!({
                         "number": number,
                         "title": title,
@@ -433,17 +421,14 @@ fn extract_reviewer_from_pr_comments(
     comments: &[serde_json::Value],
 ) -> (Option<String>, Option<String>) {
     for comment in comments {
-        let body = comment.get("body").and_then(|v| v.as_str()).unwrap_or("");
+        let body = comment.str_or("body", "");
 
         // Check new structured frontmatter first
         if let Some(fm) = super::helpers::parse_frontmatter(body)
             && fm.is_review()
             && let Some(id) = fm.session_id.or(fm.task_id)
         {
-            let created_at = comment
-                .get("createdAt")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let created_at = comment.str_field("createdAt").map(|s| s.to_string());
             return (Some(id), created_at);
         }
 
@@ -469,10 +454,7 @@ fn extract_reviewer_from_pr_comments(
         });
 
         if let Some(name) = reviewer {
-            let created_at = comment
-                .get("createdAt")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let created_at = comment.str_field("createdAt").map(|s| s.to_string());
             return (Some(name), created_at);
         }
     }
@@ -490,9 +472,9 @@ fn pr_ci_status(checks: &[serde_json::Value]) -> &'static str {
     let mut has_passed = false;
 
     for check in checks {
-        let status = check.get("status").and_then(|v| v.as_str());
-        let conclusion = check.get("conclusion").and_then(|v| v.as_str());
-        let state = check.get("state").and_then(|v| v.as_str());
+        let status = check.str_field("status");
+        let conclusion = check.str_field("conclusion");
+        let state = check.str_field("state");
 
         if let Some(status) = status {
             match status {

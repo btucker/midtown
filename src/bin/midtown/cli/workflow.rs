@@ -1,5 +1,7 @@
 use clap::Subcommand;
 
+use midtown::json_ext::ValueExt;
+
 use super::Response;
 use crate::client::DaemonClient;
 
@@ -55,14 +57,9 @@ pub fn handle(cmd: &WorkflowCommand, client: &DaemonClient) -> Result<Response, 
 fn handle_list(client: &DaemonClient) -> Result<Response, String> {
     let result = client.workflow_list_raw()?;
 
-    let workflows = result
-        .get("workflows")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
+    let workflows = result.array_field("workflows").cloned().unwrap_or_default();
     let assignments = result
-        .get("assignments")
-        .and_then(|v| v.as_object())
+        .object_field("assignments")
         .cloned()
         .unwrap_or_default();
 
@@ -75,11 +72,8 @@ fn handle_list(client: &DaemonClient) -> Result<Response, String> {
     if !workflows.is_empty() {
         out.push_str("Available Workflows\n─────────────────────────────\n");
         for wf in &workflows {
-            let name = wf.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-            let has_agents = wf
-                .get("has_agents_md")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let name = wf.str_or("name", "?");
+            let has_agents = wf.bool_or("has_agents_md", false);
             let agents_indicator = if has_agents { " (has AGENTS.md)" } else { "" };
             out.push_str(&format!("  {}{}\n", name, agents_indicator));
         }
@@ -135,8 +129,7 @@ fn handle_include(task_id: &str, client: &DaemonClient) -> Result<Response, Stri
 fn resolve_task_channel(task_id: &str, client: &DaemonClient) -> Result<String, String> {
     let metadata = client.task_metadata(task_id)?;
     metadata
-        .get("channel")
-        .and_then(|v| v.as_str())
+        .str_field("channel")
         .map(|s| s.to_string())
         .ok_or_else(|| {
             format!(

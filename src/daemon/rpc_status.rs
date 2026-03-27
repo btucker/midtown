@@ -7,6 +7,7 @@ use tracing::error;
 
 use super::DaemonState;
 use super::helpers::*;
+use crate::json_ext::ValueExt;
 use crate::rpc::{RequestId, Response, RpcError};
 
 // ============================================================================
@@ -388,10 +389,7 @@ fn tag_channel_leads_and_count(
     let active_count = coworkers
         .iter()
         .filter(|cw| {
-            !cw.get("is_channel_lead")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-                && cw.get("status").and_then(|v| v.as_str()) == Some("running")
+            !cw.bool_or("is_channel_lead", false) && cw.str_field("status") == Some("running")
         })
         .count();
     (coworkers, active_count)

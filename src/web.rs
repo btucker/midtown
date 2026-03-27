@@ -23,6 +23,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::channel::Channel;
 use crate::coworker::CoworkerManager;
+use crate::json_ext::ValueExt;
 use crate::message::Message;
 use crate::push::PushManager;
 use crate::task_store::extract_task_id_from_pr_title;
@@ -1005,10 +1006,10 @@ fn fetch_repo_status(default_branch: &str) -> RepoStatus {
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            if let Some(sha) = data.get("sha").and_then(|v| v.as_str()) {
+            if let Some(sha) = data.str_field("sha") {
                 status.commit_hash = sha.to_string();
             }
-            if let Some(date_str) = data.get("date").and_then(|v| v.as_str()) {
+            if let Some(date_str) = data.str_field("date") {
                 status.commit_time = Some(date_str.to_string());
             }
         }
@@ -1031,8 +1032,8 @@ fn fetch_repo_status(default_branch: &str) -> RepoStatus {
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            let run_status = data.get("status").and_then(|v| v.as_str()).unwrap_or("");
-            let conclusion = data.get("conclusion").and_then(|v| v.as_str());
+            let run_status = data.str_or("status", "");
+            let conclusion = data.str_field("conclusion");
 
             status.ci_status = Some(match (run_status, conclusion) {
                 ("completed", Some("success")) => CiStatus::Passed,
@@ -1057,10 +1058,10 @@ fn fetch_repo_status(default_branch: &str) -> RepoStatus {
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            if let Some(tag) = data.get("tag").and_then(|v| v.as_str()) {
+            if let Some(tag) = data.str_field("tag") {
                 status.release_tag = Some(tag.to_string());
             }
-            if let Some(date_str) = data.get("published_at").and_then(|v| v.as_str()) {
+            if let Some(date_str) = data.str_field("published_at") {
                 status.release_time = Some(date_str.to_string());
             }
         }
@@ -1117,9 +1118,9 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
     let task_map: std::collections::HashMap<u64, String> = tasks
         .iter()
         .filter_map(|t| {
-            let id_str = t.get("id").and_then(|i| i.as_str())?;
+            let id_str = t.str_field("id")?;
             let id = id_str.parse::<u64>().ok()?;
-            let subject = t.get("subject").and_then(|s| s.as_str())?;
+            let subject = t.str_field("subject")?;
             Some((id, subject.to_string()))
         })
         .collect();
@@ -1186,22 +1187,20 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
     let pull_requests: Vec<serde_json::Value> = pull_requests
         .into_iter()
         .map(|pr| {
-            let pr_number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+            let pr_number = pr.u64_field("number").unwrap_or(0);
             // RPC returns "ci_status" / "reviewer" / "reviewed_at"; gh CLI returns
             // "isDraft" / "reviewDecision". Handle both shapes.
             // Look up reviewer from active spans (covers both RPC and CLI shapes)
             let span = persistent_state.active_reviewer_for_pr(pr_number);
             let reviewer = pr
-                .get("reviewer")
-                .and_then(|v| v.as_str())
+                .str_field("reviewer")
                 .map(|s| s.to_string())
                 .or_else(|| span.map(|s| s.name.clone()));
             let reviewer_assigned_at = span.map(|s| s.created_at.to_rfc3339());
             // Prefer review_posted from RPC response (computed from actual PR comments),
             // fall back to persistent local state for the CLI path
             let review_posted = pr
-                .get("review_posted")
-                .and_then(|v| v.as_bool())
+                .bool_field("review_posted")
                 .unwrap_or_else(|| persistent_state.github.reviewed_prs.contains(&pr_number));
             let status = if pr.get("ci_status").is_some() {
                 // RPC shape: derive review status from review_posted and reviewer
@@ -1214,15 +1213,11 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 }
             } else {
                 // gh CLI shape: use isDraft and reviewDecision fields
-                let is_draft = pr.get("isDraft").and_then(|d| d.as_bool()).unwrap_or(false);
+                let is_draft = pr.bool_or("isDraft", false);
                 if is_draft {
                     "draft"
                 } else {
-                    match pr
-                        .get("reviewDecision")
-                        .and_then(|r| r.as_str())
-                        .unwrap_or("")
-                    {
+                    match pr.str_or("reviewDecision", "") {
                         "APPROVED" => "approved",
                         "CHANGES_REQUESTED" => "changes requested",
                         "REVIEW_REQUIRED" => "awaiting review",
@@ -1234,25 +1229,19 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             let author = pr
                 .get("author")
                 .and_then(|a| {
-                    a.as_str().map(|s| s.to_string()).or_else(|| {
-                        a.get("login")
-                            .and_then(|l| l.as_str())
-                            .map(|s| s.to_string())
-                    })
+                    a.as_str()
+                        .map(|s| s.to_string())
+                        .or_else(|| a.str_field("login").map(|s| s.to_string()))
                 })
                 .unwrap_or_else(|| "unknown".to_string());
             let created_at = pr
-                .get("createdAt")
-                .or_else(|| pr.get("created_at"))
-                .and_then(|c| c.as_str());
+                .str_field("createdAt")
+                .or_else(|| pr.str_field("created_at"));
             // Extract task ID from PR title and look up task name
-            let title = pr.get("title").and_then(|t| t.as_str()).unwrap_or("");
+            let title = pr.str_or("title", "");
             let task_id = extract_task_id_from_pr_title(title);
             let task_name = task_id.and_then(|id| task_map.get(&id).cloned());
-            let ci_status = pr
-                .get("ci_status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
+            let ci_status = pr.str_or("ci_status", "unknown");
             serde_json::json!({
                 "number": pr_number,
                 "title": title,
@@ -1280,13 +1269,10 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         let coworker_tasks: std::collections::HashMap<String, (Option<u32>, String)> = tasks
             .iter()
             .filter_map(|t| {
-                let status = t.get("status").and_then(|s| s.as_str()).unwrap_or("");
-                let owner = t.get("owner").and_then(|o| o.as_str()).unwrap_or("");
-                let subject = t.get("subject").and_then(|s| s.as_str()).unwrap_or("");
-                let task_id = t
-                    .get("id")
-                    .and_then(|id| id.as_str())
-                    .and_then(|s| s.parse::<u32>().ok());
+                let status = t.str_or("status", "");
+                let owner = t.str_or("owner", "");
+                let subject = t.str_or("subject", "");
+                let task_id = t.str_field("id").and_then(|s| s.parse::<u32>().ok());
                 if status == "in_progress" && !owner.is_empty() {
                     Some((owner.to_lowercase(), (task_id, subject.to_string())))
                 } else {
@@ -1331,33 +1317,31 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                         }
 
                         // Look up current task from task storage (case-insensitive)
-                        let (internal_task_id, pr_number) = if let Some((tid, _)) =
-                            coworker_tasks.get(&cw.name.to_lowercase())
-                        {
-                            // Has a task — try to find associated PR number
-                            let pr_num = tid.and_then(|id| {
-                                pull_requests
-                                    .iter()
-                                    .find(|pr| {
-                                        pr.get("task_id").and_then(|v| v.as_u64()).map(|v| v as u32)
-                                            == Some(id)
-                                    })
-                                    .and_then(|pr| pr.get("number").and_then(|n| n.as_u64()))
-                            });
-                            (*tid, pr_num)
-                        } else if let Some(assignment) =
-                            persistent_state.worktree_registry.get_by_coworker(&cw.name)
-                        {
-                            // No task in storage, but has a worktree (reviewing or PR handoff)
-                            // Parse task_id from String to u32
-                            let task_id_u32 = assignment
-                                .task_id
-                                .as_ref()
-                                .and_then(|s| s.parse::<u32>().ok());
-                            (task_id_u32, assignment.pr_number)
-                        } else {
-                            (None, None)
-                        };
+                        let (internal_task_id, pr_number) =
+                            if let Some((tid, _)) = coworker_tasks.get(&cw.name.to_lowercase()) {
+                                // Has a task — try to find associated PR number
+                                let pr_num = tid.and_then(|id| {
+                                    pull_requests
+                                        .iter()
+                                        .find(|pr| {
+                                            pr.u64_field("task_id").map(|v| v as u32) == Some(id)
+                                        })
+                                        .and_then(|pr| pr.u64_field("number"))
+                                });
+                                (*tid, pr_num)
+                            } else if let Some(assignment) =
+                                persistent_state.worktree_registry.get_by_coworker(&cw.name)
+                            {
+                                // No task in storage, but has a worktree (reviewing or PR handoff)
+                                // Parse task_id from String to u32
+                                let task_id_u32 = assignment
+                                    .task_id
+                                    .as_ref()
+                                    .and_then(|s| s.parse::<u32>().ok());
+                                (task_id_u32, assignment.pr_number)
+                            } else {
+                                (None, None)
+                            };
 
                         // For display: prefer source task ID (from PR title) over internal task ID
                         // This ensures reviewers show the meaningful task ID, not their ephemeral one
@@ -2649,7 +2633,7 @@ async fn api_channel_settings_set(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let show_full_lead_output = body.get("show_full_lead_output").and_then(|v| v.as_bool());
+    let show_full_lead_output = body.bool_field("show_full_lead_output");
 
     if show_full_lead_output.is_none() {
         return Ok(Json(serde_json::json!({ "ok": true })));

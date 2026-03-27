@@ -6,6 +6,7 @@
 
 use super::effects::Effect;
 use crate::headless::StreamEvent;
+use crate::json_ext::ValueExt;
 use crate::message::ToolBlock;
 use std::collections::{HashMap, HashSet};
 
@@ -47,14 +48,13 @@ pub fn extract_assistant_text(events: &[StreamEvent]) -> String {
                 continue;
             }
 
-            let is_codex = extra.get("provider").and_then(|v| v.as_str()) == Some("codex");
+            let is_codex = extra.str_field("provider") == Some("codex");
             if !is_codex {
                 aggregated.push_str(&text);
                 continue;
             }
 
-            let is_completed =
-                extra.get("event").and_then(|v| v.as_str()) == Some("item/completed");
+            let is_completed = extra.str_field("event") == Some("item/completed");
             if is_completed {
                 // Codex emits per-delta assistant chunks and then a full completed
                 // assistant message. For channel posting, emit completed text only
@@ -83,7 +83,7 @@ pub fn extract_assistant_text(events: &[StreamEvent]) -> String {
                 ..
             } = event
             {
-                let is_codex = extra.get("provider").and_then(|v| v.as_str()) == Some("codex");
+                let is_codex = extra.str_field("provider") == Some("codex");
                 if is_codex && !text.is_empty() {
                     aggregated.push_str(text);
                 }
@@ -231,7 +231,7 @@ fn detect_provider(events: &[StreamEvent]) -> Option<String> {
     for event in events {
         if let StreamEvent::Assistant { extra, .. } = event {
             has_assistant = true;
-            if extra.get("provider").and_then(|v| v.as_str()) == Some("codex") {
+            if extra.str_field("provider") == Some("codex") {
                 return Some("codex".to_string());
             }
         }

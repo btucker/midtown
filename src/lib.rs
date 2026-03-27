@@ -119,6 +119,9 @@ pub mod push;
 // Randomized daemon event messages
 pub mod daemon_messages;
 
+// Extension trait for ergonomic JSON field access
+pub mod json_ext;
+
 // Headless Claude Code executor (JSON streaming)
 pub mod headless;
 

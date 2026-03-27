@@ -12,6 +12,8 @@ use std::collections::{HashMap, HashSet};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
+use crate::json_ext::ValueExt;
+
 /// Kill a stale daemon process that lost its PID lock but didn't exit.
 ///
 /// Called after successfully acquiring the PID lock. Since we hold the exclusive
@@ -204,11 +206,8 @@ pub fn check_claude_auth_status(repo_name: &str) {
         }
     };
 
-    let logged_in = json
-        .get("loggedIn")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let email = json.get("email").and_then(|v| v.as_str()).map(String::from);
+    let logged_in = json.bool_or("loggedIn", false);
+    let email = json.str_field("email").map(String::from);
 
     if logged_in {
         if let Some(ref email) = email {
