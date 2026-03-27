@@ -1579,7 +1579,6 @@ impl DaemonState {
         {
             let mut ps = self.persistent_state.lock().await;
             let agent_type_str = config.agent_type.clone();
-            let is_reviewer = config.agent_type == "midtown-code-reviewer";
             // Look up bound thread from TaskStore — mirrors SpawnForTask path
             // in effects.rs so reviewers get thread-bound like dispatched dev tasks.
             let bound_thread_id = config
@@ -1602,7 +1601,7 @@ impl DaemonState {
                     agent_type: agent_type_str,
                     is_running: true,
                     created_at: chrono::Utc::now(),
-                    resume_on_startup: !is_reviewer,
+                    resume_on_startup: true,
                     last_active: chrono::Utc::now(),
                     purpose: config
                         .initial_prompt
@@ -2421,7 +2420,7 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
             };
             if let Some(record) = record {
                 record.is_running = true;
-                record.resume_on_startup = !record.is_reviewer();
+                record.resume_on_startup = true;
                 record.pid = info.pid;
                 record.last_active = info.last_active;
                 if let Some(ref wd) = info.working_dir {
