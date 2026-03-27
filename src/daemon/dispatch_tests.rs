@@ -940,3 +940,81 @@ fn reviewer_suffixed_name_is_rechecked_against_exclusions() {
         "Suffixed name should not be in exclusion set"
     );
 }
+
+/// Regression test (!2571-!2574): session cap counted ALL active sessions
+/// (leads, forks, project lead) not just coworkers, blocking all fresh
+/// dispatches when total sessions exceeded max_in_progress_tasks.
+///
+/// Scenario: 4 in-progress coworker tasks, 3 channel leads, 1 project lead
+/// = 8 active session names >= task_cap (8). This falsely triggered the
+/// session cap despite only 4 actual coworker tasks.
+#[test]
+fn session_cap_excludes_channel_leads() {
+    let review_task = Task {
+        id: "2571".to_string(),
+        subject: "Review PR #2215".to_string(),
+        agent_type: "midtown-code-reviewer".to_string(),
+        status: TaskStatus::Pending,
+        pr: Some(2215),
+        created_at: chrono::Utc::now() - chrono::Duration::seconds(120),
+        ..Default::default()
+    };
+
+    let in_progress_tasks: Vec<Task> = (1..=4)
+        .map(|i| Task {
+            id: format!("{}", 2566 + i),
+            subject: format!("DRY task {}", i),
+            agent_name: format!("worker-{}", i),
+            status: TaskStatus::InProgress,
+            ..Default::default()
+        })
+        .collect();
+
+    let mut ps = make_ps("test");
+    ps.tick_max_in_progress_tasks = 8;
+
+    // 4 coworker sessions + 3 leads + 1 project lead = 8 total active sessions
+    ps.tick_active_session_names = [
+        "worker-1",
+        "worker-2",
+        "worker-3",
+        "worker-4", // coworkers
+        "ops",
+        "code-quality",
+        "web",     // channel leads
+        "midtown", // project lead
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+
+    // Register channel leads so the dispatch knows to exclude them
+    ps.channel_lead_sessions
+        .insert("ops".to_string(), "sess-ops".to_string());
+    ps.channel_lead_sessions
+        .insert("code-quality".to_string(), "sess-cq".to_string());
+    ps.channel_lead_sessions
+        .insert("web".to_string(), "sess-web".to_string());
+
+    ps.tick_in_progress_tasks = in_progress_tasks
+        .iter()
+        .map(|t| (t.id.clone(), t.subject.clone(), t.agent_name.clone()))
+        .collect();
+
+    let mut all_tasks: Vec<Task> = in_progress_tasks;
+    all_tasks.push(review_task.clone());
+
+    let loop_state = DispatchLoopState {
+        pr_coworker_map: HashMap::new(),
+        task_coworker_map: HashMap::new(),
+        names_assigned_this_tick: HashSet::new(),
+        spawns_queued_this_tick: 0,
+    };
+
+    let result = select_coworker_name(&review_task, &ps, &all_tasks, &loop_state);
+    assert!(
+        result.is_some(),
+        "Review task should get a coworker name — 4 in-progress tasks is under the cap of 8, \
+         but session cap was falsely counting 8 total sessions (including leads)"
+    );
+}

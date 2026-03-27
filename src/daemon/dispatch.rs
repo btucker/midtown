@@ -1199,7 +1199,15 @@ fn select_coworker_name(
     // Hard cap: also check active session count as a safety net for spawn storms
     // when task state tracking has gaps (e.g., review tasks not yet in
     // pr_task_index). Only applied to fresh spawns, not grouped tasks. (!2511)
-    let session_count = ps.tick_active_session_names.len() + loop_state.spawns_queued_this_tick;
+    // Count only coworker sessions — exclude channel leads (ops, web, etc.)
+    // which share tick_active_session_names but don't consume coworker slots.
+    let lead_names = ps.channel_lead_names();
+    let coworker_session_count = ps
+        .tick_active_session_names
+        .iter()
+        .filter(|name| !lead_names.contains(name.as_str()))
+        .count();
+    let session_count = coworker_session_count + loop_state.spawns_queued_this_tick;
     let at_session_cap = session_count >= task_cap;
 
     let name = if let Some(name) = grouped_name {
