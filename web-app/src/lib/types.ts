@@ -209,6 +209,13 @@ export interface Project {
 	webhook_port: number;
 }
 
+// ── Read State ──────────────────────────────────────────────────────────────
+
+export interface ReadState {
+	threads: Record<string, string>; // thread_id → ISO last_read timestamp
+	channels: Record<string, string>; // channel_name → ISO last_read timestamp
+}
+
 // ── Search ───────────────────────────────────────────────────────────────────
 
 export interface SearchResult {
