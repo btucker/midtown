@@ -310,6 +310,7 @@ export function switchProject(projectName: string, webhookPort: number | null): 
 	if (lastProject !== projectName) {
 		trackedThreads.set({});
 		threadReadState.set({});
+		channelReadState.set({});
 	}
 	if (typeof localStorage !== "undefined") {
 		localStorage.setItem("midtown_thread_project", projectName);

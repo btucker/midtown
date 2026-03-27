@@ -1,4 +1,4 @@
-import { writable } from "svelte/store";
+import { get, writable } from "svelte/store";
 import type {
 	AuthProfile,
 	Channel,
@@ -245,6 +245,22 @@ export const progressTimestamps = writable<Record<string, number>>({});
 export const threadReadState = writable<Record<string, string>>({});
 export const channelReadState = writable<Record<string, string>>({});
 
-// Backwards compatibility — Channel.svelte and ThreadList.svelte still reference this.
-// Will be removed when those components are updated to use threadReadState.
+// Derived unread counts — Channel.svelte and ThreadList.svelte read this for badge display.
+// Computed from trackedThreads.lastActivity vs threadReadState timestamps.
 export const threadUnreadCounts = writable<Record<string, number>>({});
+
+function syncUnreadCounts() {
+	const tracked = get(trackedThreads);
+	const readState = get(threadReadState);
+	const counts: Record<string, number> = {};
+	for (const [id, t] of Object.entries(tracked)) {
+		const lastRead = readState[id];
+		if (!lastRead || new Date(lastRead) < new Date(t.lastActivity)) {
+			counts[id] = 1;
+		}
+	}
+	threadUnreadCounts.set(counts);
+}
+
+trackedThreads.subscribe(syncUnreadCounts);
+threadReadState.subscribe(syncUnreadCounts);
