@@ -1522,6 +1522,8 @@ struct StuckEvalContext<'a> {
     channel_workflows: HashMap<String, String>,
     /// Channels in lead-driven mode (skip stuck-condition nudges).
     lead_driven_channels: std::collections::HashSet<String>,
+    /// PR numbers that have a pending review task awaiting dispatch.
+    pending_review_prs: HashSet<u64>,
 }
 
 impl StuckEvalContext<'_> {
@@ -1611,11 +1613,19 @@ async fn collect_stuck_condition_effects(
                 })
                 .collect()
         };
-        let task_channel: HashMap<String, String> = state
-            .task_store
-            .load_all()
-            .into_iter()
-            .filter_map(|t| t.channel.map(|ch| (t.id, ch)))
+        let all_tasks = state.task_store.load_all();
+        let task_channel: HashMap<String, String> = all_tasks
+            .iter()
+            .filter_map(|t| t.channel.as_ref().map(|ch| (t.id.clone(), ch.clone())))
+            .collect();
+        let pending_review_prs: HashSet<u64> = all_tasks
+            .iter()
+            .filter(|t| {
+                t.pr.is_some()
+                    && t.subject.starts_with("Review PR #")
+                    && t.status == crate::task_store::TaskStatus::Pending
+            })
+            .filter_map(|t| t.pr)
             .collect();
         let channel_workflows = ps.channel_workflows.clone();
         let lead_driven_channels = ps.lead_driven_channels.clone();
@@ -1632,6 +1642,7 @@ async fn collect_stuck_condition_effects(
             task_channel,
             channel_workflows,
             lead_driven_channels,
+            pending_review_prs,
         }
     };
 
@@ -1805,6 +1816,8 @@ fn no_review_nudge_self_review(
         format_no_reviewer_reason(&busy, pr_author.as_deref())
     };
 
+    let has_pending_review = ctx.pending_review_prs.contains(&pf.number);
+
     if should_escalate(prior_nudges) {
         let context = if is_assigned && ctx.has_available_slots {
             "A reviewer was assigned but hasn't posted a review, and coworker slots are available. This looks like a daemon bug.".to_string()
@@ -1812,6 +1825,8 @@ fn no_review_nudge_self_review(
             "Coworker slots are available but no reviewer was assigned. This looks like a daemon bug.".to_string()
         } else if is_assigned {
             "A reviewer was assigned but hasn't posted a review.".to_string()
+        } else if has_pending_review {
+            "Review dispatch deferred: at task limit. A review task exists but cannot be assigned until a slot opens.".to_string()
         } else {
             format!("No reviewer could be assigned — {}", build_busy_reason())
         };
@@ -1825,6 +1840,8 @@ fn no_review_nudge_self_review(
     } else {
         let context = if is_assigned {
             "I assigned a reviewer but no review has been posted yet".to_string()
+        } else if has_pending_review {
+            "review dispatch deferred — at task limit, review task queued".to_string()
         } else {
             format!("I couldn't assign a reviewer — {}", build_busy_reason())
         };
