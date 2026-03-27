@@ -1414,3 +1414,108 @@ fn test_session_record_none_color_icon_omitted_in_json() {
         "None icon should be omitted from JSON"
     );
 }
+
+/// Regression test: worktree_collision() must not false-positive when a session
+/// name is reused. An OLD session ("old-sess") named "york-reviewer" bound to
+/// worktree "review-pr-100" has died. A NEW session ("new-sess") also named
+/// "york-reviewer" is active but working on a different worktree. The collision
+/// check should return None because the specific session bound to this worktree
+/// is no longer active.
+#[test]
+fn worktree_collision_no_false_positive_on_reused_session_name() {
+    let mut ps = DaemonPersistentState::default();
+
+    // Register the worktree and bind it to "york-reviewer" (from OLD session)
+    ps.worktree_registry
+        .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+            worktree_id: "review-pr-100".to_string(),
+            branch_name: "review-pr-100".to_string(),
+            task_id: Some("42".to_string()),
+            current_coworker: Some("york-reviewer".to_string()),
+            pr_number: Some(100),
+            created_at: Utc::now(),
+            completed_at: None,
+        })
+        .unwrap();
+
+    // OLD session: dead, was working on this worktree
+    ps.sessions.insert(
+        "old-sess".to_string(),
+        SessionRecord {
+            session_id: "old-sess".to_string(),
+            name: "york-reviewer".to_string(),
+            working_dir: "/worktrees/review-pr-100".to_string(),
+            task_id: Some("42".to_string()),
+            is_running: false,
+            ..Default::default()
+        },
+    );
+
+    // NEW session: active, same name, DIFFERENT worktree
+    ps.sessions.insert(
+        "new-sess".to_string(),
+        SessionRecord {
+            session_id: "new-sess".to_string(),
+            name: "york-reviewer".to_string(),
+            working_dir: "/worktrees/review-pr-200".to_string(),
+            task_id: Some("99".to_string()),
+            is_running: true,
+            ..Default::default()
+        },
+    );
+
+    // Only the NEW session is active
+    ps.tick_active_session_names = HashSet::from(["york-reviewer".to_string()]);
+    ps.tick_active_session_ids = HashSet::from(["new-sess".to_string()]);
+
+    // A new coworker "madison-reviewer" wants this worktree.
+    // The old "york-reviewer" session is dead — should NOT be a collision.
+    let result = ps.worktree_collision("review-pr-100", "madison-reviewer");
+    assert_eq!(
+        result, None,
+        "worktree_collision() should not report a collision when the bound coworker's \
+         session is dead, even if a new session reuses the same name"
+    );
+}
+
+/// Verify worktree_collision() still correctly detects a REAL collision when
+/// the bound coworker's session is genuinely active on the same worktree.
+#[test]
+fn worktree_collision_detects_real_active_collision() {
+    let mut ps = DaemonPersistentState::default();
+
+    ps.worktree_registry
+        .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+            worktree_id: "review-pr-100".to_string(),
+            branch_name: "review-pr-100".to_string(),
+            task_id: Some("42".to_string()),
+            current_coworker: Some("york-reviewer".to_string()),
+            pr_number: Some(100),
+            created_at: Utc::now(),
+            completed_at: None,
+        })
+        .unwrap();
+
+    // Session is active AND working on this worktree
+    ps.sessions.insert(
+        "active-sess".to_string(),
+        SessionRecord {
+            session_id: "active-sess".to_string(),
+            name: "york-reviewer".to_string(),
+            working_dir: "/worktrees/review-pr-100".to_string(),
+            task_id: Some("42".to_string()),
+            is_running: true,
+            ..Default::default()
+        },
+    );
+
+    ps.tick_active_session_names = HashSet::from(["york-reviewer".to_string()]);
+    ps.tick_active_session_ids = HashSet::from(["active-sess".to_string()]);
+
+    let result = ps.worktree_collision("review-pr-100", "madison-reviewer");
+    assert_eq!(
+        result,
+        Some("york-reviewer".to_string()),
+        "worktree_collision() should detect a real collision when the bound coworker is active"
+    );
+}

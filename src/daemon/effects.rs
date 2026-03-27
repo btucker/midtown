@@ -2528,14 +2528,26 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
             } => {
                 let mut ps = state.persistent_state.lock().await;
 
-                // Collision guard: check if worktree is bound to a different ACTIVE coworker
+                // Collision guard: check if worktree is bound to a different ACTIVE coworker.
+                // Uses session IDs + working_dir (not name-only) to avoid false
+                // collisions when session names are reused across worktrees.
                 let needs_force_rebind = if let Some(assignment) =
                     ps.worktree_registry.get(&worktree_id)
                 {
                     if let Some(ref current_coworker) = assignment.current_coworker {
                         if current_coworker != &coworker {
-                            // Worktree is bound to a different coworker - check if they're active
-                            if state.session_manager.is_alive(current_coworker).await {
+                            // Worktree is bound to a different coworker — check if
+                            // they have an active session on THIS specific worktree.
+                            let bound_lower = current_coworker.to_lowercase();
+                            let has_active_session_on_worktree =
+                                ps.sessions.values().any(|record| {
+                                    record.name.to_lowercase() == bound_lower
+                                        && ps.tick_active_session_ids.contains(&record.session_id)
+                                        && std::path::Path::new(&record.working_dir)
+                                            .ends_with(&worktree_id)
+                                });
+
+                            if has_active_session_on_worktree {
                                 warn!(
                                     "WORKTREE COLLISION BLOCKED: Refusing to bind {} to worktree {} - already bound to ACTIVE coworker {}",
                                     coworker, worktree_id, current_coworker
@@ -2546,10 +2558,10 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                 continue;
                             } else {
                                 debug!(
-                                    "Worktree {} was bound to {} but they're not active - allowing rebind to {}",
+                                    "Worktree {} was bound to {} but they're not active on this worktree - allowing rebind to {}",
                                     worktree_id, current_coworker, coworker
                                 );
-                                // Old coworker is dead - need force rebind
+                                // Old coworker is dead or on a different worktree - need force rebind
                                 true
                             }
                         } else {
