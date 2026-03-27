@@ -250,6 +250,11 @@ pub enum WebUpdate {
     /// Open threads set changed for a channel
     #[serde(rename = "open_threads_changed")]
     OpenThreadsChanged(OpenThreadsChangedData),
+    /// Heartbeat data frame — resets the client's stale-connection timer.
+    /// Unlike WebSocket ping control frames (RFC 6455), data frames trigger
+    /// the browser's onmessage handler, making them visible to JavaScript.
+    #[serde(rename = "heartbeat")]
+    Heartbeat,
 }
 
 /// Thread ownership state sent to web clients when a fork is created/destroyed.
@@ -3012,6 +3017,25 @@ async fn handle_websocket(socket: WebSocket, state: Arc<WebState>) {
                             elapsed.as_secs()
                         );
                         break;
+                    }
+                    // Send a data-frame heartbeat so the browser's onmessage fires
+                    // and resets the client's stale-connection timer. WebSocket ping
+                    // control frames (RFC 6455) are invisible to JavaScript.
+                    let hb_json = serde_json::to_string(&WebUpdate::Heartbeat)
+                        .expect("heartbeat serialization cannot fail");
+                    match tokio::time::timeout(
+                        WS_SEND_TIMEOUT,
+                        sender.send(WsMessage::Text(hb_json.into())),
+                    ).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            disconnect_reason = format!("heartbeat send error: {e}");
+                            break;
+                        }
+                        Err(_) => {
+                            disconnect_reason = "heartbeat send timeout".to_string();
+                            break;
+                        }
                     }
                     if sender.send(WsMessage::Ping(vec![].into())).await.is_err() {
                         disconnect_reason = "ping send error".to_string();

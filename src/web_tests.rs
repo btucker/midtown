@@ -1961,3 +1961,22 @@ async fn test_pong_timeout_detection() {
         "reset pong should not be timed out"
     );
 }
+
+#[test]
+fn test_heartbeat_serialization() {
+    // The server must send heartbeats as JSON data frames (not ping control frames)
+    // so the browser's onmessage handler fires and resets the client's stale timer.
+    let update = WebUpdate::Heartbeat;
+    let json = serde_json::to_string(&update).unwrap();
+
+    // Must serialize with type "heartbeat" to match client-side handling
+    assert!(
+        json.contains(r#""type":"heartbeat""#),
+        "heartbeat should serialize with type field: {json}"
+    );
+    // Must NOT have a data field (it's a unit variant)
+    assert!(
+        !json.contains(r#""data""#),
+        "heartbeat should not have a data field: {json}"
+    );
+}
