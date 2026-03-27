@@ -797,6 +797,12 @@ export function handleUpdate(update: Record<string, unknown>): void {
 								...(replyFullText ? { fullText: replyFullText } : {}),
 							},
 						}));
+						// If the user is currently viewing this thread, keep read state
+						// in sync so live replies don't produce false unread indicators.
+						const td = get(threadData);
+						if (td && td.parentMessage?.id === threadParentId) {
+							markRead("thread", threadParentId);
+						}
 					}
 				}
 
