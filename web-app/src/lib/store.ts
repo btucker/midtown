@@ -243,6 +243,12 @@ threadUnreadCounts.subscribe((v) => debouncedSaveToLocalStorage("midtown_thread_
 // Format: { [channelName]: Set<threadParentId> }
 export const openThreads = writable<Record<string, Set<string>>>({});
 
+// ── Progress timestamps (needs-attention: stale task detection) ──────────────
+// Tracks when each coworker's progress value last changed.
+// Keyed by task_id (string). Value is Unix ms timestamp.
+// In-memory only — stale detection starts fresh on page reload.
+export const progressTimestamps = writable<Record<string, number>>({});
+
 // ── Dismissed attention items (client-side) ─────────────────────────────────
 // IDs of needs-attention items the user has dismissed. Persists via localStorage.
 const _dismissedAttentionArr = loadFromLocalStorage<string[]>("midtown_dismissed_attention", []);
