@@ -307,18 +307,18 @@ function handleKeyDown(event: KeyboardEvent) {
     {@const hasUnread = channel.unread > 0 && channel.name !== 'ops'}
 
     <div class="channel-row mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
-      <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
+      <div class="flex items-stretch py-1.5 {isActive ? 'text-primary' : 'rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
         {#if !sidebar.isMobile}
         <span
           use:dragHandle
-          class="drag-handle flex items-center justify-center w-4 ml-1 cursor-grab text-muted-foreground/40 hover:text-muted-foreground/80 transition-colors duration-150 shrink-0"
+          class="drag-handle flex items-center justify-center w-3 -ml-1 cursor-grab text-muted-foreground/40 hover:text-muted-foreground/80 transition-colors duration-150 shrink-0"
           title="Drag to reorder"
         >
-          <GripVertical size={12} />
+          <GripVertical size={16} />
         </span>
         {/if}
         <button
-          class="flex items-center justify-between flex-1 min-w-0 px-2 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
+          class="flex items-center justify-between flex-1 min-w-0 px-1 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
           aria-label="Select channel {channel.name}"
           onclick={() => selectChannel(channel.name)}
         >

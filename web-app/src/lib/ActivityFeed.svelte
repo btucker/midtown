@@ -54,27 +54,11 @@ const attentionItems = $derived(
 	}),
 );
 
-const typeConfig: Record<string, { bg: string; border: string; icon: string }> = {
-	task_completed: {
-		bg: "rgba(74,222,128,0.06)",
-		border: "rgba(74,222,128,0.12)",
-		icon: "✓",
-	},
-	thread_waiting: {
-		bg: "rgba(59,130,246,0.06)",
-		border: "rgba(59,130,246,0.12)",
-		icon: "↩",
-	},
-	mention: {
-		bg: "rgba(245,158,11,0.06)",
-		border: "rgba(245,158,11,0.12)",
-		icon: "@",
-	},
-	stale_work: {
-		bg: "rgba(239,68,68,0.06)",
-		border: "rgba(239,68,68,0.12)",
-		icon: "⏱",
-	},
+const typeConfig: Record<string, { accent: string; halo: string; icon: string }> = {
+	task_completed: { accent: "hsl(var(--accent-green))", halo: "var(--accent-green)", icon: "✓" },
+	thread_waiting: { accent: "hsl(var(--sidebar-ring))", halo: "var(--sidebar-ring)", icon: "↩" },
+	mention: { accent: "hsl(var(--status-amber))", halo: "var(--status-amber)", icon: "@" },
+	stale_work: { accent: "hsl(var(--status-red))", halo: "var(--status-red)", icon: "⏱" },
 };
 
 // ── Tasks ────────────────────────────────────────────────────────────────────
@@ -145,9 +129,10 @@ const allThreadsSorted = $derived.by(() => {
 		.sort((a, b) => b.lastActivityMs - a.lastActivityMs);
 });
 
-const recentThreads = $derived(allThreadsSorted.filter((t) => t.isRecent));
-const olderThreads = $derived(allThreadsSorted.filter((t) => !t.isRecent));
-const olderUnreadCount = $derived(olderThreads.filter((t) => t.isUnread).length);
+// Visible threads: recent (< 15 min) OR unread — always shown
+const visibleThreads = $derived(allThreadsSorted.filter((t) => t.isRecent || t.isUnread));
+// Older threads: not recent AND read — collapsed
+const olderThreads = $derived(allThreadsSorted.filter((t) => !t.isRecent && !t.isUnread));
 
 function handleThreadClick(threadId: string, channel: string) {
 	onItemClick?.({ threadId, channel });
@@ -158,59 +143,57 @@ function handleAttentionClick(item: NeedsAttentionItem) {
 }
 </script>
 
-<div class="flex flex-col gap-0.5">
-  <!-- Section header -->
-  <div class="flex items-center gap-1.5 px-3 py-1">
-    <span
-      style="font-size: 10px; color: #666; letter-spacing: 0.5px; text-transform: uppercase; font-weight: 600;"
-    >ACTIVITY</span>
-  </div>
+<div class="activity-feed flex flex-col gap-0.5">
 
   <!-- ── Attention items ──────────────────────────────────────────────── -->
-  {#each attentionItems as item (item.id)}
-    {@const config = typeConfig[item.type] ?? typeConfig.thread_waiting}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="mx-2 cursor-pointer"
-      style="background: {config.bg}; border: 1px solid {config.border}; padding: 8px; border-radius: 6px; margin-bottom: 3px;"
-      onclick={() => handleAttentionClick(item)}
-    >
-      <!-- Line 1: icon + title + #channel -->
-      <div class="flex items-center gap-1.5" style="font-size: 12px;">
-        <span class="shrink-0 text-muted-foreground/70" style="font-size: 11px; line-height: 1;">{config.icon}</span>
-        <span class="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-sidebar-foreground">
-          {item.title}
-        </span>
-        {#if item.channel}
-          <span class="shrink-0" style="font-size: 10px; color: #555;">#{item.channel}</span>
-        {/if}
-      </div>
-
-      <!-- Line 2: context with colored worker name -->
-      <div class="mt-0.5 text-muted-foreground/50 overflow-hidden text-ellipsis whitespace-nowrap" style="font-size: 11px;">
-        {#if item.workerName && item.workerColor && item.context.includes(item.workerName)}
-          {@const parts = item.context.split(item.workerName)}
-          {parts[0]}<span style="color: {item.workerColor}; font-weight: 500;">{item.workerName}</span>{parts.slice(1).join(item.workerName)}
-        {:else}
-          {item.context}
-        {/if}
-      </div>
+  {#if attentionItems.length > 0}
+    <div class="px-3 pt-1 pb-0.5">
+      <span class="section-heading text-xs font-bold text-muted-foreground uppercase tracking-wide">Needs attention</span>
     </div>
-  {/each}
+    {#each attentionItems as item (item.id)}
+      {@const config = typeConfig[item.type] ?? typeConfig.thread_waiting}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="mx-2 px-2.5 py-1.5 mb-0.5 cursor-pointer rounded-lg bg-background shadow-sm hover:shadow transition-shadow duration-150"
+        onclick={() => handleAttentionClick(item)}
+      >
+        <!-- Line 1: icon + title + #channel pill -->
+        <div class="flex items-center gap-1.5 text-xs">
+          <span class="shrink-0" style="color: {config.accent}; font-size: 12px; line-height: 1; font-weight: 600;">{config.icon}</span>
+          <span class="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-sidebar-foreground font-medium">
+            {item.title}
+          </span>
+          {#if item.channel}
+            <span class="shrink-0 rounded px-1 py-px text-[9px] font-mono text-muted-foreground bg-sidebar-accent">#{item.channel}</span>
+          {/if}
+        </div>
+
+        <!-- Line 2: context with colored worker name -->
+        <div class="mt-0.5 text-[10px] text-muted-foreground/70 overflow-hidden text-ellipsis whitespace-nowrap">
+          {#if item.workerName && item.workerColor && item.context.includes(item.workerName)}
+            {@const parts = item.context.split(item.workerName)}
+            {parts[0]}<span style="color: {item.workerColor}; font-weight: 500;">{item.workerName}</span>{parts.slice(1).join(item.workerName)}
+          {:else}
+            {item.context}
+          {/if}
+        </div>
+      </div>
+    {/each}
+  {/if}
 
   <!-- ── Active tasks ─────────────────────────────────────────────────── -->
-  {#each sortedActiveTasks as task (task.id)}
-    {@const cw = task.owner ? cwMap.get(task.owner) ?? null : null}
-    {@const reviewInfo = reviewerByTaskId.get(String(task.id))}
-    {@const channelLabel = getChannelLabel(task)}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="flex items-start gap-0 px-3 py-[3px] rounded-[5px] hover:bg-sidebar-accent cursor-pointer"
-      onclick={() => handleTaskClick(task)}
-    >
-      <div class="flex-1 min-w-0">
+  {#if sortedActiveTasks.length > 0}
+    {#each sortedActiveTasks as task (task.id)}
+      {@const cw = task.owner ? cwMap.get(task.owner) ?? null : null}
+      {@const reviewInfo = reviewerByTaskId.get(String(task.id))}
+      {@const channelLabel = getChannelLabel(task)}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="px-3 py-[3px] rounded-[5px] hover:bg-sidebar-accent cursor-pointer"
+        onclick={() => handleTaskClick(task)}
+      >
         <TaskRow
           {task}
           {cw}
@@ -218,70 +201,55 @@ function handleAttentionClick(item: NeedsAttentionItem) {
           reviewPosted={reviewInfo?.reviewPosted ?? false}
           variant="row"
           onclick={() => handleTaskClick(task)}
+          channelLabel={channelLabel}
         />
       </div>
-      {#if channelLabel}
-        <span
-          class="shrink-0 mt-[5px] ml-1"
-          style="font-size: 10px; color: #555;"
-          title={channelLabel}
-        >#{channelLabel}</span>
-      {/if}
-    </div>
-  {/each}
+    {/each}
+  {/if}
 
-  <!-- ── Recent threads (< 15 min) ───────────────────────────────────── -->
-  {#each recentThreads as { id, thread, isUnread } (id)}
+  <!-- ── Visible threads (recent or unread) ─────────────────────────── -->
+  {#each visibleThreads as { id, thread, isUnread } (id)}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="flex items-center gap-1.5 px-3 py-[3px] rounded-[5px] hover:bg-sidebar-accent cursor-pointer"
-      style="font-size: 12px; color: #bbb;"
+      class="flex items-center gap-1.5 px-3 py-[5px] text-xs rounded-[5px] hover:bg-sidebar-accent cursor-pointer text-sidebar-foreground/80"
       onclick={() => handleThreadClick(id, thread.channelName)}
     >
-      <span class="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+      {#if isUnread}
+        <span class="shrink-0 w-1.5 h-1.5 rounded-full bg-sidebar-ring"></span>
+      {/if}
+      <span class="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap {isUnread ? 'text-sidebar-foreground font-medium' : ''}">
         {thread.subject}
       </span>
-      {#if isUnread}
-        <span class="shrink-0 w-1.5 h-1.5 rounded-full" style="background: #3b82f6;"></span>
-      {/if}
-      <span class="shrink-0" style="font-size: 10px; color: #555;">#{thread.channelName}</span>
+      <span class="shrink-0 rounded px-1 py-px text-[9px] font-mono text-muted-foreground bg-sidebar-accent">#{thread.channelName}</span>
     </div>
   {/each}
 
-  <!-- ── Older threads (collapsed) ────────────────────────────────────── -->
+  <!-- ── Older read threads (collapsed) ───────────────────────────────── -->
   {#if olderThreads.length > 0}
-    <div class="flex items-center gap-1.5 px-3 mt-1">
-      <div style="flex: 1; height: 1px; background: #2a2a4a;"></div>
-      <button
-        class="flex items-center gap-1 border-none bg-transparent cursor-pointer p-0"
-        style="font-size: 9px; color: #555;"
-        onclick={() => { olderCollapsed = !olderCollapsed; }}
-      >
-        <span>{olderCollapsed ? '▸' : '▾'}</span>
-        <span>{olderThreads.length} older threads{olderUnreadCount > 0 ? ` · ${olderUnreadCount} unread` : ''}</span>
-      </button>
-      <div style="flex: 1; height: 1px; background: #2a2a4a;"></div>
-    </div>
+    <button
+      class="flex items-center gap-1.5 mx-3 mt-1 mb-0.5 px-2 py-1 border-none rounded cursor-pointer text-[10px] text-muted-foreground bg-transparent transition-colors duration-100 hover:bg-sidebar-accent"
+      onclick={() => { olderCollapsed = !olderCollapsed; }}
+    >
+      <span class="text-[8px]">{olderCollapsed ? '▸' : '▾'}</span>
+      <span>{olderThreads.length} older threads</span>
+    </button>
 
     {#if !olderCollapsed}
-      {#each olderThreads as { id, thread, isUnread } (id)}
+      {#each olderThreads as { id, thread } (id)}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="flex items-center gap-1.5 px-3 py-[3px] rounded-[5px] hover:bg-sidebar-accent cursor-pointer"
-          style="font-size: 12px; color: #bbb;"
+          class="flex items-center gap-1.5 px-3 py-[5px] text-xs rounded-[5px] hover:bg-sidebar-accent cursor-pointer text-sidebar-foreground/80"
           onclick={() => handleThreadClick(id, thread.channelName)}
         >
           <span class="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
             {thread.subject}
           </span>
-          {#if isUnread}
-            <span class="shrink-0 w-1.5 h-1.5 rounded-full" style="background: #3b82f6;"></span>
-          {/if}
-          <span class="shrink-0" style="font-size: 10px; color: #555;">#{thread.channelName}</span>
+          <span class="shrink-0 rounded px-1 py-px text-[9px] font-mono text-muted-foreground bg-sidebar-accent">#{thread.channelName}</span>
         </div>
       {/each}
     {/if}
   {/if}
 </div>
+

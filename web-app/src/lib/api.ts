@@ -1312,6 +1312,7 @@ export function openTaskThread(task: Task, channelName: string): void {
 		// No creation message — show task card only, replies sent as top-level messages
 		threadData.set({ parentMessage: null, channelName, messages: [], tasks: [task] });
 		pushNavState({ channel: channelName });
+		markRead("thread", `task:${task.id}`);
 		return;
 	}
 
@@ -1346,8 +1347,11 @@ export function openTaskThread(task: Task, channelName: string): void {
 	};
 	threadData.set({ parentMessage, channelName, messages: [], tasks });
 	pushNavState({ channel: channelName, thread: parentMessageId });
-	// Mark the task's thread as read so it disappears from attention feed
+	// Mark the thread and associated tasks as read so they disappear from attention feed
 	markRead("thread", parentMessageId);
+	for (const t of tasks) {
+		markRead("thread", `task:${t.id}`);
+	}
 	fetchThread(channelName, parentMessageId).then((fetched) => {
 		threadData.update((td) => {
 			if (!td || td.parentMessage?.id !== parentMessageId) return td;
