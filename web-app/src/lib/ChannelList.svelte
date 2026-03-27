@@ -20,6 +20,7 @@ import {
 	activeProject,
 	channelOrder,
 	channels,
+	kanbanData,
 	messagesByChannel,
 	showArchivedChannels,
 	threadForkOwners,

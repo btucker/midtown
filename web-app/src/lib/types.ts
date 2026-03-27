@@ -69,6 +69,7 @@ export interface Task {
 	parent?: string;
 	color?: string;
 	icon?: string;
+	updated_at?: string; // ISO timestamp — when the task was last modified
 }
 
 // ── Pull requests ────────────────────────────────────────────────────────────

@@ -126,6 +126,31 @@ describe("computeAttentionItems", () => {
 		expect(items[0].title).toBe("Fix bug");
 	});
 
+	it("filters out completed tasks older than 24 hours", () => {
+		const items = computeAttentionItems({
+			...baseOpts,
+			coworkers: [{ name: "ghost-town" }],
+			tasks: [
+				{
+					id: 1,
+					subject: "Old completed",
+					status: "completed",
+					owner: "ghost-town",
+					updated_at: new Date(now - 25 * 60 * 60 * 1000).toISOString(),
+				},
+				{
+					id: 2,
+					subject: "Recent completed",
+					status: "completed",
+					owner: "ghost-town",
+					updated_at: new Date(now - 1 * 60 * 60 * 1000).toISOString(),
+				},
+			],
+		});
+		expect(items).toHaveLength(1);
+		expect(items[0].title).toBe("Recent completed");
+	});
+
 	it("does NOT match tasks with status 'done'", () => {
 		const items = computeAttentionItems({
 			...baseOpts,

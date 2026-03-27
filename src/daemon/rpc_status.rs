@@ -311,6 +311,7 @@ fn map_tasks_to_json(
                 "parent": parent,
                 "color": task.color,
                 "icon": task.icon,
+                "updated_at": task.updated_at.to_rfc3339(),
             })
         })
         .collect()

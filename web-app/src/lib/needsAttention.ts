@@ -3,6 +3,7 @@ import type { Coworker, NeedsAttentionItem, Task, TrackedThread } from "./types.
 
 const TEN_MINUTES_MS = 10 * 60 * 1000;
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
 export interface LastMessage {
 	sender: string;
@@ -99,14 +100,18 @@ export function computeAttentionItems(opts: {
 		}
 	}
 
-	// 2. Completed tasks — only show if the owning coworker is still known
-	// (filters out old historical completions)
+	// 2. Completed tasks — only show if completed within the last 24 hours
 	for (const task of opts.tasks) {
 		if (task.status !== "completed") continue;
-		const id = `task:${task.id}`;
 
+		// Filter out old completions — only show tasks updated in the last 24h
+		if (task.updated_at) {
+			const updatedMs = new Date(task.updated_at).getTime();
+			if (now - updatedMs > TWENTY_FOUR_HOURS_MS) continue;
+		}
+
+		const id = `task:${task.id}`;
 		const cw = opts.coworkers.find((c) => c.name === task.owner);
-		if (!cw) continue; // No active coworker = old task, skip
 		const channel = task.channel || opts.mainChannel;
 
 		items.push({
