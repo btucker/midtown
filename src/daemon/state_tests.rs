@@ -1070,6 +1070,78 @@ fn test_is_fork_session() {
 }
 
 #[test]
+fn test_is_reviewer() {
+    let reviewer = SessionRecord {
+        agent_type: "midtown-code-reviewer".to_string(),
+        ..Default::default()
+    };
+    assert!(reviewer.is_reviewer());
+
+    let author = SessionRecord {
+        agent_type: "midtown-code-author".to_string(),
+        ..Default::default()
+    };
+    assert!(!author.is_reviewer());
+
+    let lead = SessionRecord {
+        agent_type: "midtown-channel-lead".to_string(),
+        ..Default::default()
+    };
+    assert!(!lead.is_reviewer());
+}
+
+#[test]
+fn test_is_active_reviewer() {
+    let running_reviewer = SessionRecord {
+        agent_type: "midtown-code-reviewer".to_string(),
+        is_running: true,
+        ..Default::default()
+    };
+    assert!(running_reviewer.is_active_reviewer());
+
+    let stopped_reviewer = SessionRecord {
+        agent_type: "midtown-code-reviewer".to_string(),
+        is_running: false,
+        ..Default::default()
+    };
+    assert!(!stopped_reviewer.is_active_reviewer());
+
+    let running_author = SessionRecord {
+        agent_type: "midtown-code-author".to_string(),
+        is_running: true,
+        ..Default::default()
+    };
+    assert!(!running_author.is_active_reviewer());
+}
+
+#[test]
+fn test_is_active_fork() {
+    let running_fork = SessionRecord {
+        agent_type: "midtown-channel-lead".to_string(),
+        bound_thread_id: Some("thread-1".to_string()),
+        is_running: true,
+        ..Default::default()
+    };
+    assert!(running_fork.is_active_fork());
+
+    let stopped_fork = SessionRecord {
+        agent_type: "midtown-channel-lead".to_string(),
+        bound_thread_id: Some("thread-1".to_string()),
+        is_running: false,
+        ..Default::default()
+    };
+    assert!(!stopped_fork.is_active_fork());
+
+    let running_lead = SessionRecord {
+        agent_type: "midtown-channel-lead".to_string(),
+        bound_thread_id: None,
+        is_running: true,
+        ..Default::default()
+    };
+    assert!(!running_lead.is_active_fork());
+}
+
+#[test]
 fn test_session_by_name() {
     let mut ps = DaemonPersistentState::default();
     ps.sessions.insert(

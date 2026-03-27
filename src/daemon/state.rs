@@ -165,6 +165,21 @@ impl SessionRecord {
     pub fn is_fork_session(&self) -> bool {
         self.agent_type == "midtown-channel-lead" && self.bound_thread_id.is_some()
     }
+
+    /// Whether this session is a code reviewer (running or stopped).
+    pub fn is_reviewer(&self) -> bool {
+        self.agent_type == "midtown-code-reviewer"
+    }
+
+    /// Whether this session is a running code reviewer.
+    pub fn is_active_reviewer(&self) -> bool {
+        self.is_reviewer() && self.is_running
+    }
+
+    /// Whether this session is a running fork.
+    pub fn is_active_fork(&self) -> bool {
+        self.is_fork_session() && self.is_running
+    }
 }
 
 /// Per-channel settings that control daemon behavior for a specific channel.
@@ -633,7 +648,7 @@ impl DaemonPersistentState {
     pub fn active_reviewer_for_pr(&self, pr_number: u64) -> Option<&SessionRecord> {
         self.sessions
             .values()
-            .filter(|s| s.agent_type == "midtown-code-reviewer" && s.is_running)
+            .filter(|s| s.is_active_reviewer())
             .find(|s| s.pr_number == Some(pr_number))
     }
 
@@ -646,17 +661,14 @@ impl DaemonPersistentState {
     pub fn active_reviewer_sessions(&self) -> Vec<&SessionRecord> {
         self.sessions
             .values()
-            .filter(|s| s.agent_type == "midtown-code-reviewer" && s.is_running)
+            .filter(|s| s.is_active_reviewer())
             .collect()
     }
 
     /// Returns all reviewer sessions (running or stopped).
     /// Used by snapshot to include dead reviewers for respawn detection.
     pub fn all_reviewer_sessions(&self) -> Vec<&SessionRecord> {
-        self.sessions
-            .values()
-            .filter(|s| s.agent_type == "midtown-code-reviewer")
-            .collect()
+        self.sessions.values().filter(|s| s.is_reviewer()).collect()
     }
 
     /// Insert a session record for a task.
@@ -797,9 +809,7 @@ impl DaemonPersistentState {
         let session_ids: Vec<String> = self
             .sessions
             .values()
-            .filter(|s| {
-                s.name == reviewer_name && s.agent_type == "midtown-code-reviewer" && s.is_running
-            })
+            .filter(|s| s.name == reviewer_name && s.is_active_reviewer())
             .map(|s| s.session_id.clone())
             .collect();
         for sid in &session_ids {
@@ -839,7 +849,7 @@ impl DaemonPersistentState {
         let mut best: Option<&SessionRecord> = None;
         for s in self.sessions.values() {
             if s.bound_thread_id.as_deref() == Some(thread_id) && s.is_fork_session() {
-                if s.is_running {
+                if s.is_active_fork() {
                     return Some(s);
                 }
                 if best.is_none() {
@@ -946,7 +956,7 @@ impl DaemonPersistentState {
     pub fn running_reviewer_sessions(&self) -> Vec<&SessionRecord> {
         self.sessions
             .values()
-            .filter(|s| s.agent_type == "midtown-code-reviewer" && s.is_running)
+            .filter(|s| s.is_active_reviewer())
             .collect()
     }
 

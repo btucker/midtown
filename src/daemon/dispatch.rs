@@ -507,7 +507,7 @@ fn check_and_recover_orphans_impl(
     );
 
     let (session_mode, preferred_name) = match ps.find_session_for_task(&recovery.task_id) {
-        Some(record) if !record.is_running && record.agent_type != "midtown-code-reviewer" => (
+        Some(record) if !record.is_running && !record.is_reviewer() => (
             crate::launch::SessionMode::ResumeSession(record.session_id.clone()),
             if record.name.is_empty() {
                 None
