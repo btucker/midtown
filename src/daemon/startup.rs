@@ -612,7 +612,7 @@ pub async fn recover_from_session_records(
             // unrestricted settings.
             // Must match recover_from_session_records() which also special-cases the lead.
             LaunchConfig::lead(repo_name, None)
-        } else if record.agent_type == "midtown-code-reviewer" {
+        } else if record.is_reviewer() {
             if let Some(pr_number) = record.pr_number {
                 let reviewer_provider = crate::config::get_execution_provider_for_role(
                     repo_name,

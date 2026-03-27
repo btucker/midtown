@@ -116,7 +116,7 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         ps_guard
             .sessions
             .values()
-            .filter(|s| s.is_fork_session() && s.is_running)
+            .filter(|s| s.is_active_fork())
             .filter_map(|s| {
                 s.bound_thread_id
                     .as_ref()
@@ -556,7 +556,7 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         ps.tick_active_reviewers = ps
             .sessions
             .values()
-            .filter(|s| s.agent_type == "midtown-code-reviewer" && s.is_running)
+            .filter(|s| s.is_active_reviewer())
             .filter(|s| !s.name.is_empty())
             .map(|s| s.name.to_lowercase())
             .collect();
