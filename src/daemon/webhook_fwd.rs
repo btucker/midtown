@@ -7,6 +7,7 @@
 //! Also detects and cleans up orphaned `gh webhook forward` processes from
 //! previous daemon runs that weren't properly shut down.
 
+use crate::process::check_cmd_output;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
@@ -202,22 +203,13 @@ fn start_gh_webhook_forward(repo: &str, url: &str) -> std::io::Result<std::proce
 /// to `webhook-forwarder.github.com` — these are leftover from previous
 /// `gh webhook forward` sessions that weren't cleaned up on exit.
 fn delete_stale_github_webhooks(repo: &str) -> bool {
-    let output = match std::process::Command::new("gh")
-        .args(["api", &format!("repos/{}/hooks", repo), "--paginate"])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
-        Ok(o) => {
-            warn!(
-                "Failed to list webhooks: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            );
-            return false;
-        }
-        Err(e) => {
-            warn!("Failed to run gh api: {}", e);
-            return false;
-        }
+    let Some(output) = check_cmd_output(
+        std::process::Command::new("gh")
+            .args(["api", &format!("repos/{}/hooks", repo), "--paginate"])
+            .output(),
+        "list webhooks",
+    ) else {
+        return false;
     };
 
     let body = String::from_utf8_lossy(&output.stdout);
@@ -237,29 +229,21 @@ fn delete_stale_github_webhooks(repo: &str) -> bool {
 
         if name == "cli" && hook_url.contains("webhook-forwarder.github.com") && id != 0 {
             info!("Deleting stale CLI webhook {} (url: {})", id, hook_url);
-            match std::process::Command::new("gh")
-                .args([
-                    "api",
-                    "--method",
-                    "DELETE",
-                    &format!("repos/{}/hooks/{}", repo, id),
-                ])
-                .output()
+            if check_cmd_output(
+                std::process::Command::new("gh")
+                    .args([
+                        "api",
+                        "--method",
+                        "DELETE",
+                        &format!("repos/{}/hooks/{}", repo, id),
+                    ])
+                    .output(),
+                &format!("delete webhook {}", id),
+            )
+            .is_some()
             {
-                Ok(o) if o.status.success() => {
-                    info!("Successfully deleted stale webhook {}", id);
-                    deleted = true;
-                }
-                Ok(o) => {
-                    warn!(
-                        "Failed to delete webhook {}: {}",
-                        id,
-                        String::from_utf8_lossy(&o.stderr).trim()
-                    );
-                }
-                Err(e) => {
-                    warn!("Failed to run gh api DELETE for webhook {}: {}", id, e);
-                }
+                info!("Successfully deleted stale webhook {}", id);
+                deleted = true;
             }
         }
     }

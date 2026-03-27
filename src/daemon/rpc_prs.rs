@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 use crate::json_ext::ValueExt;
+use crate::process::check_cmd_output;
 use crate::rpc::{RequestId, Response, RpcError};
 
 use super::DaemonState;
@@ -233,29 +234,20 @@ fn fetch_prs_all(
         ])
         .output();
 
-    let data = match graphql_output {
-        Ok(o) if o.status.success() => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            match serde_json::from_str::<serde_json::Value>(&stdout) {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!("Failed to parse PR GraphQL response: {}", e);
-                    return (Vec::new(), Vec::new());
-                }
+    let Some(graphql_out) = check_cmd_output(
+        graphql_output,
+        &format!("query GitHub API for {}", name_with_owner),
+    ) else {
+        return (Vec::new(), Vec::new());
+    };
+    let data = {
+        let stdout = String::from_utf8_lossy(&graphql_out.stdout);
+        match serde_json::from_str::<serde_json::Value>(&stdout) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Failed to parse PR GraphQL response: {}", e);
+                return (Vec::new(), Vec::new());
             }
-        }
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            warn!(
-                "GitHub API query failed for {}: {}",
-                name_with_owner,
-                stderr.trim()
-            );
-            return (Vec::new(), Vec::new());
-        }
-        Err(e) => {
-            warn!("Failed to execute gh command: {}", e);
-            return (Vec::new(), Vec::new());
         }
     };
 
