@@ -16,6 +16,7 @@ import {
 	messagesByChannel,
 	openThreads,
 	pendingQuestions,
+	progressTimestamps,
 	projects,
 	repoStatus,
 	repoStatuses,
@@ -339,6 +340,7 @@ export function switchProject(projectName: string, webhookPort: number | null): 
 	threadForkOwners.set({});
 	threadData.set(null);
 	threadOwnership.set({});
+	progressTimestamps.set({});
 	// Clear tracked threads when switching to a different project.
 	// On same-project reload, the stores (initialized from localStorage)
 	// should be preserved.  Use the persisted project name so the first
@@ -840,6 +842,7 @@ export function handleUpdate(update: Record<string, unknown>): void {
 								...t[threadParentId],
 								lastActivity: new Date().toISOString(),
 								replyCount: (t[threadParentId]?.replyCount || 0) + 1,
+								lastReplySender: msg.from,
 								...(replyFullText ? { fullText: replyFullText } : {}),
 							},
 						}));
@@ -919,8 +922,20 @@ export function handleUpdate(update: Record<string, unknown>): void {
 			coworkers.update((list) => {
 				const idx = list.findIndex((c) => c.name === name);
 				if (idx >= 0) {
+					// Track progress changes for stale-task detection
+					const oldProgress = list[idx].progress;
+					if (coworkerData.progress != null && coworkerData.progress !== oldProgress) {
+						const taskId = coworkerData.task_id ?? list[idx].task_id;
+						if (taskId != null) {
+							progressTimestamps.update((pts) => ({ ...pts, [String(taskId)]: Date.now() }));
+						}
+					}
 					list[idx] = { ...list[idx], ...coworkerData };
 					return [...list];
+				}
+				// New coworker — seed progress timestamp if they have active progress
+				if (coworkerData.task_id != null && coworkerData.progress != null) {
+					progressTimestamps.update((pts) => ({ ...pts, [String(coworkerData.task_id)]: Date.now() }));
 				}
 				return [...list, coworkerData];
 			});
