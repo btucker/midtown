@@ -179,3 +179,75 @@ fn test_save_overwrites_existing() {
     assert_eq!(loaded.status, TaskStatus::InProgress);
     assert_eq!(loaded.description, Some("Updated description".to_string()));
 }
+
+// ── extract_task_id_from_pr_title tests ───────────────────────────────
+
+#[test]
+fn extract_task_id_bracket_bang() {
+    // Canonical format: [Midtown !NNN]
+    assert_eq!(
+        extract_task_id_from_pr_title("feat: add auth [Midtown !42]"),
+        Some(42)
+    );
+}
+
+#[test]
+fn extract_task_id_bracket_hash() {
+    // Legacy format: [Midtown #NNN]
+    assert_eq!(
+        extract_task_id_from_pr_title("fix: login bug [Midtown #99]"),
+        Some(99)
+    );
+}
+
+#[test]
+fn extract_task_id_parenthesized_bang() {
+    // Parenthesized format: (!NNN)
+    assert_eq!(
+        extract_task_id_from_pr_title(
+            "refactor: DRY repeated subprocess and JSON patterns (!2590)"
+        ),
+        Some(2590)
+    );
+}
+
+#[test]
+fn extract_task_id_bare_bang_suffix() {
+    // Bare suffix format: !NNN at end of title
+    assert_eq!(
+        extract_task_id_from_pr_title("fix: update config handling !2607"),
+        Some(2607)
+    );
+}
+
+#[test]
+fn extract_task_id_no_match() {
+    assert_eq!(extract_task_id_from_pr_title("feat: unrelated PR"), None);
+}
+
+#[test]
+fn extract_task_id_bare_bang_not_at_end() {
+    // Bare !NNN in the middle should NOT match (too ambiguous)
+    assert_eq!(
+        extract_task_id_from_pr_title("fix !123 something else"),
+        None
+    );
+}
+
+#[test]
+fn extract_task_id_paren_skips_non_numeric_prefix() {
+    // If title has a non-numeric (!...) before the real (!NNN), still find the task ID
+    assert_eq!(
+        extract_task_id_from_pr_title("fix: handle fn(!arg) call (!2590)"),
+        Some(2590)
+    );
+}
+
+#[test]
+fn extract_task_id_bracket_takes_priority_over_paren() {
+    // If both formats present, bracket format wins (it's checked first)
+    assert_eq!(
+        extract_task_id_from_pr_title("feat: thing [Midtown !10] (!20)"),
+        Some(10)
+    );
+}
