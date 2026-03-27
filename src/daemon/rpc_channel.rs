@@ -263,7 +263,8 @@ pub(super) async fn handle_channel_post(
     // This prevents "black hole" messages — thread replies with dangling parent IDs
     // that are invisible in the web UI (filtered from main view but unreachable via
     // any thread panel).
-    if let Some(parent_id) = thread_parent_id {
+    // Also extract the parent message author for thread-reply nudging below.
+    let parent_msg_author: Option<String> = if let Some(parent_id) = thread_parent_id {
         let channel = match state.channel_router.get_channel(channel_name) {
             Ok(ch) => ch,
             Err(e) => {
@@ -274,8 +275,24 @@ pub(super) async fn handle_channel_post(
                 return Response::error(id, RpcError::new(-32603, e.to_string()));
             }
         };
-        let parent_exists = match channel.contains_message_id_async(parent_id).await {
-            Ok(exists) => exists,
+        match channel.find_message_by_id_async(parent_id).await {
+            Ok(Some(parent_msg)) => Some(parent_msg.from),
+            Ok(None) => {
+                warn!(
+                    "channel.post: thread_parent_id '{}' does not match any message in channel '{}'",
+                    parent_id, channel_name
+                );
+                return Response::error(
+                    id,
+                    RpcError::new(
+                        -32602,
+                        format!(
+                            "thread_parent_id '{}' does not match any existing message in channel '{}'",
+                            parent_id, channel_name
+                        ),
+                    ),
+                );
+            }
             Err(e) => {
                 error!(
                     "Failed to scan channel '{}' for thread validation: {}",
@@ -283,24 +300,10 @@ pub(super) async fn handle_channel_post(
                 );
                 return Response::error(id, RpcError::new(-32603, e.to_string()));
             }
-        };
-        if !parent_exists {
-            warn!(
-                "channel.post: thread_parent_id '{}' does not match any message in channel '{}'",
-                parent_id, channel_name
-            );
-            return Response::error(
-                id,
-                RpcError::new(
-                    -32602,
-                    format!(
-                        "thread_parent_id '{}' does not match any existing message in channel '{}'",
-                        parent_id, channel_name
-                    ),
-                ),
-            );
         }
-    }
+    } else {
+        None
+    };
 
     let msg = if let Some(parent_id) = thread_parent_id {
         Message::thread_reply(
@@ -345,6 +348,38 @@ pub(super) async fn handle_channel_post(
             },
         );
         crate::daemon::effects::execute_effects(vec![workflow_effect], state).await;
+    }
+
+    // Nudge the parent message author on every thread reply so they are aware
+    // of follow-ups to their message. Skip self-nudges (sender == parent author),
+    // user/system authors (no session to nudge), and sessions that aren't running.
+    if let Some(ref parent_author) = parent_msg_author {
+        let dominated_by_existing_nudge = state.is_user_sender(parent_author)
+            || super::constants::SKIP_SENDERS
+                .iter()
+                .any(|&s| s.eq_ignore_ascii_case(parent_author))
+            || parent_author.eq_ignore_ascii_case(from);
+
+        if !dominated_by_existing_nudge {
+            let parent_session = {
+                let ps = state.persistent_state.lock().await;
+                ps.session_by_name(parent_author)
+                    .filter(|s| s.is_running)
+                    .map(|s| (s.session_id.clone(), s.name.clone()))
+            };
+            if let Some((sid, name)) = parent_session
+                && state.session_manager.is_alive(&name).await
+            {
+                let nudge = crate::daemon::effects::Effect::nudge_session(
+                    sid,
+                    format!(
+                        "Thread reply from {} in #{}: {}",
+                        from, channel_name, content
+                    ),
+                );
+                crate::daemon::effects::execute_effects(vec![nudge], state).await;
+            }
+        }
     }
 
     // Nudge fork sessions when any sender (coworker, channel lead) posts a
