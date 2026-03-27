@@ -3,15 +3,7 @@ import ArchiveIcon from "@lucide/svelte/icons/archive";
 import GripVertical from "@lucide/svelte/icons/grip-vertical";
 import { type DndEvent, dndzone } from "svelte-dnd-action";
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
-import {
-	closeThread,
-	fetchChannels,
-	fetchHistory,
-	getApiBase,
-	openThread,
-	pushNavState,
-	setOpenThreads,
-} from "./api.ts";
+import { closeThread, fetchChannels, fetchHistory, getApiBase, markRead, openThread, pushNavState } from "./api.ts";
 import { computeVisibleDmChannels, getDisplayableDmChannels } from "./channelUtils.ts";
 import NeedsAttention from "./NeedsAttention.svelte";
 import {
@@ -147,6 +139,7 @@ function selectChannel(channelName: string) {
 	// when the store was empty, but that caused stale/incomplete data when a few
 	// WS messages had arrived but the full history was never loaded.
 	fetchHistory(channelName);
+	markRead("channel", channelName);
 }
 
 function handleAttentionItemClick(item: NeedsAttentionItem) {

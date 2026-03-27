@@ -5,6 +5,7 @@ import {
 	authProfiles,
 	authProfilesByProvider,
 	authSwitching,
+	channelReadState,
 	channels,
 	connected,
 	coworkers,
@@ -14,7 +15,6 @@ import {
 	maxInProgressTasks,
 	messages,
 	messagesByChannel,
-	openThreads,
 	pendingQuestions,
 	progressTimestamps,
 	projects,
@@ -25,6 +25,7 @@ import {
 	threadForkOwners,
 	threadForkParents,
 	threadOwnership,
+	threadReadState,
 	threadUnreadCounts,
 	trackedThreads,
 	usageData,
@@ -165,64 +166,38 @@ export async function fetchProjects(): Promise<Project[]> {
 	return [];
 }
 
-// Fetch the set of open thread IDs for a channel
-export async function fetchOpenThreads(channel: string): Promise<string[]> {
+// Fetch the read state for all threads and channels
+export async function fetchReadState(): Promise<void> {
 	try {
-		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/open-threads`);
+		const res = await fetch(`${getApiBase()}/read-state`);
 		if (res.ok) {
 			const data = await res.json();
-			return data.threads || [];
+			threadReadState.set(data.threads || {});
+			channelReadState.set(data.channels || {});
 		}
 	} catch (err) {
-		console.warn("Failed to fetch open threads:", err);
+		console.warn("Failed to fetch read state:", err);
 	}
-	return [];
 }
 
-// Persist the set of open thread IDs for a channel
-export async function setOpenThreads(channel: string, threads: string[]): Promise<void> {
+export async function markRead(type: "thread" | "channel", id: string): Promise<void> {
+	const timestamp = new Date().toISOString();
+	// Optimistic update
+	if (type === "thread") {
+		threadReadState.update((s) => ({ ...s, [id]: timestamp }));
+	} else {
+		channelReadState.update((s) => ({ ...s, [id]: timestamp }));
+	}
 	try {
-		await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/open-threads`, {
+		await fetch(`${getApiBase()}/read-state/${type}/${encodeURIComponent(id)}`, {
 			method: "PUT",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ threads }),
+			body: JSON.stringify({ timestamp }),
 		});
 	} catch (err) {
-		console.warn("Failed to set open threads:", err);
+		console.warn("Failed to mark read:", err);
 	}
 }
-
-const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
-const AUTO_CLOSE_INTERVAL_MS = 5 * 60 * 1000;
-
-// Auto-close threads with no activity for 12+ hours
-setInterval(() => {
-	const now = Date.now();
-	const tracked = get(trackedThreads);
-	const ot = get(openThreads);
-	let changed = false;
-	const updated = { ...ot };
-
-	for (const [channel, threadIds] of Object.entries(updated)) {
-		const remaining = new Set<string>();
-		for (const id of threadIds) {
-			const thread = tracked[id];
-			if (thread && now - new Date(thread.lastActivity).getTime() < TWELVE_HOURS_MS) {
-				remaining.add(id);
-			} else {
-				changed = true;
-			}
-		}
-		if (remaining.size !== threadIds.size) {
-			updated[channel] = remaining;
-			setOpenThreads(channel, [...remaining]);
-		}
-	}
-
-	if (changed) {
-		openThreads.set(updated);
-	}
-}, AUTO_CLOSE_INTERVAL_MS);
 
 // Fetch the list of available channels
 export async function fetchChannels(includeArchived = false): Promise<Channel[]> {
@@ -243,17 +218,6 @@ export async function fetchChannels(includeArchived = false): Promise<Channel[]>
 			);
 			// Backend already returns channels sorted with main project channel first
 			channels.set(channelList);
-			// After channels are loaded, fetch open threads for each
-			for (const ch of channelList) {
-				if (!ch.is_dm && !ch.is_archived) {
-					fetchOpenThreads(ch.name).then((threads) => {
-						openThreads.update((ot) => ({
-							...ot,
-							[ch.name]: new Set(threads),
-						}));
-					});
-				}
-			}
 			return channelList;
 		}
 	} catch (err) {
@@ -381,6 +345,7 @@ export function switchProject(projectName: string, webhookPort: number | null): 
 		// Note: fetchHistory() also builds a channel list from messages,
 		// but this ensures all channels (including empty ones) appear immediately.
 		fetchChannels();
+		fetchReadState();
 		fetchHistory();
 		fetchStatus();
 		fetchUsage();
@@ -847,21 +812,6 @@ export function handleUpdate(update: Record<string, unknown>): void {
 							},
 						}));
 					}
-
-					// Reopen thread in sidebar if it was auto-closed (not in openThreads)
-					const updatedTracked = get(trackedThreads);
-					const threadInfo = updatedTracked[threadParentId];
-					if (threadInfo) {
-						const ot = get(openThreads);
-						const channelThreads = ot[threadInfo.channelName];
-						if (!channelThreads || !channelThreads.has(threadParentId)) {
-							openThreads.update((current) => ({
-								...current,
-								[threadInfo.channelName]: new Set([...(current[threadInfo.channelName] || []), threadParentId]),
-							}));
-							setOpenThreads(threadInfo.channelName, [...(ot[threadInfo.channelName] || []), threadParentId]);
-						}
-					}
 				}
 
 				// DM channels: thread replies stay in the thread panel (consistent
@@ -954,12 +904,13 @@ export function handleUpdate(update: Record<string, unknown>): void {
 			// Re-fetch full channel list from server to get accurate state
 			fetchChannels(get(showArchivedChannels));
 			break;
-		case "open_threads_changed": {
-			const { channel, threads } = update.data as { channel: string; threads: string[] };
-			openThreads.update((ot) => ({
-				...ot,
-				[channel]: new Set(threads),
-			}));
+		case "read_state_changed": {
+			const { type, id, timestamp } = update.data as { type: string; id: string; timestamp: string };
+			if (type === "thread") {
+				threadReadState.update((s) => ({ ...s, [id]: timestamp }));
+			} else if (type === "channel") {
+				channelReadState.update((s) => ({ ...s, [id]: timestamp }));
+			}
 			break;
 		}
 		case "thread_ownership": {
@@ -1339,6 +1290,7 @@ export function openThread(parentMessage: Message, channelName: string, { pushSt
 		return next;
 	});
 	trackThread(parentMessage.id, channelName, parentMessage.content, { replyCount: parentMessage.reply_count });
+	markRead("thread", parentMessage.id);
 
 	// Show panel immediately with loading state, then populate with replies
 	threadData.set({ parentMessage, channelName, messages: [], tasks });
