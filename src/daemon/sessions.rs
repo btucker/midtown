@@ -25,6 +25,10 @@ use crate::headless::{HeadlessConfig, HeadlessSession, StreamEvent, shutdown_cod
 pub struct RuntimeSessionSnapshot {
     pub last_active: DateTime<Utc>,
     pub pid: Option<u32>,
+    /// Session ID from the running session — used to locate the correct
+    /// `SessionRecord` during persist (avoids `session_by_name_mut` ambiguity
+    /// when multiple historical records share the same coworker name).
+    pub session_id: Option<String>,
     pub initial_prompt: Option<String>,
     pub working_dir: Option<String>,
     pub provider: Option<crate::auth::AuthProvider>,
@@ -1653,6 +1657,7 @@ impl SessionManager {
                 let info = RuntimeSessionSnapshot {
                     last_active: cs.last_event_at.unwrap_or(cs.started_at),
                     pid,
+                    session_id: cs.session_id.clone(),
                     initial_prompt: cs.initial_prompt.clone(),
                     working_dir: None,      // Filled by caller
                     provider: None,         // Filled by caller
