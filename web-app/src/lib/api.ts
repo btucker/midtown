@@ -26,7 +26,6 @@ import {
 	threadForkParents,
 	threadOwnership,
 	threadReadState,
-	threadUnreadCounts,
 	trackedThreads,
 	usageData,
 	userSenderName,
@@ -100,11 +99,6 @@ function trackThread(
 export function dismissThread(threadParentId: string): void {
 	trackedThreads.update((tracked) => {
 		const next = { ...tracked };
-		delete next[threadParentId];
-		return next;
-	});
-	threadUnreadCounts.update((counts) => {
-		const next = { ...counts };
 		delete next[threadParentId];
 		return next;
 	});
@@ -315,7 +309,7 @@ export function switchProject(projectName: string, webhookPort: number | null): 
 	const lastProject = previousProject || savedThreadProject;
 	if (lastProject !== projectName) {
 		trackedThreads.set({});
-		threadUnreadCounts.set({});
+		threadReadState.set({});
 	}
 	if (typeof localStorage !== "undefined") {
 		localStorage.setItem("midtown_thread_project", projectName);
@@ -790,14 +784,6 @@ export function handleUpdate(update: Record<string, unknown>): void {
 					}
 
 					const tracked = get(trackedThreads);
-					const td = get(threadData);
-					const panelShowingThis = td && td.parentMessage?.id === threadParentId;
-					if (tracked[threadParentId] && !panelShowingThis) {
-						threadUnreadCounts.update((counts) => ({
-							...counts,
-							[threadParentId]: (counts[threadParentId] || 0) + 1,
-						}));
-					}
 					// Update lastActivity/replyCount on the tracked entry
 					if (tracked[threadParentId]) {
 						const replyFullText = extractPlainText(msg.content);
@@ -1283,12 +1269,7 @@ export function openThread(parentMessage: Message, channelName: string, { pushSt
 	const { inProgress, backlog } = get(kanbanData);
 	const allTasks = [...inProgress, ...backlog];
 	const tasks = allTasks.filter((t) => t.thread_id === parentMessage.id || t.message_id === parentMessage.id);
-	// Clear unread count for this thread and auto-track it in the sidebar
-	threadUnreadCounts.update((counts) => {
-		const next = { ...counts };
-		delete next[parentMessage.id];
-		return next;
-	});
+	// Auto-track thread in the sidebar and mark as read
 	trackThread(parentMessage.id, channelName, parentMessage.content, { replyCount: parentMessage.reply_count });
 	markRead("thread", parentMessage.id);
 
