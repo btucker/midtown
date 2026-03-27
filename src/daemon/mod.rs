@@ -2411,7 +2411,14 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
 
         for (name, info) in &session_info {
             running_count += 1;
-            if let Some(record) = persistent.session_by_name_mut(name) {
+            // Look up the correct SessionRecord by session_id (unique) rather than
+            // by name (ambiguous — multiple historical records share the same name).
+            let record = if let Some(ref sid) = info.session_id {
+                persistent.sessions.get_mut(sid)
+            } else {
+                persistent.session_by_name_mut(name)
+            };
+            if let Some(record) = record {
                 record.is_running = true;
                 record.resume_on_startup = record.agent_type != "midtown-code-reviewer";
                 record.pid = info.pid;
