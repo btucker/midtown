@@ -6132,3 +6132,103 @@ fn extract_review_pr_numbers_tracks_create_review_task() {
     assert!(pr_numbers.contains(&99), "Should track PR #99");
     assert_eq!(pr_numbers.len(), 2);
 }
+
+/// Review task parent linkage should use the task store, not just session records.
+///
+/// Bug: `parent_task_id` was looked up from `pr_task_associations` (derived from
+/// session records), which are ephemeral. Once a worker session is GC'd, the
+/// PR→task mapping vanishes and `parent_task_id` becomes `None`.
+///
+/// Fix: Fall back to the task store's `pr` field, which persists permanently.
+#[tokio::test]
+async fn test_review_task_parent_from_task_store_when_session_gone() {
+    let pr_number = 88801u64;
+    let parent_task_id = "200";
+
+    let pr_json = serde_json::json!({
+        "number": pr_number,
+        "headRefName": "ghost/add-widget",
+        "title": "feat: Add widget [Midtown !200]",
+        "mergeable": "MERGEABLE",
+        "statusCheckRollup": null,
+        "reviewDecision": null,
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let mut registry = crate::worktree_registry::WorktreeRegistry::new();
+    // Register a worktree for the task so the PR is not considered orphaned.
+    registry
+        .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+            worktree_id: "task-200-add-widget".into(),
+            branch_name: "ghost/add-widget".into(),
+            task_id: Some(parent_task_id.into()),
+            current_coworker: Some("ghost".into()),
+            pr_number: Some(pr_number),
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+        })
+        .unwrap();
+    let active_names: std::collections::HashSet<String> =
+        ["ghost".to_string()].into_iter().collect();
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    // Save the parent task in the task store with pr field set.
+    // Crucially, do NOT add a session record — simulating a GC'd worker session.
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: parent_task_id.into(),
+            pr: Some(pr_number),
+            channel: Some("daemon-core".into()),
+            agent_name: "ghost".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let effects = collect_reviewer_effects_with_source(
+        &registry,
+        &active_names,
+        &state,
+        &[pr_json],
+        true,
+        &std::collections::HashMap::new(),
+        false, // not at task limit
+    )
+    .await;
+
+    // Extract the CreateReviewTask effect and check parent_task_id
+    let review_effect = effects.iter().find_map(|e| {
+        if let Effect::CreateReviewTask {
+            pr_number: pn,
+            parent_task_id,
+            ..
+        } = e
+        {
+            if *pn == pr_number {
+                Some(parent_task_id.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    });
+
+    assert!(
+        review_effect.is_some(),
+        "Expected a CreateReviewTask effect for PR #{}. Effects: {:#?}",
+        pr_number,
+        effects
+    );
+
+    assert_eq!(
+        review_effect.unwrap(),
+        Some(parent_task_id.to_string()),
+        "CreateReviewTask.parent_task_id should be set from the task store's pr field \
+         even when no session record exists. Before fix: parent_task_id was None because \
+         pr_task_associations (from session records) had no entry for this PR."
+    );
+}

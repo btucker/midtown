@@ -3007,7 +3007,12 @@ pub(crate) async fn collect_reviewer_effects_with_source(
 
         // --- Spawn reviewer ---
         let channel = pr_ctx.get_channel(pr_number);
-        let parent_task_id = pr_task_associations.get(&pr_number).cloned();
+        let parent_task_id = pr_task_associations.get(&pr_number).cloned().or_else(|| {
+            all_tasks
+                .iter()
+                .find(|t| t.pr == Some(pr_number) && !t.subject.starts_with("Review PR #"))
+                .map(|t| t.id.clone())
+        });
 
         debug!(
             "Creating review task for PR #{}: {}",
