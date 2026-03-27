@@ -908,6 +908,24 @@ impl Effect {
             Some(super::constants::OPS_CHANNEL.to_string()),
         )
     }
+
+    /// Convenience: post a system message to a specific channel.
+    ///
+    /// Creates a `PostSystemMessage` with the given channel. Pass `None` to
+    /// route to the default project channel.
+    pub fn system_message(message: impl Into<String>, channel: Option<String>) -> Self {
+        Self::PostSystemMessage {
+            message: message.into(),
+            channel,
+        }
+    }
+
+    /// Convenience: post a system message to the ops channel.
+    ///
+    /// Shorthand for `system_message(message, Some("ops"))`.
+    pub fn system_message_to_ops(message: impl Into<String>) -> Self {
+        Self::system_message(message, Some(super::constants::OPS_CHANNEL.to_string()))
+    }
 }
 
 /// Returns true if a non-completed task already exists for the given PR number.
