@@ -90,6 +90,7 @@ function trackThread(
 				// Only set lastActivity on initial tracking — WS handler updates it on new replies
 				lastActivity: existing?.lastActivity || new Date().toISOString(),
 				replyCount: opts?.replyCount ?? (existing?.replyCount || 0),
+				lastReplySender: existing?.lastReplySender,
 			},
 		};
 	});
