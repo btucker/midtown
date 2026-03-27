@@ -348,7 +348,7 @@ function handleKeyDown(event: KeyboardEvent) {
   <!-- Channels with inline threads (drag-to-reorder) -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    use:dndzone={{ items: dndChannelItems, flipDurationMs: 200, dropTargetStyle: {}, dragDisabled: false, type: "channels" }}
+    use:dndzone={{ items: dndChannelItems, flipDurationMs: 200, dropTargetStyle: {}, dragDisabled: false, type: "channels", dragHandleSelector: ".drag-handle" }}
     onconsider={handleDndConsider}
     onfinalize={handleDndFinalize}
   >
