@@ -19,6 +19,7 @@ use super::helpers::is_lead_branch;
 use super::helpers::*;
 use super::trackers::{PrIssueType, StuckConditionType};
 use crate::json_ext::ValueExt;
+use crate::process::{check_cmd_output, cmd_stdout, parse_json_warn};
 
 /// Resolve a PR's owner via the session-centric path:
 /// PR number → task_id → session_id → session.name.
@@ -251,29 +252,17 @@ pub(super) fn fetch_merged_pr_data(state: &DaemonState) -> (HashSet<u64>, Vec<se
         ])
         .output();
 
-    let (pr_numbers, merged_prs_data): (HashSet<u64>, Vec<serde_json::Value>) = match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if let Ok(prs) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
+    let (pr_numbers, merged_prs_data): (HashSet<u64>, Vec<serde_json::Value>) =
+        check_cmd_output(output, "get merged PRs from gh CLI")
+            .and_then(|o| parse_json_warn::<Vec<serde_json::Value>>(&o.stdout, "parse merged PRs"))
+            .map(|prs| {
                 let numbers: HashSet<u64> = prs
                     .iter()
                     .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
                     .collect();
                 (numbers, prs)
-            } else {
-                (HashSet::new(), Vec::new())
-            }
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!("Failed to get merged PRs from gh CLI: {}", stderr.trim());
-            (HashSet::new(), Vec::new())
-        }
-        Err(e) => {
-            warn!("Failed to execute gh pr list (merged): {}", e);
-            (HashSet::new(), Vec::new())
-        }
-    };
+            })
+            .unwrap_or_default();
 
     // Update cache
     {
@@ -3138,33 +3127,20 @@ pub(super) fn pr_has_completed_review_uncached(
         ])
         .output();
 
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let json: serde_json::Value = match serde_json::from_str(&stdout) {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!("Failed to parse review JSON for PR #{}: {}", pr_number, e);
-                    return false;
-                }
-            };
+    let Some(json) = check_cmd_output(
+        output,
+        &format!("fetch reviews/comments for PR #{pr_number}"),
+    )
+    .and_then(|o| {
+        parse_json_warn::<serde_json::Value>(
+            &o.stdout,
+            &format!("parse review JSON for PR #{pr_number}"),
+        )
+    }) else {
+        return false;
+    };
 
-            json_has_completed_review(&json, assigned_reviewer, assigned_session_id)
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!(
-                "Failed to fetch reviews/comments for PR #{}: {}",
-                pr_number,
-                stderr.trim()
-            );
-            false
-        }
-        Err(e) => {
-            warn!("Failed to execute gh pr view for PR #{}: {}", pr_number, e);
-            false
-        }
-    }
+    json_has_completed_review(&json, assigned_reviewer, assigned_session_id)
 }
 
 /// Pure logic for checking if parsed review JSON contains a completed review.
@@ -3255,39 +3231,20 @@ pub(super) fn fetch_review_comment_ids(repo_full_name: &str, pr_number: u64) -> 
         .args(["api", "--paginate", "--slurp", &endpoint])
         .output();
 
-    match output {
-        Ok(output) if output.status.success() => {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let comments: Vec<serde_json::Value> = match serde_json::from_str(&stdout) {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!(
-                        "Failed to parse REST API comments for PR #{}: {}",
-                        pr_number, e
-                    );
-                    return vec![];
-                }
-            };
+    let Some(comments) = check_cmd_output(
+        output,
+        &format!("fetch REST API comments for PR #{pr_number}"),
+    )
+    .and_then(|o| {
+        parse_json_warn::<Vec<serde_json::Value>>(
+            &o.stdout,
+            &format!("parse REST API comments for PR #{pr_number}"),
+        )
+    }) else {
+        return vec![];
+    };
 
-            extract_review_comment_ids_from_json(&comments)
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!(
-                "Failed to fetch REST API comments for PR #{}: {}",
-                pr_number,
-                stderr.trim()
-            );
-            vec![]
-        }
-        Err(e) => {
-            warn!(
-                "Failed to execute gh api for PR #{} comments: {}",
-                pr_number, e
-            );
-            vec![]
-        }
-    }
+    extract_review_comment_ids_from_json(&comments)
 }
 
 /// Check whether a PR has an unupdated "Review in progress" placeholder comment.
@@ -3299,15 +3256,15 @@ pub(super) fn fetch_review_comment_ids(repo_full_name: &str, pr_number: u64) -> 
 pub(super) fn pr_in_progress_placeholder_comment_id(pr_number: u64) -> Option<u64> {
     let output = std::process::Command::new("gh")
         .args(["pr", "view", &pr_number.to_string(), "--json", "comments"])
-        .output()
-        .ok()?;
+        .output();
 
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&stdout).ok()?;
+    let json =
+        check_cmd_output(output, &format!("fetch comments for PR #{pr_number}")).and_then(|o| {
+            parse_json_warn::<serde_json::Value>(
+                &o.stdout,
+                &format!("parse comments for PR #{pr_number}"),
+            )
+        })?;
 
     extract_placeholder_comment_id(&json)
 }
@@ -3373,30 +3330,17 @@ pub(super) async fn cleanup_review_placeholders(pr_number: u64, repo_full_name: 
         .output()
         .await;
 
-    let output = match output {
-        Ok(o) if o.status.success() => o,
-        Ok(o) => {
-            let stderr = String::from_utf8_lossy(&o.stderr);
-            warn!(
-                "Failed to list comments for placeholder cleanup on PR #{}: {}",
-                pr_number,
-                stderr.trim()
-            );
-            return;
-        }
-        Err(e) => {
-            warn!(
-                "Failed to run gh for placeholder cleanup on PR #{}: {}",
-                pr_number, e
-            );
-            return;
-        }
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = match serde_json::from_str(&stdout) {
-        Ok(v) => v,
-        Err(_) => return,
+    let Some(json) = check_cmd_output(
+        output,
+        &format!("list comments for placeholder cleanup on PR #{pr_number}"),
+    )
+    .and_then(|o| {
+        parse_json_warn::<serde_json::Value>(
+            &o.stdout,
+            &format!("parse comments for placeholder cleanup on PR #{pr_number}"),
+        )
+    }) else {
+        return;
     };
 
     let placeholder_ids = extract_all_placeholder_comment_ids(&json);
@@ -3472,25 +3416,20 @@ async fn add_eyes_reaction(repo_full_name: &str, comment_node: &crate::webhook::
 
 /// Fetch the branch name (headRefName) for a PR using the GitHub CLI.
 async fn get_pr_branch_async(pr_number: u64) -> Option<String> {
-    let output = tokio::process::Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr_number.to_string(),
-            "--json",
-            "headRefName",
-            "-q",
-            ".headRefName",
-        ])
-        .output()
-        .await
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    cmd_stdout(
+        tokio::process::Command::new("gh")
+            .args([
+                "pr",
+                "view",
+                &pr_number.to_string(),
+                "--json",
+                "headRefName",
+                "-q",
+                ".headRefName",
+            ])
+            .output()
+            .await,
+    )
 }
 
 /// Handle nudging a PR owner when a comment/review is posted on their PR.
