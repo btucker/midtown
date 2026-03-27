@@ -400,7 +400,13 @@ impl TaskStore {
 
 // ── Utility functions (moved from tasks.rs) ─────────────────────────────
 
-/// Extract task ID from PR title using `[Midtown !XX]` or `[Midtown #XX]` format.
+/// Extract task ID from PR title.
+///
+/// Matches these formats (checked in priority order):
+/// 1. `[Midtown !XX]` — canonical bracket format
+/// 2. `[Midtown #XX]` — legacy bracket format
+/// 3. `(!XX)` — parenthesized task ID
+/// 4. `!XX` at end of title — bare task ID suffix
 pub fn extract_task_id_from_pr_title(title: &str) -> Option<u64> {
     // Try `[Midtown !XX]` first (canonical format used by coworkers)
     if let Some(start) = title.find("[Midtown !") {
@@ -417,7 +423,30 @@ pub fn extract_task_id_from_pr_title(title: &str) -> Option<u64> {
         let rest = &title[start + 10..]; // Skip "[Midtown #"
         if let Some(end) = rest.find(']') {
             let num_str = &rest[..end];
-            return num_str.parse::<u64>().ok();
+            if let Ok(id) = num_str.parse::<u64>() {
+                return Some(id);
+            }
+        }
+    }
+    // Try parenthesized format: (!NNN)
+    if let Some(start) = title.find("(!") {
+        let rest = &title[start + 2..]; // Skip "(!"
+        if let Some(end) = rest.find(')') {
+            let num_str = &rest[..end];
+            if let Ok(id) = num_str.parse::<u64>() {
+                return Some(id);
+            }
+        }
+    }
+    // Try bare !NNN at end of title
+    let trimmed = title.trim_end();
+    if let Some(pos) = trimmed.rfind('!') {
+        // Only match if preceded by a space (or is start of string) — avoid matching mid-word
+        if pos == 0 || trimmed.as_bytes()[pos - 1] == b' ' {
+            let num_str = &trimmed[pos + 1..];
+            if !num_str.is_empty() {
+                return num_str.parse::<u64>().ok();
+            }
         }
     }
     None
