@@ -67,6 +67,7 @@ export interface Task {
 	thread_id?: string;
 	message_id?: string;
 	parent?: string;
+	blocked_by?: string[];
 	color?: string;
 	icon?: string;
 	updated_at?: string; // ISO timestamp — when the task was last modified

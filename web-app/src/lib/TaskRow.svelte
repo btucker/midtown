@@ -144,7 +144,7 @@ function handleDescriptionClick(e) {
               class="h-full transition-[width] duration-500 ease-in-out"
               style="width: {seg.width}%; max-width: {seg.maxWidth}%; background: {seg.color}"
             ></div>
-            {#if seg.maxWidth < 100}
+            {#if seg.maxWidth > seg.width}
               <div style="width: {seg.maxWidth - seg.width}%"></div>
             {/if}
           {/each}
