@@ -117,7 +117,14 @@ describe("computeAttentionItems", () => {
 			...baseOpts,
 			coworkers: [{ name: "ghost-town" }],
 			tasks: [
-				{ id: 1, subject: "Fix bug", status: "completed", owner: "ghost-town", channel: "web" },
+				{
+					id: 1,
+					subject: "Fix bug",
+					status: "completed",
+					owner: "ghost-town",
+					channel: "web",
+					updated_at: new Date(now - 60000).toISOString(),
+				},
 				{ id: 2, subject: "Pending task", status: "pending", owner: "ghost-town" },
 			],
 		});
@@ -279,7 +286,15 @@ describe("computeAttentionItems", () => {
 		const items = computeAttentionItems({
 			...baseOpts,
 			coworkers: [{ name: "ghost-town" }],
-			tasks: [{ id: 1, subject: "Old completed", status: "completed", owner: "ghost-town" }],
+			tasks: [
+				{
+					id: 1,
+					subject: "Old completed",
+					status: "completed",
+					owner: "ghost-town",
+					updated_at: new Date(now - 60000).toISOString(),
+				},
+			],
 			trackedThreads: {
 				[threadId]: {
 					channelName: "web",

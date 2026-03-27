@@ -100,14 +100,32 @@ export function computeAttentionItems(opts: {
 		}
 	}
 
-	// 2. Completed tasks — only show if completed within the last 24 hours
+	// 2. Completed tasks — only show if completed within the last 24 hours and not yet seen
+	const completedTasks = opts.tasks.filter((t) => t.status === "completed");
+	if (completedTasks.length > 0) {
+		console.log(
+			"[needsAttention] completed tasks:",
+			completedTasks.length,
+			"sample:",
+			completedTasks[0]?.updated_at,
+			"now:",
+			now,
+			"24h ago:",
+			now - TWENTY_FOUR_HOURS_MS,
+		);
+	}
 	for (const task of opts.tasks) {
 		if (task.status !== "completed") continue;
 
 		// Filter out old completions — only show tasks updated in the last 24h
-		if (task.updated_at) {
-			const updatedMs = new Date(task.updated_at).getTime();
-			if (now - updatedMs > TWENTY_FOUR_HOURS_MS) continue;
+		const updatedMs = task.updated_at ? new Date(task.updated_at).getTime() : 0;
+		if (now - updatedMs > TWENTY_FOUR_HOURS_MS) continue;
+
+		// Filter out if user has already seen this task's thread
+		const threadId = task.thread_id || task.message_id;
+		if (threadId) {
+			const lastRead = opts.threadReadState[threadId];
+			if (lastRead && new Date(lastRead).getTime() >= updatedMs) continue;
 		}
 
 		const id = `task:${task.id}`;
