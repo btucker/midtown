@@ -291,6 +291,7 @@ pub(super) fn validate_agent_name(
     name: &str,
     project_name: &str,
     channel_lead_names: &std::collections::HashSet<String>,
+    active_session_names: &std::collections::HashSet<String>,
 ) -> Result<(), String> {
     if super::helpers::is_project_lead(name, project_name) {
         return Err(format!(
@@ -301,6 +302,12 @@ pub(super) fn validate_agent_name(
     if channel_lead_names.contains(name) {
         return Err(format!(
             "agent_name '{}' is reserved (matches a channel lead name)",
+            name
+        ));
+    }
+    if active_session_names.contains(&name.to_lowercase()) {
+        return Err(format!(
+            "agent_name '{}' is already in use by an active session",
             name
         ));
     }
@@ -356,11 +363,17 @@ pub(super) async fn handle_task_create(
         );
     }
 
-    // Check agent_name doesn't collide with project lead or channel lead names
+    // Check agent_name doesn't collide with reserved or active session names
     {
         let ps = state.persistent_state.lock().await;
         let channel_lead_names = ps.channel_lead_names();
-        if let Err(e) = validate_agent_name(agent_name, &state.project_name, &channel_lead_names) {
+        let active_session_names = &ps.tick_active_session_names;
+        if let Err(e) = validate_agent_name(
+            agent_name,
+            &state.project_name,
+            &channel_lead_names,
+            active_session_names,
+        ) {
             return Response::error(id, RpcError::new(-32602, e));
         }
     }
