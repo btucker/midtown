@@ -1236,7 +1236,7 @@ fn slugify_fork_hint(message: &str, thread_parent_id: &str) -> String {
 pub(super) fn build_fork_config(
     thread_parent_id: &str,
     _calling_session_id: &str,
-    caller_name: Option<&str>,
+    _caller_name: Option<&str>,
     fork_name_hint: Option<&str>,
     fork_channel: Option<&str>,
     working_dir: Option<&str>,
@@ -1245,23 +1245,17 @@ pub(super) fn build_fork_config(
     repo_name: &str,
     name_override: Option<&str>,
 ) -> (String, crate::headless::HeadlessConfig) {
-    // Derive the fork name
+    // Derive the fork name — just the slug from the hint, or a fallback
+    // from the thread ID. Uniqueness is enforced by validate_agent_name.
     let fork_name = if let Some(name) = name_override {
         name.to_string()
+    } else if let Some(hint) = fork_name_hint.filter(|h| !h.is_empty()) {
+        slugify_fork_hint(hint, thread_parent_id)
     } else {
-        let tid_suffix = thread_parent_id.get(..4).unwrap_or(thread_parent_id);
-        if let Some(hint) = fork_name_hint.filter(|h| !h.is_empty()) {
-            let slug = slugify_fork_hint(hint, thread_parent_id);
-            match caller_name {
-                Some(name) => format!("{}-{}-{}", name, slug, tid_suffix),
-                None => format!("fork-{}-{}", slug, tid_suffix),
-            }
-        } else {
-            format!(
-                "fork-{}",
-                thread_parent_id.get(..8).unwrap_or(thread_parent_id),
-            )
-        }
+        format!(
+            "fork-{}",
+            thread_parent_id.get(..8).unwrap_or(thread_parent_id),
+        )
     };
 
     // Build LaunchConfig and convert to HeadlessConfig
@@ -1460,6 +1454,22 @@ pub(super) async fn create_fork_session(
         state.paths.dir_key(),
         None, // normal fork — derive name from hint
     );
+
+    // Validate fork name uniqueness against reserved and active names.
+    {
+        let ps = state.persistent_state.lock().await;
+        let channel_lead_names = ps.channel_lead_names();
+        let active_session_names = &ps.tick_active_session_names;
+        if let Err(e) = super::rpc_task::validate_agent_name(
+            &fork_name,
+            state.paths.dir_key(),
+            &channel_lead_names,
+            active_session_names,
+        ) {
+            state.pending_forks.lock().unwrap().remove(thread_parent_id);
+            return Err(e);
+        }
+    }
 
     // Spawn the forked session.
     let fork_session_id = match state

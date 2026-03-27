@@ -936,7 +936,7 @@ fn test_fork_channel_lead_disallows_edit() {
 ///
 /// Regression guard for the Codex-identified crash-respawn name stability issue.
 #[test]
-fn test_build_fork_config_mutates_name_when_given_existing_fork_name_as_hint() {
+fn test_build_fork_config_stable_name_from_hint() {
     let midtown_dir = tempfile::TempDir::new().expect("midtown temp dir");
     let _guard = crate::paths::set_test_midtown_base_dir(midtown_dir.path().to_path_buf());
 
@@ -944,8 +944,8 @@ fn test_build_fork_config_mutates_name_when_given_existing_fork_name_as_hint() {
     let provider = crate::auth::AuthProvider::Claude;
     let repo_name = "test-repo";
 
-    // First fork: caller "web" creates a fork with topic hint "auth discussion"
-    let (original_name, _cfg) = build_fork_config(
+    // Fork with topic hint "auth discussion" — name is just the slug
+    let (name1, _cfg) = build_fork_config(
         thread_id,
         "parent-session",
         Some("web"),
@@ -955,47 +955,49 @@ fn test_build_fork_config_mutates_name_when_given_existing_fork_name_as_hint() {
         provider,
         false,
         repo_name,
-        None, // no name override
+        None,
     );
 
-    // Without name_override: passing original name as hint re-derives a different name
-    let (respawned_name_via_hint, _cfg) = build_fork_config(
+    // Same hint produces the same slug (stable naming)
+    let (name2, _cfg) = build_fork_config(
         thread_id,
         "",
         None,
-        Some(&original_name),
+        Some("auth discussion"),
         Some("web"),
         Some("/tmp/test"),
         provider,
         false,
         repo_name,
-        None, // no name override — uses hint derivation
-    );
-
-    // The names DIFFER when using hint — this is the bug that name_override fixes
-    assert_ne!(
-        original_name, respawned_name_via_hint,
-        "build_fork_config should produce a different name when re-deriving from an existing \
-         fork name as hint (demonstrating why name_override is needed)"
-    );
-
-    // With name_override: the exact original name is preserved
-    let (respawned_name_via_override, _cfg) = build_fork_config(
-        thread_id,
-        "",
         None,
-        None,
-        Some("web"),
-        Some("/tmp/test"),
-        provider,
-        false,
-        repo_name,
-        Some(&original_name), // name override — reuses exact name
     );
 
     assert_eq!(
-        original_name, respawned_name_via_override,
-        "name_override should produce the exact same fork name for stable cooldown keys"
+        name1, name2,
+        "Same hint should produce the same fork name (slug-only naming)"
+    );
+    assert_eq!(
+        name1, "auth-discussion",
+        "Fork name should be just the slug"
+    );
+
+    // name_override still works for resume
+    let (name3, _cfg) = build_fork_config(
+        thread_id,
+        "",
+        None,
+        None,
+        Some("web"),
+        Some("/tmp/test"),
+        provider,
+        false,
+        repo_name,
+        Some(&name1),
+    );
+
+    assert_eq!(
+        name1, name3,
+        "name_override should produce the exact same fork name"
     );
 }
 

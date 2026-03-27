@@ -773,3 +773,79 @@ async fn test_handle_task_handoff_session_exists_but_no_record() {
         message
     );
 }
+
+// ── validate_agent_name tests ───────────────────────────────────────────────
+
+#[test]
+fn test_validate_agent_name_rejects_project_name() {
+    let channel_leads = std::collections::HashSet::new();
+    let result = validate_agent_name(
+        "midtown",
+        "midtown",
+        &channel_leads,
+        &std::collections::HashSet::new(),
+    );
+    assert!(result.is_err(), "should reject name matching project name");
+    assert!(result.unwrap_err().contains("reserved"));
+}
+
+#[test]
+fn test_validate_agent_name_rejects_project_name_case_insensitive() {
+    let channel_leads = std::collections::HashSet::new();
+    let result = validate_agent_name(
+        "Midtown",
+        "midtown",
+        &channel_leads,
+        &std::collections::HashSet::new(),
+    );
+    assert!(result.is_err(), "should reject case-insensitive match");
+}
+
+#[test]
+fn test_validate_agent_name_rejects_lead() {
+    let channel_leads = std::collections::HashSet::new();
+    let result = validate_agent_name(
+        "lead",
+        "midtown",
+        &channel_leads,
+        &std::collections::HashSet::new(),
+    );
+    assert!(result.is_err(), "should reject 'lead'");
+}
+
+#[test]
+fn test_validate_agent_name_rejects_channel_lead_name() {
+    let mut channel_leads = std::collections::HashSet::new();
+    channel_leads.insert("daemon-core".to_string());
+    let result = validate_agent_name(
+        "daemon-core",
+        "midtown",
+        &channel_leads,
+        &std::collections::HashSet::new(),
+    );
+    assert!(result.is_err(), "should reject channel lead name");
+    assert!(result.unwrap_err().contains("channel lead"));
+}
+
+#[test]
+fn test_validate_agent_name_rejects_active_session_name() {
+    let channel_leads = std::collections::HashSet::new();
+    let mut active_sessions = std::collections::HashSet::new();
+    active_sessions.insert("ghost-town".to_string());
+    let result = validate_agent_name("ghost-town", "midtown", &channel_leads, &active_sessions);
+    assert!(
+        result.is_err(),
+        "should reject name matching active session"
+    );
+    assert!(result.unwrap_err().contains("in use"));
+}
+
+#[test]
+fn test_validate_agent_name_accepts_unique_name() {
+    let mut channel_leads = std::collections::HashSet::new();
+    channel_leads.insert("daemon-core".to_string());
+    let mut active_sessions = std::collections::HashSet::new();
+    active_sessions.insert("ghost-town".to_string());
+    let result = validate_agent_name("silver-fox", "midtown", &channel_leads, &active_sessions);
+    assert!(result.is_ok(), "should accept unique name");
+}

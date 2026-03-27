@@ -593,8 +593,11 @@ pub async fn recover_from_session_records(
         );
 
         // Build launch config from SessionRecord
-        let is_main_lead_session =
-            record.agent_type == "midtown-project-lead" || name == "lead" || name == repo_name;
+        // A session is the main lead only if its agent_type says so,
+        // OR if it's named "lead"/repo_name AND has no task (workers can
+        // collide on the repo name — e.g., a coworker named "midtown").
+        let is_main_lead_session = record.agent_type == "midtown-project-lead"
+            || ((name == "lead" || name == repo_name) && record.task_id.is_none());
 
         let mut config = if is_main_lead_session {
             // Lead session — uses lead system prompt, provider-compatible model,
