@@ -1,6 +1,11 @@
 import { getSenderColor } from "./messageUtils.ts";
 import type { Coworker, NeedsAttentionItem, Task, TrackedThread } from "./types.ts";
 
+function lookupTaskColor(ownerName: string, tasks: Task[]): string | undefined {
+	const task = tasks.find((t) => t.owner === ownerName && t.color);
+	return task?.color;
+}
+
 const TEN_MINUTES_MS = 10 * 60 * 1000;
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 
@@ -96,7 +101,7 @@ export function computeAttentionItems(opts: {
 					threadId,
 					timestamp: new Date(lastMsg.timestamp).getTime(),
 					workerName: lastMsg.sender,
-					workerColor: getSenderColor(lastMsg.sender, null),
+					workerColor: lookupTaskColor(lastMsg.sender, opts.tasks) || getSenderColor(lastMsg.sender, null),
 				});
 			}
 		}
@@ -120,7 +125,7 @@ export function computeAttentionItems(opts: {
 			taskId: task.id,
 			timestamp: now,
 			workerName: task.owner,
-			workerColor: task.owner ? getSenderColor(task.owner, null) : undefined,
+			workerColor: task.color || (task.owner ? getSenderColor(task.owner, null) : undefined),
 		});
 	}
 
@@ -147,7 +152,7 @@ export function computeAttentionItems(opts: {
 				taskId: task.id,
 				timestamp: lastChange,
 				workerName: task.owner,
-				workerColor: task.owner ? getSenderColor(task.owner, null) : undefined,
+				workerColor: task.color || (task.owner ? getSenderColor(task.owner, null) : undefined),
 			});
 		}
 	}
