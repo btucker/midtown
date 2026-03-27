@@ -149,5 +149,8 @@ The web app runs as a PWA on mobile devices. When modifying layout or adding new
 
 ## Pull Requests
 
-- When a PR includes visual changes to the web UI (`web-app/` or `web/`), include before/after screenshots in the PR description.
+- When a PR includes visual changes to the web UI (`web-app/` or `web/`), include before/after screenshots in the PR description. Use the Playwright MCP tools to capture them:
+  1. `browser_navigate` to the relevant page, then `browser_screenshot` to capture the before/after states
+  2. `midtown agent upload-image <path>` to get a GitHub-embeddable URL
+  3. Embed the returned markdown image URL in the PR body
 - **Check code coverage before opening a PR.** Run `./scripts/coverage-diff.sh` to generate a branch-based coverage diff. This shows coverage only for lines changed relative to `origin/main` and prints a summary to the terminal. Review the summary for uncovered lines in your changed files. New code should have reasonable coverage — if a function is untestable at the unit level (e.g., async functions requiring full `DaemonState`), note it in the PR description. Prerequisites: `cargo install cargo-llvm-cov` and `pip install diff-cover`.

@@ -130,6 +130,10 @@ When your PR includes visual changes, use the **Playwright MCP tools** to captur
 2. **Upload for GitHub** — use `midtown agent upload-image` to get a GitHub-embeddable URL
 3. **Embed in PR description** — include the returned markdown in your PR body
 
+### Before Creating the PR: Screenshot Check
+
+If your diff includes changes to `web-app/` or `web/`, you **MUST** capture before/after screenshots before creating the PR. Use the [Screenshots for Visual Changes](#screenshots-for-visual-changes) workflow above.
+
 ## Requesting PR Reviews
 
 When your PR is ready for review:
