@@ -308,6 +308,8 @@ fn map_tasks_to_json(
                 "thread_id": thread_id,
                 "plan": plan,
                 "parent": parent,
+                "color": task.color,
+                "icon": task.icon,
             })
         })
         .collect()

@@ -41,8 +41,8 @@ const effectiveCw = $derived(isCard ? (task.owner ? (cwMap?.get(task.owner) ?? n
 const effectiveReviewer = $derived(isCard ? (relatedPr?.reviewer ?? null) : reviewer);
 const effectiveReviewPosted = $derived(isCard ? relatedPr?.review_posted || false : reviewPosted);
 const hasProgress = $derived(effectiveCw?.progress != null);
-const ownerColor = $derived(effectiveCw?.color || (task.owner ? getSenderColor(task.owner) : null));
-const ownerIcon = $derived(effectiveCw?.icon);
+const ownerColor = $derived(task.color || effectiveCw?.color || (task.owner ? getSenderColor(task.owner) : null));
+const ownerIcon = $derived(task.icon || effectiveCw?.icon);
 
 const prUrl = $derived(
 	relatedPr && $repoStatus.fullName ? `https://github.com/${$repoStatus.fullName}/pull/${relatedPr.number}` : null,

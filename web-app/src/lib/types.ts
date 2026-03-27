@@ -67,6 +67,8 @@ export interface Task {
 	thread_id?: string;
 	message_id?: string;
 	parent?: string;
+	color?: string;
+	icon?: string;
 }
 
 // ── Pull requests ────────────────────────────────────────────────────────────
