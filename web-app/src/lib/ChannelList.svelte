@@ -147,7 +147,7 @@ function handleActivityItemClick(item: { threadId?: string; taskId?: number; cha
 	} else if (item.taskId) {
 		// Find the task and open its thread
 		const allTasks = [...$kanbanData.inProgress, ...$kanbanData.backlog, ...($kanbanData.completedTasks || [])];
-		const task = allTasks.find((t) => t.id === item.taskId);
+		const task = allTasks.find((t) => String(t.id) === String(item.taskId));
 		if (task) {
 			openTaskThread(task, item.channel);
 			sidebar.setOpenMobile(false);
