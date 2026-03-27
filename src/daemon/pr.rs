@@ -18,6 +18,7 @@ use super::effects::Effect;
 use super::helpers::is_lead_branch;
 use super::helpers::*;
 use super::trackers::{PrIssueType, StuckConditionType};
+use crate::json_ext::ValueExt;
 
 /// Resolve a PR's owner via the session-centric path:
 /// PR number → task_id → session_id → session.name.
@@ -3110,12 +3111,9 @@ pub(super) fn json_has_completed_review(
     assigned_session_id: Option<&str>,
 ) -> bool {
     // Check formal reviews first (Codex / GitHub-native review flow).
-    if let Some(reviews) = json.get("reviews").and_then(|v| v.as_array()) {
+    if let Some(reviews) = json.array_field("reviews") {
         for review in reviews {
-            let state_upper = review
-                .get("state")
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_ascii_uppercase());
+            let state_upper = review.str_field("state").map(|s| s.to_ascii_uppercase());
 
             // Only strong review states count as completed reviews.
             // COMMENTED and DISMISSED are too weak — Codex and other tools
@@ -3126,12 +3124,11 @@ pub(super) fn json_has_completed_review(
                 .is_some_and(|s| matches!(s, "APPROVED" | "CHANGES_REQUESTED"));
 
             let has_review_body = review
-                .get("body")
-                .and_then(|b| b.as_str())
+                .str_field("body")
                 .is_some_and(text_contains_review_signature);
 
             if is_strong_state || has_review_body {
-                let body = review.get("body").and_then(|b| b.as_str()).unwrap_or("");
+                let body = review.str_or("body", "");
 
                 if review_author_matches(body, assigned_reviewer, assigned_session_id)
                     || (is_strong_state && assigned_reviewer.is_some())
@@ -3143,9 +3140,9 @@ pub(super) fn json_has_completed_review(
     }
 
     // Check comments (where coworkers post comment-based reviews).
-    if let Some(comments) = json.get("comments").and_then(|v| v.as_array()) {
+    if let Some(comments) = json.array_field("comments") {
         for comment in comments {
-            if let Some(body) = comment.get("body").and_then(|b| b.as_str())
+            if let Some(body) = comment.str_field("body")
                 && text_contains_review_signature(body)
                 && review_author_matches(body, assigned_reviewer, assigned_session_id)
             {

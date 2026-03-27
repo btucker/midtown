@@ -9,6 +9,8 @@ use std::process::Command;
 
 use clap::{Args, Subcommand};
 
+use midtown::json_ext::ValueExt;
+
 use super::Response;
 use super::session_render;
 use crate::client::DaemonClient;
@@ -306,34 +308,14 @@ fn handle_attach(target: &AttachArgs, client: &DaemonClient) -> Result<Response,
         };
 
         let session_id = info
-            .get("session_id")
-            .and_then(|v| v.as_str())
+            .str_field("session_id")
             .ok_or("Daemon did not return session_id")?;
-        let cwd = info
-            .get("cwd")
-            .and_then(|v| v.as_str())
-            .ok_or("Daemon did not return cwd")?;
-        let name = info
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or("Daemon did not return name")?;
-        let provider = parse_provider(
-            info.get("provider")
-                .and_then(|v| v.as_str())
-                .unwrap_or("claude"),
-        );
-        let profile = info
-            .get("profile")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let coworker_type = info
-            .get("coworker_type")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let channel = info
-            .get("channel")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let cwd = info.str_field("cwd").ok_or("Daemon did not return cwd")?;
+        let name = info.str_field("name").ok_or("Daemon did not return name")?;
+        let provider = parse_provider(info.str_or("provider", "claude"));
+        let profile = info.str_field("profile").map(|s| s.to_string());
+        let coworker_type = info.str_field("coworker_type").map(|s| s.to_string());
+        let channel = info.str_field("channel").map(|s| s.to_string());
         let profile_dir = profile
             .as_deref()
             .map(|name| midtown::auth::profile_dir_for(provider, name));
@@ -533,11 +515,9 @@ fn extract_spawned_name(response: &Response) -> Result<String, String> {
             .map(|c| c.name.to_lowercase())
             .ok_or_else(|| "Spawn response contained no coworkers".to_string()),
         Response::Json { value } => value
-            .get("coworkers")
-            .and_then(|v| v.as_array())
+            .array_field("coworkers")
             .and_then(|arr| arr.first())
-            .and_then(|cw| cw.get("name"))
-            .and_then(|v| v.as_str())
+            .and_then(|cw| cw.str_field("name"))
             .map(|s| s.to_lowercase())
             .ok_or_else(|| "Spawn response JSON did not include coworker name".to_string()),
         Response::Message { message } => message
@@ -972,16 +952,9 @@ fn handle_show(target: &str, watch: bool, client: &DaemonClient) -> Result<Respo
         }
     };
 
-    let output = raw
-        .get("output")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let log_path = raw
-        .get("log_path")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let snapshot_log_offset = raw.get("log_offset").and_then(|v| v.as_u64()).unwrap_or(0);
+    let output = raw.str_or("output", "").to_string();
+    let log_path = raw.str_field("log_path").map(|s| s.to_string());
+    let snapshot_log_offset = raw.u64_field("log_offset").unwrap_or(0);
 
     // Render the initial snapshot
     let rendered = session_render::render_ansi(&output);
@@ -1167,7 +1140,7 @@ fn upload_to_github(image_path: &std::path::Path, ext: &str) -> Result<String, S
         .json()
         .map_err(|e| format!("Failed to parse GitHub upload response: {}", e))?;
 
-    if let Some(url) = body.get("url").and_then(|v| v.as_str()) {
+    if let Some(url) = body.str_field("url") {
         eprintln!("Screenshot uploaded to GitHub: {}", url);
         return Ok(url.to_string());
     }

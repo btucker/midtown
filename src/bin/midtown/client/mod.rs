@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use midtown::json_ext::ValueExt;
+
 use crate::cli::Response;
 
 /// Client for communicating with the midtown daemon over Unix socket using JSON-RPC 2.0.
@@ -233,9 +235,8 @@ impl DaemonClient {
         // When --thread-id was used, message_id points to a reply within the
         // thread, so using it as thread_parent_id would nest replies incorrectly.
         let thread_parent_id = metadata
-            .get("thread_id")
-            .and_then(|v| v.as_str())
-            .or_else(|| metadata.get("message_id").and_then(|v| v.as_str()))
+            .str_field("thread_id")
+            .or_else(|| metadata.str_field("message_id"))
             .ok_or_else(|| {
                 format!(
                     "Task !{} has no thread or announcement message (may have been created before threading was added)",
@@ -249,10 +250,7 @@ impl DaemonClient {
         // 2. MIDTOWN_CHANNEL env var (coworker context sets this to the task's topic channel)
         // 3. Task's channel from metadata (fallback for non-coworker contexts)
         let env_channel = std::env::var("MIDTOWN_CHANNEL").ok();
-        let task_channel = metadata
-            .get("channel")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let task_channel = metadata.str_field("channel").map(|s| s.to_string());
         let effective_channel = channel
             .map(|s| s.to_string())
             .or(env_channel)
@@ -452,8 +450,7 @@ impl DaemonClient {
     pub fn coworker_view(&self, name: &str) -> Result<Response, String> {
         let result = self.send_raw("coworker.view", Some(serde_json::json!({ "name": name })))?;
         let output = result
-            .get("output")
-            .and_then(|v| v.as_str())
+            .str_field("output")
             .ok_or_else(|| "RPC response missing 'output' field".to_string())?
             .to_string();
         Ok(Response::message(output))
@@ -1022,7 +1019,7 @@ fn parse_daemon_response(value: Value) -> Result<Response, String> {
     }
 
     // Canonical message fast-path.
-    if let Some(message) = value.get("message").and_then(|v| v.as_str()) {
+    if let Some(message) = value.str_field("message") {
         return Ok(Response::Message {
             message: message.to_string(),
         });

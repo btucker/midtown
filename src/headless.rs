@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use crate::json_ext::ValueExt;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -533,7 +534,7 @@ impl CodexSharedRuntime {
     async fn dispatch_event(&self, parsed: serde_json::Value) {
         let mut routed = Vec::new();
 
-        if let Some(id) = parsed.get("id").and_then(|v| v.as_u64()) {
+        if let Some(id) = parsed.u64_field("id") {
             let token = self
                 .request_to_session
                 .write()
@@ -839,7 +840,7 @@ fn codex_json_value_to_string(value: &serde_json::Value) -> Option<String> {
 }
 
 fn codex_is_command_execution_item(item: &serde_json::Value) -> bool {
-    match item.get("type").and_then(|v| v.as_str()) {
+    match item.str_field("type") {
         Some("commandExecution") => true,
         Some(_) => false,
         None => {
@@ -979,7 +980,7 @@ fn codex_translate_event(
         );
     }
 
-    let Some(method) = parsed.get("method").and_then(|v| v.as_str()) else {
+    let Some(method) = parsed.str_field("method") else {
         return (
             codex_heartbeat_event(
                 session_id,
@@ -998,8 +999,7 @@ fn codex_translate_event(
             if session_id.is_none()
                 && let Some(thread_id) = params
                     .get("thread")
-                    .and_then(|t| t.get("id"))
-                    .and_then(|id| id.as_str())
+                    .and_then(|t| t.str_field("id"))
                     .map(str::to_string)
             {
                 *session_id = Some(thread_id.clone());
@@ -1016,7 +1016,7 @@ fn codex_translate_event(
             }
         }
         "item/agentMessage/delta" => {
-            if let Some(delta) = params.get("delta").and_then(|v| v.as_str()) {
+            if let Some(delta) = params.str_field("delta") {
                 let next = state.latest_agent_message.take().unwrap_or_default() + delta;
                 state.latest_agent_message = Some(next);
                 return (

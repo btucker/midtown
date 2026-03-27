@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::daemon::state::DaemonPersistentState;
+use crate::json_ext::ValueExt;
 use crate::task_store::TaskStatus;
 
 /// A migrated task in the new format with enriched metadata.
@@ -181,11 +182,8 @@ pub fn migrate_tasks_if_needed(
                     .collect()
             })
             .unwrap_or_default();
-        let channel = task_val
-            .get("channel")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let pr_val = task_val.get("pr").and_then(|v| v.as_u64());
+        let channel = task_val.str_field("channel").map(String::from);
+        let pr_val = task_val.u64_field("pr");
 
         let new_task_path = new_tasks_dir.join(format!("{}.json", id));
 

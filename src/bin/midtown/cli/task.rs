@@ -1,5 +1,7 @@
 use clap::Subcommand;
 
+use midtown::json_ext::ValueExt;
+
 use super::Response;
 use super::response::TaskInfo;
 use crate::client::DaemonClient;
@@ -297,22 +299,22 @@ fn handle_view(id: &str) -> Result<Response, String> {
     if let Ok(client) = crate::client::DaemonClient::connect()
         && let Ok(result) = client.task_metadata(id)
     {
-        if let Some(channel) = result.get("channel").and_then(|v| v.as_str()) {
+        if let Some(channel) = result.str_field("channel") {
             output.push_str(&format!("Channel:  {}\n", channel));
         }
-        if let Some(model) = result.get("model").and_then(|v| v.as_str()) {
+        if let Some(model) = result.str_field("model") {
             output.push_str(&format!("Model:    {}\n", model));
         }
-        if let Some(plan) = result.get("plan").and_then(|v| v.as_str()) {
+        if let Some(plan) = result.str_field("plan") {
             output.push_str(&format!("Plan:     {}\n", plan));
         }
-        if let Some(skill) = result.get("execution_skill").and_then(|v| v.as_str()) {
+        if let Some(skill) = result.str_field("execution_skill") {
             output.push_str(&format!("Skill:    {}\n", skill));
         }
-        if let Some(parent) = result.get("parent").and_then(|v| v.as_str()) {
+        if let Some(parent) = result.str_field("parent") {
             output.push_str(&format!("Parent:   !{}\n", parent));
         }
-        if let Some(agent_type) = result.get("agent_type").and_then(|v| v.as_str()) {
+        if let Some(agent_type) = result.str_field("agent_type") {
             output.push_str(&format!("Agent:    {}\n", agent_type));
         }
     }

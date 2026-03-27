@@ -6,6 +6,8 @@ use std::os::unix::net::UnixStream;
 use chrono::Utc;
 use clap::Subcommand;
 
+use midtown::json_ext::ValueExt;
+
 use super::Response;
 
 /// Append a timestamped log line to `~/.midtown/projects/<repo>/logs/hooks.log`.
@@ -509,20 +511,20 @@ fn apply_task_update_from_hook(
     repo: &str,
 ) {
     if let Ok(mut task) = task_store.load(task_id) {
-        if let Some(status) = updates.get("status").and_then(|v| v.as_str()) {
+        if let Some(status) = updates.str_field("status") {
             task.status = match status {
                 "in_progress" => midtown::task_store::TaskStatus::InProgress,
                 "completed" => midtown::task_store::TaskStatus::Completed,
                 _ => midtown::task_store::TaskStatus::Pending,
             };
         }
-        if let Some(subject) = updates.get("subject").and_then(|v| v.as_str()) {
+        if let Some(subject) = updates.str_field("subject") {
             task.subject = subject.to_string();
         }
-        if let Some(description) = updates.get("description").and_then(|v| v.as_str()) {
+        if let Some(description) = updates.str_field("description") {
             task.description = Some(description.to_string());
         }
-        if let Some(channel) = updates.get("channel").and_then(|v| v.as_str()) {
+        if let Some(channel) = updates.str_field("channel") {
             task.channel = Some(channel.to_string());
         }
         if let Err(e) = task_store.save(&task) {
