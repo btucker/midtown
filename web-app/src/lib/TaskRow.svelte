@@ -20,6 +20,7 @@ let {
 	reviewPosted = false,
 	onclick = null,
 	variant = "row",
+	channelLabel = "",
 } = $props();
 
 const isCard = $derived(variant === "card");
@@ -105,27 +106,26 @@ function handleDescriptionClick(e) {
       <span class="shrink-0 font-semibold text-[0.65rem] {isActive ? 'opacity-80' : 'opacity-60'}">!{task.id}</span>
       <span>{#if task.status === 'done'}<span class="text-[hsl(var(--accent-green))]">✓ </span>{/if}{task.subject}</span>
     {:else}
-      <div class="flex items-center gap-1.5">
-        <span class="shrink-0 font-semibold {isActive ? 'opacity-80' : 'opacity-60'}">!{task.id}</span>
+      <div class="flex items-center gap-1">
         <span class="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{#if rolledUpStatus === 'done'}<span class="text-[hsl(var(--accent-green))]">✓ </span>{/if}{task.subject}</span>
         {#if isBlocked}
           <span class="shrink-0 text-[0.62rem] text-[hsl(var(--status-amber))] opacity-85" title="Blocked by !{task.blocked_by[0]}">⧗ !{task.blocked_by[0]}</span>
         {/if}
+        {#if channelLabel}
+          <span class="shrink-0 rounded px-1 py-px text-[9px] font-mono text-muted-foreground bg-sidebar-accent">#{channelLabel}</span>
+        {/if}
       </div>
     {/if}
-    {#if isActive && (hasProgress || effectiveReviewer) && task.owner}
-      {@const segments = lifecycleSegments(effectiveCw?.progress ?? 0, effectiveReviewer, effectiveReviewPosted, ownerColor || getSenderColor(task.owner), effectiveReviewer ? getSenderColor(effectiveReviewer) : null)}
-      {@const totalPct = Math.round(segments.reduce((sum, s) => sum + s.width, 0))}
-      <div class="flex items-center gap-1.5 pr-0.5">
-        <div class="flex-1 h-[3px] bg-sidebar-accent rounded-sm overflow-hidden flex">
-          {#each segments as seg}
-            <div
-              class="h-full transition-[width] duration-500 ease-in-out"
-              style="width: {seg.width}%; background: {seg.color}"
-            ></div>
-          {/each}
-        </div>
-        <span class="shrink-0 text-[0.6rem] text-[hsl(var(--accent-teal))] tabular-nums">{totalPct}%</span>
+    {#if isActive && task.owner}
+      {@const progress = effectiveCw?.progress ?? 0}
+      {@const color = ownerColor || getSenderColor(task.owner)}
+      <div class="h-[3px] rounded-full overflow-hidden mt-1" style="background: {color}; opacity: 0.15;">
+        {#if progress > 0}
+          <div
+            class="h-full rounded-full transition-[width] duration-500 ease-in-out"
+            style="width: {progress}%; background: {color}; opacity: 1;"
+          ></div>
+        {/if}
       </div>
     {/if}
 

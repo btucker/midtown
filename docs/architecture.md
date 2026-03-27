@@ -628,8 +628,10 @@ The web interface is a Svelte 5 + Vite SPA served on port 47022:
 - Installable as a PWA for mobile use
 - Real-time updates via WebSocket
 - Kanban board for task visualization
-- Multi-channel support with split-panel layout (channel list sidebar + message pane)
-- Channel list with task counts (in progress, pending) and CI status badges
+- Multi-channel support with split-panel layout (sidebar + message pane)
+- Sidebar with two sections:
+  - **Activity feed** (`ActivityFeed.svelte`): unified sorted list — attention items (completed tasks, threads waiting on user, @mentions, stale work) → active tasks with progress bars → recent threads (< 15 min) → collapsed older threads. Attention items are self-resolving (no dismiss buttons). Thread visibility is derived from activity timestamps and read state, not an explicit set.
+  - **Channels**: pure navigation with drag-to-reorder (via grip handle). No inline threads or task pips.
 - Channel header displays channel-specific stats (PR count, in-progress tasks, pending tasks) that update when switching channels
 - Create new channels directly from the sidebar (+ button) with inline validation
 - Clickable channel (`#name`), task (`!N`), and PR (`#N`) references in messages
@@ -921,6 +923,31 @@ Coworkers can ask the Lead questions via the Claude Code `AskUserQuestion` tool.
 **RPC methods:**
 - `coworker.asking` — Store a pending question and notify the Lead
 - `coworker.questions` — Return all pending questions (used by TUI polling and `/api/questions` endpoint)
+
+## Read State (Server-Synced Unread Tracking)
+
+Per-user read state for threads and channels, enabling unread indicators that sync across devices.
+
+**Daemon state:** `DaemonPersistentState.read_state: HashMap<String, ReadState>` maps user ID → `ReadState { threads: HashMap<String, String>, channels: HashMap<String, String> }`. Each entry stores the ISO timestamp of when the user last read that thread/channel. Uses `"default"` as the user ID for single-user; multi-user is a key change, not a schema change.
+
+**RPC endpoints** (`rpc_read_state.rs`):
+- `read_state.get` — returns all read timestamps for the current user
+- `read_state.mark_read` — marks a thread or channel as read (type + id + timestamp)
+
+**REST endpoints** (`web.rs`):
+- `GET /api/read-state` — all read state for current user
+- `PUT /api/read-state/{type}/{id}` — mark thread or channel as read
+
+**WebSocket broadcast:** `WebUpdate::ReadStateChanged` broadcasts `{ type, id, timestamp }` to all connected clients when read state changes, keeping all open tabs/devices in sync.
+
+**Frontend stores** (`store.ts`):
+- `threadReadState: Record<string, string>` — thread ID → last read ISO timestamp
+- `channelReadState: Record<string, string>` — channel name → last read ISO timestamp
+- `threadUnreadCounts: Record<string, number>` — derived from `trackedThreads.lastActivity > threadReadState[id]`
+
+**Unread derivation:** A thread is unread if `trackedThreads[id].lastActivity > threadReadState[id]` (or no read entry exists). A channel is unread if it has messages newer than `channelReadState[channelName]`. Read state is marked automatically on channel switch and thread open. Live thread replies auto-mark read when the thread panel is open.
+
+**Task serialization:** `task_to_json()` in `task_store.rs` is the single source of truth for task → JSON conversion, used by both the RPC status handler and the REST `/api/status` endpoint. Includes `updated_at` for frontend recency filtering.
 
 ## Channel List Changed Events
 

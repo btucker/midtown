@@ -1442,6 +1442,22 @@ pub(super) async fn create_fork_session(
         .or(channel)
         .or_else(|| Some(state.project_name.clone()));
 
+    // If the caller didn't provide color/icon, inherit from the parent session.
+    let (effective_color, effective_icon) = {
+        let ps = state.persistent_state.lock().await;
+        let parent = ps
+            .sessions
+            .get(calling_session_id)
+            .or_else(|| caller_name.as_ref().and_then(|n| ps.session_by_name(n)));
+        let c = color
+            .map(String::from)
+            .or_else(|| parent.and_then(|r| r.color.clone()));
+        let i = icon
+            .map(String::from)
+            .or_else(|| parent.and_then(|r| r.icon.clone()));
+        (c, i)
+    };
+
     let (fork_name, headless_config) = build_fork_config(
         thread_parent_id,
         calling_session_id,
@@ -1526,8 +1542,8 @@ pub(super) async fn create_fork_session(
                     .map(crate::platform::Platform::from_provider),
                 profile: parent_record.as_ref().and_then(|r| r.profile.clone()),
                 restart_count: 0,
-                color: color.map(|c| c.to_string()),
-                icon: icon.map(|i| i.to_string()),
+                color: effective_color.clone(),
+                icon: effective_icon.clone(),
                 avatar_badge: None,
             },
         );

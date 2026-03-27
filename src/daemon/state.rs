@@ -207,6 +207,17 @@ impl Default for ChannelSettings {
     }
 }
 
+/// Per-user read state for threads and channels.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReadState {
+    /// Thread read timestamps. Maps thread_id → ISO last_read timestamp.
+    #[serde(default)]
+    pub threads: HashMap<String, String>,
+    /// Channel read timestamps. Maps channel_name → ISO last_read timestamp.
+    #[serde(default)]
+    pub channels: HashMap<String, String>,
+}
+
 /// All persistent daemon state in one struct.
 ///
 /// Serialized to `~/.midtown/projects/<repo>/daemon-state.json`.
@@ -288,14 +299,11 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub workflow_state: HashMap<String, serde_json::Value>,
 
-    /// Per-channel set of thread IDs the user wants visible in the sidebar.
-    ///
-    /// Maps channel name → set of thread parent IDs. Synced to all web clients
-    /// via WebSocket so thread visibility is consistent across devices.
-    /// Threads are added when opened or created, removed on manual close or
-    /// 12-hour idle timeout.
+    /// Per-user read state for threads and channels.
+    /// Maps user_id → ReadState. Uses "default" for single-user;
+    /// multi-user support is a key change, not a schema change.
     #[serde(default)]
-    pub open_threads: HashMap<String, HashSet<String>>,
+    pub read_state: HashMap<String, ReadState>,
 
     /// Permanent PR nudge entries that survive daemon restarts.
     ///

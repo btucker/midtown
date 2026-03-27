@@ -505,16 +505,16 @@ async fn dispatch_request(request: Request, state: &DaemonState) -> Response {
             super::rpc_channel::handle_channel_rename(request.id, old, new, state).await
         }
 
-        "channel.open_threads" => {
-            let channel = require_str!(params, "channel", request.id);
-            super::rpc_open_threads::handle_open_threads_get(request.id, channel, state).await
-        }
+        "read_state.get" => super::rpc_read_state::handle_read_state_get(request.id, state).await,
 
-        "channel.open_threads.set" => {
-            let channel = require_str!(params, "channel", request.id);
-            let threads = params.str_array_param("threads").unwrap_or_default();
-            super::rpc_open_threads::handle_open_threads_set(request.id, channel, threads, state)
-                .await
+        "read_state.mark_read" => {
+            let item_type = require_str!(params, "type", request.id);
+            let id = require_str!(params, "id", request.id);
+            let timestamp = require_str!(params, "timestamp", request.id);
+            super::rpc_read_state::handle_read_state_mark_read(
+                request.id, item_type, id, timestamp, state,
+            )
+            .await
         }
 
         "channel.get_settings" => {

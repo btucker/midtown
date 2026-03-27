@@ -1,13 +1,9 @@
 import { getSenderColor } from "./messageUtils.ts";
 import type { Coworker, NeedsAttentionItem, Task, TrackedThread } from "./types.ts";
 
-function lookupTaskColor(ownerName: string, tasks: Task[]): string | undefined {
-	const task = tasks.find((t) => t.owner === ownerName && t.color);
-	return task?.color;
-}
-
 const TEN_MINUTES_MS = 10 * 60 * 1000;
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
 export interface LastMessage {
 	sender: string;
@@ -65,12 +61,11 @@ export function isTaskStale(
  */
 export function computeAttentionItems(opts: {
 	trackedThreads: Record<string, TrackedThread>;
-	openThreads: Record<string, Set<string>>;
 	lastMessages: Record<string, LastMessage>;
 	coworkers: Coworker[];
 	tasks: Task[];
 	progressTimestamps: Record<string, number>;
-	dismissed: Set<string>;
+	threadReadState: Record<string, string>;
 	userSender: string;
 	mainChannel: string;
 	now?: number;
@@ -78,41 +73,47 @@ export function computeAttentionItems(opts: {
 	const now = opts.now ?? Date.now();
 	const items: NeedsAttentionItem[] = [];
 
-	// 1. Threads needing attention (from openThreads)
-	for (const [channel, threadIds] of Object.entries(opts.openThreads)) {
-		for (const threadId of threadIds) {
-			const tracked = opts.trackedThreads[threadId];
-			const lastMsg = opts.lastMessages[threadId];
-			if (!tracked || !lastMsg) continue;
+	// 1. Threads needing attention
+	for (const [threadId, tracked] of Object.entries(opts.trackedThreads)) {
+		const lastMsg = opts.lastMessages[threadId];
+		if (!lastMsg) continue;
 
-			if (threadNeedsAttention(lastMsg, opts.userSender, now)) {
-				const id = `thread:${threadId}`;
-				if (opts.dismissed.has(id)) continue;
+		// Skip if thread is read (user has seen it since last message)
+		const lastRead = opts.threadReadState[threadId];
+		if (lastRead && new Date(lastRead) >= new Date(lastMsg.timestamp)) continue;
 
-				const ageMs = now - new Date(lastMsg.timestamp).getTime();
-				const agoText = formatAgo(ageMs);
+		if (threadNeedsAttention(lastMsg, opts.userSender, now)) {
+			const ageMs = now - new Date(lastMsg.timestamp).getTime();
+			const agoText = formatAgo(ageMs);
 
-				items.push({
-					id,
-					type: lastMsg.content.includes(`@${opts.userSender}`) ? "mention" : "thread_waiting",
-					title: tracked.subject,
-					context: `${lastMsg.sender} replied ${agoText} · waiting on you · #${channel}`,
-					channel,
-					threadId,
-					timestamp: new Date(lastMsg.timestamp).getTime(),
-					workerName: lastMsg.sender,
-					workerColor: lookupTaskColor(lastMsg.sender, opts.tasks) || getSenderColor(lastMsg.sender, null),
-				});
-			}
+			items.push({
+				id: `thread:${threadId}`,
+				type: lastMsg.content.includes(`@${opts.userSender}`) ? "mention" : "thread_waiting",
+				title: tracked.subject,
+				context: `${lastMsg.sender} replied ${agoText} · waiting on you`,
+				channel: tracked.channelName,
+				threadId,
+				timestamp: new Date(lastMsg.timestamp).getTime(),
+				workerName: lastMsg.sender,
+				workerColor: getSenderColor(lastMsg.sender, null),
+			});
 		}
 	}
 
-	// 2. Completed tasks
+	// 2. Completed tasks — only show if completed within the last 24 hours and not yet seen
 	for (const task of opts.tasks) {
 		if (task.status !== "completed") continue;
-		const id = `task:${task.id}`;
-		if (opts.dismissed.has(id)) continue;
 
+		// Filter out old completions — only show tasks updated in the last 24h
+		const updatedMs = task.updated_at ? new Date(task.updated_at).getTime() : 0;
+		if (now - updatedMs > TWENTY_FOUR_HOURS_MS) continue;
+
+		// Filter out if user has already seen this completed task
+		const taskReadKey = `task:${task.id}`;
+		const lastRead = opts.threadReadState[taskReadKey];
+		if (lastRead && new Date(lastRead).getTime() >= updatedMs) continue;
+
+		const id = taskReadKey;
 		const cw = opts.coworkers.find((c) => c.name === task.owner);
 		const channel = task.channel || opts.mainChannel;
 
@@ -138,7 +139,6 @@ export function computeAttentionItems(opts: {
 
 		if (isTaskStale(cw?.progress ?? null, lastChange, now)) {
 			const id = `stale:${task.id}`;
-			if (opts.dismissed.has(id)) continue;
 
 			const channel = task.channel || opts.mainChannel;
 			const staleHours = Math.floor((now - lastChange) / 3600000);

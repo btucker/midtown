@@ -3,7 +3,7 @@
 use crate::rpc::RequestId;
 
 use super::super::DaemonState;
-use super::{handle_status, map_tasks_to_json, resolve_pr_number, tag_channel_leads_and_count};
+use super::{handle_status, resolve_pr_number, tag_channel_leads_and_count};
 
 // ============================================================================
 // Integration test helper
@@ -346,7 +346,7 @@ fn test_resolve_pr_none_when_task_id_has_no_pr() {
     );
 }
 
-// ─── Tests for map_tasks_to_json (task → JSON with message_id and thread_id) ───
+// ─── Tests for task_to_json (task → JSON serialization) ─────────────────────
 
 fn make_task(
     id: &str,
@@ -367,103 +367,102 @@ fn make_task(
 }
 
 #[test]
-fn test_map_tasks_includes_thread_id_and_message_id() {
-    let tasks = vec![make_task(
+fn test_task_to_json_includes_thread_id_and_message_id() {
+    let mut task = make_task(
         "42",
         "Fix auth bug",
         crate::task_store::TaskStatus::InProgress,
-    )];
-    let msg_ids = [("42".to_string(), "msg-abc".to_string())]
-        .into_iter()
-        .collect();
-    let thread_ids = [("42".to_string(), "thread-xyz".to_string())]
-        .into_iter()
-        .collect();
+    );
+    task.message_id = Some("msg-abc".to_string());
+    task.thread_id = Some("thread-xyz".to_string());
 
-    let plan_map = std::collections::HashMap::new();
-    let parent_map = std::collections::HashMap::new();
-    let result = map_tasks_to_json(tasks, &msg_ids, &thread_ids, &plan_map, &parent_map);
+    let result = crate::task_store::task_to_json(&task, None, None);
 
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0]["id"], "42");
-    assert_eq!(result[0]["subject"], "Fix auth bug");
-    assert_eq!(result[0]["status"], "in_progress");
-    assert_eq!(result[0]["message_id"], "msg-abc");
-    assert_eq!(result[0]["thread_id"], "thread-xyz");
+    assert_eq!(result["id"], "42");
+    assert_eq!(result["subject"], "Fix auth bug");
+    assert_eq!(result["status"], "in_progress");
+    assert_eq!(result["message_id"], "msg-abc");
+    assert_eq!(result["thread_id"], "thread-xyz");
 }
 
 #[test]
-fn test_map_tasks_thread_id_null_when_absent() {
-    let tasks = vec![make_task(
-        "99",
-        "Add feature",
-        crate::task_store::TaskStatus::Pending,
-    )];
-    let msg_ids = [("99".to_string(), "msg-only".to_string())]
-        .into_iter()
-        .collect();
-    let thread_ids = std::collections::HashMap::new();
+fn test_task_to_json_thread_id_null_when_absent() {
+    let mut task = make_task("99", "Add feature", crate::task_store::TaskStatus::Pending);
+    task.message_id = Some("msg-only".to_string());
 
-    let plan_map = std::collections::HashMap::new();
-    let parent_map = std::collections::HashMap::new();
-    let result = map_tasks_to_json(tasks, &msg_ids, &thread_ids, &plan_map, &parent_map);
+    let result = crate::task_store::task_to_json(&task, None, None);
 
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0]["message_id"], "msg-only");
+    assert_eq!(result["message_id"], "msg-only");
     assert!(
-        result[0]["thread_id"].is_null(),
+        result["thread_id"].is_null(),
         "thread_id should be null when absent"
     );
 }
 
 #[test]
-fn test_map_tasks_both_ids_null_when_absent() {
-    let tasks = vec![make_task(
-        "7",
-        "New task",
-        crate::task_store::TaskStatus::Completed,
-    )];
-    let msg_ids = std::collections::HashMap::new();
-    let thread_ids = std::collections::HashMap::new();
+fn test_task_to_json_both_ids_null_when_absent() {
+    let task = make_task("7", "New task", crate::task_store::TaskStatus::Completed);
 
-    let plan_map = std::collections::HashMap::new();
-    let parent_map = std::collections::HashMap::new();
-    let result = map_tasks_to_json(tasks, &msg_ids, &thread_ids, &plan_map, &parent_map);
+    let result = crate::task_store::task_to_json(&task, None, None);
 
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0]["status"], "completed");
-    assert!(result[0]["message_id"].is_null());
-    assert!(result[0]["thread_id"].is_null());
+    assert_eq!(result["status"], "completed");
+    assert!(result["message_id"].is_null());
+    assert!(result["thread_id"].is_null());
 }
 
 #[test]
-fn test_map_tasks_includes_parent_when_set() {
-    let tasks = vec![
-        make_task(
-            "10",
-            "Implement feature",
-            crate::task_store::TaskStatus::InProgress,
-        ),
-        make_task(
-            "11",
-            "Review PR #42",
-            crate::task_store::TaskStatus::InProgress,
-        ),
-    ];
-    let msg_ids = std::collections::HashMap::new();
-    let thread_ids = std::collections::HashMap::new();
-    let plan_map = std::collections::HashMap::new();
-    let parent_map = [("11".to_string(), "10".to_string())].into_iter().collect();
+fn test_task_to_json_includes_parent_when_set() {
+    let parent_task = make_task(
+        "10",
+        "Implement feature",
+        crate::task_store::TaskStatus::InProgress,
+    );
+    let mut child_task = make_task(
+        "11",
+        "Review PR #42",
+        crate::task_store::TaskStatus::InProgress,
+    );
+    child_task.parent = Some("10".to_string());
 
-    let result = map_tasks_to_json(tasks, &msg_ids, &thread_ids, &plan_map, &parent_map);
+    let parent_json = crate::task_store::task_to_json(&parent_task, None, None);
+    let child_json = crate::task_store::task_to_json(&child_task, None, None);
 
-    assert_eq!(result.len(), 2);
     assert!(
-        result[0]["parent"].is_null(),
+        parent_json["parent"].is_null(),
         "parent task should have no parent"
     );
     assert_eq!(
-        result[1]["parent"], "10",
+        child_json["parent"], "10",
         "child task should reference parent"
+    );
+}
+
+// ============================================================================
+// task_to_json: shared serialization function
+// ============================================================================
+
+/// Verify that the shared task_to_json includes updated_at.
+/// Regression test: web.rs and rpc_status.rs had divergent serialization,
+/// web.rs was missing updated_at.
+#[test]
+fn task_to_json_includes_updated_at() {
+    let task = crate::task_store::Task {
+        id: "42".to_string(),
+        subject: "Fix the bug".to_string(),
+        status: crate::task_store::TaskStatus::Completed,
+        agent_name: "ghost-town".to_string(),
+        updated_at: chrono::Utc::now(),
+        ..Default::default()
+    };
+
+    let json = crate::task_store::task_to_json(&task, None, None);
+
+    assert!(
+        json.get("updated_at").is_some(),
+        "task JSON must include updated_at"
+    );
+    assert!(
+        json.get("updated_at").unwrap().is_string(),
+        "updated_at must be a string"
     );
 }

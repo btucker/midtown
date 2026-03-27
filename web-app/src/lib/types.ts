@@ -69,6 +69,7 @@ export interface Task {
 	parent?: string;
 	color?: string;
 	icon?: string;
+	updated_at?: string; // ISO timestamp — when the task was last modified
 }
 
 // ── Pull requests ────────────────────────────────────────────────────────────
@@ -207,6 +208,13 @@ export interface Project {
 	status: string;
 	daemon_socket: string;
 	webhook_port: number;
+}
+
+// ── Read State ──────────────────────────────────────────────────────────────
+
+export interface ReadState {
+	threads: Record<string, string>; // thread_id → ISO last_read timestamp
+	channels: Record<string, string>; // channel_name → ISO last_read timestamp
 }
 
 // ── Search ───────────────────────────────────────────────────────────────────

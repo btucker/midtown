@@ -1,4 +1,4 @@
-import { writable } from "svelte/store";
+import { get, writable } from "svelte/store";
 import type {
 	AuthProfile,
 	Channel,
@@ -234,23 +234,33 @@ export const trackedThreads = writable<Record<string, TrackedThread>>(
 );
 trackedThreads.subscribe((v) => debouncedSaveToLocalStorage("midtown_tracked_threads", v));
 
-// Per-thread unread counts: { [threadParentId]: number }
-export const threadUnreadCounts = writable<Record<string, number>>(loadFromLocalStorage("midtown_thread_unread", {}));
-threadUnreadCounts.subscribe((v) => debouncedSaveToLocalStorage("midtown_thread_unread", v));
-
-// ── Open threads (server-synced) ────────────────────────────────────────────
-// Per-channel set of thread IDs visible in sidebar. Synced from daemon API.
-// Format: { [channelName]: Set<threadParentId> }
-export const openThreads = writable<Record<string, Set<string>>>({});
-
 // ── Progress timestamps (needs-attention: stale task detection) ──────────────
 // Tracks when each coworker's progress value last changed.
 // Keyed by task_id (string). Value is Unix ms timestamp.
 // In-memory only — stale detection starts fresh on page reload.
 export const progressTimestamps = writable<Record<string, number>>({});
 
-// ── Dismissed attention items (client-side) ─────────────────────────────────
-// IDs of needs-attention items the user has dismissed. Persists via localStorage.
-const _dismissedAttentionArr = loadFromLocalStorage<string[]>("midtown_dismissed_attention", []);
-export const dismissedAttentionItems = writable<Set<string>>(new Set(_dismissedAttentionArr));
-dismissedAttentionItems.subscribe((s) => debouncedSaveToLocalStorage("midtown_dismissed_attention", [...s]));
+// ── Read state (server-synced) ──────────────────────────────────────────────
+// Per-thread and per-channel read timestamps. Synced from daemon API.
+export const threadReadState = writable<Record<string, string>>({});
+export const channelReadState = writable<Record<string, string>>({});
+
+// Derived unread counts — Channel.svelte and ThreadList.svelte read this for badge display.
+// Computed from trackedThreads.lastActivity vs threadReadState timestamps.
+export const threadUnreadCounts = writable<Record<string, number>>({});
+
+function syncUnreadCounts() {
+	const tracked = get(trackedThreads);
+	const readState = get(threadReadState);
+	const counts: Record<string, number> = {};
+	for (const [id, t] of Object.entries(tracked)) {
+		const lastRead = readState[id];
+		if (!lastRead || new Date(lastRead) < new Date(t.lastActivity)) {
+			counts[id] = 1;
+		}
+	}
+	threadUnreadCounts.set(counts);
+}
+
+trackedThreads.subscribe(syncUnreadCounts);
+threadReadState.subscribe(syncUnreadCounts);
