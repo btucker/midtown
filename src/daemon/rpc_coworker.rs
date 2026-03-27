@@ -13,7 +13,6 @@ use tracing::{debug, error, info, warn};
 use crate::rpc::{RequestId, Response, RpcError};
 
 use super::DaemonState;
-use super::constants::*;
 use super::snapshot::ProcessHealth;
 use super::{effects, snapshot};
 
@@ -663,10 +662,10 @@ pub(super) async fn handle_coworker_report_state(
             name: name.to_string(),
             message: String::new(),
             on_success: vec![
-                effects::Effect::PostSystemMessage {
-                    message: format!("☕ {} reported idle, taking a break", name),
-                    channel: Some(OPS_CHANNEL.to_string()),
-                },
+                effects::Effect::system_message_to_ops(format!(
+                    "☕ {} reported idle, taking a break",
+                    name
+                )),
                 effects::Effect::BroadcastCoworkerUpdate {
                     name: name.to_string(),
                     status: "stopped".to_string(),
