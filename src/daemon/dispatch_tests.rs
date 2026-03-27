@@ -940,3 +940,105 @@ fn reviewer_suffixed_name_is_rechecked_against_exclusions() {
         "Suffixed name should not be in exclusion set"
     );
 }
+
+// ============================================================================
+// Review task limit bypass tests
+// ============================================================================
+
+#[test]
+fn review_task_bypasses_task_limit() {
+    // GIVEN: task limit is reached (2 in-progress tasks with cap of 2)
+    // but session cap has room (cap is checked against active sessions, set higher)
+    let mut ps = make_ps("test");
+    ps.tick_max_in_progress_tasks = 2;
+    ps.tick_in_progress_tasks = vec![
+        ("1".into(), "Task A".into(), "alpha".into()),
+        ("2".into(), "Task B".into(), "bravo".into()),
+    ];
+    // Only one active session — session cap (2) is not reached
+    ps.tick_active_session_names = ["alpha".into()].into_iter().collect();
+
+    // A pending review task
+    let mut review_task = make_task("3", "Review PR #100", "", TaskStatus::Pending);
+    review_task.agent_type = "midtown-code-reviewer".to_string();
+    review_task.pr = Some(100);
+
+    let tasks = vec![review_task.clone()];
+    let loop_state = DispatchLoopState {
+        pr_coworker_map: HashMap::new(),
+        task_coworker_map: HashMap::new(),
+        names_assigned_this_tick: HashSet::new(),
+        spawns_queued_this_tick: 0,
+    };
+
+    // WHEN: selecting a coworker name for the review task at task limit
+    let result = select_coworker_name(&review_task, &ps, &tasks, &loop_state);
+
+    // THEN: review task should NOT be deferred — it bypasses the task limit
+    assert!(
+        result.is_some(),
+        "Review task should bypass task limit and get a coworker name"
+    );
+}
+
+#[test]
+fn non_review_task_deferred_at_task_limit() {
+    // GIVEN: task limit is reached but session cap has room
+    let mut ps = make_ps("test");
+    ps.tick_max_in_progress_tasks = 2;
+    ps.tick_in_progress_tasks = vec![
+        ("1".into(), "Task A".into(), "alpha".into()),
+        ("2".into(), "Task B".into(), "bravo".into()),
+    ];
+    ps.tick_active_session_names = ["alpha".into()].into_iter().collect();
+
+    // A pending implementation task (not a reviewer)
+    let impl_task = make_task("3", "Implement feature", "", TaskStatus::Pending);
+    let tasks = vec![impl_task.clone()];
+    let loop_state = DispatchLoopState {
+        pr_coworker_map: HashMap::new(),
+        task_coworker_map: HashMap::new(),
+        names_assigned_this_tick: HashSet::new(),
+        spawns_queued_this_tick: 0,
+    };
+
+    // WHEN: selecting a coworker name for the impl task at task limit
+    let result = select_coworker_name(&impl_task, &ps, &tasks, &loop_state);
+
+    // THEN: implementation task should be deferred
+    assert!(
+        result.is_none(),
+        "Non-review task should be deferred at task limit"
+    );
+}
+
+#[test]
+fn review_task_still_blocked_by_session_cap() {
+    // GIVEN: session cap is reached (safety net)
+    let mut ps = make_ps("test");
+    ps.tick_max_in_progress_tasks = 2;
+    // No in-progress tasks in tick_in_progress_tasks (so at_task_limit is false)
+    // but active sessions fill the session cap
+    ps.tick_active_session_names = ["alpha".into(), "bravo".into()].into_iter().collect();
+
+    let mut review_task = make_task("3", "Review PR #100", "", TaskStatus::Pending);
+    review_task.agent_type = "midtown-code-reviewer".to_string();
+    review_task.pr = Some(100);
+
+    let tasks = vec![review_task.clone()];
+    let loop_state = DispatchLoopState {
+        pr_coworker_map: HashMap::new(),
+        task_coworker_map: HashMap::new(),
+        names_assigned_this_tick: HashSet::new(),
+        spawns_queued_this_tick: 0,
+    };
+
+    // WHEN: selecting a coworker name for review task at session cap
+    let result = select_coworker_name(&review_task, &ps, &tasks, &loop_state);
+
+    // THEN: review task should still be deferred by session cap (safety net)
+    assert!(
+        result.is_none(),
+        "Review task should still respect session cap as safety net"
+    );
+}
