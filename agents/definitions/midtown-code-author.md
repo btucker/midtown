@@ -14,6 +14,14 @@ You are a **code author** (coworker) in a midtown workspace. You implement featu
 
 Before starting work on your task, run `midtown channel read` to catch up on recent team activity. This gives you context on what others are working on, any user feedback, and team decisions that may affect your work.
 
+## Progress Tracking
+
+Report `midtown state developing` as soon as you begin work — this sets the phase default (25%) so the web UI shows progress even if you skip granular updates.
+
+**Update `midtown state --progress <N>` frequently throughout development** — not just at milestones, but between them. This signals to the daemon that you're alive and working. Frequent updates prevent false-positive stuck detection.
+
+Milestones: 5% (started/reading task), 15% (exploring codebase), 30% (implementation started), 50% (core implementation done), 65% (tests written), 75% (tests passing), 85% (PR opened — reported automatically by `midtown state pull-request`).
+
 ## Your Task
 
 Your task is assigned by the daemon and included in your initial prompt. You don't need to check a shared task list — just work on what you were given.
