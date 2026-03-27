@@ -45,7 +45,17 @@ impl DerefMut for WorktreeTestFixture {
 impl WorktreeTestFixture {
     /// Create a new test fixture with a fake git repository.
     fn new() -> Option<Self> {
-        let harness = DaemonTestHarness::new("worktree-e2e-test", DaemonHarnessOptions::default())?;
+        let state_dir = PathBuf::from(format!(
+            "/tmp/midtown-test-worktree-e2e-{}",
+            std::process::id()
+        ));
+        let harness = DaemonTestHarness::new(
+            "worktree-e2e-test",
+            DaemonHarnessOptions {
+                custom_state_dir: Some(state_dir),
+                ..Default::default()
+            },
+        )?;
 
         let worktree_dir = dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))

@@ -22,8 +22,18 @@ use common::{DaemonHarnessOptions, DaemonTestHarness};
 #[test]
 #[ignore] // E2E test - requires daemon
 fn test_channel_read_topic_channel_routing() {
-    let mut fixture = DaemonTestHarness::new("channel-rpc-test", DaemonHarnessOptions::default())
-        .expect("Failed to create test fixture");
+    let state_dir = std::path::PathBuf::from(format!(
+        "/tmp/midtown-test-channel-rpc-{}",
+        std::process::id()
+    ));
+    let mut fixture = DaemonTestHarness::new(
+        "channel-rpc-test",
+        DaemonHarnessOptions {
+            custom_state_dir: Some(state_dir),
+            ..Default::default()
+        },
+    )
+    .expect("Failed to create test fixture");
 
     assert!(fixture.start_daemon(), "Failed to start daemon");
 
