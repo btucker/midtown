@@ -1084,15 +1084,23 @@ async fn bind_coworker_to_worktree_collision_does_not_drop_subsequent_effects() 
         ps.worktree_registry
             .bind_coworker("wt-collision-test", "old-coworker")
             .expect("bind old-coworker");
-    }
 
-    // Make the session manager report "old-coworker" as alive so the collision
-    // guard fires.
-    state
-        .session_manager
-        .set_test_is_alive_hook(Some(std::sync::Arc::new(|name: &str| {
-            name == "old-coworker"
-        })));
+        // Add a session record for "old-coworker" that is active on the SAME
+        // worktree, so the collision guard detects a real collision.
+        ps.sessions.insert(
+            "sess-old".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-old".to_string(),
+                name: "old-coworker".to_string(),
+                working_dir: "/tmp/worktrees/wt-collision-test".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+        ps.tick_active_session_ids.insert("sess-old".to_string());
+        ps.tick_active_session_names
+            .insert("old-coworker".to_string());
+    }
 
     // Batch: first effect will be blocked (collision), second must still run.
     let sentinel_channel = "sentinel-ch".to_string();
@@ -1122,6 +1130,100 @@ async fn bind_coworker_to_worktree_collision_does_not_drop_subsequent_effects() 
         Some(sentinel_session.as_str()),
         "SaveChannelLeadSession must execute even when a preceding \
          BindCoworkerToWorktree is blocked by the collision guard"
+    );
+
+    // The bind itself must have been blocked — worktree still bound to old-coworker.
+    let assignment = ps
+        .worktree_registry
+        .get("wt-collision-test")
+        .expect("worktree should exist");
+    assert_eq!(
+        assignment.current_coworker.as_deref(),
+        Some("old-coworker"),
+        "Collision guard must block the bind when the active session IS on this worktree"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BindCoworkerToWorktree — reused session name on different worktree
+//
+// When a reviewer session name is reused (common across PR cycles), the
+// collision guard must NOT block the bind if the active session with that
+// name is working on a DIFFERENT worktree.  The guard should cross-reference
+// session records (name + working_dir) rather than checking name-only via
+// is_alive().
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn bind_coworker_allows_reused_name_on_different_worktree() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("myrepo-reuse");
+
+    // Register worktree "wt-old" and bind it to "park-reviewer".
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.worktree_registry
+            .assign_worktree(crate::worktree_registry::WorktreeAssignment {
+                worktree_id: "wt-old".to_string(),
+                branch_name: "park-reviewer/task-old".to_string(),
+                task_id: None,
+                current_coworker: None,
+                pr_number: None,
+                created_at: chrono::Utc::now(),
+                completed_at: None,
+            })
+            .expect("assign wt-old");
+        ps.worktree_registry
+            .bind_coworker("wt-old", "park-reviewer")
+            .expect("bind park-reviewer to wt-old");
+
+        // Add a session record for "park-reviewer" that is active but on a
+        // DIFFERENT worktree ("wt-new").  This simulates the name being reused
+        // for a new task/worktree.
+        ps.sessions.insert(
+            "sess-park-new".to_string(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-park-new".to_string(),
+                name: "park-reviewer".to_string(),
+                working_dir: "/tmp/worktrees/wt-new".to_string(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+        ps.tick_active_session_ids
+            .insert("sess-park-new".to_string());
+        ps.tick_active_session_names
+            .insert("park-reviewer".to_string());
+    }
+
+    // is_alive returns true for "park-reviewer" (the reused name IS alive,
+    // just on a different worktree).
+    state
+        .session_manager
+        .set_test_is_alive_hook(Some(std::sync::Arc::new(|name: &str| {
+            name == "park-reviewer"
+        })));
+
+    // Attempt to bind "new-coworker" to "wt-old".
+    // The stale binding to "park-reviewer" should NOT block this because
+    // the active "park-reviewer" session is on "wt-new", not "wt-old".
+    execute_effects(
+        vec![Effect::BindCoworkerToWorktree {
+            worktree_id: "wt-old".to_string(),
+            coworker: "new-coworker".to_string(),
+        }],
+        &state,
+    )
+    .await;
+
+    let ps = state.persistent_state.lock().await;
+    let assignment = ps
+        .worktree_registry
+        .get("wt-old")
+        .expect("wt-old should exist");
+    assert_eq!(
+        assignment.current_coworker.as_deref(),
+        Some("new-coworker"),
+        "Bind must succeed when the active session with the same name is on a different worktree"
     );
 }
 
