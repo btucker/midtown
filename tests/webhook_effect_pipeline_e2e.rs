@@ -16,7 +16,6 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -24,62 +23,9 @@ use hmac::{Hmac, Mac};
 use ntest::timeout;
 use sha2::Sha256;
 
+mod common;
+
 type HmacSha256 = Hmac<Sha256>;
-
-// ── Shared test infrastructure ─────────────────────────────────────
-
-static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn test_repo_name() -> String {
-    let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    format!("webhook-effect-e2e-test-{}-{}", std::process::id(), counter)
-}
-
-/// Kill any orphaned test daemons from previous runs.
-fn cleanup_orphaned_test_daemons() {
-    let _ = Command::new("pkill")
-        .args(["-f", "midtown daemon.*webhook-effect-e2e-test"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    thread::sleep(Duration::from_millis(100));
-
-    let current_pid = format!("webhook-effect-e2e-test-{}-", std::process::id());
-    let projects_dir = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".midtown")
-        .join("projects");
-    if let Ok(entries) = fs::read_dir(&projects_dir) {
-        for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str()
-                && name.starts_with("webhook-effect-e2e-test-")
-                && !name.starts_with(&current_pid)
-            {
-                let _ = fs::remove_dir_all(entry.path());
-            }
-        }
-    }
-
-    let state_dir = std::env::var("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".local")
-                .join("state")
-        });
-    let sockets_dir = state_dir.join("midtown");
-    if let Ok(entries) = fs::read_dir(&sockets_dir) {
-        for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str()
-                && name.starts_with("webhook-effect-e2e-test-")
-                && !name.starts_with(&current_pid)
-            {
-                let _ = fs::remove_dir_all(entry.path());
-            }
-        }
-    }
-}
 
 /// Test fixture managing daemon lifecycle and cleanup.
 struct WebhookEffectFixture {
@@ -96,9 +42,9 @@ struct WebhookEffectFixture {
 
 impl WebhookEffectFixture {
     fn new(webhook_port: u16) -> Option<Self> {
-        cleanup_orphaned_test_daemons();
+        common::cleanup_orphaned_test_daemons("webhook-effect-e2e-test");
 
-        let repo_name = test_repo_name();
+        let repo_name = common::test_repo_name("webhook-effect-e2e-test");
         let temp_dir = std::env::temp_dir().join(&repo_name);
 
         let _ = fs::remove_dir_all(&temp_dir);

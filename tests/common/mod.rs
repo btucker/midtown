@@ -86,6 +86,15 @@ pub fn cleanup_orphaned_test_daemons(pattern: &str) {
     }
 }
 
+/// Check if tmux is available and usable.
+pub fn tmux_available() -> bool {
+    Command::new("tmux")
+        .args(["list-sessions"])
+        .output()
+        .map(|o| o.status.success() || o.status.code() == Some(1))
+        .unwrap_or(false)
+}
+
 // ── Git Repository Setup ────────────────────────────────────────────
 
 /// Initialize a git repository in the given directory.
