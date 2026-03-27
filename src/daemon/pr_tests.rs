@@ -266,6 +266,107 @@ fn format_no_reviewer_reason_with_known_author() {
     );
 }
 
+// ── no_review_nudge_self_review: dispatch deferral vs no eligible reviewers ───
+
+/// Helper to build a minimal StuckEvalContext for nudge message tests.
+fn make_stuck_eval_ctx(
+    has_available_slots: bool,
+    assigned_prs: HashSet<u64>,
+    pending_review_prs: HashSet<u64>,
+) -> StuckEvalContext<'static> {
+    StuckEvalContext {
+        review_mode: crate::config::ReviewMode::Local,
+        pr_session_names: HashMap::new(),
+        channel_lead_names: HashSet::new(),
+        has_available_slots,
+        running_coworkers: vec![],
+        project_name: "test-project",
+        assigned_prs,
+        active_reviewer_prs: HashSet::new(),
+        pr_task_associations: HashMap::new(),
+        task_channel: HashMap::new(),
+        channel_workflows: HashMap::new(),
+        lead_driven_channels: HashSet::new(),
+        pending_review_prs,
+    }
+}
+
+/// When at task limit with a pending review task, the nudge should say
+/// "dispatch deferred" instead of "no eligible reviewers".
+#[test]
+fn nudge_dispatch_deferred_at_task_limit() {
+    let pr_json = json!({"number": 42, "title": "Fix auth", "headRefName": "york/fix-auth", "isDraft": false});
+    let pf = PrFields::from_json(&pr_json);
+    let ctx = make_stuck_eval_ctx(false, HashSet::new(), HashSet::from([42]));
+    let msg = no_review_nudge_self_review(&pf, 1200, 0, &ctx);
+    assert!(
+        msg.contains("review dispatch deferred"),
+        "Should indicate dispatch deferral, got: {msg}"
+    );
+    assert!(
+        !msg.contains("no eligible reviewers"),
+        "Should NOT say 'no eligible reviewers' when review task is queued, got: {msg}"
+    );
+}
+
+/// When at task limit with NO pending review task, the nudge should still say
+/// "no eligible reviewers" (genuine lack of reviewers).
+#[test]
+fn nudge_no_eligible_reviewers_without_pending_task() {
+    let pr_json = json!({"number": 42, "title": "Fix auth", "headRefName": "york/fix-auth", "isDraft": false});
+    let pf = PrFields::from_json(&pr_json);
+    let ctx = make_stuck_eval_ctx(false, HashSet::new(), HashSet::new());
+    let msg = no_review_nudge_self_review(&pf, 1200, 0, &ctx);
+    assert!(
+        msg.contains("no eligible reviewers"),
+        "Should say 'no eligible reviewers' when no review task exists, got: {msg}"
+    );
+}
+
+/// Escalation path: dispatch deferral message at escalation nudge count.
+#[test]
+fn nudge_dispatch_deferred_escalation() {
+    let pr_json = json!({"number": 42, "title": "Fix auth", "headRefName": "york/fix-auth", "isDraft": false});
+    let pf = PrFields::from_json(&pr_json);
+    let ctx = make_stuck_eval_ctx(false, HashSet::new(), HashSet::from([42]));
+    // prior_nudges=1 → second nudge → escalation
+    let msg = no_review_nudge_self_review(&pf, 2400, 1, &ctx);
+    assert!(
+        msg.contains("Review dispatch deferred: at task limit"),
+        "Escalation should mention dispatch deferral, got: {msg}"
+    );
+    assert!(
+        msg.contains("Consider running"),
+        "Escalation should include debug hint, got: {msg}"
+    );
+}
+
+/// Escalation path: no pending review task → still says "No reviewer could be assigned".
+#[test]
+fn nudge_no_reviewer_escalation_without_pending_task() {
+    let pr_json = json!({"number": 42, "title": "Fix auth", "headRefName": "york/fix-auth", "isDraft": false});
+    let pf = PrFields::from_json(&pr_json);
+    let ctx = make_stuck_eval_ctx(false, HashSet::new(), HashSet::new());
+    let msg = no_review_nudge_self_review(&pf, 2400, 1, &ctx);
+    assert!(
+        msg.contains("No reviewer could be assigned"),
+        "Escalation without pending task should say 'No reviewer could be assigned', got: {msg}"
+    );
+}
+
+/// When a reviewer IS assigned, the pending_review_prs field is irrelevant.
+#[test]
+fn nudge_assigned_reviewer_ignores_pending_review() {
+    let pr_json = json!({"number": 42, "title": "Fix auth", "headRefName": "york/fix-auth", "isDraft": false});
+    let pf = PrFields::from_json(&pr_json);
+    let ctx = make_stuck_eval_ctx(false, HashSet::from([42]), HashSet::from([42]));
+    let msg = no_review_nudge_self_review(&pf, 1200, 0, &ctx);
+    assert!(
+        msg.contains("I assigned a reviewer"),
+        "When reviewer is assigned, message should be about the assigned reviewer, got: {msg}"
+    );
+}
+
 /// Bug: When a coworker goes on break and has no active session, their orphaned
 /// PR with a merge conflict should still trigger a warning to the lead.
 ///
