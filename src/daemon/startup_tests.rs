@@ -910,8 +910,8 @@ async fn test_clear_stale_running_sessions_clears_channel_leads() {
     );
 }
 
-/// Reviewer sessions have resume_on_startup=false and are never resumed.
-/// Their stale is_running=true should be cleared.
+/// Reviewer sessions that were not recovered during startup should have
+/// their stale is_running=true flag cleared.
 #[tokio::test]
 async fn test_clear_stale_running_sessions_clears_stale_reviewers() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
@@ -922,7 +922,7 @@ async fn test_clear_stale_running_sessions_clears_stale_reviewers() {
             test_session_record("sess-reviewer", "amsterdam", "midtown-code-reviewer");
         reviewer.agent_type = "midtown-code-reviewer".to_string();
         reviewer.pr_number = Some(42);
-        reviewer.resume_on_startup = false;
+        reviewer.resume_on_startup = true;
         state.sessions.insert("sess-reviewer".to_string(), reviewer);
     }
 
