@@ -247,9 +247,9 @@ pub enum WebUpdate {
     /// Channel settings changed
     #[serde(rename = "channel_settings_changed")]
     ChannelSettingsChanged(ChannelSettingsChangedData),
-    /// Open threads set changed for a channel
-    #[serde(rename = "open_threads_changed")]
-    OpenThreadsChanged(OpenThreadsChangedData),
+    /// Read state changed for a thread or channel
+    #[serde(rename = "read_state_changed")]
+    ReadStateChanged(ReadStateChangedData),
     /// Heartbeat data frame — resets the client's stale-connection timer.
     /// Unlike WebSocket ping control frames (RFC 6455), data frames trigger
     /// the browser's onmessage handler, making them visible to JavaScript.
@@ -287,13 +287,16 @@ pub struct ChannelSettingsChangedData {
     pub show_full_lead_output: Option<bool>,
 }
 
-/// Data for an open threads set change notification.
+/// Data for a read state change notification.
 #[derive(Debug, Clone, Serialize)]
-pub struct OpenThreadsChangedData {
-    /// The channel whose open thread set changed
-    pub channel: String,
-    /// The new set of open thread IDs
-    pub threads: Vec<String>,
+pub struct ReadStateChangedData {
+    /// Whether the item is a "thread" or "channel"
+    #[serde(rename = "type")]
+    pub item_type: String,
+    /// The thread or channel ID that was marked read
+    pub id: String,
+    /// ISO 8601 timestamp of when it was last read
+    pub timestamp: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -524,9 +527,10 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
             "/api/channels/{channel}/settings",
             get(api_channel_settings_get).put(api_channel_settings_set),
         )
+        .route("/api/read-state", get(api_read_state_get))
         .route(
-            "/api/channels/{channel}/open-threads",
-            get(api_channel_open_threads_get).put(api_channel_open_threads_set),
+            "/api/read-state/{item_type}/{id}",
+            put(api_read_state_mark_read),
         )
         .route(
             "/api/channels/{channel}/agents-md",
@@ -2734,21 +2738,11 @@ async fn api_channel_settings_set(
     }
 }
 
-/// GET /api/channels/{channel}/open-threads — read the open thread set for a channel.
-async fn api_channel_open_threads_get(
+/// GET /api/read-state — return all read timestamps for the current user.
+async fn api_read_state_get(
     State(state): State<Arc<WebState>>,
-    Path(channel): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    if channel.contains("..")
-        || channel.contains('/')
-        || channel.contains('\\')
-        || channel.is_empty()
-    {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
     let dir_key = state.config.dir_key.clone();
-    let ch = channel.clone();
 
     let result = tokio::task::spawn_blocking(move || {
         use std::io::{BufRead, BufReader, Write};
@@ -2768,8 +2762,8 @@ async fn api_channel_open_threads_get(
 
         let request = serde_json::json!({
             "jsonrpc": "2.0",
-            "method": "channel.open_threads",
-            "params": { "channel": ch },
+            "method": "read_state.get",
+            "params": {},
             "id": 1
         });
         writeln!(&mut writer, "{}", request).map_err(|e| format!("Failed to send RPC: {e}"))?;
@@ -2799,47 +2793,38 @@ async fn api_channel_open_threads_get(
     })
     .await
     .map_err(|e| {
-        warn!("spawn_blocking panic in channel_open_threads_get: {e}");
+        warn!("spawn_blocking panic in read_state_get: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
     match result {
         Ok(data) => Ok(Json(data)),
         Err(e) => {
-            warn!("Failed to get open threads: {e}");
+            warn!("Failed to get read state: {e}");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
 }
 
-/// PUT /api/channels/{channel}/open-threads — replace the open thread set for a channel.
+/// PUT /api/read-state/:type/:id — mark a thread or channel as read.
 ///
-/// Request body: `{ "threads": ["thread-id-1", "thread-id-2"] }`
-async fn api_channel_open_threads_set(
+/// Request body: `{ "timestamp": "2026-03-27T10:00:00Z" }`
+async fn api_read_state_mark_read(
     State(state): State<Arc<WebState>>,
-    Path(channel): Path<String>,
+    Path((item_type, id)): Path<(String, String)>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    if channel.contains("..")
-        || channel.contains('/')
-        || channel.contains('\\')
-        || channel.is_empty()
-    {
+    let timestamp = body
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if timestamp.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let threads: Vec<String> = body
-        .get("threads")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-
     let dir_key = state.config.dir_key.clone();
-    let ch = channel.clone();
 
     let result = tokio::task::spawn_blocking(move || {
         use std::io::{BufRead, BufReader, Write};
@@ -2862,8 +2847,8 @@ async fn api_channel_open_threads_set(
 
         let request = serde_json::json!({
             "jsonrpc": "2.0",
-            "method": "channel.open_threads.set",
-            "params": { "channel": ch, "threads": threads },
+            "method": "read_state.mark_read",
+            "params": { "type": item_type, "id": id, "timestamp": timestamp },
             "id": 1
         });
         writeln!(&mut writer, "{}", request).map_err(|e| format!("Failed to send RPC: {e}"))?;
@@ -2890,14 +2875,14 @@ async fn api_channel_open_threads_set(
     })
     .await
     .map_err(|e| {
-        warn!("spawn_blocking panic in channel_open_threads_set: {e}");
+        warn!("spawn_blocking panic in read_state_mark_read: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
     match result {
         Ok(()) => Ok(Json(serde_json::json!({ "ok": true }))),
         Err(e) => {
-            warn!("Failed to set open threads: {e}");
+            warn!("Failed to mark read state: {e}");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

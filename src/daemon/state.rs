@@ -284,15 +284,6 @@ pub struct DaemonPersistentState {
     #[serde(default)]
     pub workflow_state: HashMap<String, serde_json::Value>,
 
-    /// Per-channel set of thread IDs the user wants visible in the sidebar.
-    ///
-    /// Maps channel name → set of thread parent IDs. Synced to all web clients
-    /// via WebSocket so thread visibility is consistent across devices.
-    /// Threads are added when opened or created, removed on manual close or
-    /// 12-hour idle timeout.
-    #[serde(default)]
-    pub open_threads: HashMap<String, HashSet<String>>,
-
     /// Per-user read state for threads and channels.
     /// Maps user_id → ReadState. Uses "default" for single-user;
     /// multi-user support is a key change, not a schema change.

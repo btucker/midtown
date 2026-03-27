@@ -22,12 +22,8 @@ mod rpc_auth;
 mod rpc_channel;
 mod rpc_coworker;
 mod rpc_headless;
-mod rpc_open_threads;
 mod rpc_prs;
 mod rpc_read_state;
-#[path = "rpc_read_state_tests.rs"]
-#[cfg(test)]
-mod rpc_read_state_tests;
 mod rpc_reminder;
 mod rpc_session;
 mod rpc_status;
