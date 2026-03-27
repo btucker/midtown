@@ -102,12 +102,11 @@ describe("computeAttentionItems", () => {
 	const now = Date.now();
 	const baseOpts = {
 		trackedThreads: {},
-		openThreads: {} as Record<string, Set<string>>,
 		lastMessages: {},
 		coworkers: [],
 		tasks: [],
 		progressTimestamps: {},
-		dismissed: new Set<string>(),
+		threadReadState: {} as Record<string, string>,
 		userSender: "human",
 		mainChannel: "midtown",
 		now,
@@ -147,7 +146,6 @@ describe("computeAttentionItems", () => {
 					lastReplySender: "ghost-town",
 				},
 			},
-			openThreads: { web: new Set([threadId]) },
 			lastMessages: {
 				[threadId]: {
 					sender: "ghost-town",
@@ -173,7 +171,6 @@ describe("computeAttentionItems", () => {
 					replyCount: 1,
 				},
 			},
-			openThreads: { web: new Set([threadId]) },
 			lastMessages: {
 				[threadId]: {
 					sender: "ghost-town",
@@ -198,13 +195,57 @@ describe("computeAttentionItems", () => {
 		expect(items[0].title).toBe("Refactor auth");
 	});
 
-	it("filters out dismissed items", () => {
+	it("skips thread when threadReadState shows it has been read", () => {
+		const threadId = "msg-read-1";
+		const msgTimestamp = new Date(now - 20 * 60000).toISOString();
+		const readTimestamp = new Date(now - 10 * 60000).toISOString(); // read after last message
 		const items = computeAttentionItems({
 			...baseOpts,
-			tasks: [{ id: 1, subject: "Fix bug", status: "completed", owner: "ghost-town" }],
-			dismissed: new Set(["task:1"]),
+			trackedThreads: {
+				[threadId]: {
+					channelName: "web",
+					subject: "Already read",
+					lastActivity: msgTimestamp,
+					replyCount: 1,
+				},
+			},
+			lastMessages: {
+				[threadId]: {
+					sender: "ghost-town",
+					content: "what do you think?",
+					timestamp: msgTimestamp,
+				},
+			},
+			threadReadState: { [threadId]: readTimestamp },
 		});
 		expect(items).toHaveLength(0);
+	});
+
+	it("includes thread when threadReadState is older than last message", () => {
+		const threadId = "msg-unread-1";
+		const readTimestamp = new Date(now - 30 * 60000).toISOString(); // read before last message
+		const msgTimestamp = new Date(now - 20 * 60000).toISOString(); // new message after read
+		const items = computeAttentionItems({
+			...baseOpts,
+			trackedThreads: {
+				[threadId]: {
+					channelName: "web",
+					subject: "New reply",
+					lastActivity: msgTimestamp,
+					replyCount: 2,
+				},
+			},
+			lastMessages: {
+				[threadId]: {
+					sender: "ghost-town",
+					content: "updated thoughts",
+					timestamp: msgTimestamp,
+				},
+			},
+			threadReadState: { [threadId]: readTimestamp },
+		});
+		expect(items).toHaveLength(1);
+		expect(items[0].type).toBe("thread_waiting");
 	});
 
 	it("sorts items newest first", () => {
@@ -220,7 +261,6 @@ describe("computeAttentionItems", () => {
 					replyCount: 1,
 				},
 			},
-			openThreads: { web: new Set([threadId]) },
 			lastMessages: {
 				[threadId]: { sender: "ghost-town", content: "update?", timestamp: new Date(now - 15 * 60000).toISOString() },
 			},
