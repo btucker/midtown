@@ -2101,38 +2101,17 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 comment_id,
                 repo_full_name,
                 new_body,
-            } => {
-                let endpoint = format!("/repos/{}/issues/comments/{}", repo_full_name, comment_id);
-                let output = tokio::process::Command::new("gh")
-                    .args([
-                        "api",
-                        "--method",
-                        "PATCH",
-                        &endpoint,
-                        "-f",
-                        &format!("body={}", new_body),
-                    ])
-                    .output()
-                    .await;
-                match output {
-                    Ok(out) if out.status.success() => {
-                        info!(
-                            "Updated placeholder comment {} on {}",
-                            comment_id, repo_full_name
-                        );
-                    }
-                    Ok(out) => {
-                        let stderr = String::from_utf8_lossy(&out.stderr);
-                        warn!("Failed to update comment {}: {}", comment_id, stderr.trim());
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to run gh api for comment update {}: {}",
-                            comment_id, e
-                        );
-                    }
+            } => match super::gh::gh_patch_comment(&repo_full_name, comment_id, &new_body).await {
+                Ok(()) => {
+                    info!(
+                        "Updated placeholder comment {} on {}",
+                        comment_id, repo_full_name
+                    );
                 }
-            }
+                Err(e) => {
+                    warn!("Failed to update comment {}: {}", comment_id, e);
+                }
+            },
             Effect::LinkPrToSession {
                 pr_number,
                 session_id,
@@ -3890,36 +3869,13 @@ async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &st
             return;
         }
 
-        let endpoint = format!("/repos/{}/issues/comments/{}", repo_full_name, existing_id);
-        let output = tokio::process::Command::new("gh")
-            .args([
-                "api",
-                "--method",
-                "PATCH",
-                &endpoint,
-                "-f",
-                &format!("body={}", body),
-            ])
-            .output()
-            .await;
-
-        match output {
-            Ok(out) if out.status.success() => {
+        match super::gh::gh_patch_comment(&repo_full_name, existing_id, body).await {
+            Ok(()) => {
                 info!(
                     "Edited existing placeholder comment {} on PR #{} for reviewer {}",
                     existing_id, pr_number, reviewer_name
                 );
                 Some(existing_id)
-            }
-            Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                warn!(
-                    "Failed to edit placeholder comment {} on PR #{}: {}",
-                    existing_id,
-                    pr_number,
-                    stderr.trim()
-                );
-                return;
             }
             Err(e) => {
                 warn!(

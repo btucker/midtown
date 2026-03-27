@@ -3312,31 +3312,15 @@ pub(super) async fn cleanup_review_placeholders(pr_number: u64, repo_full_name: 
     );
 
     for comment_id in placeholder_ids {
-        let endpoint = format!("/repos/{}/issues/comments/{}", repo_full_name, comment_id);
-        let result = tokio::process::Command::new("gh")
-            .args(["api", "--method", "DELETE", &endpoint])
-            .output()
-            .await;
-        match result {
-            Ok(o) if o.status.success() => {
+        match super::gh::gh_delete_comment(repo_full_name, comment_id).await {
+            Ok(()) => {
                 info!(
                     "Deleted review placeholder comment {} on PR #{}",
                     comment_id, pr_number
                 );
             }
-            Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                warn!(
-                    "Failed to delete placeholder comment {}: {}",
-                    comment_id,
-                    stderr.trim()
-                );
-            }
             Err(e) => {
-                warn!(
-                    "Failed to run gh api for placeholder delete {}: {}",
-                    comment_id, e
-                );
+                warn!("Failed to delete placeholder comment {}: {}", comment_id, e);
             }
         }
     }

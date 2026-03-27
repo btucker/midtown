@@ -1140,21 +1140,8 @@ pub(super) async fn handle_pr_review_post(
 
     // Execute the comment update inline (not via execute_effects) so we can
     // surface failures to the caller — the reviewer agent can retry on error.
-    let endpoint = format!("/repos/{}/issues/comments/{}", repo_full_name, comment_id);
-    let output = tokio::process::Command::new("gh")
-        .args([
-            "api",
-            "--method",
-            "PATCH",
-            &endpoint,
-            "-f",
-            &format!("body={}", final_body),
-        ])
-        .output()
-        .await;
-
-    match output {
-        Ok(out) if out.status.success() => {
+    match super::gh::gh_patch_comment(&repo_full_name, comment_id, &final_body).await {
+        Ok(()) => {
             info!(
                 "Updated placeholder comment {} on {}",
                 comment_id, repo_full_name
@@ -1184,13 +1171,10 @@ pub(super) async fn handle_pr_review_post(
                 }),
             )
         }
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
+        Err(e) => {
             warn!(
                 "Failed to update comment {} for PR #{}: {}",
-                comment_id,
-                pr_number,
-                stderr.trim()
+                comment_id, pr_number, e
             );
             Response::error(
                 id,
@@ -1198,23 +1182,8 @@ pub(super) async fn handle_pr_review_post(
                     -32603,
                     format!(
                         "Failed to update comment {} for PR #{}: {}",
-                        comment_id,
-                        pr_number,
-                        stderr.trim()
+                        comment_id, pr_number, e
                     ),
-                ),
-            )
-        }
-        Err(e) => {
-            warn!(
-                "Failed to run gh api for comment update {} on PR #{}: {}",
-                comment_id, pr_number, e
-            );
-            Response::error(
-                id,
-                RpcError::new(
-                    -32603,
-                    format!("Failed to run gh api for PR #{}: {}", pr_number, e),
                 ),
             )
         }
