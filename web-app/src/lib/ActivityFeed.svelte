@@ -80,9 +80,11 @@ const reviewerByTaskId = $derived.by(() => {
 	return map;
 });
 
-const activeTasks = $derived([
+// All tasks including completed, so children of active parents show as filled segments
+const allTasks = $derived([
 	...$kanbanData.inProgress.map((t) => ({ ...t, status: "in_progress" as const })),
 	...$kanbanData.backlog.map((t) => ({ ...t, status: "pending" as const })),
+	...($kanbanData.completedTasks || []).map((t) => ({ ...t, status: "completed" as const })),
 ]);
 
 function taskSortKey(task: Task): number {
@@ -91,9 +93,10 @@ function taskSortKey(task: Task): number {
 	return 2;
 }
 
+// Group by parent, filter out completed parents, then sort
 const groupedActiveTasks = $derived.by(() => {
-	const groups = groupTasksByParent(activeTasks);
-	return groups.sort((a, b) => taskSortKey(a.task) - taskSortKey(b.task));
+	const groups = groupTasksByParent(allTasks);
+	return groups.filter((g) => g.task.status !== "completed").sort((a, b) => taskSortKey(a.task) - taskSortKey(b.task));
 });
 
 const cwMap = $derived(new Map($coworkers.map((cw) => [cw.name, cw])));

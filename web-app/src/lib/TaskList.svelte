@@ -29,14 +29,18 @@ function filterTasksByChannel(tasks, channel) {
 	return tasks.filter((task) => task.channel === channel);
 }
 
-// Derived: tasks for this channel, grouped by parent-child hierarchy
+// Derived: tasks for this channel, grouped by parent-child hierarchy.
+// Include completed tasks so children of active parents show as filled segments.
 const groupedTasks = $derived.by(() => {
 	const allTasks = [
 		...$kanbanData.inProgress.map((t) => ({ ...t, status: "in_progress" })),
 		...$kanbanData.backlog.map((t) => ({ ...t, status: "pending" })),
+		...($kanbanData.completedTasks || []).map((t) => ({ ...t, status: "completed" })),
 	];
 	const filtered = filterTasksByChannel(allTasks, channelName);
-	return groupTasksByParent(filtered);
+	const groups = groupTasksByParent(filtered);
+	// Only show groups whose parent is still active (not completed top-level tasks)
+	return groups.filter((g) => g.task.status !== "completed");
 });
 
 // Map coworker name → coworker object for progress/phase lookup
