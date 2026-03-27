@@ -64,30 +64,6 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
         let channel_leads = ps.channel_lead_names();
         (rev_map, wt_map, ps.github.rate_limit.clone(), channel_leads)
     };
-    // Build task metadata maps from TaskStore
-    let all_loaded_tasks_for_maps = state.task_store.load_all();
-    let (task_message_ids, task_thread_ids, task_plan_map, task_parent_map) = {
-        let mut msg_ids = std::collections::HashMap::new();
-        let mut thread_ids = std::collections::HashMap::new();
-        let mut plan_map = std::collections::HashMap::new();
-        let mut parent_map = std::collections::HashMap::new();
-        for t in &all_loaded_tasks_for_maps {
-            if let Some(ref m) = t.message_id {
-                msg_ids.insert(t.id.clone(), m.clone());
-            }
-            if let Some(ref tid) = t.thread_id {
-                thread_ids.insert(t.id.clone(), tid.clone());
-            }
-            if let Some(ref p) = t.plan {
-                plan_map.insert(t.id.clone(), p.clone());
-            }
-            if let Some(ref p) = t.parent {
-                parent_map.insert(t.id.clone(), p.clone());
-            }
-        }
-        (msg_ids, thread_ids, plan_map, parent_map)
-    };
-
     // Get token usage from session manager (keyed by coworker name).
     let token_usage = state.session_manager.get_token_usage().await;
 
@@ -122,13 +98,10 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
         })
         .collect();
     let (tasks, recent_activity, task_pr_map) = match tokio::task::spawn_blocking(move || {
-        let tasks = get_all_tasks(
-            all_loaded_tasks,
-            &task_message_ids,
-            &task_thread_ids,
-            &task_plan_map,
-            &task_parent_map,
-        );
+        let tasks: Vec<serde_json::Value> = all_loaded_tasks
+            .into_iter()
+            .map(|task| crate::task_store::task_to_json(&task, None, None))
+            .collect();
         let recent_activity = get_recent_channel_activity();
         let task_pr_map = task_pr_map_preloaded;
         (tasks, recent_activity, task_pr_map)
@@ -259,42 +232,6 @@ fn resolve_pr_number(
         .and_then(|tid| task_pr_map.get(&tid).copied())
         .or_else(|| reviewer_pr_map.get(coworker_name).copied())
         .or_else(|| worktree_pr_map.get(coworker_name).copied())
-}
-
-/// Get all tasks with their status, enriched with metadata.
-fn get_all_tasks(
-    all_tasks: Vec<crate::task_store::Task>,
-    task_message_ids: &std::collections::HashMap<String, String>,
-    task_thread_ids: &std::collections::HashMap<String, String>,
-    task_plan_map: &std::collections::HashMap<String, String>,
-    task_parent_map: &std::collections::HashMap<String, String>,
-) -> Vec<serde_json::Value> {
-    map_tasks_to_json(
-        all_tasks,
-        task_message_ids,
-        task_thread_ids,
-        task_plan_map,
-        task_parent_map,
-    )
-}
-
-/// Map a list of tasks to JSON values, enriching each with message_id and thread_id
-/// from the daemon's persistent state maps.
-fn map_tasks_to_json(
-    tasks: Vec<crate::task_store::Task>,
-    task_message_ids: &std::collections::HashMap<String, String>,
-    task_thread_ids: &std::collections::HashMap<String, String>,
-    _task_plan_map: &std::collections::HashMap<String, String>,
-    _task_parent_map: &std::collections::HashMap<String, String>,
-) -> Vec<serde_json::Value> {
-    tasks
-        .into_iter()
-        .map(|task| {
-            let message_id = task_message_ids.get(&task.id).cloned();
-            let thread_id = task_thread_ids.get(&task.id).cloned();
-            crate::task_store::task_to_json(&task, message_id, thread_id)
-        })
-        .collect()
 }
 
 /// Get recent channel activity.
