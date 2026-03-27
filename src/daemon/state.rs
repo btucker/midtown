@@ -838,7 +838,7 @@ impl DaemonPersistentState {
     pub fn session_by_thread(&self, thread_id: &str) -> Option<&SessionRecord> {
         let mut best: Option<&SessionRecord> = None;
         for s in self.sessions.values() {
-            if s.bound_thread_id.as_deref() == Some(thread_id) {
+            if s.bound_thread_id.as_deref() == Some(thread_id) && s.is_fork_session() {
                 if s.is_running {
                     return Some(s);
                 }

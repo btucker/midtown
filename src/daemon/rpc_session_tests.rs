@@ -1388,6 +1388,7 @@ async fn test_handle_session_fork_accepts_valid_uuid() {
                 session_id: "existing-session".to_string(),
                 name: "fork-existing".to_string(),
                 bound_thread_id: Some(valid_uuid.to_string()),
+                agent_type: "midtown-channel-lead".to_string(),
                 is_running: true,
                 ..Default::default()
             },

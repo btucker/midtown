@@ -1299,6 +1299,56 @@ fn test_session_by_thread_returns_none_for_empty_sessions() {
     assert!(ps.session_by_thread("thread-abc").is_none());
 }
 
+#[test]
+fn test_session_by_thread_ignores_worker_sessions() {
+    let mut ps = DaemonPersistentState::default();
+    // Worker session with bound_thread_id (set at spawn for message routing)
+    ps.sessions.insert(
+        "worker-1".into(),
+        SessionRecord {
+            session_id: "worker-1".into(),
+            name: "ghost-town".into(),
+            bound_thread_id: Some("thread-abc".into()),
+            is_running: true,
+            agent_type: "midtown-code-author".into(),
+            ..Default::default()
+        },
+    );
+    // Fork session with the same bound_thread_id
+    ps.sessions.insert(
+        "fork-1".into(),
+        SessionRecord {
+            session_id: "fork-1".into(),
+            name: "riverside".into(),
+            bound_thread_id: Some("thread-abc".into()),
+            is_running: true,
+            agent_type: "midtown-channel-lead".into(),
+            ..Default::default()
+        },
+    );
+    // session_by_thread should return only the fork, not the worker
+    let result = ps.session_by_thread("thread-abc");
+    assert_eq!(result.unwrap().session_id, "fork-1");
+}
+
+#[test]
+fn test_session_by_thread_returns_none_when_only_worker_bound() {
+    let mut ps = DaemonPersistentState::default();
+    // Only a worker is bound to this thread — no fork exists
+    ps.sessions.insert(
+        "worker-1".into(),
+        SessionRecord {
+            session_id: "worker-1".into(),
+            name: "ghost-town".into(),
+            bound_thread_id: Some("thread-abc".into()),
+            is_running: true,
+            agent_type: "midtown-code-author".into(),
+            ..Default::default()
+        },
+    );
+    assert!(ps.session_by_thread("thread-abc").is_none());
+}
+
 // ── ChannelSettings tests ──────────────────────────────────────────
 
 #[test]
