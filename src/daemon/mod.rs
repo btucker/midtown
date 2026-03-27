@@ -2420,7 +2420,7 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
             };
             if let Some(record) = record {
                 record.is_running = true;
-                record.resume_on_startup = record.agent_type != "midtown-code-reviewer";
+                record.resume_on_startup = !record.is_reviewer();
                 record.pid = info.pid;
                 record.last_active = info.last_active;
                 if let Some(ref wd) = info.working_dir {

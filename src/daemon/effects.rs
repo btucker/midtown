@@ -6,6 +6,7 @@ use tracing::{debug, info, warn};
 use super::DaemonState;
 use super::constants::OPS_CHANNEL;
 use super::trackers::PrIssueType;
+use crate::json_ext::ValueExt;
 use crate::message::Message;
 
 /// Maximum tool activity entries per agent before oldest are evicted.
@@ -18,7 +19,7 @@ const MAX_SEMANTIC_HEADER_BYTES: usize = 120;
 fn semantic_header(name: &str, input: &serde_json::Value) -> String {
     let raw = match name {
         "Bash" => {
-            let command = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            let command = input.str_or("command", "");
             format!("$ {command}")
         }
         "Edit" | "Write" | "Read" => {
@@ -27,18 +28,15 @@ fn semantic_header(name: &str, input: &serde_json::Value) -> String {
             format!("{verb} {path}")
         }
         "Glob" => {
-            let pattern = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            let pattern = input.str_or("pattern", "");
             format!("glob {pattern}")
         }
         "Grep" => {
-            let pattern = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+            let pattern = input.str_or("pattern", "");
             format!("grep /{pattern}/")
         }
         "Task" | "Agent" => {
-            let desc = input
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let desc = input.str_or("description", "");
             format!("task: {desc}")
         }
         "NotebookEdit" => {
@@ -46,11 +44,11 @@ fn semantic_header(name: &str, input: &serde_json::Value) -> String {
             format!("notebook edit {path}")
         }
         "WebFetch" => {
-            let url_str = input.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            let url_str = input.str_or("url", "");
             format!("fetch {url_str}")
         }
         "WebSearch" => {
-            let query = input.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            let query = input.str_or("query", "");
             format!("search \"{query}\"")
         }
         "TodoWrite" => "todo: update".to_string(),
@@ -72,7 +70,7 @@ fn semantic_header(name: &str, input: &serde_json::Value) -> String {
 /// Return the first path-like field found in the input object.
 fn first_path_field(input: &serde_json::Value) -> &str {
     for key in &["file_path", "notebook_path", "path"] {
-        if let Some(v) = input.get(key).and_then(|v| v.as_str()) {
+        if let Some(v) = input.str_field(key) {
             return v;
         }
     }
@@ -130,7 +128,7 @@ pub(super) fn format_workflow_state_summary(state: &serde_json::Value) -> String
         return "No active workflow state.".to_string();
     }
 
-    if let Some(tasks) = state.get("tasks").and_then(|t| t.as_object()) {
+    if let Some(tasks) = state.object_field("tasks") {
         if tasks.is_empty() {
             return "No active workflow state.".to_string();
         }
@@ -907,6 +905,24 @@ impl Effect {
             message,
             Some(super::constants::OPS_CHANNEL.to_string()),
         )
+    }
+
+    /// Convenience: post a system message to a specific channel.
+    ///
+    /// Creates a `PostSystemMessage` with the given channel. Pass `None` to
+    /// route to the default project channel.
+    pub fn system_message(message: impl Into<String>, channel: Option<String>) -> Self {
+        Self::PostSystemMessage {
+            message: message.into(),
+            channel,
+        }
+    }
+
+    /// Convenience: post a system message to the ops channel.
+    ///
+    /// Shorthand for `system_message(message, Some("ops"))`.
+    pub fn system_message_to_ops(message: impl Into<String>) -> Self {
+        Self::system_message(message, Some(super::constants::OPS_CHANNEL.to_string()))
     }
 }
 

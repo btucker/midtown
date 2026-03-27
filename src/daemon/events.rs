@@ -14,7 +14,6 @@
 use std::collections::HashSet;
 
 use super::DaemonState;
-use super::constants::OPS_CHANNEL;
 use super::effects::Effect;
 
 /// Events that drive the daemon's state machine.
@@ -265,14 +264,11 @@ pub async fn evaluate_tick(
 
                 // Warn when entering critical state (< 5%)
                 if now_critical && !was_critical {
-                    effects.push(Effect::PostSystemMessage {
-                        message: format!(
-                            "⚠️ GitHub API quota critical ({}). PR polling paused until reset at {}.",
-                            rate_limit.summary(),
-                            rate_limit.graphql.reset_time().format("%H:%M UTC")
-                        ),
-                        channel: Some(OPS_CHANNEL.to_string()),
-                    });
+                    effects.push(Effect::system_message_to_ops(format!(
+                        "⚠️ GitHub API quota critical ({}). PR polling paused until reset at {}.",
+                        rate_limit.summary(),
+                        rate_limit.graphql.reset_time().format("%H:%M UTC")
+                    )));
                     effects.push(Effect::RecordCooldown {
                         category: "rate_limit_critical".to_string(),
                         key: "throttle_warning".to_string(),
@@ -280,13 +276,10 @@ pub async fn evaluate_tick(
                 }
                 // Warn when entering low state (< 20%)
                 else if now_low && !was_low && !now_critical {
-                    effects.push(Effect::PostSystemMessage {
-                        message: format!(
-                            "⚠️ GitHub API quota low ({}). Consider reducing manual gh commands.",
-                            rate_limit.summary()
-                        ),
-                        channel: Some(OPS_CHANNEL.to_string()),
-                    });
+                    effects.push(Effect::system_message_to_ops(format!(
+                        "⚠️ GitHub API quota low ({}). Consider reducing manual gh commands.",
+                        rate_limit.summary()
+                    )));
                     effects.push(Effect::RecordCooldown {
                         category: "rate_limit_low".to_string(),
                         key: "throttle_warning".to_string(),
@@ -296,32 +289,23 @@ pub async fn evaluate_tick(
                 else if was_critical && !now_critical {
                     if now_low {
                         // Critical → low (improved but still low)
-                        effects.push(Effect::PostSystemMessage {
-                            message: format!(
-                                "⬆️ GitHub API quota improved ({}) — PR polling resumed, but quota still low.",
-                                rate_limit.summary()
-                            ),
-                            channel: Some(OPS_CHANNEL.to_string()),
-                        });
+                        effects.push(Effect::system_message_to_ops(format!(
+                            "⬆️ GitHub API quota improved ({}) — PR polling resumed, but quota still low.",
+                            rate_limit.summary()
+                        )));
                     } else {
                         // Critical → normal (fully recovered)
-                        effects.push(Effect::PostSystemMessage {
-                            message: format!(
-                                "✅ GitHub API quota recovered ({}). PR polling resumed.",
-                                rate_limit.summary()
-                            ),
-                            channel: Some(OPS_CHANNEL.to_string()),
-                        });
+                        effects.push(Effect::system_message_to_ops(format!(
+                            "✅ GitHub API quota recovered ({}). PR polling resumed.",
+                            rate_limit.summary()
+                        )));
                     }
                 } else if was_low && !was_critical && !now_low && !now_critical {
                     // Low → normal (recovered from low state)
-                    effects.push(Effect::PostSystemMessage {
-                        message: format!(
-                            "✅ GitHub API quota recovered ({}).",
-                            rate_limit.summary()
-                        ),
-                        channel: Some(OPS_CHANNEL.to_string()),
-                    });
+                    effects.push(Effect::system_message_to_ops(format!(
+                        "✅ GitHub API quota recovered ({}).",
+                        rate_limit.summary()
+                    )));
                 }
 
                 effects.push(Effect::UpdateRateLimit(rate_limit.clone()));

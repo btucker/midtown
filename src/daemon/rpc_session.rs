@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
+use crate::json_ext::ValueExt;
 use crate::message::{Message, MessageType};
 use crate::rpc::{RequestId, Response, RpcError};
 use crate::web;
@@ -389,14 +390,14 @@ pub(super) async fn handle_session_resolve(
     }
 
     candidates.sort_by(|a, b| {
-        let ar = a.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
-        let br = b.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
+        let ar = a.bool_or("running", false);
+        let br = b.bool_or("running", false);
         match br.cmp(&ar) {
             std::cmp::Ordering::Equal => {}
             ord => return ord,
         }
-        let an = a.get("name").and_then(|v| v.as_str()).unwrap_or_default();
-        let bn = b.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+        let an = a.str_or("name", "");
+        let bn = b.str_or("name", "");
         an.cmp(bn)
     });
 
@@ -787,14 +788,14 @@ pub(super) async fn handle_session_list(id: RequestId, state: &DaemonState) -> R
             "attached" => 1,
             _ => 2, // paused / historical
         };
-        let as_status = a.get("status").and_then(|v| v.as_str()).unwrap_or("paused");
-        let bs_status = b.get("status").and_then(|v| v.as_str()).unwrap_or("paused");
+        let as_status = a.str_or("status", "paused");
+        let bs_status = b.str_or("status", "paused");
         match status_rank(as_status).cmp(&status_rank(bs_status)) {
             std::cmp::Ordering::Equal => {}
             ord => return ord,
         }
-        let an = a.get("name").and_then(|v| v.as_str()).unwrap_or_default();
-        let bn = b.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+        let an = a.str_or("name", "");
+        let bn = b.str_or("name", "");
         an.cmp(bn)
     });
 

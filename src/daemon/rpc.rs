@@ -18,6 +18,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
+use crate::json_ext::ValueExt;
 use crate::rpc::{Request, RequestId, Response, RpcError};
 
 use super::{DaemonState, effects};
@@ -55,13 +56,11 @@ trait ParamExt {
 
 impl ParamExt for Option<&serde_json::Value> {
     fn str_param(&self, key: &str) -> Option<&str> {
-        self.and_then(|p| p.get(key)).and_then(|v| v.as_str())
+        self.and_then(|p| p.str_field(key))
     }
 
     fn bool_or(&self, key: &str, default: bool) -> bool {
-        self.and_then(|p| p.get(key))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(default)
+        self.map_or(default, |p| p.bool_or(key, default))
     }
 
     fn str_or<'a>(&'a self, key: &str, default: &'a str) -> &'a str {
@@ -69,23 +68,20 @@ impl ParamExt for Option<&serde_json::Value> {
     }
 
     fn u64_param(&self, key: &str) -> Option<u64> {
-        self.and_then(|p| p.get(key)).and_then(|v| v.as_u64())
+        self.and_then(|p| p.u64_field(key))
     }
 
     fn usize_param(&self, key: &str) -> Option<usize> {
-        self.and_then(|p| p.get(key))
-            .and_then(|v| v.as_u64())
+        self.and_then(|p| p.u64_field(key))
             .and_then(|n| usize::try_from(n).ok())
     }
 
     fn str_array_param(&self, key: &str) -> Option<Vec<String>> {
-        self.and_then(|p| p.get(key))
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
+        self.and_then(|p| p.array_field(key)).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
     }
 }
 

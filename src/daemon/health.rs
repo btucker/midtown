@@ -1045,7 +1045,7 @@ pub(super) fn check_for_state_gc(
         }
 
         // Dead reviewer sessions: prune immediately (ephemeral lifecycle).
-        if record.agent_type == "midtown-code-reviewer" {
+        if record.is_reviewer() {
             dead_session_ids.push(session_id.clone());
             continue;
         }
@@ -1091,12 +1091,7 @@ pub(super) fn check_for_state_gc(
             dead_session_ids.len(),
             dead_session_ids
                 .iter()
-                .filter(|sid| {
-                    sessions
-                        .get(*sid)
-                        .map(|r| r.agent_type == "midtown-code-reviewer")
-                        .unwrap_or(false)
-                })
+                .filter(|sid| { sessions.get(*sid).map(|r| r.is_reviewer()).unwrap_or(false) })
                 .count()
         );
     }

@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use midtown::json_ext::ValueExt;
 use midtown::task_store::extract_task_id_from_pr_title;
 use midtown::{Channel, Message};
 
@@ -3109,24 +3110,10 @@ fn fetch_tasks() -> Vec<KanbanTask> {
             && let Ok(content) = std::fs::read_to_string(&path)
             && let Ok(task_data) = serde_json::from_str::<serde_json::Value>(&content)
         {
-            let id = task_data
-                .get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let subject = task_data
-                .get("subject")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let owner = task_data
-                .get("owner")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            let status_str = task_data
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("pending");
+            let id = task_data.str_or("id", "").to_string();
+            let subject = task_data.str_or("subject", "").to_string();
+            let owner = task_data.str_field("owner").map(String::from);
+            let status_str = task_data.str_or("status", "pending");
 
             let status = match status_str {
                 "in_progress" => TaskStatus::InProgress,
@@ -3141,21 +3128,16 @@ fn fetch_tasks() -> Vec<KanbanTask> {
                 .map(DateTime::<Utc>::from);
 
             // Read channel assignment
-            let channel = task_data
-                .get("channel")
-                .and_then(|v| v.as_str())
-                .map(String::from);
+            let channel = task_data.str_field("channel").map(String::from);
 
             let description = task_data
-                .get("description")
-                .and_then(|v| v.as_str())
+                .str_field("description")
                 .filter(|s| !s.is_empty())
                 .map(String::from);
 
             // Read blocked_by array
             let blocked_by = task_data
-                .get("blockedBy")
-                .and_then(|v| v.as_array())
+                .array_field("blockedBy")
                 .map(|arr| {
                     arr.iter()
                         .filter_map(|v| v.as_str().map(String::from))
@@ -3165,8 +3147,7 @@ fn fetch_tasks() -> Vec<KanbanTask> {
 
             // ID of the channel message that created this task
             let message_id = task_data
-                .get("message_id")
-                .and_then(|v| v.as_str())
+                .str_field("message_id")
                 .filter(|s| !s.is_empty())
                 .map(String::from);
 
@@ -3205,7 +3186,7 @@ fn fetch_repo_name() -> String {
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Ok(repo) = serde_json::from_str::<serde_json::Value>(&stdout)
-            && let Some(name) = repo.get("nameWithOwner").and_then(|v| v.as_str())
+            && let Some(name) = repo.str_field("nameWithOwner")
         {
             return name.to_string();
         }
@@ -3271,40 +3252,32 @@ fn fetch_prs() -> Vec<KanbanPr> {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Ok(pr_list) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
             for pr in pr_list {
-                let number = pr.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
-                let title = pr
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let number = pr.u64_field("number").unwrap_or(0);
+                let title = pr.str_or("title", "").to_string();
                 let github_author = pr
                     .get("author")
-                    .and_then(|v| v.get("login"))
-                    .and_then(|v| v.as_str())
+                    .and_then(|v| v.str_field("login"))
                     .unwrap_or("unknown")
                     .to_string();
-                let body = pr.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                let body = pr.str_or("body", "");
                 // Use coworker name from body frontmatter if present, otherwise GitHub author
                 let author = extract_coworker_from_body(body).unwrap_or(github_author);
                 let created_at = pr
-                    .get("createdAt")
-                    .and_then(|v| v.as_str())
+                    .str_field("createdAt")
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(Utc::now);
 
                 // Parse CI status from statusCheckRollup
                 let ci_status = parse_ci_status_from_checks(
-                    pr.get("statusCheckRollup")
-                        .and_then(|v| v.as_array())
+                    pr.array_field("statusCheckRollup")
                         .map(|a| a.as_slice())
                         .unwrap_or(&[]),
                 );
 
                 // Extract reviewer from comments (look for review comment frontmatter)
                 let (reviewer, reviewed_at) = extract_reviewer_from_comments(
-                    pr.get("comments")
-                        .and_then(|v| v.as_array())
+                    pr.array_field("comments")
                         .map(|a| a.as_slice())
                         .unwrap_or(&[]),
                 );
@@ -3345,7 +3318,7 @@ fn extract_reviewer_from_comments(
     comments: &[serde_json::Value],
 ) -> (Option<String>, Option<DateTime<Utc>>) {
     for comment in comments {
-        let body = comment.get("body").and_then(|v| v.as_str()).unwrap_or("");
+        let body = comment.str_or("body", "");
 
         // Check if this looks like a review comment
         let is_review = body.contains("Code Review") || body.contains("Code review");
@@ -3361,8 +3334,7 @@ fn extract_reviewer_from_comments(
 
         if let Some(name) = reviewer_name {
             let created_at = comment
-                .get("createdAt")
-                .and_then(|v| v.as_str())
+                .str_field("createdAt")
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt.with_timezone(&Utc));
             return (Some(name), created_at);
@@ -3401,9 +3373,9 @@ fn parse_ci_status_from_checks(checks: &[serde_json::Value]) -> CiStatus {
     for check in checks {
         // Check runs have "status" and "conclusion" fields
         // Status contexts have "state" field
-        let status = check.get("status").and_then(|v| v.as_str());
-        let conclusion = check.get("conclusion").and_then(|v| v.as_str());
-        let state = check.get("state").and_then(|v| v.as_str());
+        let status = check.str_field("status");
+        let conclusion = check.str_field("conclusion");
+        let state = check.str_field("state");
 
         // Handle check runs (GitHub Actions)
         if let Some(status) = status {
@@ -3462,15 +3434,10 @@ fn fetch_merged_prs() -> Vec<MergedPr> {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Ok(pr_list) = serde_json::from_str::<Vec<serde_json::Value>>(&stdout) {
             for pr in pr_list {
-                let number = pr.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
-                let title = pr
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let number = pr.u64_field("number").unwrap_or(0);
+                let title = pr.str_or("title", "").to_string();
                 let merged_at = pr
-                    .get("mergedAt")
-                    .and_then(|v| v.as_str())
+                    .str_field("mergedAt")
                     .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(Utc::now);
@@ -3504,22 +3471,17 @@ fn fetch_kanban_data_via_rpc() -> KanbanRpcResult {
     let client = DaemonClient::connect().ok()?;
     let data = client.prs_status().ok()?;
 
-    let prs_json = data.get("prs").and_then(|v| v.as_array())?;
-    let merged_json = data.get("merged_prs").and_then(|v| v.as_array())?;
+    let prs_json = data.array_field("prs")?;
+    let merged_json = data.array_field("merged_prs")?;
 
     // Extract repo metadata if present
     let repos: Vec<(String, String)> = data
-        .get("repos")
-        .and_then(|v| v.as_array())
+        .array_field("repos")
         .map(|arr| {
             arr.iter()
                 .filter_map(|r| {
-                    let label = r.get("label").and_then(|v| v.as_str())?.to_string();
-                    let full_name = r
-                        .get("full_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                    let label = r.str_field("label")?.to_string();
+                    let full_name = r.str_or("full_name", "").to_string();
                     Some((label, full_name))
                 })
                 .collect()
@@ -3529,63 +3491,34 @@ fn fetch_kanban_data_via_rpc() -> KanbanRpcResult {
     let prs: Vec<KanbanPr> = prs_json
         .iter()
         .filter_map(|pr| {
-            let number = pr.get("number").and_then(|v| v.as_u64())?;
-            let title = pr
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let author = pr
-                .get("author")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
+            let number = pr.u64_field("number")?;
+            let title = pr.str_or("title", "").to_string();
+            let author = pr.str_or("author", "unknown").to_string();
             let created_at = pr
-                .get("created_at")
-                .and_then(|v| v.as_str())
+                .str_field("created_at")
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(Utc::now);
-            let ci_status = match pr
-                .get("ci_status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-            {
+            let ci_status = match pr.str_or("ci_status", "unknown") {
                 "passed" => CiStatus::Passed,
                 "failed" => CiStatus::Failed,
                 "running" => CiStatus::Running,
                 _ => CiStatus::Unknown,
             };
-            let reviewer = pr
-                .get("reviewer")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let reviewer = pr.str_field("reviewer").map(|s| s.to_string());
             let reviewed_at = pr
-                .get("reviewed_at")
-                .and_then(|v| v.as_str())
+                .str_field("reviewed_at")
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt.with_timezone(&Utc));
 
-            let review_posted = pr
-                .get("review_posted")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let review_posted = pr.bool_or("review_posted", false);
 
-            let repo = pr
-                .get("repo")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let repo = pr.str_field("repo").map(|s| s.to_string());
 
-            let task_id = pr.get("task_id").and_then(|v| v.as_u64());
-            let task_name = pr
-                .get("task_name")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let task_id = pr.u64_field("task_id");
+            let task_name = pr.str_field("task_name").map(|s| s.to_string());
 
-            let has_conflicts = pr
-                .get("has_conflicts")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let has_conflicts = pr.bool_or("has_conflicts", false);
 
             Some(KanbanPr {
                 number,
@@ -3607,22 +3540,14 @@ fn fetch_kanban_data_via_rpc() -> KanbanRpcResult {
     let merged_prs: Vec<MergedPr> = merged_json
         .iter()
         .filter_map(|pr| {
-            let number = pr.get("number").and_then(|v| v.as_u64())?;
-            let title = pr
-                .get("title")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let number = pr.u64_field("number")?;
+            let title = pr.str_or("title", "").to_string();
             let merged_at = pr
-                .get("merged_at")
-                .and_then(|v| v.as_str())
+                .str_field("merged_at")
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(Utc::now);
-            let repo = pr
-                .get("repo")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+            let repo = pr.str_field("repo").map(|s| s.to_string());
             Some(MergedPr {
                 number,
                 title,
@@ -3647,11 +3572,10 @@ fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
     let project_name = midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
     let (fallback_provider, fallback_profile) = project_lead_provider_and_profile(&project_name);
 
-    let coworkers_json = data.get("coworkers").and_then(|v| v.as_array());
+    let coworkers_json = data.array_field("coworkers");
 
     let max_in_progress_tasks = data
-        .get("max_in_progress_tasks")
-        .and_then(|v| v.as_u64())
+        .u64_field("max_in_progress_tasks")
         .map(|n| n as usize)
         .unwrap_or(10);
 
@@ -3659,16 +3583,10 @@ fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
         .map(|arr| {
             arr.iter()
                 .filter_map(|cw| {
-                    let name = cw.get("name").and_then(|v| v.as_str())?.to_string();
-                    let task_id = cw
-                        .get("task_id")
-                        .and_then(|v| v.as_u64())
-                        .map(|id| id as u32);
-                    let phase = cw
-                        .get("phase")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let status = cw.get("status").and_then(|v| v.as_str());
+                    let name = cw.str_field("name")?.to_string();
+                    let task_id = cw.u64_field("task_id").map(|id| id as u32);
+                    let phase = cw.str_field("phase").map(|s| s.to_string());
+                    let status = cw.str_field("status");
 
                     let is_inactive = match phase.as_deref() {
                         Some(phase) if !phase.trim().is_empty() => {
@@ -3687,27 +3605,18 @@ fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
                         return None;
                     }
 
-                    let pr_number = cw.get("pr_number").and_then(|v| v.as_u64());
-                    let health = cw
-                        .get("health")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("green")
-                        .to_string();
+                    let pr_number = cw.u64_field("pr_number");
+                    let health = cw.str_or("health", "green").to_string();
                     let provider = cw
-                        .get("provider")
-                        .and_then(|v| v.as_str())
+                        .str_field("provider")
                         .unwrap_or(fallback_provider.as_str())
                         .to_string();
                     let profile = cw
-                        .get("profile")
-                        .and_then(|v| v.as_str())
+                        .str_field("profile")
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| fallback_profile.clone());
-                    let progress = cw.get("progress").and_then(|v| v.as_u64()).map(|p| p as u8);
-                    let time_estimate = cw
-                        .get("time_estimate")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
+                    let progress = cw.u64_field("progress").map(|p| p as u8);
+                    let time_estimate = cw.str_field("time_estimate").map(|s| s.to_string());
                     Some(CoworkerInfo {
                         name,
                         task_id,
@@ -3724,14 +3633,10 @@ fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
         })
         .unwrap_or_default();
 
-    let lead_working = data
-        .get("lead_working")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let lead_working = data.bool_or("lead_working", false);
 
     let tool_activity: HashMap<String, Vec<String>> = data
-        .get("tool_activity")
-        .and_then(|v| v.as_object())
+        .object_field("tool_activity")
         .map(|obj| {
             obj.iter()
                 .map(|(agent, headers)| {
@@ -3750,8 +3655,7 @@ fn fetch_coworker_status_via_rpc() -> Option<CoworkerStatusData> {
         .unwrap_or_default();
 
     let channel_lead_names: Vec<String> = data
-        .get("channel_leads")
-        .and_then(|v| v.as_array())
+        .array_field("channel_leads")
         .map(|arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
@@ -3787,18 +3691,15 @@ fn fetch_pending_questions_via_rpc() -> Vec<PendingQuestion> {
         Err(_) => return Vec::new(),
     };
 
-    data.get("questions")
-        .and_then(|v| v.as_array())
+    data.array_field("questions")
         .map(|arr| {
             arr.iter()
                 .filter_map(|q| {
-                    let id = q.get("id").and_then(|v| v.as_u64())?;
-                    let coworker_name =
-                        q.get("coworker_name").and_then(|v| v.as_str())?.to_string();
-                    let question = q.get("question").and_then(|v| v.as_str())?.to_string();
+                    let id = q.u64_field("id")?;
+                    let coworker_name = q.str_field("coworker_name")?.to_string();
+                    let question = q.str_field("question")?.to_string();
                     let timestamp = q
-                        .get("timestamp")
-                        .and_then(|v| v.as_str())
+                        .str_field("timestamp")
                         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                         .map(|dt| dt.with_timezone(&chrono::Utc))
                         .unwrap_or_else(chrono::Utc::now);
@@ -3972,10 +3873,10 @@ fn fetch_repo_status(repo_full_name: Option<&str>) -> RepoStatus {
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            if let Some(sha) = data.get("sha").and_then(|v| v.as_str()) {
+            if let Some(sha) = data.str_field("sha") {
                 status.commit_hash = sha.to_string();
             }
-            if let Some(date_str) = data.get("date").and_then(|v| v.as_str()) {
+            if let Some(date_str) = data.str_field("date") {
                 status.commit_time = DateTime::parse_from_rfc3339(date_str)
                     .ok()
                     .map(|dt| dt.with_timezone(&Utc));
@@ -3996,8 +3897,8 @@ fn fetch_repo_status(repo_full_name: Option<&str>) -> RepoStatus {
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            let run_status = data.get("status").and_then(|v| v.as_str()).unwrap_or("");
-            let conclusion = data.get("conclusion").and_then(|v| v.as_str());
+            let run_status = data.str_or("status", "");
+            let conclusion = data.str_field("conclusion");
 
             status.ci_status = match (run_status, conclusion) {
                 ("completed", Some("success")) => CiStatus::Passed,
@@ -4022,10 +3923,10 @@ fn fetch_repo_status(repo_full_name: Option<&str>) -> RepoStatus {
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            if let Some(tag) = data.get("tag").and_then(|v| v.as_str()) {
+            if let Some(tag) = data.str_field("tag") {
                 status.release_tag = Some(tag.to_string());
             }
-            if let Some(date_str) = data.get("published_at").and_then(|v| v.as_str()) {
+            if let Some(date_str) = data.str_field("published_at") {
                 status.release_time = DateTime::parse_from_rfc3339(date_str)
                     .ok()
                     .map(|dt| dt.with_timezone(&Utc));

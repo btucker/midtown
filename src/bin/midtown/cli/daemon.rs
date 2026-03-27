@@ -6,6 +6,8 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use midtown::json_ext::ValueExt;
+
 use crate::cli::Response;
 use crate::client::DaemonClient;
 
@@ -1127,19 +1129,15 @@ fn extract_review_phase_names(
     coworkers_status: &serde_json::Value,
 ) -> std::collections::HashSet<String> {
     coworkers_status
-        .get("coworkers")
-        .and_then(|v| v.as_array())
+        .array_field("coworkers")
         .into_iter()
         .flatten()
         .filter_map(|coworker| {
-            let phase = coworker.get("phase").and_then(|v| v.as_str())?;
+            let phase = coworker.str_field("phase")?;
             if phase != "review" {
                 return None;
             }
-            coworker
-                .get("name")
-                .and_then(|v| v.as_str())
-                .map(|name| name.to_string())
+            coworker.str_field("name").map(|name| name.to_string())
         })
         .collect()
 }
@@ -1149,20 +1147,15 @@ fn extract_unreviewed_assigned_reviewer_names(
     prs_status: &serde_json::Value,
 ) -> std::collections::HashSet<String> {
     prs_status
-        .get("prs")
-        .and_then(|v| v.as_array())
+        .array_field("prs")
         .into_iter()
         .flatten()
         .filter_map(|pr| {
-            let review_posted = pr
-                .get("review_posted")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let review_posted = pr.bool_or("review_posted", false);
             if review_posted {
                 return None;
             }
-            pr.get("reviewer")
-                .and_then(|v| v.as_str())
+            pr.str_field("reviewer")
                 .filter(|name| !name.is_empty())
                 .map(|name| name.to_string())
         })
@@ -1549,24 +1542,14 @@ pub fn handle_view(project: Option<&str>, attach: bool) -> Result<Response, Stri
         };
 
         let session_id = info
-            .get("session_id")
-            .and_then(|v| v.as_str())
+            .str_field("session_id")
             .ok_or("Daemon did not return session_id")?;
-        let cwd = info
-            .get("cwd")
-            .and_then(|v| v.as_str())
-            .ok_or("Daemon did not return cwd")?;
-        let provider_str = info
-            .get("provider")
-            .and_then(|v| v.as_str())
-            .unwrap_or("claude");
+        let cwd = info.str_field("cwd").ok_or("Daemon did not return cwd")?;
+        let provider_str = info.str_or("provider", "claude");
         let provider = provider_str
             .parse::<midtown::auth::AuthProvider>()
             .unwrap_or(midtown::auth::AuthProvider::Claude);
-        let profile = info
-            .get("profile")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        let profile = info.str_field("profile").map(|s| s.to_string());
 
         let profile_dir = profile
             .as_deref()

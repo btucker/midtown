@@ -61,6 +61,8 @@ pub use response::Response;
 pub use task::TaskCommand;
 pub use workflow::WorkflowCommand;
 
+use midtown::json_ext::ValueExt;
+
 use crate::client::DaemonClient;
 
 pub fn handle_channel(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, String> {
@@ -255,13 +257,10 @@ pub fn handle_oneshot(
     )?;
 
     // Extract the result text for display
-    let success = result
-        .get("success")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let result_text = result.get("result").and_then(|v| v.as_str()).unwrap_or("");
-    let cost = result.get("cost_usd").and_then(|v| v.as_f64());
-    let duration = result.get("duration_ms").and_then(|v| v.as_u64());
+    let success = result.bool_or("success", false);
+    let result_text = result.str_or("result", "");
+    let cost = result.f64_field("cost_usd");
+    let duration = result.u64_field("duration_ms");
 
     if success {
         let mut message = result_text.to_string();

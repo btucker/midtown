@@ -18,6 +18,7 @@ use super::effects::Effect;
 use super::helpers::is_lead_branch;
 use super::helpers::*;
 use super::trackers::{PrIssueType, StuckConditionType};
+use crate::json_ext::ValueExt;
 
 /// Resolve a PR's owner via the session-centric path:
 /// PR number → task_id → session_id → session.name.
@@ -498,10 +499,7 @@ async fn collect_orphaned_pr_effects(
                         get_issue_action(*issue_type),
                         owner_desc
                     );
-                    effects.push(Effect::PostSystemMessage {
-                        message: format!("⚠️ {}", warning),
-                        channel: Some(OPS_CHANNEL.to_string()),
-                    });
+                    effects.push(Effect::system_message_to_ops(format!("⚠️ {}", warning)));
                     effects.push(Effect::RecordPrNudge {
                         pr_number,
                         issue_type: *issue_type,
@@ -910,19 +908,19 @@ async fn detect_and_block_external_prs(
             );
             ps.github.mark_external_pr_notified(pr_number);
 
-            effects.push(Effect::PostSystemMessage {
-                message: format!(
+            effects.push(Effect::system_message(
+                format!(
                     "⚠️ PR #{} from fork `{}` is from an external repository. \
                      External PRs are not processed automatically. \
                      To allow it, run: `midtown pr allow {}`",
                     pr_number, source_repo, pr_number
                 ),
-                channel: if default_channel.is_empty() {
+                if default_channel.is_empty() {
                     None
                 } else {
                     Some(default_channel.to_string())
                 },
-            });
+            ));
         }
     }
 
@@ -1465,25 +1463,14 @@ fn action_to_effects(
         // would just re-fire the same message every 10 minutes indefinitely.
         PrAction::NudgeOwner { owner, message: _ } | PrAction::SpawnOwner { owner, message: _ } => {
             vec![
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message: format!(
-                        "PR #{} ({}) owned by {} \u{2014} {}: {} (no task linked, posting for manual review)",
-                        pr_number,
-                        truncate_str(title, 40),
-                        owner,
-                        issue_type,
-                        get_issue_action(issue_type),
-                    ),
-                    channel: Some(OPS_CHANNEL.to_string()),
-                    auto_output: false,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                },
+                Effect::post_to_ops(format!(
+                    "PR #{} ({}) owned by {} \u{2014} {}: {} (no task linked, posting for manual review)",
+                    pr_number,
+                    truncate_str(title, 40),
+                    owner,
+                    issue_type,
+                    get_issue_action(issue_type),
+                )),
                 Effect::RecordPermanentPrNudge {
                     pr_number,
                     issue_type,
@@ -1492,18 +1479,7 @@ fn action_to_effects(
         }
         PrAction::PostToChannel { message } => {
             vec![
-                Effect::PostToChannel {
-                    sender: "midtown".to_string(),
-                    message,
-                    channel: channel.clone(),
-                    auto_output: false,
-                    message_type: None,
-                    nudge_type: None,
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                },
+                Effect::post_to_channel("midtown", message, channel.clone()),
                 Effect::RecordPrNudge {
                     pr_number,
                     issue_type,
@@ -2039,15 +2015,12 @@ async fn silent_coworker_scenario(
                 state.session_id_for_name(name).await,
                 nudge_msg,
             ));
-            effects.push(Effect::PostSystemMessage {
-                message: format!(
-                    "⚠️ Nudging {} — silent on {} for over {} minutes",
-                    name,
-                    task_info,
-                    STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
-                ),
-                channel: Some(OPS_CHANNEL.to_string()),
-            });
+            effects.push(Effect::system_message_to_ops(format!(
+                "⚠️ Nudging {} — silent on {} for over {} minutes",
+                name,
+                task_info,
+                STUCK_SILENT_COWORKER_DURATION.as_secs() / 60,
+            )));
         } else {
             // Escalation: coworker didn't respond, notify ops
             let nudge = format!(
@@ -2108,10 +2081,7 @@ pub(super) fn format_no_reviewer_reason(busy_names: &[String], pr_author: Option
 /// a separate nudge effect here because that would cause double delivery
 /// (the @ops routing in the PostSystemMessage handler already handles it).
 fn stuck_nudge_effects(message: &str) -> Vec<Effect> {
-    vec![Effect::PostSystemMessage {
-        message: format!("⚠️ {}", message),
-        channel: Some(OPS_CHANNEL.to_string()),
-    }]
+    vec![Effect::system_message_to_ops(format!("⚠️ {}", message))]
 }
 
 /// Fetch PR details with comments and author for a specific PR.
@@ -3110,12 +3080,9 @@ pub(super) fn json_has_completed_review(
     assigned_session_id: Option<&str>,
 ) -> bool {
     // Check formal reviews first (Codex / GitHub-native review flow).
-    if let Some(reviews) = json.get("reviews").and_then(|v| v.as_array()) {
+    if let Some(reviews) = json.array_field("reviews") {
         for review in reviews {
-            let state_upper = review
-                .get("state")
-                .and_then(|s| s.as_str())
-                .map(|s| s.to_ascii_uppercase());
+            let state_upper = review.str_field("state").map(|s| s.to_ascii_uppercase());
 
             // Only strong review states count as completed reviews.
             // COMMENTED and DISMISSED are too weak — Codex and other tools
@@ -3126,12 +3093,11 @@ pub(super) fn json_has_completed_review(
                 .is_some_and(|s| matches!(s, "APPROVED" | "CHANGES_REQUESTED"));
 
             let has_review_body = review
-                .get("body")
-                .and_then(|b| b.as_str())
+                .str_field("body")
                 .is_some_and(text_contains_review_signature);
 
             if is_strong_state || has_review_body {
-                let body = review.get("body").and_then(|b| b.as_str()).unwrap_or("");
+                let body = review.str_or("body", "");
 
                 if review_author_matches(body, assigned_reviewer, assigned_session_id)
                     || (is_strong_state && assigned_reviewer.is_some())
@@ -3143,9 +3109,9 @@ pub(super) fn json_has_completed_review(
     }
 
     // Check comments (where coworkers post comment-based reviews).
-    if let Some(comments) = json.get("comments").and_then(|v| v.as_array()) {
+    if let Some(comments) = json.array_field("comments") {
         for comment in comments {
-            if let Some(body) = comment.get("body").and_then(|b| b.as_str())
+            if let Some(body) = comment.str_field("body")
                 && text_contains_review_signature(body)
                 && review_author_matches(body, assigned_reviewer, assigned_session_id)
             {
@@ -4472,10 +4438,7 @@ pub fn collect_merged_pr_cleanup_effects(ps: &super::state::DaemonPersistentStat
                 pr_number: pr_num,
                 branch: branch.clone(),
             });
-            effects.push(Effect::PostSystemMessage {
-                message,
-                channel: Some(OPS_CHANNEL.to_string()),
-            });
+            effects.push(Effect::system_message_to_ops(message));
         }
     }
 
@@ -4798,20 +4761,17 @@ pub fn evaluate_rebase_regression(input: &RebaseRegressionInput) -> Vec<Effect> 
     );
 
     vec![
-        Effect::NudgeCoworker {
-            name: input.coworker_name.clone(),
-            message: nudge_message,
-            nudge_type: "rebase_regression".to_string(),
-            on_success: vec![],
-        },
+        Effect::nudge_coworker(
+            input.coworker_name.clone(),
+            nudge_message,
+            "rebase_regression",
+            vec![],
+        ),
         Effect::RecordCooldown {
             category: "rebase_regression".to_string(),
             key: input.coworker_name.clone(),
         },
-        Effect::PostSystemMessage {
-            message: ops_message,
-            channel: Some(OPS_CHANNEL.to_string()),
-        },
+        Effect::system_message_to_ops(ops_message),
     ]
 }
 
