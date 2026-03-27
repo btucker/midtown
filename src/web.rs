@@ -1101,6 +1101,8 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
                 "blocked_by": task.blocked_by,
                 "message_id": message_id,
                 "thread_id": thread_id,
+                "color": task.color,
+                "icon": task.icon,
             })
         })
         .collect();
