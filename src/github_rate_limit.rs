@@ -3,6 +3,7 @@
 //! Monitors both GraphQL and REST API quotas to prevent exhaustion.
 //! The daemon uses this to adaptively reduce polling frequency when quotas run low.
 
+use crate::process::check_cmd_output;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
@@ -101,25 +102,13 @@ impl GitHubRateLimit {
     ///
     /// Returns `None` if the API call fails or cannot be parsed.
     pub async fn fetch() -> Option<Self> {
-        let output = tokio::process::Command::new("gh")
-            .args(["api", "rate_limit"])
-            .output()
-            .await;
-
-        let output = match output {
-            Ok(o) if o.status.success() => o,
-            Ok(o) => {
-                warn!(
-                    "gh api rate_limit failed: {}",
-                    String::from_utf8_lossy(&o.stderr)
-                );
-                return None;
-            }
-            Err(e) => {
-                warn!("Failed to execute gh api rate_limit: {}", e);
-                return None;
-            }
-        };
+        let output = check_cmd_output(
+            tokio::process::Command::new("gh")
+                .args(["api", "rate_limit"])
+                .output()
+                .await,
+            "fetch rate limit",
+        )?;
 
         let body = String::from_utf8_lossy(&output.stdout);
         let response: RateLimitResponse = match serde_json::from_str(&body) {

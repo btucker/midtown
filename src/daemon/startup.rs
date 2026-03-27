@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::process::check_cmd_output;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -233,24 +234,13 @@ pub fn check_claude_auth_status(repo_name: &str) {
 ///
 /// Returns `true` if the token was updated, `false` if unchanged or on error.
 pub fn refresh_gh_token(github_user: &str) -> bool {
-    let output = match std::process::Command::new("gh")
-        .args(["auth", "token", "--user", github_user])
-        .output()
-    {
-        Ok(output) if output.status.success() => output,
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!(
-                "gh auth token --user {} failed during refresh: {}",
-                github_user,
-                stderr.trim()
-            );
-            return false;
-        }
-        Err(e) => {
-            warn!("Failed to run `gh auth token` for refresh: {}", e);
-            return false;
-        }
+    let Some(output) = check_cmd_output(
+        std::process::Command::new("gh")
+            .args(["auth", "token", "--user", github_user])
+            .output(),
+        &format!("refresh gh auth token for {}", github_user),
+    ) else {
+        return false;
     };
 
     let new_token = String::from_utf8_lossy(&output.stdout).trim().to_string();

@@ -1,9 +1,50 @@
-//! Process management utilities for orphan cleanup and PID tracking.
+//! Process management utilities for orphan cleanup, PID tracking, and command output handling.
 //!
 //! Provides functions for detecting and killing orphaned processes,
-//! checking process liveness, and managing process trees.
+//! checking process liveness, managing process trees, and common
+//! subprocess output error handling patterns.
 
 use std::process::Command;
+use tracing::warn;
+
+/// Check command output, logging a warning on failure.
+///
+/// Handles the common 3-arm pattern for subprocess output:
+/// - Success (exit code 0) → returns `Some(output)`
+/// - Non-zero exit → logs stderr via `warn!`, returns `None`
+/// - Spawn/IO error → logs error via `warn!`, returns `None`
+///
+/// Works with both `std::process::Command::output()` and
+/// `tokio::process::Command::output().await` since both return `io::Result<Output>`.
+///
+/// # Examples
+///
+/// ```ignore
+/// let Some(output) = check_cmd_output(
+///     Command::new("gh").args(["pr", "list"]).output(),
+///     "list open PRs",
+/// ) else {
+///     return vec![];
+/// };
+/// let stdout = String::from_utf8_lossy(&output.stdout);
+/// ```
+pub fn check_cmd_output(
+    output: std::io::Result<std::process::Output>,
+    context: &str,
+) -> Option<std::process::Output> {
+    match output {
+        Ok(out) if out.status.success() => Some(out),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            warn!("Failed to {}: {}", context, stderr.trim());
+            None
+        }
+        Err(e) => {
+            warn!("Failed to {}: {}", context, e);
+            None
+        }
+    }
+}
 
 /// Check if a process is still alive.
 pub fn is_pid_alive(pid: u32) -> bool {
@@ -146,3 +187,7 @@ pub fn kill_orphaned_processes(pattern: &str) -> usize {
 
     count
 }
+
+#[path = "process_tests.rs"]
+#[cfg(test)]
+mod tests;
