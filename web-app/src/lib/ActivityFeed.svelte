@@ -13,6 +13,7 @@ import {
 	userSenderName,
 } from "./store.ts";
 import TaskRow from "./TaskRow.svelte";
+import { groupTasksByParent } from "./taskGrouping.ts";
 import type { NeedsAttentionItem, Task, TrackedThread } from "./types.ts";
 
 interface Props {
@@ -90,7 +91,10 @@ function taskSortKey(task: Task): number {
 	return 2;
 }
 
-const sortedActiveTasks = $derived([...activeTasks].sort((a, b) => taskSortKey(a) - taskSortKey(b)));
+const groupedActiveTasks = $derived.by(() => {
+	const groups = groupTasksByParent(activeTasks);
+	return groups.sort((a, b) => taskSortKey(a.task) - taskSortKey(b.task));
+});
 
 const cwMap = $derived(new Map($coworkers.map((cw) => [cw.name, cw])));
 
@@ -183,10 +187,11 @@ function handleAttentionClick(item: NeedsAttentionItem) {
   {/if}
 
   <!-- ── Active tasks ─────────────────────────────────────────────────── -->
-  {#if sortedActiveTasks.length > 0}
-    {#each sortedActiveTasks as task (task.id)}
+  {#if groupedActiveTasks.length > 0}
+    {#each groupedActiveTasks as { task, children } (task.id)}
       {@const cw = task.owner ? cwMap.get(task.owner) ?? null : null}
       {@const reviewInfo = reviewerByTaskId.get(String(task.id))}
+      {@const childReviewer = !reviewInfo?.reviewer ? children.find((c) => /review/i.test(c.subject))?.owner : undefined}
       {@const channelLabel = getChannelLabel(task)}
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -197,7 +202,8 @@ function handleAttentionClick(item: NeedsAttentionItem) {
         <TaskRow
           {task}
           {cw}
-          reviewer={reviewInfo?.reviewer ?? null}
+          {children}
+          reviewer={reviewInfo?.reviewer ?? childReviewer}
           reviewPosted={reviewInfo?.reviewPosted ?? false}
           variant="row"
           onclick={() => handleTaskClick(task)}
