@@ -11,6 +11,7 @@ mod dispatch;
 pub(crate) mod dispatch_priority;
 pub(crate) mod effects;
 pub(crate) mod events;
+mod gh;
 mod health;
 pub mod helpers;
 mod migration;
