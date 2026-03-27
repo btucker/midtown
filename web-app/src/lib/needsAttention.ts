@@ -115,6 +115,9 @@ export function computeAttentionItems(opts: {
 			if (lastRead && new Date(lastRead).getTime() >= updatedMs) continue;
 		}
 
+		// Debug: log why this task is showing
+		console.log(`[needsAttention] task !${task.id} showing: threadId=${threadId}, readState=${threadId ? opts.threadReadState[threadId] : "no-thread"}, updatedMs=${updatedMs}, readStateKeys=${Object.keys(opts.threadReadState).slice(0, 5).join(",")}`);
+
 		const id = `task:${task.id}`;
 		const cw = opts.coworkers.find((c) => c.name === task.owner);
 		const channel = task.channel || opts.mainChannel;
