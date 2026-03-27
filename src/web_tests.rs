@@ -1875,3 +1875,89 @@ fn test_reply_count_excludes_tool_only_messages() {
     assert!(reply.participants.contains(&"bob".to_string()));
     assert!(reply.participants.contains(&"charlie".to_string()));
 }
+
+#[test]
+fn test_ws_keepalive_constants() {
+    // Verify the keepalive timing relationships are sensible:
+    // - Ping interval should be > pong timeout (so we don't timeout before the next ping)
+    // - Send timeout should be reasonable
+    assert!(
+        WS_PING_INTERVAL > WS_PONG_TIMEOUT,
+        "ping interval should exceed pong timeout"
+    );
+    assert!(
+        WS_SEND_TIMEOUT.as_secs() >= 5,
+        "send timeout should be at least 5s"
+    );
+    assert!(
+        WS_SEND_TIMEOUT.as_secs() <= 30,
+        "send timeout should be at most 30s"
+    );
+}
+
+#[tokio::test]
+async fn test_broadcast_lagged_continues() {
+    // Verify that a lagged broadcast receiver reports Lagged with the skip count
+    // rather than a fatal error — the WebSocket handler should continue on Lagged.
+    let (tx, _) = broadcast::channel::<WebUpdate>(2); // small buffer
+    let mut rx = tx.subscribe();
+
+    // Send 5 messages — with a buffer of 2, the receiver will lag
+    for i in 0..5 {
+        let update = WebUpdate::Error(ErrorData {
+            message: format!("msg-{i}"),
+        });
+        tx.send(update).unwrap();
+    }
+
+    // First recv should report Lagged
+    match rx.recv().await {
+        Err(broadcast::error::RecvError::Lagged(n)) => {
+            assert!(n >= 3, "should have lagged by at least 3 messages, got {n}");
+        }
+        other => panic!("expected Lagged error, got {other:?}"),
+    }
+
+    // After lagging, subsequent recv should succeed with the latest messages
+    match rx.recv().await {
+        Ok(update) => {
+            let json = serde_json::to_string(&update).unwrap();
+            assert!(
+                json.contains("msg-"),
+                "should receive a valid message after lag"
+            );
+        }
+        other => panic!("expected Ok after lag recovery, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_pong_timeout_detection() {
+    // Test the pong timeout logic: if last_pong is older than PING_INTERVAL + PONG_TIMEOUT,
+    // the connection should be considered dead.
+    let last_pong = Arc::new(Mutex::new(Instant::now()));
+
+    // Fresh pong — should NOT be timed out
+    let elapsed = last_pong.lock().unwrap().elapsed();
+    assert!(
+        elapsed <= WS_PING_INTERVAL + WS_PONG_TIMEOUT,
+        "fresh pong should not be timed out"
+    );
+
+    // Simulate stale pong by setting it to the past
+    *last_pong.lock().unwrap() =
+        Instant::now() - (WS_PING_INTERVAL + WS_PONG_TIMEOUT + Duration::from_secs(1));
+    let elapsed = last_pong.lock().unwrap().elapsed();
+    assert!(
+        elapsed > WS_PING_INTERVAL + WS_PONG_TIMEOUT,
+        "stale pong should be detected as timed out"
+    );
+
+    // Simulate pong received — reset to now
+    *last_pong.lock().unwrap() = Instant::now();
+    let elapsed = last_pong.lock().unwrap().elapsed();
+    assert!(
+        elapsed <= WS_PING_INTERVAL + WS_PONG_TIMEOUT,
+        "reset pong should not be timed out"
+    );
+}

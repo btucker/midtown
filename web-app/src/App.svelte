@@ -11,6 +11,7 @@ import {
 	fetchProjects,
 	fetchStatus,
 	openThread,
+	reconnectIfNeeded,
 	replaceNavState,
 	setupHistoryNavigation,
 	switchProject,
@@ -206,7 +207,9 @@ onMount(async () => {
 	// Reload history when page becomes visible again (handles PWA resume from background)
 	function handleVisibilityChange() {
 		if (!document.hidden && $activeProject) {
-			// Page became visible and we have an active project - refresh history
+			// Page became visible — reconnect if WebSocket is not open
+			reconnectIfNeeded();
+			// Refresh history to catch up on missed messages
 			fetchHistory();
 			// Also refresh the active channel if it's not the main one (e.g. DM or topic channel)
 			const currentChannel = $activeChannel;
