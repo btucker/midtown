@@ -132,6 +132,38 @@ impl Default for Task {
     }
 }
 
+/// Serialize a Task to JSON for API responses.
+///
+/// Single source of truth for task serialization — used by both the RPC status
+/// handler and the web status endpoint. Prevents field divergence between the two.
+pub fn task_to_json(
+    task: &Task,
+    message_id: Option<String>,
+    thread_id: Option<String>,
+) -> serde_json::Value {
+    let status = match task.status {
+        TaskStatus::Pending => "pending",
+        TaskStatus::InProgress => "in_progress",
+        TaskStatus::Completed => "completed",
+    };
+    serde_json::json!({
+        "id": task.id,
+        "subject": task.subject,
+        "description": task.description,
+        "status": status,
+        "owner": if task.agent_name.is_empty() { serde_json::Value::Null } else { serde_json::json!(task.agent_name) },
+        "channel": task.channel,
+        "blocked_by": task.blocked_by,
+        "message_id": message_id.or_else(|| task.message_id.clone()),
+        "thread_id": thread_id.or_else(|| task.thread_id.clone()),
+        "parent": task.parent,
+        "plan": task.plan,
+        "color": task.color,
+        "icon": task.icon,
+        "updated_at": task.updated_at.to_rfc3339(),
+    })
+}
+
 /// Task status — unchanged from the original.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

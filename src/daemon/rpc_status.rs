@@ -278,41 +278,21 @@ fn get_all_tasks(
     )
 }
 
-/// Map a list of tasks to JSON values, enriching each with message_id, thread_id,
-/// plan path, and parent task ID from the daemon's persistent state maps.
+/// Map a list of tasks to JSON values, enriching each with message_id and thread_id
+/// from the daemon's persistent state maps.
 fn map_tasks_to_json(
     tasks: Vec<crate::task_store::Task>,
     task_message_ids: &std::collections::HashMap<String, String>,
     task_thread_ids: &std::collections::HashMap<String, String>,
-    task_plan_map: &std::collections::HashMap<String, String>,
-    task_parent_map: &std::collections::HashMap<String, String>,
+    _task_plan_map: &std::collections::HashMap<String, String>,
+    _task_parent_map: &std::collections::HashMap<String, String>,
 ) -> Vec<serde_json::Value> {
     tasks
         .into_iter()
         .map(|task| {
-            let status = match task.status {
-                crate::task_store::TaskStatus::Pending => "pending",
-                crate::task_store::TaskStatus::InProgress => "in_progress",
-                crate::task_store::TaskStatus::Completed => "completed",
-            };
             let message_id = task_message_ids.get(&task.id).cloned();
             let thread_id = task_thread_ids.get(&task.id).cloned();
-            let plan = task_plan_map.get(&task.id).cloned();
-            let parent = task_parent_map.get(&task.id).cloned();
-            serde_json::json!({
-                "id": task.id,
-                "subject": task.subject,
-                "status": status,
-                "assignee": if task.agent_name.is_empty() { serde_json::Value::Null } else { serde_json::json!(task.agent_name) },
-                "channel": task.channel,
-                "message_id": message_id,
-                "thread_id": thread_id,
-                "plan": plan,
-                "parent": parent,
-                "color": task.color,
-                "icon": task.icon,
-                "updated_at": task.updated_at.to_rfc3339(),
-            })
+            crate::task_store::task_to_json(&task, message_id, thread_id)
         })
         .collect()
 }

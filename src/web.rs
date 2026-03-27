@@ -1091,30 +1091,10 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
     let task_store = crate::task_store::TaskStore::new(
         crate::paths::projects_dir_for_repo(&state.config.dir_key).join("tasks"),
     );
-    let tasks: Vec<serde_json::Value> = task_store.load_all()
+    let tasks: Vec<serde_json::Value> = task_store
+        .load_all()
         .into_iter()
-        .map(|task| {
-            let status = match task.status {
-                crate::task_store::TaskStatus::Pending => "pending",
-                crate::task_store::TaskStatus::InProgress => "in_progress",
-                crate::task_store::TaskStatus::Completed => "completed",
-            };
-            let message_id = task.message_id.clone();
-            let thread_id = task.thread_id.clone();
-            serde_json::json!({
-                "id": task.id,
-                "subject": task.subject,
-                "description": task.description,
-                "status": status,
-                "owner": if task.agent_name.is_empty() { serde_json::Value::Null } else { serde_json::json!(task.agent_name) },
-                "channel": task.channel,
-                "blocked_by": task.blocked_by,
-                "message_id": message_id,
-                "thread_id": thread_id,
-                "color": task.color,
-                "icon": task.icon,
-            })
-        })
+        .map(|task| crate::task_store::task_to_json(&task, None, None))
         .collect();
 
     // Build a map of task_id -> task_subject for PR enrichment

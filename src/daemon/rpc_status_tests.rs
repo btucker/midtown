@@ -467,3 +467,33 @@ fn test_map_tasks_includes_parent_when_set() {
         "child task should reference parent"
     );
 }
+
+// ============================================================================
+// task_to_json: shared serialization function
+// ============================================================================
+
+/// Verify that the shared task_to_json includes updated_at.
+/// Regression test: web.rs and rpc_status.rs had divergent serialization,
+/// web.rs was missing updated_at.
+#[test]
+fn task_to_json_includes_updated_at() {
+    let task = crate::task_store::Task {
+        id: "42".to_string(),
+        subject: "Fix the bug".to_string(),
+        status: crate::task_store::TaskStatus::Completed,
+        agent_name: "ghost-town".to_string(),
+        updated_at: chrono::Utc::now(),
+        ..Default::default()
+    };
+
+    let json = crate::task_store::task_to_json(&task, None, None);
+
+    assert!(
+        json.get("updated_at").is_some(),
+        "task JSON must include updated_at"
+    );
+    assert!(
+        json.get("updated_at").unwrap().is_string(),
+        "updated_at must be a string"
+    );
+}

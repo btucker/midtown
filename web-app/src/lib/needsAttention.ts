@@ -101,19 +101,6 @@ export function computeAttentionItems(opts: {
 	}
 
 	// 2. Completed tasks — only show if completed within the last 24 hours and not yet seen
-	const completedTasks = opts.tasks.filter((t) => t.status === "completed");
-	if (completedTasks.length > 0) {
-		console.log(
-			"[needsAttention] completed tasks:",
-			completedTasks.length,
-			"sample:",
-			completedTasks[0]?.updated_at,
-			"now:",
-			now,
-			"24h ago:",
-			now - TWENTY_FOUR_HOURS_MS,
-		);
-	}
 	for (const task of opts.tasks) {
 		if (task.status !== "completed") continue;
 
