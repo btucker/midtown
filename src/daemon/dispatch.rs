@@ -1162,7 +1162,8 @@ struct DispatchLoopState {
 /// Select a coworker name for a pending unowned task.
 ///
 /// Tries grouping strategies first (PR, blockedBy), then falls back to fresh
-/// name allocation. At task limit, defers the task.
+/// name allocation. At task limit, defers the task — except review tasks, which
+/// bypass the task limit (but still respect the session cap safety net).
 ///
 /// Returns `Some((name, was_grouped))` or `None` if the task should be deferred.
 fn select_coworker_name(
@@ -1204,10 +1205,15 @@ fn select_coworker_name(
 
     let name = if let Some(name) = grouped_name {
         name
-    } else if at_task_limit || at_session_cap {
+    } else if (at_task_limit && !is_reviewer_task) || at_session_cap {
         debug!(
-            "Task limit reached (tasks: {}+{}, sessions: {} >= {}), deferring task !{}",
-            in_progress_count, loop_state.spawns_queued_this_tick, session_count, task_cap, task.id
+            "Task limit reached (tasks: {}+{}, sessions: {} >= {}, reviewer={}), deferring task !{}",
+            in_progress_count,
+            loop_state.spawns_queued_this_tick,
+            session_count,
+            task_cap,
+            is_reviewer_task,
+            task.id
         );
         return None;
     } else {
