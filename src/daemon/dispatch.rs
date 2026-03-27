@@ -2029,12 +2029,10 @@ pub fn stop_sessions_for_completed_tasks(
     let task_status: HashMap<&str, &crate::task_store::TaskStatus> =
         tasks.iter().map(|t| (t.id.as_str(), &t.status)).collect();
 
-    for record in ps.sessions.values() {
-        // Only consider running sessions
-        if !ps
-            .tick_active_session_names
-            .contains(&record.name.to_lowercase())
-        {
+    for (session_id, record) in &ps.sessions {
+        // Only consider running sessions — match by session ID to avoid
+        // false positives when session names are reused across records
+        if !ps.tick_active_session_ids.contains(session_id) {
             continue;
         }
 

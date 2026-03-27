@@ -54,7 +54,7 @@ fn stops_running_session_for_completed_task() {
         "sess-1".into(),
         make_session("sess-1", Some("1"), "york", true),
     );
-    ps.tick_active_session_names.insert("york".into());
+    ps.tick_active_session_ids.insert("sess-1".into());
 
     let effects = stop_sessions_for_completed_tasks(&ps, &tasks, &HashSet::new());
 
@@ -80,7 +80,7 @@ fn skips_in_progress_task() {
         "sess-1".into(),
         make_session("sess-1", Some("1"), "york", true),
     );
-    ps.tick_active_session_names.insert("york".into());
+    ps.tick_active_session_ids.insert("sess-1".into());
 
     let effects = stop_sessions_for_completed_tasks(&ps, &tasks, &HashSet::new());
 
@@ -99,7 +99,7 @@ fn skips_stopped_session() {
     let mut ps = make_ps("proj");
     let tasks = vec![make_task("1", "Fix bug", "york", TaskStatus::Completed)];
 
-    // Session exists but is NOT in tick_active_session_names (already stopped)
+    // Session exists but is NOT in tick_active_session_ids (already stopped)
     ps.sessions.insert(
         "sess-1".into(),
         make_session("sess-1", Some("1"), "york", false),
@@ -125,7 +125,7 @@ fn skips_session_without_task() {
     // Session has no task_id
     ps.sessions
         .insert("sess-1".into(), make_session("sess-1", None, "york", true));
-    ps.tick_active_session_names.insert("york".into());
+    ps.tick_active_session_ids.insert("sess-1".into());
 
     let effects = stop_sessions_for_completed_tasks(&ps, &tasks, &HashSet::new());
 
@@ -149,7 +149,7 @@ fn skips_fork_sessions() {
     session.agent_type = "midtown-channel-lead".into();
     session.bound_thread_id = Some("thread-123".into());
     ps.sessions.insert("sess-1".into(), session);
-    ps.tick_active_session_names.insert("york".into());
+    ps.tick_active_session_ids.insert("sess-1".into());
 
     let effects = stop_sessions_for_completed_tasks(&ps, &tasks, &HashSet::new());
 
@@ -181,9 +181,9 @@ fn stops_multiple_sessions_for_completed_tasks() {
         "sess-3".into(),
         make_session("sess-3", Some("3"), "madison", true),
     );
-    ps.tick_active_session_names.insert("york".into());
-    ps.tick_active_session_names.insert("park".into());
-    ps.tick_active_session_names.insert("madison".into());
+    ps.tick_active_session_ids.insert("sess-1".into());
+    ps.tick_active_session_ids.insert("sess-2".into());
+    ps.tick_active_session_ids.insert("sess-3".into());
 
     let effects = stop_sessions_for_completed_tasks(&ps, &tasks, &HashSet::new());
 
@@ -211,7 +211,7 @@ fn stops_session_for_same_tick_auto_closed_task() {
         "sess-1".into(),
         make_session("sess-1", Some("1"), "york", true),
     );
-    ps.tick_active_session_names.insert("york".into());
+    ps.tick_active_session_ids.insert("sess-1".into());
 
     // Task "1" is in also_completed_ids because auto_close_completed_tasks
     // emitted a CompleteTask effect for it this tick
@@ -240,7 +240,7 @@ fn posts_ops_message_when_stopping() {
         "sess-1".into(),
         make_session("sess-1", Some("1"), "york", true),
     );
-    ps.tick_active_session_names.insert("york".into());
+    ps.tick_active_session_ids.insert("sess-1".into());
 
     let effects = stop_sessions_for_completed_tasks(&ps, &tasks, &HashSet::new());
 
@@ -249,4 +249,47 @@ fn posts_ops_message_when_stopping() {
         .filter(|e| matches!(e, Effect::PostToChannel { channel, .. } if channel.as_deref() == Some("ops")))
         .collect();
     assert!(!ops_messages.is_empty(), "Should post to ops channel");
+}
+
+#[test]
+fn does_not_stop_reused_name_active_session() {
+    // Regression: old record (completed task) shares a name with a newer active record
+    // (in-progress task). Only the old record's session ID should match, not the new one.
+    let mut ps = make_ps("proj");
+    let tasks = vec![
+        make_task("1", "Old task", "york", TaskStatus::Completed),
+        make_task("2", "New task", "york", TaskStatus::InProgress),
+    ];
+
+    // Old stopped session record — completed task
+    ps.sessions.insert(
+        "sess-old".into(),
+        make_session("sess-old", Some("1"), "york", false),
+    );
+    // New active session record — same name, different task
+    ps.sessions.insert(
+        "sess-new".into(),
+        make_session("sess-new", Some("2"), "york", true),
+    );
+    // Only the new session is active
+    ps.tick_active_session_ids.insert("sess-new".into());
+
+    let effects = stop_sessions_for_completed_tasks(&ps, &tasks, &HashSet::new());
+
+    let shutdown_names: Vec<_> = effects
+        .iter()
+        .filter_map(|e| {
+            if let Effect::ShutdownCoworker { name, .. } = e {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert!(
+        shutdown_names.is_empty(),
+        "Should not stop the active session with a reused name — \
+         the old record (completed task) is not active, and the new record \
+         (in-progress task) should not be stopped"
+    );
 }
