@@ -1316,3 +1316,12 @@ describe("fetchChannelAgentsMd — error distinction", () => {
 		expect(secondResult?.error).toBeNull();
 	});
 });
+
+describe("handleUpdate — heartbeat messages", () => {
+	it("does not log 'Unknown update type' for heartbeat", () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		handleUpdate({ type: "heartbeat" });
+		expect(logSpy).not.toHaveBeenCalledWith("Unknown update type:", "heartbeat");
+		logSpy.mockRestore();
+	});
+});

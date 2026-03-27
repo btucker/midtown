@@ -1001,6 +1001,10 @@ export function handleUpdate(update: Record<string, unknown>): void {
 			errorCallbacks.forEach((callback) => callback((update.data as { message: string }).message));
 			errorCallbacks.clear();
 			break;
+		case "heartbeat":
+			// Server-sent heartbeat data frame — resets stale timer via onmessage.
+			// No action needed here; lastMessageTimestamp was already updated.
+			break;
 		default:
 			console.log("Unknown update type:", update.type);
 	}
