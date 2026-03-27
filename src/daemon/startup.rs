@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::process::{check_cmd_output, parse_json_warn};
+use crate::process::{check_cmd_output, get_ppid, is_pid_alive, parse_json_warn};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -53,7 +53,7 @@ pub fn kill_stale_daemon(pid: u32, project_workdir: &std::path::Path) {
     // Poll up to 3 seconds for the process to die
     for _ in 0..30 {
         std::thread::sleep(std::time::Duration::from_millis(100));
-        if !process_exists(pid) {
+        if !is_pid_alive(pid) {
             info!("Stale daemon {} exited after SIGTERM", pid);
             return;
         }
@@ -122,16 +122,6 @@ pub fn verify_midtown_process(pid: u32, project_workdir: &std::path::Path) -> bo
     // with `--workdir <repo>`, so the workdir path appears in its args.
     let workdir_str = project_workdir.to_string_lossy();
     cmdline.contains(workdir_str.as_ref())
-}
-
-/// Check if a process exists (is still running).
-fn process_exists(pid: u32) -> bool {
-    // kill -0 checks if process exists without sending a signal
-    std::process::Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// Check if the daemon is running inside a sandbox context.
@@ -403,7 +393,7 @@ pub fn kill_zombie_claude_processes(
     // This mirrors kill_stale_daemon's responsive wait strategy.
     for _ in 0..20 {
         std::thread::sleep(std::time::Duration::from_millis(100));
-        if zombie_pids.iter().all(|pid| !process_exists(*pid)) {
+        if zombie_pids.iter().all(|pid| !is_pid_alive(*pid)) {
             info!("All zombie processes exited after SIGTERM");
             return;
         }
@@ -411,7 +401,7 @@ pub fn kill_zombie_claude_processes(
 
     // SIGKILL any survivors
     for pid in &zombie_pids {
-        if process_exists(*pid) {
+        if is_pid_alive(*pid) {
             warn!(
                 "Zombie process {} didn't exit after SIGTERM, sending SIGKILL",
                 pid
@@ -421,20 +411,6 @@ pub fn kill_zombie_claude_processes(
                 .output();
         }
     }
-}
-
-/// Get the parent PID of a process.
-fn get_ppid(pid: u32) -> Option<u32> {
-    let output = std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "ppid="])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
 }
 
 /// Verify that a PID belongs to a claude process.
