@@ -348,7 +348,7 @@ function handleKeyDown(event: KeyboardEvent) {
   <!-- Channels with inline threads (drag-to-reorder) -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    use:dndzone={{ items: dndChannelItems, flipDurationMs: 200, dropTargetStyle: {}, dragDisabled: false, type: "channels", dragHandleSelector: ".drag-handle" }}
+    use:dndzone={{ items: dndChannelItems, flipDurationMs: 200, dropTargetStyle: {}, dragDisabled: sidebar.isMobile, type: "channels", dragHandleSelector: ".drag-handle" }}
     onconsider={handleDndConsider}
     onfinalize={handleDndFinalize}
   >
@@ -359,12 +359,14 @@ function handleKeyDown(event: KeyboardEvent) {
 
     <div class="channel-row mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
       <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
+        {#if !sidebar.isMobile}
         <span
           class="drag-handle flex items-center justify-center w-4 ml-1 cursor-grab text-muted-foreground/40 hover:text-muted-foreground/80 transition-colors duration-150 shrink-0"
           title="Drag to reorder"
         >
           <GripVertical size={12} />
         </span>
+        {/if}
         <button
           class="flex items-center justify-between flex-1 min-w-0 px-2 py-2 border-none bg-transparent text-sm font-mono cursor-pointer transition-all duration-150 text-left text-inherit"
           aria-label="Select channel {channel.name}"
@@ -479,13 +481,6 @@ function handleKeyDown(event: KeyboardEvent) {
   /* Show drag handle on hover of the parent channel row */
   :global(.channel-row:hover) .drag-handle {
     opacity: 1;
-  }
-
-  /* On touch devices (no hover), always show drag handle so users can drag */
-  @media (hover: none) {
-    .drag-handle {
-      opacity: 0.5;
-    }
   }
 
   /* Inline thread rows */
