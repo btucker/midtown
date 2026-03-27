@@ -11,6 +11,7 @@ import DynamicIcon from "./DynamicIcon.svelte";
 import { renderContent } from "./markdown.ts";
 import { getSenderColor } from "./messageUtils.ts";
 import { activeChannel, channels, coworkers, daemonStatus, kanbanData, repoStatus, repoStatuses } from "./store.ts";
+import { rolledUpStatus as computeRolledUpStatus, statusBarColor } from "./taskStatus.ts";
 
 let {
 	task,
@@ -24,14 +25,8 @@ let {
 } = $props();
 
 const isCard = $derived(variant === "card");
-// Status rollup: in_progress if any child is in_progress; done only when all are done
-const rolledUpStatus = $derived.by(() => {
-	if (isCard || children.length === 0) return task.status;
-	const all = [task, ...children];
-	if (all.some((t) => t.status === "in_progress")) return "in_progress";
-	if (all.every((t) => t.status === "completed")) return "completed";
-	return task.status;
-});
+// Status rollup: in_progress if any child is in_progress; completed only when all are completed
+const rolledUpStatus = $derived(computeRolledUpStatus(task, children, isCard));
 const isActive = $derived(rolledUpStatus === "in_progress");
 const isBlocked = $derived(task.blocked_by?.length > 0);
 
@@ -49,14 +44,6 @@ const prUrl = $derived(
 	relatedPr && $repoStatus.fullName ? `https://github.com/${$repoStatus.fullName}/pull/${relatedPr.number}` : null,
 );
 const descriptionHtml = $derived(isCard && task.description ? renderContent(task.description) : "");
-
-function statusBarColor(status, owner, colorOverride) {
-	if (status === "completed") return "hsl(var(--accent-green, 145 40% 38%))";
-	if (status !== "in_progress") return "hsl(var(--muted-foreground) / 0.3)";
-	if (colorOverride) return colorOverride;
-	if (owner) return getSenderColor(owner);
-	return "hsl(var(--accent-teal))";
-}
 
 function lifecycleSegments(cwProgress, reviewer, reviewPosted, ownerColor, reviewerColor) {
 	const segments = [];
