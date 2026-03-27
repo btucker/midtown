@@ -1,11 +1,6 @@
 import { getSenderColor } from "./messageUtils.ts";
 import type { Coworker, NeedsAttentionItem, Task, TrackedThread } from "./types.ts";
 
-function lookupTaskColor(ownerName: string, tasks: Task[]): string | undefined {
-	const task = tasks.find((t) => t.owner === ownerName && t.color);
-	return task?.color;
-}
-
 const TEN_MINUTES_MS = 10 * 60 * 1000;
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 
