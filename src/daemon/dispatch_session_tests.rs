@@ -178,6 +178,62 @@ fn session_dispatch_skips_spawn_failure_cooldown() {
 }
 
 #[test]
+fn session_cap_excludes_channel_leads() {
+    // BUG (!2576): session cap counted ALL active sessions (leads + workers),
+    // falsely blocking dispatch when leads pushed total past max_in_progress_tasks.
+    // With 3 channel leads + 4 workers = 7 total but only 4 coworker sessions,
+    // adding 1 more lead (8 total) would block dispatch at cap=8 even though
+    // only 4 coworker slots are used.
+    let mut ps = make_ps("test");
+    ps.tick_max_in_progress_tasks = 8;
+
+    // 4 channel leads in active sessions
+    for ch in &["web", "api", "infra", "docs"] {
+        ps.channel_lead_sessions
+            .insert(ch.to_string(), format!("sess-lead-{ch}"));
+    }
+
+    // 4 coworker sessions active
+    for name in &["alpha", "bravo", "charlie", "delta"] {
+        ps.tick_active_session_names.insert(name.to_string());
+    }
+    // Plus the 4 leads are also in active session names (as populated by prepare_tick)
+    for name in &["web", "api", "infra", "docs"] {
+        ps.tick_active_session_names.insert(name.to_string());
+    }
+    // Total active = 8 sessions (hits cap), but only 4 are coworkers
+
+    // 4 in-progress tasks (one per coworker)
+    ps.tick_in_progress_tasks = vec![
+        ("1".into(), "Task A".into(), "alpha".into()),
+        ("2".into(), "Task B".into(), "bravo".into()),
+        ("3".into(), "Task C".into(), "charlie".into()),
+        ("4".into(), "Task D".into(), "delta".into()),
+    ];
+
+    let task = Task {
+        id: "5".to_string(),
+        subject: "New task".to_string(),
+        status: TaskStatus::Pending,
+        ..Default::default()
+    };
+    let tasks = vec![task.clone()];
+
+    let loop_state = super::DispatchLoopState {
+        pr_coworker_map: HashMap::new(),
+        task_coworker_map: HashMap::new(),
+        names_assigned_this_tick: HashSet::new(),
+        spawns_queued_this_tick: 0,
+    };
+
+    let result = super::select_coworker_name(&task, &ps, &tasks, &loop_state);
+    assert!(
+        result.is_some(),
+        "Should dispatch: only 4 coworker sessions, cap is 8 — channel leads must not count"
+    );
+}
+
+#[test]
 fn session_dispatch_skips_lead_driven_channel_task() {
     let mut ps = make_ps("test");
     ps.lead_driven_channels = ["web".to_string()].into_iter().collect();

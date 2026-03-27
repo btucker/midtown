@@ -1200,17 +1200,25 @@ fn select_coworker_name(
     // Hard cap: also check active session count as a safety net for spawn storms
     // when task state tracking has gaps (e.g., review tasks not yet in
     // pr_task_index). Only applied to fresh spawns, not grouped tasks. (!2511)
-    let session_count = ps.tick_active_session_names.len() + loop_state.spawns_queued_this_tick;
-    let at_session_cap = session_count >= task_cap;
+    // Exclude channel leads — they aren't coworkers and shouldn't count
+    // against the task cap. (!2576)
+    let lead_names = ps.channel_lead_names();
+    let coworker_session_count = ps
+        .tick_active_session_names
+        .iter()
+        .filter(|name| !lead_names.contains(*name))
+        .count()
+        + loop_state.spawns_queued_this_tick;
+    let at_session_cap = coworker_session_count >= task_cap;
 
     let name = if let Some(name) = grouped_name {
         name
     } else if (at_task_limit && !is_reviewer_task) || at_session_cap {
         debug!(
-            "Task limit reached (tasks: {}+{}, sessions: {} >= {}, reviewer={}), deferring task !{}",
+            "Task limit reached (tasks: {}+{}, coworker_sessions: {} >= {}, reviewer={}), deferring task !{}",
             in_progress_count,
             loop_state.spawns_queued_this_tick,
-            session_count,
+            coworker_session_count,
             task_cap,
             is_reviewer_task,
             task.id
