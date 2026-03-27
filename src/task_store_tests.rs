@@ -235,6 +235,15 @@ fn extract_task_id_bare_bang_not_at_end() {
 }
 
 #[test]
+fn extract_task_id_paren_skips_non_numeric_prefix() {
+    // If title has a non-numeric (!...) before the real (!NNN), still find the task ID
+    assert_eq!(
+        extract_task_id_from_pr_title("fix: handle fn(!arg) call (!2590)"),
+        Some(2590)
+    );
+}
+
+#[test]
 fn extract_task_id_bracket_takes_priority_over_paren() {
     // If both formats present, bracket format wins (it's checked first)
     assert_eq!(
