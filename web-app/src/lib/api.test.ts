@@ -18,8 +18,8 @@ import {
 	activeChannel,
 	activeProject,
 	channels,
-	dismissedThreads,
 	messagesByChannel,
+	openThreads,
 	threadData,
 	threadUnreadCounts,
 	trackedThreads,
@@ -877,7 +877,7 @@ describe("handleUpdate — auto-track threads when someone replies to user messa
 
 	beforeEach(() => {
 		trackedThreads.set({});
-		dismissedThreads.set(new Set());
+		openThreads.set({});
 		threadUnreadCounts.set({});
 		threadData.set(null);
 		userSenderName.set("user");
@@ -993,8 +993,18 @@ describe("handleUpdate — auto-track threads when someone replies to user messa
 		expect(tracked[parentId]).toBeUndefined();
 	});
 
-	it("respects dismissedThreads — does not re-track a dismissed thread", () => {
-		dismissedThreads.set(new Set([parentId]));
+	it("reopens thread in openThreads when a new message arrives for a tracked thread not in openThreads", () => {
+		// Pre-track the thread so the reopen logic can find it
+		trackedThreads.set({
+			[parentId]: {
+				channelName: "web",
+				subject: "my question about auth",
+				lastActivity: "2025-01-01T00:00:00Z",
+				replyCount: 0,
+			},
+		});
+		// openThreads has an entry for "web" but does NOT include parentId
+		openThreads.set({ web: new Set() });
 
 		handleUpdate({
 			type: "channel_message",
@@ -1008,8 +1018,8 @@ describe("handleUpdate — auto-track threads when someone replies to user messa
 			},
 		});
 
-		const tracked = get(trackedThreads);
-		expect(tracked[parentId]).toBeUndefined();
+		const ot = get(openThreads);
+		expect(ot.web?.has(parentId)).toBe(true);
 	});
 
 	it("auto-tracks when parent from matches userSenderName (custom display name)", () => {

@@ -146,6 +146,9 @@ run_full_tests() {
             --skip test_daemon_delivers \
             "${test_args[@]}"
 
+    run_bg "resume_e2e" \
+        cargo test --release --test resume_e2e -- --ignored --test-threads=1 "${test_args[@]}"
+
     wait_all
 
     if [ "${FAILED}" -ne 0 ]; then

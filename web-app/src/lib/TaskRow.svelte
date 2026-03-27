@@ -99,7 +99,7 @@ function handleDescriptionClick(e) {
   onclick={isCard ? undefined : onclick}
   data-testid={isCard ? 'task-card' : undefined}
 >
-  <span class="w-[3px] rounded-sm shrink-0 self-stretch" style="background: {statusBarColor(isCard ? task.status : rolledUpStatus, task.owner, ownerColor)}"></span>
+  {#if isCard}<span class="w-[3px] rounded-sm shrink-0 self-stretch" style="background: {statusBarColor(task.status, task.owner, ownerColor)}"></span>{/if}
   <div class="flex-1 min-w-0 flex flex-col gap-[3px]">
     {#if isCard}
       <span class="shrink-0 font-semibold text-[0.65rem] {isActive ? 'opacity-80' : 'opacity-60'}">!{task.id}</span>
@@ -110,30 +110,6 @@ function handleDescriptionClick(e) {
         <span class="flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">{#if rolledUpStatus === 'done'}<span class="text-[hsl(var(--accent-green))]">✓ </span>{/if}{task.subject}</span>
         {#if isBlocked}
           <span class="shrink-0 text-[0.62rem] text-[hsl(var(--status-amber))] opacity-85" title="Blocked by !{task.blocked_by[0]}">⧗ !{task.blocked_by[0]}</span>
-        {/if}
-        {#if task.owner}
-          {@const ownerGlow = isActive && (!effectiveReviewer || effectiveReviewPosted)}
-          <span
-            role="button"
-            tabindex="0"
-            class="relative shrink-0 size-4 rounded-[3px] border-none p-0 m-0 flex items-center justify-center text-[0.55rem] font-bold text-white leading-none cursor-pointer hover:opacity-85 {ownerGlow ? 'shadow-[0_0_6px_1px_var(--glow-color)]' : ''}"
-            style="background-color: {ownerColor || getSenderColor(task.owner)}; font-family: var(--font-sans){ownerGlow ? `; --glow-color: ${ownerColor || getSenderColor(task.owner)}` : ''}"
-            title="{task.owner}{effectiveCw?.phase ? ` · ${effectiveCw.phase}` : ''}"
-            onclick={(e) => { e.stopPropagation(); selectDm(task.owner) }}
-            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(task.owner) } }}
-          >{#if ownerIcon}<DynamicIcon name={ownerIcon} size={10}>{#snippet fallback()}{task.owner[0].toUpperCase()}{/snippet}</DynamicIcon>{:else}{task.owner[0].toUpperCase()}{/if}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Feather size={11} strokeWidth={2.5} fill="hsl(var(--sidebar-background))" /></span></span>
-        {/if}
-        {#if effectiveReviewer}
-          {@const reviewerGlow = isActive && !effectiveReviewPosted}
-          <span
-            role="button"
-            tabindex="0"
-            class="relative shrink-0 size-4 rounded-[3px] border-none p-0 m-0 flex items-center justify-center text-[0.55rem] font-bold text-white leading-none cursor-pointer hover:opacity-85 {reviewerGlow ? 'shadow-[0_0_6px_1px_var(--glow-color)]' : ''}"
-            style="background-color: {getSenderColor(effectiveReviewer)}; font-family: var(--font-sans){reviewerGlow ? `; --glow-color: ${getSenderColor(effectiveReviewer)}` : ''}"
-            title="{effectiveReviewer} · {effectiveReviewPosted ? 'reviewed' : 'reviewing'}"
-            onclick={(e) => { e.stopPropagation(); selectDm(effectiveReviewer) }}
-            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(effectiveReviewer) } }}
-          >{effectiveReviewer[0].toUpperCase()}<span class="absolute -bottom-1 -right-1 flex items-center justify-center text-sidebar-foreground"><Search size={11} strokeWidth={2.5} fill="hsl(var(--sidebar-background))" style="transform: scaleX(-1)" /></span></span>
         {/if}
       </div>
     {/if}

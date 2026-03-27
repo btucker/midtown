@@ -247,6 +247,9 @@ pub enum WebUpdate {
     /// Channel settings changed
     #[serde(rename = "channel_settings_changed")]
     ChannelSettingsChanged(ChannelSettingsChangedData),
+    /// Open threads set changed for a channel
+    #[serde(rename = "open_threads_changed")]
+    OpenThreadsChanged(OpenThreadsChangedData),
 }
 
 /// Thread ownership state sent to web clients when a fork is created/destroyed.
@@ -277,6 +280,15 @@ pub struct ChannelSettingsChangedData {
     /// New value of show_full_lead_output, if changed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub show_full_lead_output: Option<bool>,
+}
+
+/// Data for an open threads set change notification.
+#[derive(Debug, Clone, Serialize)]
+pub struct OpenThreadsChangedData {
+    /// The channel whose open thread set changed
+    pub channel: String,
+    /// The new set of open thread IDs
+    pub threads: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -506,6 +518,10 @@ pub fn create_web_router(state: Arc<WebState>) -> Router {
         .route(
             "/api/channels/{channel}/settings",
             get(api_channel_settings_get).put(api_channel_settings_set),
+        )
+        .route(
+            "/api/channels/{channel}/open-threads",
+            get(api_channel_open_threads_get).put(api_channel_open_threads_set),
         )
         .route(
             "/api/channels/{channel}/agents-md",
@@ -2706,6 +2722,175 @@ async fn api_channel_settings_set(
         }
         Err(e) => {
             warn!("Failed to set channel settings: {e}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// GET /api/channels/{channel}/open-threads — read the open thread set for a channel.
+async fn api_channel_open_threads_get(
+    State(state): State<Arc<WebState>>,
+    Path(channel): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if channel.contains("..")
+        || channel.contains('/')
+        || channel.contains('\\')
+        || channel.is_empty()
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let dir_key = state.config.dir_key.clone();
+    let ch = channel.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+
+        let socket = crate::paths::daemon_socket_for_repo(&dir_key);
+        let stream = UnixStream::connect(&socket)
+            .map_err(|e| format!("Failed to connect to daemon: {e}"))?;
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+
+        let mut writer = stream
+            .try_clone()
+            .map_err(|e| format!("Failed to clone stream: {e}"))?;
+        let mut reader = BufReader::new(stream);
+
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "channel.open_threads",
+            "params": { "channel": ch },
+            "id": 1
+        });
+        writeln!(&mut writer, "{}", request).map_err(|e| format!("Failed to send RPC: {e}"))?;
+        writer.flush().ok();
+
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .map_err(|e| format!("Failed to read RPC response: {e}"))?;
+
+        let response: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| format!("Invalid RPC response: {e}"))?;
+
+        if let Some(err) = response.get("error") {
+            return Err(format!(
+                "RPC error: {}",
+                err.get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown")
+            ));
+        }
+
+        Ok(response
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::json!({})))
+    })
+    .await
+    .map_err(|e| {
+        warn!("spawn_blocking panic in channel_open_threads_get: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    match result {
+        Ok(data) => Ok(Json(data)),
+        Err(e) => {
+            warn!("Failed to get open threads: {e}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+/// PUT /api/channels/{channel}/open-threads — replace the open thread set for a channel.
+///
+/// Request body: `{ "threads": ["thread-id-1", "thread-id-2"] }`
+async fn api_channel_open_threads_set(
+    State(state): State<Arc<WebState>>,
+    Path(channel): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    if channel.contains("..")
+        || channel.contains('/')
+        || channel.contains('\\')
+        || channel.is_empty()
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let threads: Vec<String> = body
+        .get("threads")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let dir_key = state.config.dir_key.clone();
+    let ch = channel.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+
+        let socket = crate::paths::daemon_socket_for_repo(&dir_key);
+        let stream = UnixStream::connect(&socket)
+            .map_err(|e| format!("Failed to connect to daemon: {e}"))?;
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+
+        let mut writer = stream
+            .try_clone()
+            .map_err(|e| format!("Failed to clone stream: {e}"))?;
+        let mut reader = BufReader::new(stream);
+
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "channel.open_threads.set",
+            "params": { "channel": ch, "threads": threads },
+            "id": 1
+        });
+        writeln!(&mut writer, "{}", request).map_err(|e| format!("Failed to send RPC: {e}"))?;
+        writer.flush().ok();
+
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .map_err(|e| format!("Failed to read RPC response: {e}"))?;
+
+        let response: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| format!("Invalid RPC response: {e}"))?;
+
+        if let Some(err) = response.get("error") {
+            return Err(format!(
+                "RPC error: {}",
+                err.get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown")
+            ));
+        }
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| {
+        warn!("spawn_blocking panic in channel_open_threads_set: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    match result {
+        Ok(()) => Ok(Json(serde_json::json!({ "ok": true }))),
+        Err(e) => {
+            warn!("Failed to set open threads: {e}");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
