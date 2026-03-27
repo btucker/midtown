@@ -9,184 +9,9 @@
 //! Run with `cargo test --test channel_rpc_routing_test -- --ignored` as these
 //! spawn a real daemon.
 
-use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
-use std::time::Duration;
+mod common;
 
-static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn test_repo_name() -> String {
-    let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    format!("channel-rpc-test-{}-{}", std::process::id(), counter)
-}
-
-struct DaemonFixture {
-    temp_dir: PathBuf,
-    project_dir: PathBuf,
-    socket_path: PathBuf,
-    daemon_process: Option<Child>,
-}
-
-impl DaemonFixture {
-    fn new() -> Self {
-        let repo_name = test_repo_name();
-        let temp_dir = std::env::temp_dir().join(&repo_name);
-        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
-
-        for (args, desc) in [
-            (vec!["init"], "init"),
-            (vec!["config", "user.name", "Test User"], "config name"),
-            (
-                vec!["config", "user.email", "test@example.com"],
-                "config email",
-            ),
-        ] {
-            Command::new("git")
-                .args(&args)
-                .current_dir(&temp_dir)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .unwrap_or_else(|_| panic!("Failed to git {}", desc));
-        }
-
-        fs::write(temp_dir.join("README.md"), "test").expect("Failed to write README");
-        Command::new("git")
-            .args(["add", "README.md"])
-            .current_dir(&temp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .expect("Failed to git add");
-        Command::new("git")
-            .args(["commit", "-m", "Initial commit"])
-            .current_dir(&temp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .expect("Failed to git commit");
-        Command::new("git")
-            .args([
-                "remote",
-                "add",
-                "origin",
-                &format!("git@github.com:test/{}.git", repo_name),
-            ])
-            .current_dir(&temp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .expect("Failed to set git remote");
-
-        let project_dir = dirs::home_dir()
-            .expect("home dir")
-            .join(".midtown")
-            .join("projects")
-            .join(&repo_name);
-
-        let state_dir = std::env::var("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .expect("home dir")
-                    .join(".local")
-                    .join("state")
-            });
-        let socket_path = state_dir
-            .join("midtown")
-            .join(&repo_name)
-            .join("daemon.sock");
-
-        Self {
-            temp_dir,
-            project_dir,
-            socket_path,
-            daemon_process: None,
-        }
-    }
-
-    fn start_daemon(&mut self) {
-        let binary_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("debug")
-            .join("midtown");
-
-        assert!(
-            binary_path.exists(),
-            "Debug binary not found at {:?}. Run `cargo build` first.",
-            binary_path
-        );
-
-        let _ = fs::remove_file(&self.socket_path);
-
-        let daemon = Command::new(&binary_path)
-            .args(["daemon", "--workdir", self.temp_dir.to_str().unwrap()])
-            .current_dir(&self.temp_dir)
-            .env("MIDTOWN_WEBHOOK_PORT", "0")
-            .env("MIDTOWN_CHAT_MONITOR", "0")
-            .env("RUST_LOG", "warn")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("Failed to start daemon");
-
-        self.daemon_process = Some(daemon);
-
-        for _ in 0..300 {
-            thread::sleep(Duration::from_millis(200));
-            if self.socket_path.exists() && UnixStream::connect(&self.socket_path).is_ok() {
-                return;
-            }
-        }
-        panic!("Daemon socket did not become available within 60 seconds");
-    }
-
-    fn rpc_call(&self, method: &str, params: serde_json::Value) -> serde_json::Value {
-        let mut stream =
-            UnixStream::connect(&self.socket_path).expect("Failed to connect to daemon");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .expect("set read timeout");
-        stream
-            .set_write_timeout(Some(Duration::from_secs(5)))
-            .expect("set write timeout");
-
-        let request = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
-            "id": 1
-        });
-
-        writeln!(stream, "{}", request).expect("Failed to write request");
-
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        reader
-            .read_line(&mut line)
-            .expect("Failed to read response");
-        serde_json::from_str(&line).expect("Failed to parse response")
-    }
-}
-
-impl Drop for DaemonFixture {
-    fn drop(&mut self) {
-        if let Some(mut daemon) = self.daemon_process.take() {
-            let _ = daemon.kill();
-            let _ = daemon.wait();
-        }
-        let _ = fs::remove_dir_all(&self.temp_dir);
-        let _ = fs::remove_dir_all(&self.project_dir);
-        if let Some(parent) = self.socket_path.parent() {
-            let _ = fs::remove_dir_all(parent);
-        }
-    }
-}
+use common::{DaemonHarnessOptions, DaemonTestHarness};
 
 /// Verify that channel.read with a channel parameter returns messages from
 /// the topic channel, not the main channel.
@@ -197,18 +22,32 @@ impl Drop for DaemonFixture {
 #[test]
 #[ignore] // E2E test - requires daemon
 fn test_channel_read_topic_channel_routing() {
-    let mut fixture = DaemonFixture::new();
-    fixture.start_daemon();
+    let state_dir = std::path::PathBuf::from(format!(
+        "/tmp/midtown-test-channel-rpc-{}",
+        std::process::id()
+    ));
+    let mut fixture = DaemonTestHarness::new(
+        "channel-rpc-test",
+        DaemonHarnessOptions {
+            custom_state_dir: Some(state_dir),
+            ..Default::default()
+        },
+    )
+    .expect("Failed to create test fixture");
+
+    assert!(fixture.start_daemon(), "Failed to start daemon");
 
     // Post a message to the topic channel (simulating a web UI user message)
-    let post_topic = fixture.rpc_call(
-        "channel.post",
-        serde_json::json!({
-            "message": "hello from topic channel",
-            "from": "user",
-            "channel": "auth"
-        }),
-    );
+    let post_topic = fixture
+        .rpc_call(
+            "channel.post",
+            Some(serde_json::json!({
+                "message": "hello from topic channel",
+                "from": "user",
+                "channel": "auth"
+            })),
+        )
+        .expect("channel.post to topic channel should succeed");
     assert!(
         post_topic.get("error").is_none(),
         "channel.post to topic channel should succeed: {:?}",
@@ -216,13 +55,15 @@ fn test_channel_read_topic_channel_routing() {
     );
 
     // Post a different message to the main channel
-    let post_main = fixture.rpc_call(
-        "channel.post",
-        serde_json::json!({
-            "message": "hello from main channel",
-            "from": "user"
-        }),
-    );
+    let post_main = fixture
+        .rpc_call(
+            "channel.post",
+            Some(serde_json::json!({
+                "message": "hello from main channel",
+                "from": "user"
+            })),
+        )
+        .expect("channel.post to main channel should succeed");
     assert!(
         post_main.get("error").is_none(),
         "channel.post to main channel should succeed: {:?}",
@@ -230,13 +71,15 @@ fn test_channel_read_topic_channel_routing() {
     );
 
     // Read from the topic channel — should return only the topic message
-    let read_topic = fixture.rpc_call(
-        "channel.read",
-        serde_json::json!({
-            "all": true,
-            "channel": "auth"
-        }),
-    );
+    let read_topic = fixture
+        .rpc_call(
+            "channel.read",
+            Some(serde_json::json!({
+                "all": true,
+                "channel": "auth"
+            })),
+        )
+        .expect("channel.read from topic channel should succeed");
     assert!(
         read_topic.get("error").is_none(),
         "channel.read from topic channel should succeed: {:?}",
@@ -262,12 +105,14 @@ fn test_channel_read_topic_channel_routing() {
     );
 
     // Read from the main channel (no channel param) — should return only the main message
-    let read_main = fixture.rpc_call(
-        "channel.read",
-        serde_json::json!({
-            "all": true
-        }),
-    );
+    let read_main = fixture
+        .rpc_call(
+            "channel.read",
+            Some(serde_json::json!({
+                "all": true
+            })),
+        )
+        .expect("channel.read from main channel should succeed");
     assert!(
         read_main.get("error").is_none(),
         "channel.read from main channel should succeed: {:?}",

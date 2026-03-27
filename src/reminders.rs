@@ -8,11 +8,12 @@
 use chrono::{DateTime, Utc};
 use croner::Cron;
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::io::{self, ErrorKind};
+use std::io;
 use std::path::Path;
 use std::str::FromStr;
 use tracing::{debug, warn};
+
+use crate::persistence::JsonPersistable;
 
 /// Conditions that can trigger a reminder.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,33 +159,19 @@ pub struct ReminderState {
     pub reminders: Vec<Reminder>,
 }
 
+impl JsonPersistable for ReminderState {}
+
 impl ReminderState {
     /// Load state from a file, returning default if file doesn't exist.
     pub fn load(path: &Path) -> io::Result<Self> {
-        match fs::read_to_string(path) {
-            Ok(contents) => {
-                let state: Self = serde_json::from_str(&contents).map_err(|e| {
-                    warn!("Failed to parse reminders.json: {}", e);
-                    io::Error::new(ErrorKind::InvalidData, e)
-                })?;
-                debug!("Loaded {} reminders", state.reminders.len());
-                Ok(state)
-            }
-            Err(e) if e.kind() == ErrorKind::NotFound => {
-                debug!("reminders.json not found, using defaults");
-                Ok(Self::default())
-            }
-            Err(e) => Err(e),
-        }
+        Self::load_json(path)
+            .inspect(|state| debug!("Loaded {} reminders", state.reminders.len()))
+            .inspect_err(|e| warn!("Failed to load reminders.json: {}", e))
     }
 
     /// Save state to a file.
     pub fn save(&self, path: &Path) -> io::Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let contents = serde_json::to_string_pretty(self)?;
-        fs::write(path, contents)?;
+        self.save_json(path)?;
         debug!("Saved {} reminders", self.reminders.len());
         Ok(())
     }

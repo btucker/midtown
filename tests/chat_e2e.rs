@@ -19,6 +19,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
+mod common;
+
 /// Counter for unique session names across tests.
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -26,15 +28,6 @@ static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 fn test_session_name() -> String {
     let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
     format!("midtown-chat-test-{}-{}", std::process::id(), counter)
-}
-
-/// Check if tmux is available.
-fn tmux_available() -> bool {
-    Command::new("tmux")
-        .args(["list-sessions"])
-        .output()
-        .map(|o| o.status.success() || o.status.code() == Some(1)) // 1 = no sessions
-        .unwrap_or(false)
 }
 
 /// Helper to create a tmux session with a specific size.
@@ -234,7 +227,7 @@ impl Drop for TestFixture {
 #[timeout(30000)]
 #[ignore] // Requires tmux
 fn test_kanban_column_minimum_width_rendering() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("Skipping test: tmux not available");
         return;
     }
@@ -286,7 +279,7 @@ fn test_pr_identifier_preserved_in_narrow_column() {
 #[timeout(30000)]
 #[ignore] // Requires tmux
 fn test_message_appears_promptly() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("Skipping test: tmux not available");
         return;
     }
@@ -326,7 +319,7 @@ fn test_message_appears_promptly() {
 #[timeout(30000)]
 #[ignore] // Requires tmux and built binary
 fn test_chat_tui_starts() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("Skipping test: tmux not available");
         return;
     }
@@ -365,7 +358,7 @@ fn test_chat_tui_starts() {
 #[timeout(30000)]
 #[ignore] // Requires tmux
 fn test_kanban_multi_item_layout() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("Skipping test: tmux not available");
         return;
     }
@@ -436,7 +429,7 @@ fn test_truncate_str_identifier_behavior() {
 #[timeout(30000)]
 #[ignore] // Requires tmux
 fn test_message_grouping() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("Skipping test: tmux not available");
         return;
     }
@@ -474,7 +467,7 @@ fn test_message_grouping() {
 #[timeout(30000)]
 #[ignore] // Requires tmux
 fn test_action_message_format() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("Skipping test: tmux not available");
         return;
     }
@@ -519,7 +512,7 @@ fn test_action_message_format() {
 #[timeout(30000)]
 #[ignore] // Requires tmux and built binary
 fn test_full_tui_rendering() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("Skipping test: tmux not available");
         return;
     }
@@ -602,7 +595,7 @@ fn test_full_tui_rendering() {
 #[timeout(30000)]
 #[ignore] // Requires tmux
 fn test_narrow_terminal_no_panic() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("Skipping test: tmux not available");
         return;
     }
@@ -694,7 +687,7 @@ fn test_task_json_schema() {
 #[timeout(30000)]
 #[ignore] // Requires tmux and built binary
 fn test_message_appears_in_tui_promptly() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("Skipping test: tmux not available");
         return;
     }
@@ -818,7 +811,7 @@ fn test_message_appears_in_tui_promptly() {
 #[timeout(30000)]
 #[ignore] // Requires tmux and built binary
 fn test_message_update_in_existing_channel() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("Skipping test: tmux not available");
         return;
     }
@@ -1019,7 +1012,7 @@ fn test_message_update_in_existing_channel() {
 #[timeout(30000)]
 #[ignore] // Requires tmux and built binary
 fn test_selection_mode_toggle() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("Skipping test: tmux not available");
         return;
     }
@@ -1128,7 +1121,7 @@ fn test_selection_mode_toggle() {
 #[timeout(30000)]
 #[ignore] // Requires tmux and built binary
 fn test_scrollwheel_scrolling() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("Skipping test: tmux not available");
         return;
     }

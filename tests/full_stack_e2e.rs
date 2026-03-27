@@ -13,26 +13,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
-// ── Shared test infrastructure ─────────────────────────────────────
-
-static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn test_repo_name() -> String {
-    let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    format!("fullstack-e2e-test-{}-{}", std::process::id(), counter)
-}
-
-fn tmux_available() -> bool {
-    Command::new("tmux")
-        .args(["list-sessions"])
-        .output()
-        .map(|o| o.status.success() || o.status.code() == Some(1))
-        .unwrap_or(false)
-}
+mod common;
 
 fn claude_available() -> bool {
     Command::new("claude")
@@ -69,20 +53,9 @@ fn find_midtown_binary() -> Option<PathBuf> {
 
 /// Kill any orphaned test daemons and tmux sessions from previous runs.
 fn cleanup_orphaned_test_daemons() {
-    // Kill any lingering daemon processes
-    let _ = Command::new("pkill")
-        .args(["-f", "midtown daemon.*fullstack-e2e-test"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    let _ = Command::new("pkill")
-        .args(["-f", "midtown.*fullstack-e2e-test"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    thread::sleep(Duration::from_millis(100));
+    common::cleanup_orphaned_test_daemons("fullstack-e2e-test");
 
-    // Kill any lingering tmux sessions from previous test runs
+    // Also kill any lingering tmux sessions from previous test runs
     if let Ok(output) = Command::new("tmux")
         .args(["list-sessions", "-F", "#{session_name}"])
         .output()
@@ -100,42 +73,6 @@ fn cleanup_orphaned_test_daemons() {
         }
     }
     thread::sleep(Duration::from_millis(100));
-
-    let current_pid = format!("fullstack-e2e-test-{}-", std::process::id());
-    let projects_dir = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".midtown")
-        .join("projects");
-    if let Ok(entries) = fs::read_dir(&projects_dir) {
-        for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str()
-                && name.starts_with("fullstack-e2e-test-")
-                && !name.starts_with(&current_pid)
-            {
-                let _ = fs::remove_dir_all(entry.path());
-            }
-        }
-    }
-
-    let state_dir = std::env::var("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".local")
-                .join("state")
-        });
-    let sockets_dir = state_dir.join("midtown");
-    if let Ok(entries) = fs::read_dir(&sockets_dir) {
-        for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str()
-                && name.starts_with("fullstack-e2e-test-")
-                && !name.starts_with(&current_pid)
-            {
-                let _ = fs::remove_dir_all(entry.path());
-            }
-        }
-    }
 }
 
 /// Test fixture managing daemon lifecycle, tmux session, and cleanup.
@@ -153,7 +90,7 @@ impl FullStackFixture {
     fn new() -> Option<Self> {
         cleanup_orphaned_test_daemons();
 
-        let repo_name = test_repo_name();
+        let repo_name = common::test_repo_name("fullstack-e2e-test");
         let temp_dir = std::env::temp_dir().join(&repo_name);
 
         let _ = fs::remove_dir_all(&temp_dir);
@@ -475,7 +412,7 @@ fn test_coworker_spawn_and_tui_renders() {
 #[ignore]
 #[timeout(180_000)] // 3 minutes: lead window appearance (60s) + nudge delivery (100s)
 fn test_nudge_reaches_real_claude() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("tmux not available, skipping");
         return;
     }
@@ -716,7 +653,7 @@ fn test_web_ui_connects() {
 #[ignore]
 #[timeout(120_000)]
 fn test_worktree_isolation() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("tmux not available, skipping");
         return;
     }

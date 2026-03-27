@@ -287,7 +287,7 @@ fn test_pr_ci_status() {
 
 #[test]
 fn test_prs_cache_hit_and_miss() {
-    let cache = PrsCache::new();
+    let cache = PrsCache::new(PRS_CACHE_TTL);
     let key: u64 = 42;
     let value = serde_json::json!({"prs": []});
 

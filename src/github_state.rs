@@ -6,10 +6,11 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::io::{self, ErrorKind};
+use std::io;
 use std::path::Path;
 use tracing::{debug, warn};
+
+use crate::persistence::JsonPersistable;
 
 /// Persistent state for GitHub-related data.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -75,34 +76,19 @@ pub struct ExternalPrInfo {
     pub notified: bool,
 }
 
+impl JsonPersistable for GitHubState {}
+
 impl GitHubState {
     /// Load state from a file, returning default if file doesn't exist.
     pub fn load(path: &Path) -> io::Result<Self> {
-        match fs::read_to_string(path) {
-            Ok(contents) => {
-                let state: Self = serde_json::from_str(&contents).map_err(|e| {
-                    warn!("Failed to parse github-state.json: {}", e);
-                    io::Error::new(ErrorKind::InvalidData, e)
-                })?;
-                debug!("Loaded GitHub state");
-                Ok(state)
-            }
-            Err(e) if e.kind() == ErrorKind::NotFound => {
-                debug!("github-state.json not found, using defaults");
-                Ok(Self::default())
-            }
-            Err(e) => Err(e),
-        }
+        Self::load_json(path)
+            .inspect(|_| debug!("Loaded GitHub state"))
+            .inspect_err(|e| warn!("Failed to load github-state.json: {}", e))
     }
 
     /// Save state to a file.
     pub fn save(&self, path: &Path) -> io::Result<()> {
-        // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let contents = serde_json::to_string_pretty(self)?;
-        fs::write(path, contents)?;
+        self.save_json(path)?;
         debug!("Saved GitHub state");
         Ok(())
     }

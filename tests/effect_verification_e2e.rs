@@ -12,29 +12,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
-/// Counter for unique test names across tests.
-static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Generate a unique test repo name to avoid conflicts.
-fn test_repo_name() -> String {
-    let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-    format!("effect-e2e-test-{}-{}", std::process::id(), counter)
-}
-
-/// Check if tmux is available.
-fn tmux_available() -> bool {
-    Command::new("tmux")
-        .arg("-V")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
+mod common;
 
 /// Test fixture for effect verification E2E tests.
 ///
@@ -58,7 +39,7 @@ struct EffectTestFixture {
 impl EffectTestFixture {
     /// Create a new test fixture with a fake git repository.
     fn new() -> Option<Self> {
-        let repo_name = test_repo_name();
+        let repo_name = common::test_repo_name("effect-e2e-test");
         let temp_dir = std::env::temp_dir().join(&repo_name);
 
         // Clean up any previous test data
@@ -392,7 +373,7 @@ fn test_effect_post_to_channel_writes_file() {
 #[test]
 #[ignore] // Requires tmux and built binary (may require claude CLI)
 fn test_effect_spawn_coworker_creates_window() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("SKIPPED: tmux not available");
         return;
     }
@@ -483,7 +464,7 @@ fn test_effect_spawn_coworker_creates_window() {
 #[test]
 #[ignore] // Requires tmux, built binary, and claude CLI
 fn test_effect_nudge_coworker_sends_keys() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("SKIPPED: tmux not available");
         return;
     }
@@ -638,7 +619,7 @@ fn test_fixture_can_start_daemon() {
 #[test]
 #[ignore] // Requires tmux and built binary (may require claude CLI)
 fn test_effect_shutdown_coworker_removes_window() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("SKIPPED: tmux not available");
         return;
     }
@@ -763,7 +744,7 @@ fn test_effect_shutdown_coworker_removes_window() {
 #[test]
 #[ignore] // Requires tmux and built binary (may require claude CLI)
 fn test_effect_coworker_full_lifecycle() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("SKIPPED: tmux not available");
         return;
     }
@@ -955,7 +936,7 @@ fn test_effect_channel_messages_persist_and_read() {
 #[test]
 #[ignore] // Requires tmux and built binary (may require claude CLI)
 fn test_effect_spawn_multiple_coworkers() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("SKIPPED: tmux not available");
         return;
     }
@@ -1035,7 +1016,7 @@ fn test_effect_spawn_multiple_coworkers() {
 #[test]
 #[ignore] // Requires tmux and built binary (may require claude CLI)
 fn test_effect_shutdown_one_preserves_others() {
-    if !tmux_available() {
+    if !common::tmux_available() {
         eprintln!("SKIPPED: tmux not available");
         return;
     }

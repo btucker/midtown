@@ -122,6 +122,9 @@ pub mod daemon_messages;
 // Extension trait for ergonomic JSON field access
 pub mod json_ext;
 
+// Shared JSON persistence trait (load/save pattern)
+pub mod persistence;
+
 // Headless Claude Code executor (JSON streaming)
 pub mod headless;
 

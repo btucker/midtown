@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tracing::{debug, error, info, warn};
 
@@ -139,7 +139,7 @@ pub(crate) async fn handle_prs_status(id: RequestId, state: &DaemonState) -> Res
 /// PR data is expensive (GraphQL round-trip) so we cache for 60s.
 /// The coworker state is now served separately via `coworkers.status` at 1-2s
 /// intervals, so this cache no longer needs to include coworker data.
-const PRS_CACHE_TTL: Duration = Duration::from_secs(60);
+pub(crate) const PRS_CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// GraphQL query that fetches both open and recently merged PRs in a single call.
 ///
@@ -512,44 +512,7 @@ fn pr_ci_status(checks: &[serde_json::Value]) -> &'static str {
 ///
 /// The cache expires after `PRS_CACHE_TTL` (60s) and avoids expensive GraphQL
 /// queries on every RPC call.
-pub(crate) struct PrsCache {
-    inner: std::sync::Mutex<Option<(Instant, serde_json::Value, u64)>>,
-}
-
-impl PrsCache {
-    pub(crate) fn new() -> Self {
-        Self {
-            inner: std::sync::Mutex::new(None),
-        }
-    }
-
-    /// Return cached value if it exists, is younger than TTL, and matches the cache_key.
-    pub(crate) fn get(&self, cache_key: u64) -> Option<serde_json::Value> {
-        let guard = self.inner.lock().ok()?;
-        guard
-            .as_ref()
-            .filter(|(ts, _, key)| ts.elapsed() < PRS_CACHE_TTL && *key == cache_key)
-            .map(|(_, v, _)| v.clone())
-    }
-
-    /// Store a new value with the current timestamp and cache_key.
-    pub(crate) fn set(&self, value: serde_json::Value, cache_key: u64) {
-        if let Ok(mut guard) = self.inner.lock() {
-            *guard = Some((Instant::now(), value, cache_key));
-        }
-    }
-
-    /// Remove expired entries. Called by `DaemonState::cleanup_rpc_response_cache`.
-    pub(crate) fn cleanup(&self) {
-        if let Ok(mut guard) = self.inner.lock()
-            && guard
-                .as_ref()
-                .is_some_and(|(ts, _, _)| ts.elapsed() >= PRS_CACHE_TTL)
-        {
-            *guard = None;
-        }
-    }
-}
+pub(crate) type PrsCache = super::cache::KeyedValueCache<serde_json::Value>;
 
 // ============================================================================
 // PR review handler

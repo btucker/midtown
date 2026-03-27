@@ -5,6 +5,7 @@
 //! runs a webhook server to receive GitHub events, and polls PRs for
 //! actionable issues.
 
+mod cache;
 mod chat;
 mod constants;
 mod dispatch;
@@ -1307,7 +1308,7 @@ impl DaemonState {
                 session_agg_tx,
             ),
             rpc_response_cache: Mutex::new(HashMap::new()),
-            prs_cache: rpc_prs::PrsCache::new(),
+            prs_cache: rpc_prs::PrsCache::new(rpc_prs::PRS_CACHE_TTL),
             pr_review_negative_cache: std::sync::Mutex::new(HashMap::new()),
             reviewer_placeholder_cache: std::sync::Mutex::new(HashMap::new()),
             draining: std::sync::atomic::AtomicBool::new(false),
