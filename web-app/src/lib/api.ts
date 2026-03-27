@@ -1346,6 +1346,8 @@ export function openTaskThread(task: Task, channelName: string): void {
 	};
 	threadData.set({ parentMessage, channelName, messages: [], tasks });
 	pushNavState({ channel: channelName, thread: parentMessageId });
+	// Mark the task's thread as read so it disappears from attention feed
+	markRead("thread", parentMessageId);
 	fetchThread(channelName, parentMessageId).then((fetched) => {
 		threadData.update((td) => {
 			if (!td || td.parentMessage?.id !== parentMessageId) return td;
