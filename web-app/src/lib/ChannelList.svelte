@@ -1,7 +1,7 @@
 <script lang="ts">
 import ArchiveIcon from "@lucide/svelte/icons/archive";
 import GripVertical from "@lucide/svelte/icons/grip-vertical";
-import { type DndEvent, dndzone } from "svelte-dnd-action";
+import { type DndEvent, dragHandle, dragHandleZone } from "svelte-dnd-action";
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
 import ActivityFeed from "./ActivityFeed.svelte";
 import {
@@ -298,7 +298,7 @@ function handleKeyDown(event: KeyboardEvent) {
   <!-- Channels (drag-to-reorder) -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    use:dndzone={{ items: dndChannelItems, flipDurationMs: 200, dropTargetStyle: {}, dragDisabled: sidebar.isMobile, type: "channels", dragHandleSelector: ".drag-handle" }}
+    use:dragHandleZone={{ items: dndChannelItems, flipDurationMs: 200, dropTargetStyle: {}, dragDisabled: sidebar.isMobile, type: "channels" }}
     onconsider={handleDndConsider}
     onfinalize={handleDndFinalize}
   >
@@ -310,6 +310,7 @@ function handleKeyDown(event: KeyboardEvent) {
       <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
         {#if !sidebar.isMobile}
         <span
+          use:dragHandle
           class="drag-handle flex items-center justify-center w-4 ml-1 cursor-grab text-muted-foreground/40 hover:text-muted-foreground/80 transition-colors duration-150 shrink-0"
           title="Drag to reorder"
         >
