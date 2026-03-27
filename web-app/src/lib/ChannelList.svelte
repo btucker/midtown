@@ -3,23 +3,19 @@ import ArchiveIcon from "@lucide/svelte/icons/archive";
 import GripVertical from "@lucide/svelte/icons/grip-vertical";
 import { type DndEvent, dndzone } from "svelte-dnd-action";
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
+import ActivityFeed from "./ActivityFeed.svelte";
 import { closeThread, fetchChannels, fetchHistory, getApiBase, markRead, openThread, pushNavState } from "./api.ts";
 import { computeVisibleDmChannels, getDisplayableDmChannels } from "./channelUtils.ts";
-import NeedsAttention from "./NeedsAttention.svelte";
 import {
 	activeChannel,
 	activeProject,
 	channelOrder,
 	channels,
 	messagesByChannel,
-	openThreads,
 	showArchivedChannels,
 	threadForkOwners,
-	threadUnreadCounts,
-	trackedThreads,
 } from "./store.ts";
-import TasksSidebar from "./TasksSidebar.svelte";
-import type { Channel, NeedsAttentionItem } from "./types.ts";
+import type { Channel } from "./types.ts";
 
 const sidebar = useSidebar();
 
@@ -103,23 +99,6 @@ $: baseDmVisibleCount = computeVisibleDmChannels(dmChannels, {
 	visitedDms,
 }).length;
 
-// Compute visible threads for a channel from the openThreads store
-function getVisibleThreads(channelName: string) {
-	const threadIds = $openThreads[channelName] || new Set();
-	const threads: { id: string; subject: string; unread: number }[] = [];
-	for (const id of threadIds) {
-		const tracked = $trackedThreads[id];
-		if (tracked && tracked.channelName === channelName) {
-			threads.push({
-				id,
-				subject: tracked.subject,
-				unread: $threadUnreadCounts[id] || 0,
-			});
-		}
-	}
-	return threads;
-}
-
 function selectChannel(channelName: string) {
 	// Switch channel immediately for instant UI response (non-blocking).
 	sidebar.setOpenMobile(false);
@@ -142,7 +121,7 @@ function selectChannel(channelName: string) {
 	markRead("channel", channelName);
 }
 
-function handleAttentionItemClick(item: NeedsAttentionItem) {
+function handleActivityItemClick(item: { threadId?: string; taskId?: number; channel: string }) {
 	if (item.threadId) {
 		// Navigate to the thread's channel first if needed
 		if ($activeChannel !== item.channel) {
@@ -150,53 +129,14 @@ function handleAttentionItemClick(item: NeedsAttentionItem) {
 			pushNavState({ channel: item.channel });
 			fetchHistory(item.channel);
 		}
-		// Find the parent message in the channel's message store, or create a stub
 		const channelMsgs = $messagesByChannel[item.channel] || [];
 		const parentMsg = channelMsgs.find((m) => m.id === item.threadId);
-		const msg = parentMsg || { id: item.threadId ?? "", from: "", content: item.title, timestamp: "" };
+		const msg = parentMsg || { id: item.threadId ?? "", from: "", content: "", timestamp: "" };
 		openThread(msg, item.channel);
 		sidebar.setOpenMobile(false);
-	} else if (item.taskId) {
-		// Switch to the channel
+	} else {
 		selectChannel(item.channel);
 	}
-}
-
-function handleOpenThread(threadId: string, channelName: string) {
-	// Navigate to the thread's channel first if needed
-	if ($activeChannel !== channelName) {
-		activeChannel.set(channelName);
-		pushNavState({ channel: channelName });
-		fetchHistory(channelName);
-	}
-	const channelMsgs = $messagesByChannel[channelName] || [];
-	const parentMsg = channelMsgs.find((m) => m.id === threadId);
-	const msg = parentMsg || { id: threadId, from: "", content: "", timestamp: "" };
-	openThread(msg, channelName);
-	sidebar.setOpenMobile(false);
-}
-
-function handleCloseThread(channelName: string, threadId: string) {
-	// Optimistic update: remove from local openThreads store
-	openThreads.update((current) => {
-		const next = { ...current };
-		const threadSet = next[channelName];
-		if (threadSet) {
-			const updated = new Set(threadSet);
-			updated.delete(threadId);
-			if (updated.size === 0) {
-				delete next[channelName];
-			} else {
-				next[channelName] = updated;
-			}
-		}
-		return next;
-	});
-
-	// Persist server-side
-	const remaining = $openThreads[channelName];
-	const remainingIds = remaining ? [...remaining] : [];
-	setOpenThreads(channelName, remainingIds);
 }
 
 function formatChannelName(name: string) {
@@ -274,11 +214,8 @@ function handleKeyDown(event: KeyboardEvent) {
 </script>
 
 <div class="flex flex-col gap-1 p-3 overflow-y-auto">
-  <!-- Needs Attention section (top priority) -->
-  <NeedsAttention onItemClick={handleAttentionItemClick} />
-
-  <!-- Unified Tasks section -->
-  <TasksSidebar mainChannelName={$activeProject || "midtown"} />
+  <!-- Activity feed (attention items + tasks) -->
+  <ActivityFeed onItemClick={handleActivityItemClick} />
 
   <!-- Channel header (archive toggle, + button) -->
   <div class="flex items-center justify-between px-3 pt-2 pb-1">
@@ -338,7 +275,7 @@ function handleKeyDown(event: KeyboardEvent) {
     </div>
   {/if}
 
-  <!-- Channels with inline threads (drag-to-reorder) -->
+  <!-- Channels (drag-to-reorder) -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     use:dndzone={{ items: dndChannelItems, flipDurationMs: 200, dropTargetStyle: {}, dragDisabled: sidebar.isMobile, type: "channels", dragHandleSelector: ".drag-handle" }}
@@ -348,7 +285,6 @@ function handleKeyDown(event: KeyboardEvent) {
   {#each dndChannelItems as channel (channel.id)}
     {@const isActive = $activeChannel === channel.name}
     {@const hasUnread = channel.unread > 0 && channel.name !== 'ops'}
-    {@const channelThreads = getVisibleThreads(channel.name)}
 
     <div class="channel-row mb-0.5 {isActive ? 'channel-tab-active bg-background -mr-3 rounded-l-md relative' : ''}">
       <div class="flex items-center {isActive ? 'text-primary' : 'rounded-md text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground'}">
@@ -370,25 +306,6 @@ function handleKeyDown(event: KeyboardEvent) {
           </div>
         </button>
       </div>
-
-      <!-- Inline open threads -->
-      {#each channelThreads as thread (thread.id)}
-        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-        <div
-          class="thread-row"
-          onclick={() => handleOpenThread(thread.id, channel.name)}
-        >
-          <span class="thread-glyph">⌇</span>
-          <span class="thread-subject">{thread.subject}</span>
-          {#if thread.unread > 0}
-            <span class="thread-unread-dot"></span>
-          {/if}
-          <button
-            class="thread-close"
-            onclick={(e) => { e.stopPropagation(); handleCloseThread(channel.name, thread.id); }}
-          >✕</button>
-        </div>
-      {/each}
     </div>
   {/each}
   </div>
@@ -476,51 +393,4 @@ function handleKeyDown(event: KeyboardEvent) {
     opacity: 1;
   }
 
-  /* Inline thread rows */
-  .thread-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 7px 8px;
-    width: 100%;
-    background: none;
-    border: none;
-    cursor: pointer;
-    font-size: inherit; /* same as channel buttons */
-    color: var(--sidebar-foreground);
-  }
-  .thread-row:hover {
-    background: hsl(var(--sidebar-accent));
-    border-radius: 6px;
-  }
-  .thread-glyph {
-    color: hsl(var(--muted-foreground) / 0.4);
-    font-size: inherit;
-  }
-  .thread-subject {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .thread-unread-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #3b82f6;
-    flex-shrink: 0;
-  }
-  .thread-close {
-    background: none;
-    border: none;
-    color: hsl(var(--muted-foreground) / 0.4);
-    cursor: pointer;
-    font-size: 10px;
-    padding: 0;
-    opacity: 0;
-    transition: opacity 0.15s;
-  }
-  .thread-row:hover .thread-close {
-    opacity: 1;
-  }
 </style>

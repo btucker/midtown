@@ -244,3 +244,7 @@ export const progressTimestamps = writable<Record<string, number>>({});
 // Per-thread and per-channel read timestamps. Synced from daemon API.
 export const threadReadState = writable<Record<string, string>>({});
 export const channelReadState = writable<Record<string, string>>({});
+
+// Backwards compatibility — Channel.svelte and ThreadList.svelte still reference this.
+// Will be removed when those components are updated to use threadReadState.
+export const threadUnreadCounts = writable<Record<string, number>>({});
