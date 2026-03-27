@@ -2095,13 +2095,12 @@ pub(super) async fn handle_session_thread_ownership(
     channel: &str,
     state: &DaemonState,
 ) -> Response {
-    let (fork_session_id, has_dedicated, owner, parent_lead) = {
+    let (has_dedicated, owner, parent_lead) = {
         let ps = state.persistent_state.lock().await;
         let fork = ps
             .session_by_thread(thread_parent_id)
             .filter(|s| s.is_running);
-        let fork_sid = fork.map(|s| s.session_id.clone());
-        let has_dedicated = fork_sid.is_some();
+        let has_dedicated = fork.is_some();
         let owner = fork.map(|s| s.name.clone());
         let parent_lead = if has_dedicated {
             ps.channel_lead_sessions
@@ -2110,10 +2109,8 @@ pub(super) async fn handle_session_thread_ownership(
         } else {
             None
         };
-        (fork_sid, has_dedicated, owner, parent_lead)
+        (has_dedicated, owner, parent_lead)
     };
-
-    let _ = fork_session_id; // used for has_dedicated derivation
 
     state.broadcast_web_update(web::WebUpdate::ThreadOwnership(web::ThreadOwnershipData {
         thread_parent_id: thread_parent_id.to_string(),
