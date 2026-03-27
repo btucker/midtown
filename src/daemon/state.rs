@@ -970,6 +970,9 @@ impl DaemonPersistentState {
     }
 
     /// Check whether a worktree is bound to a different ACTIVE coworker.
+    ///
+    /// Uses session IDs (not names) to avoid false collisions when session names
+    /// are reused across different worktrees (common with reviewer sessions).
     pub fn worktree_collision(&self, worktree_id: &str, intended_coworker: &str) -> Option<String> {
         let assignment = self.worktree_registry.get(worktree_id)?;
         let bound_coworker = assignment.current_coworker.as_deref()?;
@@ -978,12 +981,22 @@ impl DaemonPersistentState {
             return None;
         }
 
+        // Find the specific session that's bound to this worktree by matching
+        // both the coworker name AND the working directory. This prevents false
+        // collisions when a new session reuses the same name but works on a
+        // different worktree.
         let bound_lower = bound_coworker.to_lowercase();
-        if self.tick_active_session_names.contains(&bound_lower) {
-            return Some(bound_coworker.to_string());
-        }
+        let has_active_session_on_worktree = self.sessions.values().any(|record| {
+            record.name.to_lowercase() == bound_lower
+                && self.tick_active_session_ids.contains(&record.session_id)
+                && std::path::Path::new(&record.working_dir).ends_with(worktree_id)
+        });
 
-        None
+        if has_active_session_on_worktree {
+            Some(bound_coworker.to_string())
+        } else {
+            None
+        }
     }
 
     /// Migrate per-channel `workflow-state.json` files into in-memory state.
