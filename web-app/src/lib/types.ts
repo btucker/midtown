@@ -162,6 +162,7 @@ export interface TrackedThread {
 	fullText?: string;
 	lastActivity: string;
 	replyCount: number;
+	lastReplySender?: string;
 }
 
 // ── Needs Attention ─────────────────────────────────────────────────────────

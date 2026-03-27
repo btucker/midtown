@@ -1,15 +1,16 @@
 <script lang="ts">
-import { computeAttentionItems } from "./needsAttention.ts";
+import { computeAttentionItems, type LastMessage } from "./needsAttention.ts";
 import {
 	activeProject,
 	coworkers,
 	dismissedAttentionItems,
 	kanbanData,
 	openThreads,
+	progressTimestamps,
 	trackedThreads,
 	userSenderName,
 } from "./store.ts";
-import type { NeedsAttentionItem } from "./types.ts";
+import type { NeedsAttentionItem, TrackedThread } from "./types.ts";
 
 interface Props {
 	onItemClick?: (item: NeedsAttentionItem) => void;
@@ -17,14 +18,24 @@ interface Props {
 
 let { onItemClick }: Props = $props();
 
+function deriveLastMessages(threads: Record<string, TrackedThread>): Record<string, LastMessage> {
+	const result: Record<string, LastMessage> = {};
+	for (const [id, t] of Object.entries(threads)) {
+		if (t.lastReplySender && t.fullText) {
+			result[id] = { sender: t.lastReplySender, content: t.fullText, timestamp: t.lastActivity };
+		}
+	}
+	return result;
+}
+
 const items = $derived(
 	computeAttentionItems({
 		trackedThreads: $trackedThreads,
 		openThreads: $openThreads,
-		lastMessages: {}, // stub — wired up in Task 9
+		lastMessages: deriveLastMessages($trackedThreads),
 		coworkers: $coworkers,
 		tasks: [...($kanbanData.inProgress ?? []), ...($kanbanData.backlog ?? []), ...($kanbanData.completedTasks ?? [])],
-		progressTimestamps: {}, // stub — wired up later
+		progressTimestamps: $progressTimestamps,
 		dismissed: $dismissedAttentionItems,
 		userSender: $userSenderName,
 		mainChannel: $activeProject ?? "midtown",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isTaskStale, threadNeedsAttention } from "./needsAttention.ts";
+import { computeAttentionItems, isTaskStale, threadNeedsAttention } from "./needsAttention.ts";
 
 describe("threadNeedsAttention", () => {
 	const now = Date.now();
@@ -95,5 +95,139 @@ describe("isTaskStale", () => {
 
 	it("returns false when task is done (progress 100)", () => {
 		expect(isTaskStale(100, now - 3 * 3600000, now)).toBe(false);
+	});
+});
+
+describe("computeAttentionItems", () => {
+	const now = Date.now();
+	const baseOpts = {
+		trackedThreads: {},
+		openThreads: {} as Record<string, Set<string>>,
+		lastMessages: {},
+		coworkers: [],
+		tasks: [],
+		progressTimestamps: {},
+		dismissed: new Set<string>(),
+		userSender: "human",
+		mainChannel: "midtown",
+		now,
+	};
+
+	it("returns completed tasks with status 'completed' (not 'done')", () => {
+		const items = computeAttentionItems({
+			...baseOpts,
+			tasks: [
+				{ id: 1, subject: "Fix bug", status: "completed", owner: "ghost-town", channel: "web" },
+				{ id: 2, subject: "Pending task", status: "pending", owner: "ghost-town" },
+			],
+		});
+		expect(items).toHaveLength(1);
+		expect(items[0].type).toBe("task_completed");
+		expect(items[0].title).toBe("Fix bug");
+	});
+
+	it("does NOT match tasks with status 'done'", () => {
+		const items = computeAttentionItems({
+			...baseOpts,
+			tasks: [{ id: 1, subject: "Old task", status: "done", owner: "ghost-town" }],
+		});
+		expect(items).toHaveLength(0);
+	});
+
+	it("returns thread_waiting items when lastMessages is populated", () => {
+		const threadId = "msg-123";
+		const items = computeAttentionItems({
+			...baseOpts,
+			trackedThreads: {
+				[threadId]: {
+					channelName: "web",
+					subject: "Auth discussion",
+					lastActivity: new Date(now - 20 * 60000).toISOString(),
+					replyCount: 3,
+					lastReplySender: "ghost-town",
+				},
+			},
+			openThreads: { web: new Set([threadId]) },
+			lastMessages: {
+				[threadId]: {
+					sender: "ghost-town",
+					content: "what do you think?",
+					timestamp: new Date(now - 20 * 60000).toISOString(),
+				},
+			},
+		});
+		expect(items).toHaveLength(1);
+		expect(items[0].type).toBe("thread_waiting");
+		expect(items[0].threadId).toBe(threadId);
+	});
+
+	it("returns mention items when user is @mentioned", () => {
+		const threadId = "msg-456";
+		const items = computeAttentionItems({
+			...baseOpts,
+			trackedThreads: {
+				[threadId]: {
+					channelName: "web",
+					subject: "Review needed",
+					lastActivity: new Date(now - 1000).toISOString(),
+					replyCount: 1,
+				},
+			},
+			openThreads: { web: new Set([threadId]) },
+			lastMessages: {
+				[threadId]: {
+					sender: "ghost-town",
+					content: "hey @human please review",
+					timestamp: new Date(now - 1000).toISOString(),
+				},
+			},
+		});
+		expect(items).toHaveLength(1);
+		expect(items[0].type).toBe("mention");
+	});
+
+	it("returns stale_work items when progress hasn't changed for 2+ hours", () => {
+		const items = computeAttentionItems({
+			...baseOpts,
+			tasks: [{ id: 10, subject: "Refactor auth", status: "in_progress", owner: "silver-fox", channel: "web" }],
+			coworkers: [{ name: "silver-fox", progress: 30 }],
+			progressTimestamps: { "10": now - 3 * 3600000 },
+		});
+		expect(items).toHaveLength(1);
+		expect(items[0].type).toBe("stale_work");
+		expect(items[0].title).toBe("Refactor auth");
+	});
+
+	it("filters out dismissed items", () => {
+		const items = computeAttentionItems({
+			...baseOpts,
+			tasks: [{ id: 1, subject: "Fix bug", status: "completed", owner: "ghost-town" }],
+			dismissed: new Set(["task:1"]),
+		});
+		expect(items).toHaveLength(0);
+	});
+
+	it("sorts items newest first", () => {
+		const threadId = "msg-789";
+		const items = computeAttentionItems({
+			...baseOpts,
+			tasks: [{ id: 1, subject: "Old completed", status: "completed", owner: "ghost-town" }],
+			trackedThreads: {
+				[threadId]: {
+					channelName: "web",
+					subject: "Recent thread",
+					lastActivity: new Date(now - 15 * 60000).toISOString(),
+					replyCount: 1,
+				},
+			},
+			openThreads: { web: new Set([threadId]) },
+			lastMessages: {
+				[threadId]: { sender: "ghost-town", content: "update?", timestamp: new Date(now - 15 * 60000).toISOString() },
+			},
+		});
+		expect(items).toHaveLength(2);
+		// task_completed uses `now` as timestamp, thread uses the message timestamp (15min ago)
+		expect(items[0].type).toBe("task_completed");
+		expect(items[1].type).toBe("thread_waiting");
 	});
 });

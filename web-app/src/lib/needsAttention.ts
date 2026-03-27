@@ -109,7 +109,7 @@ export function computeAttentionItems(opts: {
 
 	// 2. Completed tasks
 	for (const task of opts.tasks) {
-		if (task.status !== "done") continue;
+		if (task.status !== "completed") continue;
 		const id = `task:${task.id}`;
 		if (opts.dismissed.has(id)) continue;
 
