@@ -595,6 +595,50 @@ pub(super) async fn handle_channel_post(
                 thread_parent_id,
             );
             crate::daemon::effects::execute_effects(vec![nudge_effect], state).await;
+
+            // If the user explicitly mentioned @lead or @{project_name}, ALSO
+            // nudge the project lead. The topic channel lead owns the thread
+            // context, but @midtown/@lead is a direct escalation to the project
+            // lead and must not be silently swallowed.
+            let content_lower = content.to_lowercase();
+            let project_mention = format!("@{}", state.project_name).to_lowercase();
+            if content_lower.contains("@lead") || content_lower.contains(&project_mention) {
+                let should_nudge = state.cooldowns.lock().unwrap().check_and_record(
+                    "lead_mention",
+                    &msg.id,
+                    Duration::from_secs(3600),
+                );
+                if should_nudge {
+                    let summary = truncate_str(&content, 100);
+                    let base = format!(
+                        "user mentioned @{} in {} ({}): {}",
+                        state.project_name,
+                        channel_name,
+                        msg.thread_anchor_id(),
+                        summary
+                    );
+                    let nudge_msg = if let Some(parent_id) = thread_parent_id {
+                        let ctx = crate::daemon::wake_reason::ThreadContext {
+                            parent_id: parent_id.to_string(),
+                            channel_name: channel_name.to_string(),
+                        };
+                        format!("{base}\n\n{}", ctx.reply_instructions())
+                    } else {
+                        base
+                    };
+                    let lead_nudge = crate::daemon::effects::Effect::NudgeChannelLead {
+                        channel_name: state.default_channel_name().to_string(),
+                        reason: crate::daemon::wake_reason::WakeReason::Nudge {
+                            message: nudge_msg,
+                        },
+                    };
+                    info!(
+                        "Nudging project lead about @{} mention from user in topic channel '{}'",
+                        state.project_name, channel_name
+                    );
+                    crate::daemon::effects::execute_effects(vec![lead_nudge], state).await;
+                }
+            }
         } else {
             // Main channel: always nudge the lead on user messages.
             // Also route any @mentions directly to the mentioned coworkers.
