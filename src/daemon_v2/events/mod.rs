@@ -78,6 +78,7 @@ pub enum DomainEvent {
     },
     AgentResumed {
         id: AgentId,
+        pid: u32,
     },
 
     // Tasks

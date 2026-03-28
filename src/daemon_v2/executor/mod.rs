@@ -133,16 +133,56 @@ pub async fn execute(
             vec![] // nudges don't produce events
         }
         Command::ResumeAgent { id } => {
-            if let Some(agent) = projections.agents.by_id.get(&id) {
-                if let Some(ref sid) = agent.session_id {
-                    tracing::info!(%id, session_id = %sid, "would resume agent (not yet implemented)");
-                } else {
-                    tracing::warn!(%id, "resume requested but agent has no session_id");
+            let agent = match projections.agents.by_id.get(&id) {
+                Some(a) => a,
+                None => {
+                    tracing::warn!(%id, "resume requested for unknown agent");
+                    return vec![];
                 }
-            } else {
-                tracing::warn!(%id, "resume requested for unknown agent");
+            };
+            let session_id = match &agent.session_id {
+                Some(sid) => sid.clone(),
+                None => {
+                    tracing::warn!(%id, "resume requested but agent has no session_id");
+                    return vec![];
+                }
+            };
+
+            // Build a SpawnConfig so we can reuse build_launch_config
+            let spawn_config = crate::daemon_v2::decisions::SpawnConfig {
+                name: agent.name.clone(),
+                kind: agent.kind.clone(),
+                agent_type: agent.agent_type.clone(),
+                provider: agent.provider.clone(),
+                channel: agent.channel.clone(),
+                task_id: agent.task_id.clone(),
+                initial_prompt: None,
+                working_dir: None,
+                model: None,
+                bound_thread_id: agent.bound_thread_id.clone(),
+                fork_from_session: None,
+            };
+
+            let launch_config = spawn::build_launch_config(&spawn_config, paths.dir_key());
+            let mut headless_config = launch_config.to_headless_config(paths);
+            headless_config.resume_session_id = Some(session_id.clone());
+
+            tracing::info!(
+                %id, name = %agent.name, %session_id,
+                "resuming agent session after daemon restart"
+            );
+
+            match HeadlessSession::spawn(&headless_config).await {
+                Ok(session) => {
+                    let pid = session.pid().unwrap_or(0);
+                    sessions.insert(id.clone(), session);
+                    vec![DomainEvent::AgentResumed { id, pid }]
+                }
+                Err(e) => {
+                    tracing::error!(%id, %e, "failed to resume agent session");
+                    vec![]
+                }
             }
-            vec![DomainEvent::AgentResumed { id }]
         }
         Command::AssignTask { task_id, agent_id } => {
             vec![DomainEvent::TaskAssigned { task_id, agent_id }]

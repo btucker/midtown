@@ -99,8 +99,9 @@ impl AgentIndex {
                     self.running.remove(id);
                 }
             }
-            DomainEvent::AgentResumed { id } => {
+            DomainEvent::AgentResumed { id, pid } => {
                 if let Some(agent) = self.by_id.get_mut(id) {
+                    agent.pid = Some(*pid);
                     agent.stopped_at = None;
                     self.running.insert(id.clone());
                 }

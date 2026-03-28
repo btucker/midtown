@@ -36,6 +36,9 @@ pub struct DaemonV2 {
     scheduler: Scheduler,
     paths: ProjectPaths,
     sessions: HashMap<String, HeadlessSession>,
+    /// Commands to resume agents that were running before the daemon restarted.
+    /// Populated during `new()`, drained at the start of `run()`.
+    pending_resumes: Vec<Command>,
 }
 
 /// Exit status returned by [`DaemonV2::run`].
@@ -83,6 +86,16 @@ fn handle_merged_prs_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
     decisions::prs::handle_merged_prs(proj)
 }
 
+/// Wrapper: spawn reviewer agents for PRs needing review.
+fn spawn_reviewers_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
+    decisions::prs::spawn_reviewers(proj)
+}
+
+/// Wrapper: suspend author agents whose tasks have open PRs awaiting review.
+fn suspend_authors_with_prs_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
+    decisions::prs::suspend_authors_with_prs(proj)
+}
+
 impl DaemonV2 {
     /// Create a new DaemonV2, recovering state from the event store.
     pub fn new(config: DaemonV2Config) -> std::io::Result<Self> {
@@ -95,7 +108,9 @@ impl DaemonV2 {
 
         // Reconcile: agents that were "running" when the daemon last shut down
         // may have dead processes. Check PIDs and emit AgentStopped events.
+        // Track which agents we reconcile so we can resume those with session_ids.
         let mut reconcile_events = Vec::new();
+        let mut reconciled_agent_ids = Vec::new();
         for agent_id in projections.agents.running.clone() {
             if let Some(agent) = projections.agents.by_id.get(&agent_id) {
                 let is_alive = agent
@@ -113,6 +128,7 @@ impl DaemonV2 {
 
                 if !is_alive {
                     tracing::info!(%agent_id, name = %agent.name, "reconciling dead agent on startup");
+                    reconciled_agent_ids.push(agent_id.clone());
                     reconcile_events.push(DomainEvent::AgentStopped {
                         id: agent_id.clone(),
                         reason: "process not found on startup".into(),
@@ -124,6 +140,24 @@ impl DaemonV2 {
         for event in &reconcile_events {
             store.append(event)?;
             projections.apply(event);
+        }
+
+        // Schedule resumes for reconciled agents that have a session_id.
+        // The agent is now "stopped" in projections, but we still have the
+        // session_id from before the stop (AgentStopped doesn't clear it).
+        let mut pending_resumes = Vec::new();
+        for agent_id in &reconciled_agent_ids {
+            if let Some(agent) = projections.agents.by_id.get(agent_id)
+                && agent.session_id.is_some()
+            {
+                tracing::info!(
+                    %agent_id, name = %agent.name,
+                    "scheduling resume for agent that was running before restart"
+                );
+                pending_resumes.push(Command::ResumeAgent {
+                    id: agent_id.clone(),
+                });
+            }
         }
 
         let mut scheduler = Scheduler::new();
@@ -158,6 +192,16 @@ impl DaemonV2 {
             Duration::from_secs(10),
             handle_merged_prs_fn,
         );
+        scheduler.register(
+            "spawn_reviewers",
+            Duration::from_secs(45),
+            spawn_reviewers_fn,
+        );
+        scheduler.register(
+            "suspend_authors_with_prs",
+            Duration::from_secs(10),
+            suspend_authors_with_prs_fn,
+        );
 
         Ok(Self {
             config,
@@ -166,6 +210,7 @@ impl DaemonV2 {
             scheduler,
             paths,
             sessions: HashMap::new(),
+            pending_resumes,
         })
     }
 
@@ -179,6 +224,19 @@ impl DaemonV2 {
             UnixListener::bind(&self.config.socket_path).expect("failed to bind daemon socket");
 
         tracing::info!(socket = %self.config.socket_path.display(), "DaemonV2 listening");
+
+        // Resume agents that were running before the daemon restarted.
+        for cmd in std::mem::take(&mut self.pending_resumes) {
+            let events = executor::execute(
+                cmd,
+                &mut self.sessions,
+                &self.paths,
+                &self.projections,
+                &self.config.channels_dir,
+            )
+            .await;
+            self.apply_events(&events);
+        }
 
         loop {
             let deadline = self
