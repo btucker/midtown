@@ -105,15 +105,19 @@ function handleTaskClick(task: Task) {
 }
 
 // ── Threads ──────────────────────────────────────────────────────────────────
+// Exclusion sets are independent deriveds so allThreadsSorted doesn't cascade
+// through attentionItems (which also reads kanbanData, causing a double-fire).
+
+// Threads shown as attention items — derived from attentionItems, not kanbanData
+const attentionThreadIds = $derived(new Set(attentionItems.filter((i) => i.threadId).map((i) => i.threadId)));
+
+// Threads tied to active tasks — reads kanbanData directly (single cascade path)
+const taskThreadIds = $derived(
+	new Set([...$kanbanData.inProgress, ...$kanbanData.backlog].map((t) => t.thread_id).filter(Boolean)),
+);
 
 const allThreadsSorted = $derived.by(() => {
 	const now = Date.now();
-	// Exclude threads that are already shown as attention items
-	const attentionThreadIds = new Set(attentionItems.filter((i) => i.threadId).map((i) => i.threadId));
-	// Exclude threads tied to active tasks
-	const taskThreadIds = new Set(
-		[...$kanbanData.inProgress, ...$kanbanData.backlog].map((t) => t.thread_id).filter(Boolean),
-	);
 
 	return Object.entries($trackedThreads)
 		.filter(([id]) => !attentionThreadIds.has(id) && !taskThreadIds.has(id))
