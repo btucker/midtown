@@ -254,10 +254,17 @@ channelReadState.subscribe((v) => debouncedSaveToLocalStorage("midtown_channel_r
 // True once we have usable read-state data — either from localStorage
 // warm-start or from the server fetch. syncUnreadCounts suppresses
 // unread badges until this is true to avoid flash-of-unread on cold start.
-const hasLocalCache =
-	typeof localStorage !== "undefined" &&
-	(localStorage.getItem("midtown_thread_read_state") !== null ||
-		localStorage.getItem("midtown_channel_read_state") !== null);
+function hasNonEmptyCache(key: string): boolean {
+	if (typeof localStorage === "undefined") return false;
+	const raw = localStorage.getItem(key);
+	if (!raw) return false;
+	try {
+		return Object.keys(JSON.parse(raw)).length > 0;
+	} catch {
+		return false;
+	}
+}
+const hasLocalCache = hasNonEmptyCache("midtown_thread_read_state") || hasNonEmptyCache("midtown_channel_read_state");
 export const readStateLoaded = writable<boolean>(hasLocalCache);
 
 // Derived unread counts — Channel.svelte and ThreadList.svelte read this for badge display.

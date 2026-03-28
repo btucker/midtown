@@ -89,6 +89,15 @@ describe("read state warm-start from localStorage", () => {
 		const mod = await import("./store.ts");
 		expect(get(mod.readStateLoaded)).toBe(false);
 	});
+
+	it("sets readStateLoaded to false when localStorage has empty {} objects", async () => {
+		vi.resetModules();
+		localStorageMap.set("midtown_thread_read_state", JSON.stringify({}));
+		localStorageMap.set("midtown_channel_read_state", JSON.stringify({}));
+
+		const mod = await import("./store.ts");
+		expect(get(mod.readStateLoaded)).toBe(false);
+	});
 });
 
 describe("syncUnreadCounts with cached read state", () => {

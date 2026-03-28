@@ -183,6 +183,9 @@ export async function fetchReadState(): Promise<void> {
 			await new Promise((r) => setTimeout(r, 2000));
 		}
 	}
+	// Both attempts failed — set loaded anyway so badges degrade to
+	// "show everything unread" rather than being permanently suppressed.
+	readStateLoaded.set(true);
 }
 
 export async function markRead(type: "thread" | "channel", id: string): Promise<void> {
@@ -916,6 +919,7 @@ export function handleUpdate(update: Record<string, unknown>): void {
 			} else if (type === "channel") {
 				channelReadState.update((s) => ({ ...s, [id]: timestamp }));
 			}
+			readStateLoaded.set(true);
 			break;
 		}
 		case "thread_ownership": {
