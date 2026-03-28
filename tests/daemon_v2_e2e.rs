@@ -400,6 +400,48 @@ fn test_daemon_v2_channel_post_and_read() {
     );
 }
 
+#[test]
+#[ignore]
+fn test_daemon_v2_lead_driven_skips_auto_dispatch() {
+    let harness = V2Harness::start();
+
+    // Set channel to lead-driven
+    let resp = harness.rpc_call(
+        "channel.update",
+        Some(serde_json::json!({
+            "channel": "manual-chan",
+            "lead_driven": true,
+        })),
+    );
+    assert!(resp["error"].is_null(), "channel.update error: {resp}");
+
+    // Create a task in the lead-driven channel
+    let resp = harness.rpc_call(
+        "task.create",
+        Some(serde_json::json!({
+            "id": "manual-t1",
+            "subject": "Manual task - should not auto-dispatch",
+            "channel": "manual-chan",
+        })),
+    );
+    assert!(resp["error"].is_null(), "task.create error: {resp}");
+
+    // Wait for dispatch cycle (5s interval)
+    std::thread::sleep(Duration::from_secs(8));
+
+    // Verify no worker was spawned for this task
+    let resp = harness.rpc_call("agent.list", None);
+    let agents = resp["result"].as_array().unwrap();
+    let manual_workers: Vec<_> = agents
+        .iter()
+        .filter(|a| a["task_id"] == "manual-t1")
+        .collect();
+    assert!(
+        manual_workers.is_empty(),
+        "lead-driven task should not auto-dispatch: {agents:?}"
+    );
+}
+
 /// Wait up to `timeout` for `child` to exit. Returns true if it exited in time.
 fn wait_for_exit(mut child: Child, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
