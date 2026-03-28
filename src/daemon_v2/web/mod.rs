@@ -1,0 +1,28 @@
+pub mod routes;
+pub mod websocket;
+
+use axum::Router;
+use axum::routing::{get, post};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::{Mutex, broadcast};
+
+use crate::daemon_v2::events::DomainEvent;
+use crate::daemon_v2::projections::Projections;
+
+pub struct WebState {
+    pub projections: Arc<Mutex<Projections>>,
+    pub channels_dir: PathBuf,
+    pub event_tx: broadcast::Sender<DomainEvent>,
+}
+
+pub fn create_router(state: Arc<WebState>) -> Router {
+    Router::new()
+        .route("/api/health", get(routes::health))
+        .route("/api/status", get(routes::status))
+        .route("/api/channels", get(routes::channel_list))
+        .route("/api/channels/history", get(routes::channel_history))
+        .route("/api/channels/create", post(routes::channel_create))
+        .route("/api/ws", get(websocket::ws_handler))
+        .with_state(state)
+}
