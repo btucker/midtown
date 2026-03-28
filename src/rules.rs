@@ -25,6 +25,90 @@ pub struct CoworkerSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// Idle shutdown
+// ---------------------------------------------------------------------------
+
+/// Context for idle coworker shutdown decisions.
+///
+/// Each field is a set of coworker names that should be *excluded* from
+/// shutdown. A coworker not in any exclusion set and older than
+/// `minimum_lifetime` is eligible for idle shutdown.
+pub(crate) struct IdleShutdownContext<'a> {
+    pub coworkers: &'a [CoworkerSnapshot],
+    pub busy_coworkers: &'a HashSet<String>,
+    pub coworkers_with_open_prs: &'a HashSet<String>,
+    pub active_reviewers: &'a HashSet<String>,
+    pub coworkers_with_unblocked_deps: &'a HashSet<String>,
+    pub ci_passed_pr_coworkers: &'a HashSet<String>,
+    pub usage_limited_coworkers: &'a HashSet<String>,
+    pub api_error_coworkers: &'a HashSet<String>,
+    pub auth_error_coworkers: &'a HashSet<String>,
+    pub pending_task_owners: &'a HashSet<String>,
+    pub review_feedback_pr_coworkers: &'a HashSet<String>,
+    pub coworkers_with_active_tools: &'a HashSet<String>,
+    pub now_utc: DateTime<Utc>,
+    pub minimum_lifetime: Duration,
+    #[allow(dead_code)]
+    pub repo_name: &'a str,
+    pub channel_lead_names: &'a HashSet<String>,
+}
+
+/// Decision to shut down an idle coworker.
+#[derive(Debug, PartialEq)]
+pub(crate) struct IdleShutdownDecision {
+    pub name: String,
+}
+
+/// Decide which coworkers should be shut down due to idleness.
+///
+/// This is a backstop — the primary shutdown path is task completion in
+/// `dispatch.rs`. This function catches coworkers that slip through:
+/// stuck sessions, inconsistent task state, etc.
+///
+/// A coworker is shut down if:
+/// 1. It has been running longer than `minimum_lifetime` (protects startup window)
+/// 2. It is not in any exclusion set (no legitimate reason to keep running)
+pub(crate) fn decide_idle_shutdowns(ctx: &IdleShutdownContext<'_>) -> Vec<IdleShutdownDecision> {
+    let mut decisions = Vec::new();
+
+    for cw in ctx.coworkers {
+        let age = ctx
+            .now_utc
+            .signed_duration_since(cw.started_at)
+            .to_std()
+            .unwrap_or_default();
+
+        // Protect startup window
+        if age < ctx.minimum_lifetime {
+            continue;
+        }
+
+        let name = &cw.name;
+
+        // Check all exclusion sets — any match means keep running
+        if hashset_contains_icase(ctx.channel_lead_names, name)
+            || hashset_contains_icase(ctx.busy_coworkers, name)
+            || hashset_contains_icase(ctx.coworkers_with_active_tools, name)
+            || hashset_contains_icase(ctx.coworkers_with_open_prs, name)
+            || hashset_contains_icase(ctx.active_reviewers, name)
+            || hashset_contains_icase(ctx.coworkers_with_unblocked_deps, name)
+            || hashset_contains_icase(ctx.ci_passed_pr_coworkers, name)
+            || hashset_contains_icase(ctx.review_feedback_pr_coworkers, name)
+            || hashset_contains_icase(ctx.pending_task_owners, name)
+            || hashset_contains_icase(ctx.usage_limited_coworkers, name)
+            || hashset_contains_icase(ctx.api_error_coworkers, name)
+            || hashset_contains_icase(ctx.auth_error_coworkers, name)
+        {
+            continue;
+        }
+
+        decisions.push(IdleShutdownDecision { name: name.clone() });
+    }
+
+    decisions
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -1057,6 +1141,10 @@ mod rules_cooldown_tests;
 #[path = "rules_orphan_tests.rs"]
 #[cfg(test)]
 mod rules_orphan_tests;
+
+#[path = "rules_idle_tests.rs"]
+#[cfg(test)]
+mod rules_idle_tests;
 
 #[cfg(test)]
 mod tests {
