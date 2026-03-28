@@ -1,7 +1,9 @@
+pub mod channel_io;
 pub mod github;
 pub mod spawn;
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use crate::daemon_v2::decisions::Command;
 use crate::daemon_v2::events::DomainEvent;
@@ -14,6 +16,7 @@ pub async fn execute(
     sessions: &mut HashMap<String, HeadlessSession>,
     paths: &ProjectPaths,
     projections: &Projections,
+    channels_dir: &Path,
 ) -> Vec<DomainEvent> {
     match command {
         Command::SpawnAgent(config) => match spawn::spawn_agent(&config, paths).await {
@@ -81,6 +84,43 @@ pub async fn execute(
                     vec![]
                 }
             }
+        }
+        Command::Post {
+            channel,
+            sender,
+            content,
+            thread_id,
+        } => {
+            if let Err(e) = channel_io::post_message(
+                channels_dir,
+                &channel,
+                &sender,
+                &content,
+                thread_id.as_deref(),
+            ) {
+                tracing::error!(%e, %channel, "failed to post message");
+                return vec![];
+            }
+            vec![DomainEvent::MessagePosted {
+                id: uuid::Uuid::new_v4().to_string(),
+                channel,
+                sender,
+                content,
+                thread_id,
+            }]
+        }
+        Command::PostSystem { channel, content } => {
+            if let Err(e) = channel_io::post_system_message(channels_dir, &channel, &content) {
+                tracing::error!(%e, %channel, "failed to post system message");
+                return vec![];
+            }
+            vec![DomainEvent::MessagePosted {
+                id: uuid::Uuid::new_v4().to_string(),
+                channel,
+                sender: "midtown".into(),
+                content,
+                thread_id: None,
+            }]
         }
         other => {
             tracing::debug!(?other, "unhandled command");
