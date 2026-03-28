@@ -92,14 +92,14 @@ Prompt body."#;
 fn test_parse_avatar_badge() {
     let content = r#"---
 name: test-agent
-avatar_badge: pen-tool
+avatar_badge: pen-line
 ---
 
 Prompt."#;
 
     let def = parse_agent_content(content, Path::new("/tmp/test-agent.md")).unwrap();
     assert_eq!(def.name, "test-agent");
-    assert_eq!(def.avatar_badge.as_deref(), Some("pen-tool"));
+    assert_eq!(def.avatar_badge.as_deref(), Some("pen-line"));
 }
 
 #[test]

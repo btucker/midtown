@@ -1,7 +1,7 @@
 ---
 name: midtown-code-author
 description: Midtown code author — implements features, fixes bugs, opens PRs in isolated worktrees
-avatar_badge: pen-tool
+avatar_badge: pen-line
 ---
 
 # Code Author

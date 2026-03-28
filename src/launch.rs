@@ -98,7 +98,7 @@ pub struct LaunchConfig {
     /// Lucide icon name for avatar (e.g., "shield", "database").
     /// Persisted to SessionRecord at spawn time.
     pub icon: Option<String>,
-    /// Lucide icon name for avatar badge (e.g., "pen-tool", "eye").
+    /// Lucide icon name for avatar badge (e.g., "pen-line", "search").
     /// Resolved from the agent definition's `avatar_badge` frontmatter field.
     pub avatar_badge: Option<String>,
 }

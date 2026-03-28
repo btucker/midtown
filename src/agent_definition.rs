@@ -28,7 +28,7 @@ pub struct AgentDefinition {
     pub description: Option<String>,
     /// Model override (e.g., "opus", "sonnet").
     pub model: Option<String>,
-    /// Lucide icon name for avatar badge (e.g., "pen-tool", "eye").
+    /// Lucide icon name for avatar badge (e.g., "pen-line", "search").
     pub avatar_badge: Option<String>,
     /// The markdown body — used as the agent's system prompt.
     pub system_prompt: String,
