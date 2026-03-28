@@ -88,6 +88,8 @@ pub fn handle_agent_list(
                 "session_id": agent.session_id,
                 "pid": agent.pid,
                 "running": proj.agents.running.contains(&agent.id),
+                "icon": agent.icon,
+                "color": agent.color,
             })
         })
         .collect();
@@ -142,11 +144,23 @@ pub fn handle_task_create(params: Option<&Value>) -> Result<Vec<DomainEvent>, Rp
         })
         .unwrap_or_default();
 
+    let agent_type = params
+        .get("agent_type")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let icon = params
+        .get("icon")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
     Ok(vec![DomainEvent::TaskCreated {
         id,
         subject,
         channel,
         blocked_by,
+        agent_type,
+        icon,
     }])
 }
 
@@ -229,6 +243,17 @@ pub fn handle_session_fork(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    let agent_type = params
+        .get("agent_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("midtown-channel-lead")
+        .to_string();
+
+    let icon = params
+        .get("icon")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
     // Find the running lead for this channel to fork its session context.
     let fork_from_session = proj
         .agents
@@ -252,7 +277,7 @@ pub fn handle_session_fork(
     let command = Command::SpawnAgent(SpawnConfig {
         name,
         kind: AgentKind::Fork,
-        agent_type: "midtown-channel-lead".into(),
+        agent_type,
         provider: Provider::ClaudeCode,
         channel: Some(channel.to_string()),
         task_id: None,
@@ -261,6 +286,8 @@ pub fn handle_session_fork(
         model: None,
         bound_thread_id: Some(thread_parent_id.to_string()),
         fork_from_session,
+        icon,
+        color: None,
     });
 
     Ok((

@@ -22,6 +22,8 @@ fn full_lifecycle_through_store_and_projections() {
         subject: "Fix auth bug".into(),
         channel: "main".into(),
         blocked_by: vec![],
+        agent_type: None,
+        icon: None,
     };
     store.append(&e1).unwrap();
     proj.apply(&e1);
@@ -36,6 +38,8 @@ fn full_lifecycle_through_store_and_projections() {
         channel: Some("main".into()),
         task_id: Some("t1".into()),
         bound_thread_id: None,
+        icon: None,
+        color: None,
     };
     store.append(&e2).unwrap();
     proj.apply(&e2);

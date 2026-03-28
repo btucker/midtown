@@ -109,6 +109,8 @@ pub fn agent_spawned_events(
             channel: config.channel.clone(),
             task_id: config.task_id.clone(),
             bound_thread_id: config.bound_thread_id.clone(),
+            icon: config.icon.clone(),
+            color: config.color.clone(),
         },
         DomainEvent::AgentStarted {
             id: id.clone(),

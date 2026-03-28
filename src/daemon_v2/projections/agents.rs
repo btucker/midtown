@@ -22,6 +22,8 @@ pub struct Agent {
     pub pid: Option<u32>,
     pub started_at: Option<DateTime<Utc>>,
     pub stopped_at: Option<DateTime<Utc>>,
+    pub icon: Option<String>,
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -46,6 +48,8 @@ impl AgentIndex {
                 channel,
                 task_id,
                 bound_thread_id,
+                icon,
+                color,
             } => {
                 let agent = Agent {
                     id: id.clone(),
@@ -60,6 +64,8 @@ impl AgentIndex {
                     pid: None,
                     started_at: None,
                     stopped_at: None,
+                    icon: icon.clone(),
+                    color: color.clone(),
                 };
                 self.by_name.insert(name.clone(), id.clone());
                 if let Some(task_id) = task_id {

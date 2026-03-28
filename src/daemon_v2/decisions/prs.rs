@@ -55,6 +55,8 @@ pub fn spawn_reviewers(proj: &Projections) -> Vec<Command> {
                 model: None,
                 bound_thread_id: None,
                 fork_from_session: None,
+                icon: None,
+                color: None,
             }))
         })
         .collect()

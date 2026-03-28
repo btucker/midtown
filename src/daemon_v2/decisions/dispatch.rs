@@ -2,8 +2,11 @@
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashSet;
+
 use crate::daemon_v2::decisions::{Command, SpawnConfig};
 use crate::daemon_v2::events::{AgentKind, Provider, TaskStatus};
+use crate::daemon_v2::naming;
 use crate::daemon_v2::projections::Projections;
 
 const DEFAULT_AGENT_TYPE: &str = "midtown-code-author";
@@ -17,34 +20,42 @@ pub fn dispatch_pending_tasks(proj: &Projections, max_in_progress: usize) -> Vec
         return vec![];
     }
 
-    proj.work
-        .pending_unblocked()
-        .into_iter()
-        .take(slots)
-        .filter_map(|task_id| proj.work.tasks.get(task_id))
-        .filter_map(|task| {
-            if proj.channels.is_lead_driven(&task.channel) {
-                return None;
-            }
-            let agent_type = task
-                .agent_type
-                .clone()
-                .unwrap_or_else(|| DEFAULT_AGENT_TYPE.to_string());
-            Some(Command::SpawnAgent(SpawnConfig {
-                name: task.id.clone(),
-                kind: AgentKind::Worker,
-                agent_type,
-                provider: Provider::ClaudeCode,
-                channel: Some(task.channel.clone()),
-                task_id: Some(task.id.clone()),
-                initial_prompt: Some(task.subject.clone()),
-                working_dir: None,
-                model: None,
-                bound_thread_id: None,
-                fork_from_session: None,
-            }))
-        })
-        .collect()
+    let mut existing_names: HashSet<String> = proj.agents.by_name.keys().cloned().collect();
+    let mut commands = Vec::new();
+
+    for task_id in proj.work.pending_unblocked().into_iter().take(slots) {
+        let Some(task) = proj.work.tasks.get(task_id) else {
+            continue;
+        };
+        if proj.channels.is_lead_driven(&task.channel) {
+            continue;
+        }
+        let agent_type = task
+            .agent_type
+            .clone()
+            .unwrap_or_else(|| DEFAULT_AGENT_TYPE.to_string());
+        let name = naming::generate_name(&existing_names);
+        existing_names.insert(name.clone());
+        let icon = Some(naming::random_icon());
+        let color = Some(naming::random_color());
+        commands.push(Command::SpawnAgent(SpawnConfig {
+            name,
+            kind: AgentKind::Worker,
+            agent_type,
+            provider: Provider::ClaudeCode,
+            channel: Some(task.channel.clone()),
+            task_id: Some(task.id.clone()),
+            initial_prompt: Some(task.subject.clone()),
+            working_dir: None,
+            model: None,
+            bound_thread_id: None,
+            fork_from_session: None,
+            icon,
+            color,
+        }));
+    }
+
+    commands
 }
 
 /// Find running Worker agents whose task has completed.

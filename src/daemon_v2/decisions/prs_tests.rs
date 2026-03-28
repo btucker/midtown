@@ -27,6 +27,8 @@ fn make_projections_with_merged_pr(
             subject: "test task".into(),
             channel: "general".into(),
             blocked_by: vec![],
+            agent_type: None,
+            icon: None,
         });
 
         if task_status == Some(TaskStatus::InProgress) {
@@ -194,6 +196,8 @@ fn suspends_author_with_open_pr() {
         subject: "Fix".into(),
         channel: "main".into(),
         blocked_by: vec![],
+        agent_type: None,
+        icon: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: "a1".into(),
@@ -235,6 +239,8 @@ fn no_suspend_for_merged_pr() {
         subject: "Fix".into(),
         channel: "main".into(),
         blocked_by: vec![],
+        agent_type: None,
+        icon: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: "a1".into(),
@@ -279,6 +285,8 @@ fn no_suspend_for_closed_pr() {
         subject: "Fix".into(),
         channel: "main".into(),
         blocked_by: vec![],
+        agent_type: None,
+        icon: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: "a1".into(),

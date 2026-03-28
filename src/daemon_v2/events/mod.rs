@@ -66,6 +66,8 @@ pub enum DomainEvent {
         channel: Option<String>,
         task_id: Option<TaskId>,
         bound_thread_id: Option<String>,
+        icon: Option<String>,
+        color: Option<String>,
     },
     AgentStarted {
         id: AgentId,
@@ -90,6 +92,8 @@ pub enum DomainEvent {
         subject: String,
         channel: String,
         blocked_by: Vec<TaskId>,
+        agent_type: Option<String>,
+        icon: Option<String>,
     },
     TaskAssigned {
         task_id: TaskId,

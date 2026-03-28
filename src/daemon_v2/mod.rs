@@ -2,6 +2,7 @@ pub mod daemon;
 pub mod decisions;
 pub mod events;
 pub mod executor;
+pub mod naming;
 pub mod projections;
 pub mod rpc;
 pub mod scheduler;

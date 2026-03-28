@@ -16,6 +16,8 @@ fn dispatches_pending_task_when_no_agents() {
         subject: "Implement the feature".into(),
         channel: "main".into(),
         blocked_by: vec![],
+        agent_type: None,
+        icon: None,
     }];
 
     let proj = make_projections(&events);
@@ -45,24 +47,32 @@ fn respects_max_in_progress_limit() {
             subject: "Task 1".into(),
             channel: "main".into(),
             blocked_by: vec![],
+            agent_type: None,
+            icon: None,
         },
         DomainEvent::TaskCreated {
             id: "task-2".into(),
             subject: "Task 2".into(),
             channel: "main".into(),
             blocked_by: vec![],
+            agent_type: None,
+            icon: None,
         },
         DomainEvent::TaskCreated {
             id: "task-3".into(),
             subject: "Task 3".into(),
             channel: "main".into(),
             blocked_by: vec![],
+            agent_type: None,
+            icon: None,
         },
         DomainEvent::TaskCreated {
             id: "task-4".into(),
             subject: "Task 4 (pending)".into(),
             channel: "main".into(),
             blocked_by: vec![],
+            agent_type: None,
+            icon: None,
         },
         DomainEvent::TaskAssigned {
             task_id: "task-1".into(),
@@ -97,12 +107,16 @@ fn skips_blocked_tasks() {
             subject: "First task".into(),
             channel: "main".into(),
             blocked_by: vec![],
+            agent_type: None,
+            icon: None,
         },
         DomainEvent::TaskCreated {
             id: "task-2".into(),
             subject: "Blocked task".into(),
             channel: "main".into(),
             blocked_by: vec!["task-1".into()],
+            agent_type: None,
+            icon: None,
         },
     ];
 
@@ -150,6 +164,8 @@ fn stops_agents_for_completed_tasks() {
             subject: "Done task".into(),
             channel: "main".into(),
             blocked_by: vec![],
+            agent_type: None,
+            icon: None,
         },
         DomainEvent::TaskAssigned {
             task_id: "task-1".into(),
@@ -187,6 +203,8 @@ fn skips_lead_driven_channel_tasks() {
         subject: "Manual task".into(),
         channel: "manual".into(),
         blocked_by: vec![],
+        agent_type: None,
+        icon: None,
     });
 
     let commands = dispatch_pending_tasks(&proj, 5);

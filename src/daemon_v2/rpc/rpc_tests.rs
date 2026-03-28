@@ -19,6 +19,8 @@ fn projections_with_agents() -> Projections {
         channel: Some("main".into()),
         task_id: Some("task-1".into()),
         bound_thread_id: None,
+        icon: None,
+        color: None,
     });
     proj.apply(&DomainEvent::AgentStarted {
         id: "a1".into(),
@@ -34,6 +36,8 @@ fn projections_with_agents() -> Projections {
         channel: Some("main".into()),
         task_id: None,
         bound_thread_id: None,
+        icon: None,
+        color: None,
     });
     proj
 }
@@ -134,6 +138,7 @@ fn task_create_returns_events() {
             subject,
             channel,
             blocked_by,
+            ..
         } => {
             assert_eq!(id, "task-42");
             assert_eq!(subject, "Fix the bug");
@@ -283,6 +288,8 @@ fn session_fork_returns_existing_running_fork() {
         channel: Some("web".into()),
         task_id: None,
         bound_thread_id: Some("thread-abc123".into()),
+        icon: None,
+        color: None,
     });
     proj.apply(&DomainEvent::AgentStarted {
         id: "f1".into(),

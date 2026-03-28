@@ -18,6 +18,8 @@ fn sample_agent_created() -> DomainEvent {
         channel: Some("main".into()),
         task_id: Some("task-1".into()),
         bound_thread_id: None,
+        icon: None,
+        color: None,
     }
 }
 
@@ -27,6 +29,8 @@ fn sample_task_created() -> DomainEvent {
         subject: "Fix auth bug".into(),
         channel: "main".into(),
         blocked_by: vec![],
+        agent_type: None,
+        icon: None,
     }
 }
 

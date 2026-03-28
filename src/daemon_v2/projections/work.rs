@@ -17,6 +17,7 @@ pub struct Task {
     pub pr_number: Option<u64>,
     pub blocked_by: Vec<TaskId>,
     pub agent_type: Option<String>,
+    pub icon: Option<String>,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
 }
@@ -52,6 +53,8 @@ impl WorkIndex {
                 subject,
                 channel,
                 blocked_by,
+                agent_type,
+                icon,
             } => {
                 let task = Task {
                     id: id.clone(),
@@ -60,7 +63,8 @@ impl WorkIndex {
                     status: TaskStatus::Pending,
                     pr_number: None,
                     blocked_by: blocked_by.clone(),
-                    agent_type: None,
+                    agent_type: agent_type.clone(),
+                    icon: icon.clone(),
                     created_at: Utc::now(),
                     completed_at: None,
                 };
