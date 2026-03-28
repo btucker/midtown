@@ -240,16 +240,37 @@ trackedThreads.subscribe((v) => debouncedSaveToLocalStorage("midtown_tracked_thr
 // In-memory only — stale detection starts fresh on page reload.
 export const progressTimestamps = writable<Record<string, number>>({});
 
-// ── Read state (server-synced) ──────────────────────────────────────────────
+// ── Read state (server-synced, localStorage-cached) ─────────────────────────
 // Per-thread and per-channel read timestamps. Synced from daemon API.
-export const threadReadState = writable<Record<string, string>>({});
-export const channelReadState = writable<Record<string, string>>({});
+// Warm-started from localStorage so unread badges are correct before the
+// server fetch completes (avoids flash-of-unread on page refresh).
+export const threadReadState = writable<Record<string, string>>(loadFromLocalStorage("midtown_thread_read_state", {}));
+export const channelReadState = writable<Record<string, string>>(
+	loadFromLocalStorage("midtown_channel_read_state", {}),
+);
+threadReadState.subscribe((v) => debouncedSaveToLocalStorage("midtown_thread_read_state", v));
+channelReadState.subscribe((v) => debouncedSaveToLocalStorage("midtown_channel_read_state", v));
+
+// True once we have usable read-state data — either from localStorage
+// warm-start or from the server fetch. syncUnreadCounts suppresses
+// unread badges until this is true to avoid flash-of-unread on cold start.
+const hasLocalCache =
+	typeof localStorage !== "undefined" &&
+	(localStorage.getItem("midtown_thread_read_state") !== null ||
+		localStorage.getItem("midtown_channel_read_state") !== null);
+export const readStateLoaded = writable<boolean>(hasLocalCache);
 
 // Derived unread counts — Channel.svelte and ThreadList.svelte read this for badge display.
 // Computed from trackedThreads.lastActivity vs threadReadState timestamps.
 export const threadUnreadCounts = writable<Record<string, number>>({});
 
 function syncUnreadCounts() {
+	// Suppress unread badges until we have read-state data (from localStorage
+	// or the server) to avoid flash-of-unread on cold start / page refresh.
+	if (!get(readStateLoaded)) {
+		threadUnreadCounts.set({});
+		return;
+	}
 	const tracked = get(trackedThreads);
 	const readState = get(threadReadState);
 	const counts: Record<string, number> = {};
@@ -264,3 +285,4 @@ function syncUnreadCounts() {
 
 trackedThreads.subscribe(syncUnreadCounts);
 threadReadState.subscribe(syncUnreadCounts);
+readStateLoaded.subscribe(syncUnreadCounts);
