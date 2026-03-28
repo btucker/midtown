@@ -22,12 +22,15 @@ pub fn dispatch_pending_tasks(proj: &Projections, max_in_progress: usize) -> Vec
         .into_iter()
         .take(slots)
         .filter_map(|task_id| proj.work.tasks.get(task_id))
-        .map(|task| {
+        .filter_map(|task| {
+            if proj.channels.is_lead_driven(&task.channel) {
+                return None;
+            }
             let agent_type = task
                 .agent_type
                 .clone()
                 .unwrap_or_else(|| DEFAULT_AGENT_TYPE.to_string());
-            Command::SpawnAgent(SpawnConfig {
+            Some(Command::SpawnAgent(SpawnConfig {
                 name: task.id.clone(),
                 kind: AgentKind::Worker,
                 agent_type,
@@ -37,7 +40,7 @@ pub fn dispatch_pending_tasks(proj: &Projections, max_in_progress: usize) -> Vec
                 initial_prompt: Some(task.subject.clone()),
                 working_dir: None,
                 model: None,
-            })
+            }))
         })
         .collect()
 }

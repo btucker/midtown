@@ -61,3 +61,21 @@ fn multiple_replies_same_thread_no_double_count() {
     });
     assert_eq!(idx.channels.get("main").unwrap().thread_count, 1);
 }
+
+#[test]
+fn lead_driven_flag() {
+    let mut idx = ChannelIndex::default();
+    assert!(!idx.is_lead_driven("test"));
+
+    idx.apply(&DomainEvent::ChannelLeadDrivenSet {
+        channel: "test".into(),
+        lead_driven: true,
+    });
+    assert!(idx.is_lead_driven("test"));
+
+    idx.apply(&DomainEvent::ChannelLeadDrivenSet {
+        channel: "test".into(),
+        lead_driven: false,
+    });
+    assert!(!idx.is_lead_driven("test"));
+}

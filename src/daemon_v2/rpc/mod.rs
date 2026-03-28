@@ -51,6 +51,16 @@ pub fn dispatch_request(
             }
             Err(err) => (err.to_json(&id), vec![]),
         },
+        "channel.update" => {
+            let result = handlers::handle_channel_update(params);
+            match result {
+                Ok(events) => {
+                    let response = json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id });
+                    (response, events)
+                }
+                Err(err) => (err.to_json(&id), vec![]),
+            }
+        }
         _ => {
             // Read-only methods — no events produced.
             let result = match method {

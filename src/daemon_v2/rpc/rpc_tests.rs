@@ -171,3 +171,62 @@ fn task_create_missing_required_field_returns_error() {
     assert_eq!(response["error"]["code"], -32602);
     assert!(events.is_empty());
 }
+
+#[test]
+fn channel_update_sets_lead_driven() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.update",
+        "id": 20,
+        "params": {
+            "channel": "manual",
+            "lead_driven": true
+        }
+    });
+    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert_eq!(events.len(), 1);
+
+    match &events[0] {
+        DomainEvent::ChannelLeadDrivenSet {
+            channel,
+            lead_driven,
+        } => {
+            assert_eq!(channel, "manual");
+            assert!(*lead_driven);
+        }
+        other => panic!("expected ChannelLeadDrivenSet, got {:?}", other),
+    }
+}
+
+#[test]
+fn channel_update_missing_params_returns_error() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.update",
+        "id": 21
+    });
+    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
+    assert_eq!(response["error"]["code"], -32602);
+    assert!(events.is_empty());
+}
+
+#[test]
+fn channel_update_no_known_fields_returns_empty_events() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.update",
+        "id": 22,
+        "params": {
+            "channel": "manual"
+        }
+    });
+    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert!(events.is_empty());
+}

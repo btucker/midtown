@@ -162,6 +162,13 @@ impl RpcError {
         }
     }
 
+    pub fn invalid_params(msg: &str) -> Self {
+        Self {
+            code: -32602,
+            message: msg.into(),
+        }
+    }
+
     pub fn to_json(&self, id: &Value) -> Value {
         json!({
             "jsonrpc": "2.0",
@@ -245,6 +252,26 @@ pub fn handle_channel_post(
     }];
 
     Ok((json!({ "ok": true, "id": msg_id }), events))
+}
+
+/// Update channel settings. Returns events for the daemon to apply.
+pub fn handle_channel_update(params: Option<&Value>) -> Result<Vec<DomainEvent>, RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+    let channel = params
+        .get("channel")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing channel"))?;
+
+    let mut events = Vec::new();
+
+    if let Some(lead_driven) = params.get("lead_driven").and_then(|v| v.as_bool()) {
+        events.push(DomainEvent::ChannelLeadDrivenSet {
+            channel: channel.to_string(),
+            lead_driven,
+        });
+    }
+
+    Ok(events)
 }
 
 /// Read messages from a channel.

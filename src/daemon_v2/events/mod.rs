@@ -162,6 +162,12 @@ pub enum DomainEvent {
         id: WorktreeId,
     },
 
+    // Channel settings
+    ChannelLeadDrivenSet {
+        channel: String,
+        lead_driven: bool,
+    },
+
     // Config
     ConfigUpdated {
         key: String,

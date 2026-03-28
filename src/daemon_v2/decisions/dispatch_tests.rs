@@ -170,3 +170,21 @@ fn stops_agents_for_completed_tasks() {
         commands[0]
     );
 }
+
+#[test]
+fn skips_lead_driven_channel_tasks() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::ChannelLeadDrivenSet {
+        channel: "manual".into(),
+        lead_driven: true,
+    });
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Manual task".into(),
+        channel: "manual".into(),
+        blocked_by: vec![],
+    });
+
+    let commands = dispatch_pending_tasks(&proj, 5);
+    assert!(commands.is_empty());
+}
