@@ -253,6 +253,21 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Run the v2 daemon event loop (internal - experimental)
+    #[command(hide = true)]
+    DaemonV2 {
+        /// Path to the Unix socket
+        #[arg(short, long)]
+        socket: Option<std::path::PathBuf>,
+
+        /// Working directory key (git repo name)
+        #[arg(short, long)]
+        workdir: Option<String>,
+
+        /// Default channel name
+        #[arg(long, default_value = "main")]
+        channel: String,
+    },
     /// Run a one-shot Claude Code session via the daemon (JSON streaming)
     #[command(hide = true)]
     Oneshot {
@@ -499,6 +514,44 @@ fn main() {
                 std::process::exit(1);
             }
         }
+    }
+
+    // DaemonV2 command (experimental v2 event-sourced daemon)
+    if let Commands::DaemonV2 {
+        socket,
+        workdir,
+        channel,
+    } = &command
+    {
+        let dir_key = workdir
+            .clone()
+            .or_else(midtown::paths::detect_repo_name)
+            .unwrap_or_else(|| "default".to_string());
+
+        let paths = midtown::paths::ProjectPaths::new(&dir_key);
+
+        let socket_path = socket.clone().unwrap_or_else(|| paths.daemon_socket());
+
+        let events_dir = paths.base_dir().join("events");
+
+        let config = midtown::daemon_v2::DaemonV2Config {
+            dir_key,
+            socket_path,
+            events_dir,
+            default_channel: channel.clone(),
+        };
+
+        let daemon = match midtown::daemon_v2::DaemonV2::new(config) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("Failed to initialize DaemonV2: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        rt.block_on(daemon.run());
+        return;
     }
 
     // Start command (starts daemon, doesn't need existing connection)
@@ -982,7 +1035,8 @@ fn main() {
         | Commands::Log { .. }
         | Commands::Notes { .. }
         | Commands::Webserver { .. }
-        | Commands::Update { .. } => unreachable!(),
+        | Commands::Update { .. }
+        | Commands::DaemonV2 { .. } => unreachable!(),
     };
 
     handle_result(format, result);
