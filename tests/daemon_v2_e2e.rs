@@ -442,6 +442,51 @@ fn test_daemon_v2_lead_driven_skips_auto_dispatch() {
     );
 }
 
+#[test]
+#[ignore]
+fn test_daemon_v2_session_fork_spawns_agent() {
+    let harness = V2Harness::start();
+
+    // Fork a session for a thread
+    let resp = harness.rpc_call(
+        "session.fork",
+        Some(serde_json::json!({
+            "thread_parent_id": "thread-abc-123",
+            "channel": "main",
+            "message": "Investigate this thread",
+        })),
+    );
+    assert!(resp["error"].is_null(), "session.fork error: {resp}");
+    assert_eq!(resp["result"]["ok"], true);
+
+    // Wait for the fork to spawn
+    let mut saw_fork = false;
+    for _ in 0..15 {
+        std::thread::sleep(Duration::from_secs(1));
+        let resp = harness.rpc_call("agent.list", None);
+        let agents = resp["result"].as_array().unwrap();
+        if agents.iter().any(|a| a["kind"] == "Fork") {
+            saw_fork = true;
+            break;
+        }
+    }
+    assert!(saw_fork, "expected fork agent to be spawned");
+
+    // Forking the same thread again should return the existing fork
+    let resp = harness.rpc_call(
+        "session.fork",
+        Some(serde_json::json!({
+            "thread_parent_id": "thread-abc-123",
+            "channel": "main",
+        })),
+    );
+    assert!(resp["error"].is_null(), "second fork error: {resp}");
+    assert_eq!(
+        resp["result"]["existing"], true,
+        "should return existing fork"
+    );
+}
+
 /// Wait up to `timeout` for `child` to exit. Returns true if it exited in time.
 fn wait_for_exit(mut child: Child, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
