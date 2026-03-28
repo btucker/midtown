@@ -27,7 +27,12 @@ A flat enum describing what happened (~25 variants):
 ```rust
 enum DomainEvent {
     // Agents
-    AgentCreated { id: AgentId, name: String, kind: AgentKind, agent_type: String, provider: Provider, channel: Option<String>, task_id: Option<TaskId> },
+    AgentCreated {
+        id: AgentId, name: String, kind: AgentKind, agent_type: String,
+        provider: Provider, channel: Option<String>, task_id: Option<TaskId>,
+        bound_thread_id: Option<String>,  // Fork thread binding
+        session_id: Option<String>,       // Claude Code session ID (for --fork-session)
+    },
     AgentStarted { id: AgentId, pid: u32 },
     AgentStopped { id: AgentId, reason: String },
     AgentResumed { id: AgentId },
@@ -60,6 +65,10 @@ enum DomainEvent {
     WorktreeCreated { id: WorktreeId, path: PathBuf, task_id: Option<TaskId> },
     WorktreeRemoved { id: WorktreeId },
 
+    // Channel settings
+    ChannelLeadDrivenSet { channel: String, lead_driven: bool },
+    ChannelDirectorySet { channel: String, directory: Option<String> },
+
     // Config
     ConfigUpdated { key: String, value: serde_json::Value },
 }
@@ -83,11 +92,12 @@ struct Agent {
     id: AgentId,
     name: String,
     kind: AgentKind,
-    agent_type: String,     // e.g. "midtown-code-author"
+    agent_type: String,          // e.g. "midtown-code-author"
     provider: Provider,
-    session_id: Option<String>,
+    session_id: Option<String>,  // Claude Code session ID (for resume/fork)
     channel: Option<String>,
     task_id: Option<TaskId>,
+    bound_thread_id: Option<String>,  // Fork thread binding
     pid: Option<u32>,
     started_at: Option<DateTime<Utc>>,
     stopped_at: Option<DateTime<Utc>>,
@@ -108,6 +118,7 @@ struct AgentIndex {
     by_name: HashMap<String, AgentId>,
     by_task: HashMap<TaskId, AgentId>,
     by_channel: HashMap<String, Vec<AgentId>>,
+    by_thread: HashMap<String, AgentId>,  // thread_id → fork agent
     running: HashSet<AgentId>,
 }
 ```
@@ -163,7 +174,7 @@ impl WorkIndex {
 ```rust
 struct ChannelIndex {
     channels: HashMap<String, ChannelMeta>,
-    read_state: HashMap<String, ReadState>,
+    read_state: HashMap<String, DateTime<Utc>>,
 }
 
 struct ChannelMeta {
@@ -173,10 +184,21 @@ struct ChannelMeta {
     workflow: Option<String>,
     thread_count: usize,
     last_message_at: Option<DateTime<Utc>>,
+    known_threads: HashSet<String>,  // Dedup thread counting
+}
+
+struct ChannelSettings {
+    show_full_lead_output: bool,
+    lead_driven: bool,            // Skip auto-dispatch for this channel
+    directory: Option<String>,    // Repo subdirectory for AGENTS.md loading
 }
 ```
 
 Message content stays in channel JSONL files — not duplicated into the event log or projections.
+
+**Lead-driven mode**: When `lead_driven: true`, the dispatch decision skips tasks in this channel. The lead manages work manually via RPC. Workflow events are forwarded as @mentions to the lead instead of being executed automatically.
+
+**Channel directory**: The `directory` field specifies a subdirectory of the repo (e.g., `"packages/auth"`). When the daemon spawns a lead for this channel, it passes the directory as `working_dir` so the lead loads `AGENTS.md`/`CLAUDE.md` from that subdirectory, giving it domain-specific context.
 
 ### CooldownTracker
 
@@ -278,6 +300,10 @@ enum Command {
     MergePr { number: u64 },
     RerunCi { run_id: u64 },
     PostPrComment { number: u64, body: String },
+
+    // Polling (executor performs I/O, emits events)
+    PollPrs,
+    PollProcessHealth,
 }
 ```
 
@@ -433,21 +459,26 @@ Webhooks can trigger decision functions immediately — no waiting for the next 
 ~15 endpoints replacing 60+, organized as CRUD on 6 resources:
 
 ```
-agent.list          — query AgentIndex with filters
+status              — aggregated daemon status (agent/task/PR counts)
+
+agent.list          — query AgentIndex with filters (kind, running_only)
 agent.spawn         — Command::SpawnAgent
 agent.stop          — Command::StopAgent
-agent.nudge         — Command::NudgeAgent
+agent.nudge         — Command::NudgeAgent (send_message to running session)
+
+session.fork        — fork a thread: spawn Fork agent with --fork-session
+                      from parent lead's session_id. Deduplicates by thread.
 
 task.list           — query WorkIndex with filters
-task.create         — Command::CreateTask (via executor)
+task.create         — emit TaskCreated event
 task.update         — update task fields
 task.action         — done/claim/prompt/handoff
 
-channel.list        — query ChannelIndex
+channel.list        — list channels from filesystem
 channel.create      — create channel directory + event
-channel.update      — settings, workflow, archive/unarchive, rename
-channel.post        — Command::Post
-channel.read        — read channel JSONL with filters (includes read-state update)
+channel.update      — settings: lead_driven, directory, archive/unarchive
+channel.post        — write message to channel JSONL + emit MessagePosted
+channel.read        — read channel JSONL with optional limit
 
 pr.list             — query WorkIndex PR data
 pr.action           — review/merge/allow/rerun
@@ -459,7 +490,7 @@ reminder.delete     — delete reminder
 config.get          — read config
 config.update       — update config (auth switch, pool toggle)
 
-status              — aggregated daemon status
+shutdown            — graceful daemon shutdown
 ```
 
 ### Endpoint Mapping (current -> new)
@@ -688,3 +719,85 @@ Build alongside the old daemon. Migrate one domain at a time.
 - 60+ RPC endpoints -> 15
 - 6 rpc_*.rs files -> 1 handlers.rs
 - No duplicate state maps
+
+## Implementation Status and Remaining Gaps
+
+*Updated 2026-03-28 after Phases 1-6 implementation.*
+
+### What's Built (84 unit tests, 10 E2E tests, all green)
+
+- **Event store** with JSONL append, snapshots, crash-safe recovery
+- **Projections**: AgentIndex (by_id/name/task/channel/thread), WorkIndex (tasks+PRs combined), ChannelIndex (settings, directory, lead_driven), CooldownTracker
+- **Decisions**: dispatch_pending_tasks, stop_completed_agents, check_dead_workers, ensure_leads_alive, handle_merged_prs
+- **Executor**: real HeadlessSession spawning, process health polling via try_wait(), channel JSONL I/O, GitHub PR polling via `gh` CLI
+- **RPC**: status, agent.list, task.create, session.fork, channel.post/read/list/update, shutdown
+- **Scheduler**: per-decision intervals, timer wheel
+- **Lead-driven workflows**: channels with lead_driven flag skip auto-dispatch
+- **Channel directories**: channel.update with directory setting, passed as working_dir to leads
+- **Thread forks**: session.fork RPC, by_thread index, fork deduplication, MIDTOWN_BOUND_THREAD_ID env var
+- **CLI**: `midtown daemon-v2 --socket --workdir --channel`
+- **E2E tests**: startup, status, agent list, task create, agent spawn, lead-driven skip, channel post/read, PR polling, thread fork, shutdown
+
+### Remaining Gaps
+
+#### Fork Context (In Progress)
+
+- **Use `--fork-session` for real context inheritance**: Forks should use Claude's `--resume <parent_id> --fork-session` to clone the lead's full conversation context. The v1 daemon launched forks as fresh sessions (due to an old sandbox bug preventing JSONL persistence), but headless sessions now persist JSONL properly. The fix: set `resume_session_id` to the parent lead's session_id and `fork_session: true` on HeadlessConfig.
+- **Agent.session_id tracking**: AgentCreated events need to carry the session_id assigned during spawn, so forks can look up the parent lead's session_id for `--fork-session`.
+
+#### PR Review Lifecycle (Not Started)
+
+The entire author→PR→reviewer→feedback→author-resumes→merge cycle is missing:
+
+- **Auto-create review task**: When a PR is opened (or review requested), create a child task of the original task, spawn a reviewer agent (`midtown-code-reviewer`).
+- **Suspend author worker**: When a PR is opened, stop the author's agent (it's waiting for review). Save the session_id for later resume.
+- **Nudge author with feedback**: When reviewer posts feedback, nudge the original author agent with the review content.
+- **Resume author**: Resume the author's session with `--resume <session_id>` and an initial prompt containing the review feedback.
+- **Merge confirmation flow**: Author confirms feedback addressed, can request auto-merge.
+
+This requires:
+- `CreateReviewTask` command in executor
+- `SuspendAgent` / `ResumeAgent` commands fully wired (ResumeAgent is partially implemented)
+- Review state tracking in WorkIndex (approved, changes_requested)
+- Webhook or polling integration for review events
+
+#### Mention and Nudge Routing (Partially Built)
+
+- **MentionRouted event defined but not wired**: The chat monitor needs to detect @mentions in channel posts and route them to the target agent via NudgeAgent.
+- **NudgeAgent command**: Defined but executor handling is in progress — needs `session.send_message()` call to send stdin to a running HeadlessSession.
+- **Lead/fork escalation to user**: @user mentions should trigger push notifications or special UI treatment. Not wired.
+
+#### Worker Communication
+
+- **Worker questions → lead**: Workers need a mechanism to ask questions of the lead (or fork). In v1 this uses `coworker.asking` RPC + `coworker.questions` query. v2 needs an equivalent.
+- **DM channels**: v1 has `dm-<name>` channels with automatic creation and nudge posting. v2 has no DM concept. Workers post to DM channels, leads/forks see the messages.
+
+#### Agent Presentation
+
+- **Creative worker names**: Workers are currently named `task-1`, etc. Should use creative naming (v1 uses a word list). Not critical for functionality.
+- **Lucide icons + colors**: Agents should get avatar icons and colors for UI display. SpawnConfig has no icon/color fields yet.
+
+#### Project Lead vs Channel Lead
+
+- The v1 daemon has a distinction: the project lead (`midtown-project-lead`) has broad/shallow knowledge across the whole repo, while channel leads focus on their channel's domain. v2 treats all leads as channel leads. Need to add project lead spawning with a different agent type.
+
+#### GitHub Webhooks
+
+- v2 uses polling only (45s intervals). v1 has a full webhook server for real-time PR events (opened, merged, review submitted, CI status changes). Adding webhooks would eliminate the 45s delay for PR actions.
+- The existing `src/webhook.rs` can be reused — it handles HMAC verification and event parsing. The executor just needs a webhook receiver channel.
+
+#### Web API
+
+- Axum HTTP routes proxying to RPC dispatch are not yet implemented. The web UI currently talks to the v1 daemon.
+- WebSocket event broadcast for real-time UI updates is not wired.
+- The existing `src/web.rs` has 30+ HTTP routes that need to be proxied to v2 RPC methods.
+
+#### Other Missing Features
+
+- **Worktree management**: Commands exist (CreateWorktree, RemoveWorktree) but executor doesn't handle them. Workers need isolated worktrees.
+- **Auth profile pooling**: Multi-account support for rate limit rotation. Not ported.
+- **Reminders**: Cron-based and event-based triggers. Not ported.
+- **Garbage collection**: Long-dead agent records and stale worktrees need periodic cleanup.
+- **Session resume on daemon restart**: `resume_on_startup` flag from v1 not ported. Agents don't survive daemon restarts.
+- **Push notifications**: VAPID web push for mobile PWA alerts. Not ported.
+- **Tool output rendering**: `tool_data` extraction for rich web UI display. Message types exist but not fully connected.
