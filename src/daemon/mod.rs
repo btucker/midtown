@@ -3797,6 +3797,9 @@ async fn handle_session_event_batch(
                     .await;
             }
             session_events::SessionEvent::Stopped { name, slot_id } => {
+                // Capture exit code before collect_health() runs, so health
+                // decision functions see it on the next tick.
+                state.session_manager.mark_stopped(&slot_id).await;
                 stopped_sessions.push((name, slot_id));
             }
         }
