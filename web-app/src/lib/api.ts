@@ -18,6 +18,7 @@ import {
 	pendingQuestions,
 	progressTimestamps,
 	projects,
+	readStateLoaded,
 	repoStatus,
 	repoStatuses,
 	showArchivedChannels,
@@ -160,17 +161,27 @@ export async function fetchProjects(): Promise<Project[]> {
 	return [];
 }
 
-// Fetch the read state for all threads and channels
+// Fetch the read state for all threads and channels.
+// Retries once on failure so flaky mobile networks don't leave badges stuck.
 export async function fetchReadState(): Promise<void> {
-	try {
-		const res = await fetch(`${getApiBase()}/read-state`);
-		if (res.ok) {
-			const data = await res.json();
-			threadReadState.set(data.threads || {});
-			channelReadState.set(data.channels || {});
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			const res = await fetch(`${getApiBase()}/read-state`);
+			if (res.ok) {
+				const data = await res.json();
+				threadReadState.set(data.threads || {});
+				channelReadState.set(data.channels || {});
+				readStateLoaded.set(true);
+				return;
+			}
+			console.warn(`fetchReadState: server returned ${res.status}`);
+		} catch (err) {
+			console.warn(`fetchReadState attempt ${attempt + 1} failed:`, err);
 		}
-	} catch (err) {
-		console.warn("Failed to fetch read state:", err);
+		// Wait 2s before retry
+		if (attempt === 0) {
+			await new Promise((r) => setTimeout(r, 2000));
+		}
 	}
 }
 
@@ -311,6 +322,7 @@ export function switchProject(projectName: string, webhookPort: number | null): 
 		trackedThreads.set({});
 		threadReadState.set({});
 		channelReadState.set({});
+		readStateLoaded.set(false);
 	}
 	if (typeof localStorage !== "undefined") {
 		localStorage.setItem("midtown_thread_project", projectName);
