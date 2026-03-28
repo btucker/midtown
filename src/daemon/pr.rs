@@ -4002,6 +4002,77 @@ pub(super) async fn handle_webhook_review_state_change(
     super::effects::execute_effects(effects, state).await;
 }
 
+/// Route review completion to the author task immediately via webhook.
+///
+/// Called after `mark_reviewed_pr` caches review status. Finds the review task
+/// for this PR, follows `task.parent` to the author's task, fetches review
+/// content, and delivers a `TaskPrompt`. Uses `RecordPermanentPrNudge(ReviewComplete)`
+/// for dedup — the polling path's `collect_review_complete_effects` checks the same
+/// nudge, so whichever fires first wins.
+pub(super) async fn handle_webhook_review_complete(state: &DaemonState, pr_number: u64) {
+    // One-shot dedup: skip if any path already delivered ReviewComplete feedback.
+    {
+        let tracker = state.pr_issue_tracker.lock().await;
+        if tracker.has_nudge(pr_number, PrIssueType::ReviewComplete) {
+            debug!(
+                "PR #{} ReviewComplete already delivered, skipping webhook route",
+                pr_number
+            );
+            return;
+        }
+    }
+
+    // Find the review task for this PR, its parent (author) task ID,
+    // and verify the parent task actually exists.
+    let parent_task_id = {
+        let tasks = state.task_store.load_all();
+        let review_parent = tasks
+            .iter()
+            .find(|t| t.agent_type == "midtown-code-reviewer" && t.pr == Some(pr_number))
+            .and_then(|review_task| review_task.parent.clone());
+        // Verify the parent task exists (guard against stale parent references)
+        review_parent.filter(|pid| tasks.iter().any(|t| t.id == *pid))
+    };
+
+    let Some(parent_task_id) = parent_task_id else {
+        debug!(
+            "PR #{} has no review task with parent, skipping webhook review-complete route",
+            pr_number
+        );
+        return;
+    };
+
+    // Fetch full review content so the author sees the review body.
+    let review_content = fetch_review_content(pr_number).await;
+    let review_suffix = review_content.as_deref().unwrap_or("");
+    let msg = format!(
+        "Review of PR #{} is complete. Check the PR for reviewer feedback and address any issues.{}",
+        pr_number, review_suffix
+    );
+
+    let effects = vec![
+        super::effects::Effect::TaskPrompt {
+            task_id: parent_task_id,
+            message: msg,
+            model: Some("opus".to_string()),
+            pr_context: Some(super::effects::TaskPromptPrContext {
+                pr_number,
+                issue_type: PrIssueType::ReviewComplete,
+            }),
+        },
+        super::effects::Effect::RecordPermanentPrNudge {
+            pr_number,
+            issue_type: PrIssueType::ReviewComplete,
+        },
+    ];
+
+    info!(
+        "PR #{} routing review-complete feedback to author task (webhook fast path)",
+        pr_number
+    );
+    super::effects::execute_effects(effects, state).await;
+}
+
 /// Handle a CI check failure on a PR branch from a webhook.
 ///
 /// This provides immediate nudging when CI fails on a PR, instead of waiting

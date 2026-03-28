@@ -419,62 +419,6 @@ fn auto_close_review_task_when_review_posted() {
 }
 
 #[test]
-fn auto_close_review_task_notifies_parent() {
-    let mut ps = make_ps("test");
-    ps.github.reviewed_prs.insert(42);
-
-    let mut task = make_task("1", "Review PR #42", "riverside", TaskStatus::InProgress);
-    task.agent_type = "midtown-code-reviewer".to_string();
-    task.pr = Some(42);
-    task.parent = Some("99".to_string());
-    task.channel = Some("ops".to_string());
-    let tasks = vec![task];
-
-    let effects = auto_close_completed_tasks(&ps, &tasks);
-
-    assert!(
-        effects.iter().any(
-            |e| matches!(e, Effect::TaskPrompt { task_id, model, .. } if task_id == "99" && model.as_deref() == Some("opus"))
-        ),
-        "Should emit TaskPrompt targeting parent task when review task completes"
-    );
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::RecordPermanentPrNudge { pr_number: 42, .. })),
-        "Should emit RecordPermanentPrNudge to prevent double-notification from polling"
-    );
-}
-
-#[test]
-fn auto_close_review_task_without_parent_skips_notification() {
-    let mut ps = make_ps("test");
-    ps.github.reviewed_prs.insert(42);
-
-    let mut task = make_task("1", "Review PR #42", "riverside", TaskStatus::InProgress);
-    task.agent_type = "midtown-code-reviewer".to_string();
-    task.pr = Some(42);
-    // No parent set
-    task.channel = Some("ops".to_string());
-    let tasks = vec![task];
-
-    let effects = auto_close_completed_tasks(&ps, &tasks);
-
-    assert!(
-        effects
-            .iter()
-            .any(|e| matches!(e, Effect::CompleteTask { task_id, .. } if task_id == "1")),
-        "Should still complete the task"
-    );
-    assert!(
-        !effects
-            .iter()
-            .any(|e| matches!(e, Effect::TaskPrompt { .. })),
-        "Should not emit TaskPrompt when no parent task exists"
-    );
-}
-
-#[test]
 fn auto_close_skips_active_owner() {
     let mut ps = make_ps("test");
     ps.tick_active_session_names = ["park".to_string()].into_iter().collect();
@@ -581,6 +525,108 @@ fn auto_close_skips_ownerless_tasks() {
 
     let effects = auto_close_completed_tasks(&ps, &tasks);
     assert!(effects.is_empty(), "Should not auto-close ownerless tasks");
+}
+
+// ============================================================================
+// Review task completion → TaskPrompt to parent (author) task
+// ============================================================================
+
+#[test]
+fn auto_close_review_task_emits_task_prompt_to_parent() {
+    let mut ps = make_ps("test");
+    // Review has been posted for PR #42
+    ps.github.reviewed_prs.insert(42);
+
+    let mut review_task = make_task("2", "Review PR #42", "riverside", TaskStatus::InProgress);
+    review_task.agent_type = "midtown-code-reviewer".to_string();
+    review_task.pr = Some(42);
+    review_task.parent = Some("1".to_string());
+    review_task.channel = Some("web".to_string());
+
+    let parent_task = make_task("1", "Fix login bug", "york", TaskStatus::InProgress);
+    let tasks = vec![parent_task, review_task];
+
+    let effects = auto_close_completed_tasks(&ps, &tasks);
+
+    // Should emit TaskPrompt targeting the parent task
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::TaskPrompt { task_id, .. } if task_id == "1")),
+        "Should emit TaskPrompt to parent task when review task auto-closes"
+    );
+    // Should emit RecordPermanentPrNudge for dedup
+    assert!(
+        effects.iter().any(
+            |e| matches!(e, Effect::RecordPermanentPrNudge { pr_number: 42, issue_type } if *issue_type == crate::daemon::trackers::PrIssueType::ReviewComplete)
+        ),
+        "Should emit RecordPermanentPrNudge(ReviewComplete) for dedup"
+    );
+}
+
+#[test]
+fn auto_close_review_task_no_prompt_if_no_parent() {
+    let mut ps = make_ps("test");
+    ps.github.reviewed_prs.insert(42);
+
+    let mut review_task = make_task("2", "Review PR #42", "riverside", TaskStatus::InProgress);
+    review_task.agent_type = "midtown-code-reviewer".to_string();
+    review_task.pr = Some(42);
+    review_task.parent = None; // No parent
+    review_task.channel = Some("web".to_string());
+    let tasks = vec![review_task];
+
+    let effects = auto_close_completed_tasks(&ps, &tasks);
+
+    // Should still close the task
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::CompleteTask { task_id, .. } if task_id == "2")),
+        "Should still auto-close the review task"
+    );
+    // But should NOT emit TaskPrompt
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::TaskPrompt { .. })),
+        "Should not emit TaskPrompt when no parent task"
+    );
+}
+
+#[test]
+fn auto_close_review_task_no_double_prompt_if_already_nudged() {
+    let mut ps = make_ps("test");
+    ps.github.reviewed_prs.insert(42);
+    // Already nudged via polling path
+    ps.permanent_pr_nudges
+        .push((42, crate::daemon::trackers::PrIssueType::ReviewComplete));
+
+    let mut review_task = make_task("2", "Review PR #42", "riverside", TaskStatus::InProgress);
+    review_task.agent_type = "midtown-code-reviewer".to_string();
+    review_task.pr = Some(42);
+    review_task.parent = Some("1".to_string());
+    review_task.channel = Some("web".to_string());
+
+    let parent_task = make_task("1", "Fix login bug", "york", TaskStatus::InProgress);
+    let tasks = vec![parent_task, review_task];
+
+    let effects = auto_close_completed_tasks(&ps, &tasks);
+
+    // Should still close the task
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::CompleteTask { task_id, .. } if task_id == "2")),
+        "Should still auto-close the review task"
+    );
+    // But should NOT emit TaskPrompt (already nudged)
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::TaskPrompt { .. })),
+        "Should not emit duplicate TaskPrompt when already nudged"
+    );
 }
 
 // ============================================================================
