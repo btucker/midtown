@@ -99,6 +99,7 @@ const reviewerByTaskId = $derived($reviewerByTaskIdStore);
 
 // All tasks including completed, so children of active parents show as filled segments.
 // Memoized by input-array references so groupTasksByParent's memo can hit.
+const EMPTY_TASKS: Task[] = [];
 let _prevInProgress: Task[] | undefined;
 let _prevBacklog: Task[] | undefined;
 let _prevCompleted: Task[] | undefined;
@@ -107,7 +108,7 @@ let _prevAllTasks: Task[] = [];
 const allTasks = $derived.by(() => {
 	const ip = $kanbanData.inProgress;
 	const bl = $kanbanData.backlog;
-	const ct = $kanbanData.completedTasks || [];
+	const ct = $kanbanData.completedTasks ?? EMPTY_TASKS;
 	if (ip === _prevInProgress && bl === _prevBacklog && ct === _prevCompleted) {
 		return _prevAllTasks;
 	}
