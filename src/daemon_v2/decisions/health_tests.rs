@@ -110,8 +110,8 @@ fn ensure_leads_alive_spawns_missing_lead() {
 
     assert_eq!(commands.len(), 1);
     assert!(
-        matches!(&commands[0], Command::SpawnAgent(cfg) if cfg.channel.as_deref() == Some("main") && cfg.kind == AgentKind::Lead),
-        "expected SpawnAgent for channel lead, got {:?}",
+        matches!(&commands[0], Command::SpawnAgent(cfg) if cfg.channel.as_deref() == Some("main") && cfg.kind == AgentKind::Lead && cfg.agent_type == "midtown-project-lead"),
+        "expected SpawnAgent for project lead, got {:?}",
         commands[0]
     );
 }

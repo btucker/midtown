@@ -55,10 +55,13 @@ pub fn ensure_leads_alive(proj: &Projections, default_channel: &str) -> Vec<Comm
             .channel_directory(default_channel)
             .map(|d| d.to_string());
 
+        // Use project-lead for the main channel, channel-lead for topic channels
+        let agent_type = "midtown-project-lead".to_string();
+
         vec![Command::SpawnAgent(SpawnConfig {
             name: default_channel.to_string(),
             kind: AgentKind::Lead,
-            agent_type: "midtown-channel-lead".to_string(),
+            agent_type,
             provider: Provider::ClaudeCode,
             channel: Some(default_channel.to_string()),
             task_id: None,
