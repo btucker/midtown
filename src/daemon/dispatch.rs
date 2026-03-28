@@ -2014,6 +2014,31 @@ pub fn auto_close_completed_tasks(ps: &DaemonPersistentState, tasks: &[Task]) ->
             },
             push_url,
         ));
+
+        // Notify the parent task's session when a review task completes.
+        // This ensures the PR author is nudged immediately rather than waiting
+        // for the next PR polling tick (~30s). A RecordPermanentPrNudge prevents
+        // the polling path (collect_review_complete_effects) from double-notifying.
+        if task.agent_type == "midtown-code-reviewer"
+            && let (Some(parent_id), Some(pr_number)) = (&task.parent, task.pr)
+        {
+            effects.push(Effect::TaskPrompt {
+                task_id: parent_id.clone(),
+                message: format!(
+                    "Review for PR #{} has been completed. Check the PR for review feedback and address any requested changes.",
+                    pr_number
+                ),
+                model: Some("opus".to_string()),
+                pr_context: Some(effects::TaskPromptPrContext {
+                    pr_number,
+                    issue_type: crate::daemon::trackers::PrIssueType::ReviewComplete,
+                }),
+            });
+            effects.push(Effect::RecordPermanentPrNudge {
+                pr_number,
+                issue_type: crate::daemon::trackers::PrIssueType::ReviewComplete,
+            });
+        }
     }
 
     effects
