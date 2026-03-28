@@ -658,6 +658,37 @@ pub(super) async fn handle_coworker_report_state(
             );
         }
 
+        // If this reviewer has posted their review, complete the review task immediately
+        // rather than waiting for the next poll tick. The reviewer_pr check above already
+        // confirmed is_pr_reviewed == true (otherwise we'd have returned with a nudge).
+        // Cross-validate task.pr matches the session's PR to avoid completing the wrong task.
+        if let Some(pr_number) = reviewer_pr
+            && let Some(task_id) = state.get_task_id_for_coworker(name).await
+            && state
+                .task_store
+                .load(&task_id)
+                .ok()
+                .and_then(|t| t.pr)
+                .is_some_and(|p| p == pr_number)
+        {
+            let dir_key = state.paths.dir_key().to_string();
+            info!(
+                "Completing review task !{} — reviewer {} going idle after posting review for PR #{}",
+                task_id, name, pr_number
+            );
+            let complete_effects = vec![
+                effects::Effect::CompleteTask {
+                    task_id: task_id.clone(),
+                    dir_key: dir_key.clone(),
+                },
+                effects::Effect::ClearBlockedBy {
+                    completed_task_id: task_id,
+                    dir_key,
+                },
+            ];
+            effects::execute_effects(complete_effects, state).await;
+        }
+
         let shutdown_effects = vec![effects::Effect::ShutdownCoworkerWithCallbacks {
             name: name.to_string(),
             message: String::new(),

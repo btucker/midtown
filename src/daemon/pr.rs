@@ -2538,6 +2538,30 @@ async fn collect_review_complete_effects(
 
     debug!("PR #{} already has a completed review", pr_number);
 
+    // Auto-complete the review task now that the review is posted.
+    // This mirrors `detect_abandoned_review_tasks` but fires while the PR is still open.
+    let dir_key = state.paths.dir_key().to_string();
+    let tasks = state.task_store.load_all();
+    for task in &tasks {
+        if task.agent_type == "midtown-code-reviewer"
+            && task.pr == Some(pr_number)
+            && !matches!(task.status, crate::task_store::TaskStatus::Completed)
+        {
+            info!(
+                "Auto-completing review task !{} — review posted for PR #{}",
+                task.id, pr_number
+            );
+            effects.push(Effect::CompleteTask {
+                task_id: task.id.clone(),
+                dir_key: dir_key.clone(),
+            });
+            effects.push(Effect::ClearBlockedBy {
+                completed_task_id: task.id.clone(),
+                dir_key: dir_key.clone(),
+            });
+        }
+    }
+
     // Clear the reviewer assignment now that the review is complete.
     // This allows the reviewer to be sent on break, freeing up coworker slots.
     // Previously we only cleared when the reviewer had shut down, but that left
