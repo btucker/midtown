@@ -447,17 +447,56 @@ fn test_daemon_v2_lead_driven_skips_auto_dispatch() {
 fn test_daemon_v2_session_fork_spawns_agent() {
     let harness = V2Harness::start();
 
+    // Wait for a lead with a session_id to be running. We need the session_id
+    // for --fork-session to work. Recovered leads from old event store entries
+    // may have session_id: null.
+    let mut lead_has_session = false;
+    for i in 0..30 {
+        std::thread::sleep(Duration::from_secs(1));
+        let resp = harness.rpc_call("agent.list", None);
+        let agents = resp["result"].as_array().unwrap();
+        if let Some(lead) = agents
+            .iter()
+            .find(|a| a["kind"] == "Lead" && a["running"] == true)
+        {
+            if !lead["session_id"].is_null() {
+                lead_has_session = true;
+                eprintln!(
+                    "Lead ready with session_id after {i}s: {}",
+                    lead["session_id"]
+                );
+                break;
+            } else {
+                eprintln!(
+                    "Lead found but session_id is null (recovered from old state?) after {i}s"
+                );
+            }
+        }
+    }
+    assert!(
+        lead_has_session,
+        "lead should have a session_id for fork context"
+    );
+
+    // Use a unique thread ID to avoid collisions with previous test runs
+    let thread_id = format!("thread-{}", uuid::Uuid::new_v4());
+
     // Fork a session for a thread
     let resp = harness.rpc_call(
         "session.fork",
         Some(serde_json::json!({
-            "thread_parent_id": "thread-abc-123",
+            "thread_parent_id": thread_id,
             "channel": "main",
             "message": "Investigate this thread",
         })),
     );
     assert!(resp["error"].is_null(), "session.fork error: {resp}");
     assert_eq!(resp["result"]["ok"], true);
+    // Verify fork_from_session was found (--fork-session will be used)
+    assert_eq!(
+        resp["result"]["fork_from_session"], true,
+        "fork should inherit parent lead's session context: {resp}"
+    );
 
     // Wait for the fork to spawn
     let mut saw_fork = false;
@@ -476,7 +515,7 @@ fn test_daemon_v2_session_fork_spawns_agent() {
     let resp = harness.rpc_call(
         "session.fork",
         Some(serde_json::json!({
-            "thread_parent_id": "thread-abc-123",
+            "thread_parent_id": thread_id,
             "channel": "main",
         })),
     );

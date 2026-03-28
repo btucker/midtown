@@ -85,6 +85,7 @@ pub fn handle_agent_list(
                 "provider": agent.provider,
                 "channel": agent.channel,
                 "task_id": agent.task_id,
+                "session_id": agent.session_id,
                 "pid": agent.pid,
                 "running": proj.agents.running.contains(&agent.id),
             })
@@ -246,6 +247,8 @@ pub fn handle_session_fork(
         .and_then(|id| proj.agents.by_id.get(id))
         .and_then(|agent| agent.session_id.clone());
 
+    let has_parent_context = fork_from_session.is_some();
+
     let command = Command::SpawnAgent(SpawnConfig {
         name,
         kind: AgentKind::Fork,
@@ -260,7 +263,14 @@ pub fn handle_session_fork(
         fork_from_session,
     });
 
-    Ok((json!({"ok": true, "forking": true}), vec![command]))
+    Ok((
+        json!({
+            "ok": true,
+            "forking": true,
+            "fork_from_session": has_parent_context,
+        }),
+        vec![command],
+    ))
 }
 
 // ── Channel RPC handlers ─────────────────────────────────────────────────
