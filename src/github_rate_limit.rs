@@ -3,10 +3,10 @@
 //! Monitors both GraphQL and REST API quotas to prevent exhaustion.
 //! The daemon uses this to adaptively reduce polling frequency when quotas run low.
 
-use crate::process::check_cmd_output;
+use crate::process::{check_cmd_output, parse_json_warn};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// GitHub API rate limit state for both GraphQL and REST quotas.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,14 +110,8 @@ impl GitHubRateLimit {
             "fetch rate limit",
         )?;
 
-        let body = String::from_utf8_lossy(&output.stdout);
-        let response: RateLimitResponse = match serde_json::from_str(&body) {
-            Ok(r) => r,
-            Err(e) => {
-                warn!("Failed to parse rate_limit response: {}", e);
-                return None;
-            }
-        };
+        let response: RateLimitResponse =
+            parse_json_warn(&output.stdout, "parse rate_limit response")?;
 
         let graphql = QuotaState {
             limit: response.resources.graphql.limit,

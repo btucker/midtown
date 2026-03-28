@@ -8,6 +8,7 @@ use super::constants::OPS_CHANNEL;
 use super::trackers::PrIssueType;
 use crate::json_ext::ValueExt;
 use crate::message::Message;
+use crate::process::{check_cmd_output, check_cmd_result};
 
 /// Maximum tool activity entries per agent before oldest are evicted.
 const MAX_TOOL_ITEMS_PER_AGENT: usize = 20;
@@ -3815,42 +3816,31 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
         }
     }
 
-    let output = match tokio::process::Command::new("gh")
-        .args(["run", "rerun", &run_id.to_string()])
-        .output()
-        .await
-    {
-        Ok(output) => output,
-        Err(e) => {
-            warn!("Failed to run gh run rerun for workflow {}: {}", run_id, e);
-            return;
-        }
+    let Some(_output) = check_cmd_output(
+        tokio::process::Command::new("gh")
+            .args(["run", "rerun", &run_id.to_string()])
+            .output()
+            .await,
+        &format!("rerun workflow {} for PR #{}", run_id, pr_number),
+    ) else {
+        return;
     };
 
-    if output.status.success() {
-        info!(
-            "Re-ran workflow {} (check '{}') for PR #{}",
-            run_id, check_name, pr_number
-        );
-        let msg = Message::for_channel(
-            state.channel_router.default_channel_name(),
-            "midtown",
-            format!(
-                "🔄 Re-running stale CI check '{}' on PR #{} (workflow {})",
-                check_name, pr_number, run_id
-            ),
-            crate::message::MessageType::Text,
-        );
-        if let Err(e) = state.send_and_broadcast_async(&msg).await {
-            warn!("Failed to post workflow rerun message: {}", e);
-        }
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!(
-            "gh run rerun failed for workflow {}: {}",
-            run_id,
-            stderr.trim()
-        );
+    info!(
+        "Re-ran workflow {} (check '{}') for PR #{}",
+        run_id, check_name, pr_number
+    );
+    let msg = Message::for_channel(
+        state.channel_router.default_channel_name(),
+        "midtown",
+        format!(
+            "🔄 Re-running stale CI check '{}' on PR #{} (workflow {})",
+            check_name, pr_number, run_id
+        ),
+        crate::message::MessageType::Text,
+    );
+    if let Err(e) = state.send_and_broadcast_async(&msg).await {
+        warn!("Failed to post workflow rerun message: {}", e);
     }
 }
 
@@ -3967,26 +3957,12 @@ async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &st
             cmd.current_dir(path);
         }
 
-        let output = match cmd.output().await {
-            Ok(output) => output,
-            Err(e) => {
-                warn!(
-                    "Failed to post placeholder comment on PR #{}: {}",
-                    pr_number, e
-                );
-                return;
-            }
-        };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            warn!(
-                "gh pr comment failed for PR #{}: {}",
-                pr_number,
-                stderr.trim()
-            );
+        let Some(output) = check_cmd_output(
+            cmd.output().await,
+            &format!("post placeholder comment on PR #{}", pr_number),
+        ) else {
             return;
-        }
+        };
 
         // Parse comment ID from the URL in stdout (e.g., "https://github.com/.../issuecomment-12345")
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -4072,45 +4048,39 @@ async fn auto_merge_pr(state: &DaemonState, pr_number: u64, title: &str) {
     if let Some(ref path) = repo_path {
         cmd.current_dir(path);
     }
-    let output = match cmd.output().await {
-        Ok(output) => output,
-        Err(e) => {
-            warn!("Failed to run gh pr merge for PR #{}: {}", pr_number, e);
-            return;
+    match check_cmd_result(cmd.output().await) {
+        Ok(_) => {
+            info!("Auto-merge enabled for PR #{} ({})", pr_number, title);
+            let msg = Message::for_channel(
+                state.channel_router.default_channel_name(),
+                "midtown",
+                format!(
+                    "🤝 Auto-merge enabled for PR #{} ({}) — approved with all checks passing",
+                    pr_number,
+                    truncate_str(title, 40)
+                ),
+                crate::message::MessageType::Text,
+            );
+            if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                warn!("Failed to post auto-merge message: {}", e);
+            }
         }
-    };
-
-    if output.status.success() {
-        info!("Auto-merge enabled for PR #{} ({})", pr_number, title);
-        let msg = Message::for_channel(
-            state.channel_router.default_channel_name(),
-            "midtown",
-            format!(
-                "🤝 Auto-merge enabled for PR #{} ({}) — approved with all checks passing",
-                pr_number,
-                truncate_str(title, 40)
-            ),
-            crate::message::MessageType::Text,
-        );
-        if let Err(e) = state.send_and_broadcast_async(&msg).await {
-            warn!("Failed to post auto-merge message: {}", e);
-        }
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        warn!("gh pr merge failed for PR #{}: {}", pr_number, stderr);
-        let msg = Message::for_channel(
-            state.channel_router.default_channel_name(),
-            "midtown",
-            format!(
-                "⚠️ Auto-merge failed for PR #{} ({}) — {}",
-                pr_number,
-                truncate_str(title, 40),
-                truncate_str(stderr.trim(), 80)
-            ),
-            crate::message::MessageType::Text,
-        );
-        if let Err(e) = state.send_and_broadcast_async(&msg).await {
-            warn!("Failed to post auto-merge failure message: {}", e);
+        Err(stderr) => {
+            warn!("gh pr merge failed for PR #{}: {}", pr_number, stderr);
+            let msg = Message::for_channel(
+                state.channel_router.default_channel_name(),
+                "midtown",
+                format!(
+                    "⚠️ Auto-merge failed for PR #{} ({}) — {}",
+                    pr_number,
+                    truncate_str(title, 40),
+                    truncate_str(&stderr, 80)
+                ),
+                crate::message::MessageType::Text,
+            );
+            if let Err(e) = state.send_and_broadcast_async(&msg).await {
+                warn!("Failed to post auto-merge failure message: {}", e);
+            }
         }
     }
 }

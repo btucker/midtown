@@ -4,6 +4,8 @@
 //! issue comments. Returns `Result<(), String>` — callers decide how to log
 //! and whether to surface errors to RPC callers.
 
+use crate::process::check_cmd_result;
+
 /// Update the body of a GitHub issue comment via `gh api PATCH`.
 ///
 /// Returns `Ok(())` on success. Returns `Err(msg)` where `msg` is the trimmed
@@ -16,17 +18,13 @@ pub(crate) async fn gh_patch_comment(
 ) -> Result<(), String> {
     let endpoint = format!("/repos/{}/issues/comments/{}", repo, comment_id);
     let body_field = format!("body={}", body);
-    let output = tokio::process::Command::new("gh")
-        .args(["api", "--method", "PATCH", &endpoint, "-f", &body_field])
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-    }
+    check_cmd_result(
+        tokio::process::Command::new("gh")
+            .args(["api", "--method", "PATCH", &endpoint, "-f", &body_field])
+            .output()
+            .await,
+    )
+    .map(|_| ())
 }
 
 /// Delete a GitHub issue comment via `gh api DELETE`.
@@ -36,17 +34,13 @@ pub(crate) async fn gh_patch_comment(
 /// be started.
 pub(crate) async fn gh_delete_comment(repo: &str, comment_id: u64) -> Result<(), String> {
     let endpoint = format!("/repos/{}/issues/comments/{}", repo, comment_id);
-    let output = tokio::process::Command::new("gh")
-        .args(["api", "--method", "DELETE", &endpoint])
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
-    }
+    check_cmd_result(
+        tokio::process::Command::new("gh")
+            .args(["api", "--method", "DELETE", &endpoint])
+            .output()
+            .await,
+    )
+    .map(|_| ())
 }
 
 #[path = "gh_tests.rs"]

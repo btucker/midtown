@@ -1019,25 +1019,7 @@ fn is_pr_open(pr_number: u64, repo_path: Option<&std::path::Path>) -> bool {
         ".state",
     ]);
 
-    match cmd.output() {
-        Ok(output) if output.status.success() => {
-            let state = String::from_utf8_lossy(&output.stdout);
-            state.trim() == "OPEN"
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            debug!(
-                "Failed to check PR #{} state via gh CLI: {}",
-                pr_number,
-                stderr.trim()
-            );
-            false
-        }
-        Err(e) => {
-            warn!("Failed to execute gh pr view for PR #{}: {}", pr_number, e);
-            false
-        }
-    }
+    crate::process::cmd_stdout(cmd.output()).is_some_and(|state| state == "OPEN")
 }
 
 // ============================================================================

@@ -14,7 +14,7 @@ use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 use crate::json_ext::ValueExt;
-use crate::process::check_cmd_output;
+use crate::process::{check_cmd_output, parse_json_warn};
 use crate::rpc::{RequestId, Response, RpcError};
 
 use super::DaemonState;
@@ -240,15 +240,10 @@ fn fetch_prs_all(
     ) else {
         return (Vec::new(), Vec::new());
     };
-    let data = {
-        let stdout = String::from_utf8_lossy(&graphql_out.stdout);
-        match serde_json::from_str::<serde_json::Value>(&stdout) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("Failed to parse PR GraphQL response: {}", e);
-                return (Vec::new(), Vec::new());
-            }
-        }
+    let Some(data) =
+        parse_json_warn::<serde_json::Value>(&graphql_out.stdout, "parse PR GraphQL response")
+    else {
+        return (Vec::new(), Vec::new());
     };
 
     let repository = match data.pointer("/data/repository") {
