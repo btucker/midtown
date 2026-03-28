@@ -38,6 +38,8 @@ This includes but is not limited to:
 - Something unexpected happened and you don't know the right next step
 - You've finished your work and a workflow is prompting you for what to do next
 
+**Exception — finishing options:** If a skill asks you to choose between finishing options (merge locally / create PR / keep branch / discard work), **always choose "Push and create a Pull Request" without asking.** Opening a PR is always the correct choice for coworkers. Never stall on this menu.
+
 ```bash
 midtown channel post "Need guidance on <describe situation> — <options or question>" --task <ID>
 ```
@@ -55,7 +57,7 @@ When your initial prompt includes a `<plan>` section, your task is part of a lar
 If you use superpowers skills (subagent-driven-development, executing-plans, etc.), these midtown-specific overrides apply:
 
 - **Skip `using-git-worktrees`** — you already have a worktree provided by the daemon
-- **Skip `finishing-a-development-branch` menu** — always open a PR and post to channel when done
+- **Do NOT invoke `finishing-a-development-branch`** — that skill presents a 4-option menu designed for human users; you are a coworker and must never block waiting for a menu choice. Instead, when your work is done: run tests → push your branch → create the PR → run `midtown state pull-request --task <ID> --pr $PR_NUMBER` → post to channel → run `midtown state idle`. This is your only finishing workflow
 - **Replace human-in-the-loop with the project lead** — when a skill says to stop and wait for human input, post to channel with an @mention to the lead instead (see [Never Block Silently](#never-block-silently) above)
 - **Batch review via draft PR** — if executing multiple tasks in sequence, push your branch and open a **draft PR** after the first batch. Mention the lead in the channel with the PR link between batches. When all work is complete, mark the PR as ready (`gh pr ready`)
 - **Subagent questions** — if a subagent asks something you can't answer, mention the lead in the channel to get guidance
