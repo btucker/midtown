@@ -263,6 +263,15 @@ pub struct CoworkerSession {
     /// Recent stderr lines accumulated from the real-time event path.
     /// Used for crash diagnostics in exit messages.
     recent_stderr: Vec<String>,
+    /// Exit code of the session process.
+    ///
+    /// Populated from two sources:
+    /// - `Result` stream events: `0` if `is_error` is false, `1` if true.
+    /// - `reconcile_process_health`: OS exit code from `try_wait`.
+    ///
+    /// Used by `check_and_restart_dead_reviewers` to distinguish clean exits
+    /// (reviewer completed but didn't post) from error exits (crash, rate limit).
+    pub exit_code: Option<i32>,
 }
 
 impl CoworkerSession {
@@ -320,6 +329,7 @@ impl CoworkerSession {
             output_log,
             output_log_path,
             recent_stderr: Vec::new(),
+            exit_code: None,
         }
     }
 }
@@ -419,6 +429,7 @@ impl SessionManager {
                 output_log: None,
                 output_log_path: std::path::PathBuf::new(),
                 recent_stderr: Vec::new(),
+                exit_code: None,
             },
         );
     }
@@ -1232,6 +1243,10 @@ impl SessionManager {
                     // (success or error), so it's no longer pending.
                     cs.has_pending_api_call = false;
 
+                    // Track exit status for dead-reviewer detection.
+                    // Clean exits (is_error=false) get code 0; errors get code 1.
+                    cs.exit_code = Some(if *is_error { 1 } else { 0 });
+
                     if let Some(cost) = total_cost_usd {
                         cs.cost_usd = *cost;
                     }
@@ -1720,7 +1735,7 @@ impl SessionManager {
                     has_pending_tool: cs.has_pending_tool,
                     has_tool_name_conflict: cs.has_tool_name_conflict,
                     has_pending_api_call: cs.has_pending_api_call,
-                    exit_code: None,
+                    exit_code: cs.exit_code,
                 },
             );
         }
@@ -1812,6 +1827,8 @@ impl SessionManager {
                             );
                             stderr_by_name.insert(name.clone(), stderr_lines);
                         }
+                        // Capture OS exit code for dead-reviewer detection.
+                        cs.exit_code = Some(exit_status.code().unwrap_or(1));
                         cs.status = SessionStatus::Stopped;
                         cs.session = None;
                         newly_stopped.push(name.clone());
