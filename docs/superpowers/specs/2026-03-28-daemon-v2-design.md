@@ -738,66 +738,57 @@ Build alongside the old daemon. Migrate one domain at a time.
 - **CLI**: `midtown daemon-v2 --socket --workdir --channel`
 - **E2E tests**: startup, status, agent list, task create, agent spawn, lead-driven skip, channel post/read, PR polling, thread fork, shutdown
 
+### Recently Fixed
+
+- **Fork context**: Forks now use `--fork-session` with the parent lead's session_id. E2E verified. Agent.session_id is tracked via AgentStarted events.
+- **NudgeAgent**: Executor calls `session.send_message()` on the HeadlessSession.
+- **ResumeAgent**: Emits AgentResumed event. Full HeadlessConfig-based resume deferred.
+- **Sandboxing**: All spawned agents are sandboxed via `sandbox-exec` on macOS (inherited from HeadlessSession::spawn).
+- **`--agent` on forks**: Fork sessions get `--agent midtown-channel-lead` for agent definition loading.
+
 ### Remaining Gaps
 
-#### Fork Context (In Progress)
+#### Tier 1: Required for Functional Parity
 
-- **Use `--fork-session` for real context inheritance**: Forks should use Claude's `--resume <parent_id> --fork-session` to clone the lead's full conversation context. The v1 daemon launched forks as fresh sessions (due to an old sandbox bug preventing JSONL persistence), but headless sessions now persist JSONL properly. The fix: set `resume_session_id` to the parent lead's session_id and `fork_session: true` on HeadlessConfig.
-- **Agent.session_id tracking**: AgentCreated events need to carry the session_id assigned during spawn, so forks can look up the parent lead's session_id for `--fork-session`.
+**Startup reconciliation**: Recovered events can leave agents marked "running" with no live process. On daemon startup, must check PIDs and emit AgentStopped for dead agents. Without this, `ensure_leads_alive` thinks a lead exists when it doesn't, and forks can't find a valid session_id.
 
-#### PR Review Lifecycle (Not Started)
+**PR review lifecycle**: The core "work gets done" loop:
+- Auto-create review task when PR is opened/review-requested
+- Suspend author worker when PR opens (save session_id for later resume)
+- Nudge author with review feedback
+- Resume author with `--resume <session_id>` and review context as initial prompt
+- Merge confirmation flow
 
-The entire author→PR→reviewer→feedback→author-resumes→merge cycle is missing:
+Requires: `CreateReviewTask` command, full `ResumeAgent` wiring (build HeadlessConfig for resume), review state tracking in WorkIndex.
 
-- **Auto-create review task**: When a PR is opened (or review requested), create a child task of the original task, spawn a reviewer agent (`midtown-code-reviewer`).
-- **Suspend author worker**: When a PR is opened, stop the author's agent (it's waiting for review). Save the session_id for later resume.
-- **Nudge author with feedback**: When reviewer posts feedback, nudge the original author agent with the review content.
-- **Resume author**: Resume the author's session with `--resume <session_id>` and an initial prompt containing the review feedback.
-- **Merge confirmation flow**: Author confirms feedback addressed, can request auto-merge.
+**Mention routing in channels**: MentionRouted event exists but chat monitor not wired. Need to detect @mentions in `channel.post` content and emit `NudgeAgent` commands targeting the mentioned agent. @lead should route to the channel lead, @ops to ops channel.
 
-This requires:
-- `CreateReviewTask` command in executor
-- `SuspendAgent` / `ResumeAgent` commands fully wired (ResumeAgent is partially implemented)
-- Review state tracking in WorkIndex (approved, changes_requested)
-- Webhook or polling integration for review events
+**Worktree management**: Workers need isolated git worktrees. CreateWorktree/RemoveWorktree commands exist but executor doesn't handle them. Reuse existing `src/worktree.rs`.
 
-#### Mention and Nudge Routing (Partially Built)
+**Session resume on daemon restart**: `resume_on_startup` flag not ported. Agents die when daemon restarts and don't come back.
 
-- **MentionRouted event defined but not wired**: The chat monitor needs to detect @mentions in channel posts and route them to the target agent via NudgeAgent.
-- **NudgeAgent command**: Defined but executor handling is in progress — needs `session.send_message()` call to send stdin to a running HeadlessSession.
-- **Lead/fork escalation to user**: @user mentions should trigger push notifications or special UI treatment. Not wired.
+**Project lead vs channel lead**: The default channel needs a `midtown-project-lead` agent (broad/shallow), while topic channels get `midtown-channel-lead` agents. Currently all leads use `midtown-channel-lead`.
 
-#### Worker Communication
+#### Tier 2: Required for Web UI
 
-- **Worker questions → lead**: Workers need a mechanism to ask questions of the lead (or fork). In v1 this uses `coworker.asking` RPC + `coworker.questions` query. v2 needs an equivalent.
-- **DM channels**: v1 has `dm-<name>` channels with automatic creation and nudge posting. v2 has no DM concept. Workers post to DM channels, leads/forks see the messages.
+**Web API (Axum HTTP + WebSocket)**: HTTP routes proxying to RPC dispatch. The web UI needs this to talk to v2. Reuse route structure from `src/web.rs`.
 
-#### Agent Presentation
+**WebSocket event broadcast**: DomainEvents broadcast to connected WebSocket clients for real-time UI updates.
 
-- **Creative worker names**: Workers are currently named `task-1`, etc. Should use creative naming (v1 uses a word list). Not critical for functionality.
-- **Lucide icons + colors**: Agents should get avatar icons and colors for UI display. SpawnConfig has no icon/color fields yet.
+**GitHub webhooks**: Real-time PR events instead of 45s polling. Reuse `src/webhook.rs` for HMAC verification and event parsing. Wire webhook receiver into the event loop.
 
-#### Project Lead vs Channel Lead
+#### Tier 3: Quality of Life
 
-- The v1 daemon has a distinction: the project lead (`midtown-project-lead`) has broad/shallow knowledge across the whole repo, while channel leads focus on their channel's domain. v2 treats all leads as channel leads. Need to add project lead spawning with a different agent type.
+**Worker communication**: Workers asking questions of lead/fork. DM channels (`dm-<name>`) with auto-creation. v1 uses `coworker.asking` RPC.
 
-#### GitHub Webhooks
+**Creative worker names + icons**: Workers currently named `task-1`. Should use creative naming from word list and Lucide icon assignment for UI display. Add `icon` and `color` to SpawnConfig.
 
-- v2 uses polling only (45s intervals). v1 has a full webhook server for real-time PR events (opened, merged, review submitted, CI status changes). Adding webhooks would eliminate the 45s delay for PR actions.
-- The existing `src/webhook.rs` can be reused — it handles HMAC verification and event parsing. The executor just needs a webhook receiver channel.
+**Auth profile pooling**: Multi-account support for rate limit rotation.
 
-#### Web API
+**Reminders**: Cron-based and event-based triggers.
 
-- Axum HTTP routes proxying to RPC dispatch are not yet implemented. The web UI currently talks to the v1 daemon.
-- WebSocket event broadcast for real-time UI updates is not wired.
-- The existing `src/web.rs` has 30+ HTTP routes that need to be proxied to v2 RPC methods.
+**Garbage collection**: Periodic cleanup of long-dead agent records and stale worktrees.
 
-#### Other Missing Features
+**Push notifications**: VAPID web push for mobile PWA alerts.
 
-- **Worktree management**: Commands exist (CreateWorktree, RemoveWorktree) but executor doesn't handle them. Workers need isolated worktrees.
-- **Auth profile pooling**: Multi-account support for rate limit rotation. Not ported.
-- **Reminders**: Cron-based and event-based triggers. Not ported.
-- **Garbage collection**: Long-dead agent records and stale worktrees need periodic cleanup.
-- **Session resume on daemon restart**: `resume_on_startup` flag from v1 not ported. Agents don't survive daemon restarts.
-- **Push notifications**: VAPID web push for mobile PWA alerts. Not ported.
-- **Tool output rendering**: `tool_data` extraction for rich web UI display. Message types exist but not fully connected.
+**Lead/fork escalation to user**: @user mentions triggering push notifications or special UI treatment.
