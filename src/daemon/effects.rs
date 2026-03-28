@@ -420,6 +420,12 @@ pub enum Effect {
     /// `reviewer_escalations_posted` set is checked via WorldSnapshot before
     /// emitting escalation effects.
     RecordReviewerEscalation { pr_number: u64 },
+    /// Mark a PR as reviewed in the GitHub state cache.
+    ///
+    /// Used when the daemon auto-posts a clean review on behalf of a reviewer
+    /// that exited without posting (e.g., the code-review skill found no issues
+    /// and the reviewer silently exited). This prevents stuck-review alerts.
+    MarkPrReviewed { pr_number: u64 },
     /// Record that the lead has been nudged about an orphaned PR (reviewed + CI green,
     /// no active task). Prevents `reconcile_orphaned_prs` from nudging on every tick.
     RecordOrphanedPrLeadNudge { pr_number: u64 },
@@ -2059,6 +2065,14 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 let mut posted = state.reviewer_escalations_posted.lock().unwrap();
                 posted.insert(pr_number);
                 debug!("Recorded reviewer escalation for PR #{}", pr_number);
+            }
+            Effect::MarkPrReviewed { pr_number } => {
+                let mut ps = state.persistent_state.lock().await;
+                ps.github.mark_reviewed_pr(pr_number);
+                info!(
+                    "Auto-marked PR #{} as reviewed (reviewer exited without posting)",
+                    pr_number
+                );
             }
             Effect::RecordOrphanedPrLeadNudge { pr_number } => {
                 let mut sent = state.orphaned_pr_lead_nudges_sent.lock().unwrap();

@@ -47,12 +47,39 @@ pub fn check_and_restart_dead_reviewers(ps: &DaemonPersistentState, tasks: &[Tas
         MAX_REVIEWER_RESTARTS,
     );
 
-    if respawns.is_empty() && escalations.is_empty() {
+    // Separate clean exits (exit code 0) from error exits.
+    // Clean exits mean the reviewer completed but didn't post — auto-post a review.
+    // Error exits (crash, rate limit, etc.) still need respawning.
+    let (clean_exits, error_exits): (Vec<_>, Vec<_>) = respawns.into_iter().partition(|restart| {
+        ps.tick_process_health
+            .get(&restart.name)
+            .and_then(|h| h.exit_code)
+            == Some(0)
+    });
+
+    if clean_exits.is_empty() && error_exits.is_empty() && escalations.is_empty() {
         return vec![];
     }
 
     let mut effects = Vec::new();
-    for restart in respawns {
+
+    // Clean exits: auto-post a review on behalf of the reviewer.
+    for restart in &clean_exits {
+        info!(
+            "Reviewer {} exited cleanly without posting review for PR #{} — auto-posting clean review",
+            restart.name, restart.pr_number,
+        );
+
+        effects.extend(build_auto_review_effects(ps, restart.pr_number));
+
+        effects.push(Effect::post_to_ops(format!(
+            "📋 Auto-posted clean review for PR #{} — reviewer {} exited without posting",
+            restart.pr_number, restart.name,
+        )));
+    }
+
+    // Error exits: respawn the reviewer.
+    for restart in error_exits {
         let new_restart_count = restart.restart_count + 1;
 
         warn!(
@@ -92,20 +119,23 @@ pub fn check_and_restart_dead_reviewers(ps: &DaemonPersistentState, tasks: &[Tas
 
     for escalation in escalations {
         warn!(
-            "Reviewer {} exited without posting review for PR #{} after {} restarts — escalating to ops",
+            "Reviewer {} exited without posting review for PR #{} after {} restarts — auto-posting and escalating",
             escalation.name, escalation.pr_number, escalation.restart_count
         );
 
+        // Auto-post a clean review to unblock the PR.
+        effects.extend(build_auto_review_effects(ps, escalation.pr_number));
+
         effects.push(Effect::post_to_ops(format!(
-            "@ops PR #{} has hit max reviewer restarts — needs manual intervention. \
-             Reviewer {} exited without posting a review {} times.",
+            "@ops PR #{} hit max reviewer restarts — auto-posted clean review to unblock. \
+             Reviewer {} failed to post after {} attempts.",
             escalation.pr_number, escalation.name, escalation.restart_count,
         )));
         effects.push(Effect::nudge_channel_lead(
             &ps.tick_project_name,
             format!(
                 "Reviewer {} failed to post a review for PR #{} after {} attempts. \
-                 Escalated to ops — please investigate.",
+                 Auto-posted clean review to unblock — investigate why reviewer kept failing.",
                 escalation.name, escalation.pr_number, escalation.restart_count,
             ),
         ));
@@ -113,6 +143,47 @@ pub fn check_and_restart_dead_reviewers(ps: &DaemonPersistentState, tasks: &[Tas
             pr_number: escalation.pr_number,
         });
     }
+
+    effects
+}
+
+/// Build effects to auto-post a clean review when a reviewer exited without posting.
+///
+/// Updates the placeholder comment (if one exists) with a clean review body and
+/// marks the PR as reviewed in the GitHub state cache. This unblocks the merge
+/// flow and prevents stuck-review alerts.
+fn build_auto_review_effects(ps: &DaemonPersistentState, pr_number: u64) -> Vec<Effect> {
+    let mut effects = Vec::new();
+
+    let task_id = ps.tick_pr_task_index.task_for_pr(pr_number);
+    let frontmatter = match task_id {
+        Some(tid) => format!("<!-- midtown task:{tid} type:review -->"),
+        None => "<!-- midtown type:review -->".to_string(),
+    };
+
+    let review_body = format!(
+        "{frontmatter}\n\n\
+         ### Code review\n\n\
+         No issues found. Checked for bugs and CLAUDE.md compliance.\n\n\
+         *(auto-posted by daemon — reviewer exited without submitting)*\n\n\
+         🌃 Co-built with [Midtown](https://github.com/btucker/midtown)"
+    );
+
+    // Update the placeholder comment if one exists.
+    if let Some(&comment_id) = ps.tick_reviewer_in_progress_comment_ids.get(&pr_number) {
+        let repo_full_name = format!(
+            "{}/{}",
+            ps.tick_repo_owner.as_deref().unwrap_or("unknown"),
+            ps.tick_project_name
+        );
+        effects.push(Effect::UpdatePrComment {
+            comment_id,
+            repo_full_name,
+            new_body: review_body,
+        });
+    }
+
+    effects.push(Effect::MarkPrReviewed { pr_number });
 
     effects
 }

@@ -495,24 +495,24 @@ fn dead_reviewer_escalation_not_repeated_after_recorded() {
 fn dead_reviewer_respawn_and_escalation_in_same_tick() {
     let mut ps = test_ps();
 
-    // riverside: below max restarts → respawn
+    // riverside: error exit, below max restarts → respawn
     ps.tick_process_health.insert(
         "riverside".into(),
         ProcessHealth {
             is_alive: false,
-            exit_code: Some(0),
+            exit_code: Some(1),
             ..Default::default()
         },
     );
     ps.tick_reviewer_pr_assignments
         .insert("riverside".into(), 100);
 
-    // broadway: at max restarts → escalation
+    // broadway: error exit, at max restarts → escalation
     ps.tick_process_health.insert(
         "broadway".into(),
         ProcessHealth {
             is_alive: false,
-            exit_code: Some(0),
+            exit_code: Some(1),
             ..Default::default()
         },
     );
@@ -536,6 +536,62 @@ fn dead_reviewer_respawn_and_escalation_in_same_tick() {
         .iter()
         .any(|e| matches!(e, Effect::RecordReviewerEscalation { pr_number } if *pr_number == 200));
     assert!(has_escalation, "Expected escalation for PR 200");
+}
+
+#[test]
+fn dead_reviewer_clean_exit_and_error_exit_in_same_tick() {
+    let mut ps = test_ps();
+    ps.tick_repo_owner = Some("btucker".into());
+
+    // riverside: clean exit → auto-post
+    ps.tick_process_health.insert(
+        "riverside".into(),
+        ProcessHealth {
+            is_alive: false,
+            exit_code: Some(0),
+            ..Default::default()
+        },
+    );
+    ps.tick_reviewer_pr_assignments
+        .insert("riverside".into(), 100);
+
+    // broadway: error exit → respawn
+    ps.tick_process_health.insert(
+        "broadway".into(),
+        ProcessHealth {
+            is_alive: false,
+            exit_code: Some(1),
+            ..Default::default()
+        },
+    );
+    ps.tick_reviewer_pr_assignments
+        .insert("broadway".into(), 200);
+
+    let effects = check_and_restart_dead_reviewers(&ps, &[]);
+
+    // riverside should get auto-posted, not respawned
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::MarkPrReviewed { pr_number } if *pr_number == 100)),
+        "Expected MarkPrReviewed for riverside (clean exit)"
+    );
+    let has_riverside_respawn = effects.iter().any(|e| {
+        matches!(e, Effect::SpawnCoworkerWithCallbacks { config, .. } if config.name == "riverside")
+    });
+    assert!(
+        !has_riverside_respawn,
+        "riverside should not be respawned (clean exit)"
+    );
+
+    // broadway should get respawned, not auto-posted
+    let has_broadway_respawn = effects.iter().any(|e| {
+        matches!(e, Effect::SpawnCoworkerWithCallbacks { config, .. } if config.name == "broadway")
+    });
+    assert!(
+        has_broadway_respawn,
+        "Expected respawn for broadway (error exit)"
+    );
 }
 
 #[test]
@@ -657,6 +713,121 @@ fn dead_reviewer_respawn_inherits_task_channel() {
 
     assert!(config.is_some());
     assert_eq!(config.unwrap().channel, Some(channel_name.to_string()));
+}
+
+// ── Auto-post review on clean reviewer exit ─────────────────────────────
+
+#[test]
+fn dead_reviewer_clean_exit_auto_posts_review_instead_of_respawn() {
+    let mut ps = test_ps();
+    ps.tick_repo_owner = Some("btucker".into());
+    ps.tick_process_health.insert(
+        "riverside".into(),
+        ProcessHealth {
+            is_alive: false,
+            exit_code: Some(0), // clean exit — reviewer finished but didn't post
+            ..Default::default()
+        },
+    );
+    ps.tick_reviewer_pr_assignments
+        .insert("riverside".into(), 1351);
+    ps.tick_reviewer_in_progress_comment_ids.insert(1351, 9001);
+    ps.tick_name_session_map
+        .insert("riverside".into(), "sess-riverside".into());
+
+    let task_to_pr: HashMap<String, u64> = [("500".to_string(), 1351)].into_iter().collect();
+    ps.tick_pr_task_index =
+        crate::daemon::snapshot::PrTaskIndex::from_task_maps(task_to_pr, HashMap::new());
+
+    let effects = check_and_restart_dead_reviewers(&ps, &[]);
+
+    // Should update the placeholder comment with a clean review
+    let update = effects
+        .iter()
+        .find(|e| matches!(e, Effect::UpdatePrComment { comment_id, .. } if *comment_id == 9001));
+    assert!(update.is_some(), "Expected UpdatePrComment for placeholder");
+    if let Some(Effect::UpdatePrComment { new_body, .. }) = update {
+        assert!(
+            new_body.contains("type:review"),
+            "Review body should contain review frontmatter"
+        );
+        assert!(
+            new_body.contains("No issues found"),
+            "Review body should contain clean review text"
+        );
+    }
+
+    // Should mark PR as reviewed
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::MarkPrReviewed { pr_number } if *pr_number == 1351)),
+        "Expected MarkPrReviewed effect"
+    );
+
+    // Should NOT respawn
+    let has_respawn = effects.iter().any(|e| {
+        matches!(e, Effect::SpawnCoworkerWithCallbacks { config, .. } if config.name == "riverside")
+    });
+    assert!(!has_respawn, "Should not respawn a cleanly exited reviewer");
+}
+
+#[test]
+fn dead_reviewer_error_exit_still_respawns() {
+    let mut ps = test_ps();
+    ps.tick_process_health.insert(
+        "riverside".into(),
+        ProcessHealth {
+            is_alive: false,
+            exit_code: Some(1), // error exit
+            ..Default::default()
+        },
+    );
+    ps.tick_reviewer_pr_assignments
+        .insert("riverside".into(), 1351);
+    ps.tick_name_session_map
+        .insert("riverside".into(), "sess-riverside".into());
+
+    let effects = check_and_restart_dead_reviewers(&ps, &[]);
+
+    // Should still respawn on error exit
+    let has_respawn = effects.iter().any(|e| {
+        matches!(e, Effect::SpawnCoworkerWithCallbacks { config, .. } if config.name == "riverside")
+    });
+    assert!(has_respawn, "Error exit should trigger respawn");
+}
+
+#[test]
+fn dead_reviewer_clean_exit_without_placeholder_still_marks_reviewed() {
+    let mut ps = test_ps();
+    ps.tick_repo_owner = Some("btucker".into());
+    ps.tick_process_health.insert(
+        "riverside".into(),
+        ProcessHealth {
+            is_alive: false,
+            exit_code: Some(0),
+            ..Default::default()
+        },
+    );
+    ps.tick_reviewer_pr_assignments
+        .insert("riverside".into(), 1351);
+    // No placeholder comment ID — placeholder was never posted or already overwritten
+
+    let effects = check_and_restart_dead_reviewers(&ps, &[]);
+
+    // Should still mark PR as reviewed (even without placeholder to update)
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::MarkPrReviewed { pr_number } if *pr_number == 1351)),
+        "Expected MarkPrReviewed even without placeholder"
+    );
+
+    // Should NOT respawn
+    let has_respawn = effects.iter().any(|e| {
+        matches!(e, Effect::SpawnCoworkerWithCallbacks { config, .. } if config.name == "riverside")
+    });
+    assert!(!has_respawn, "Should not respawn a cleanly exited reviewer");
 }
 
 // ── Tool name conflict tests ─────────────────────────────────────────────

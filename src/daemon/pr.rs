@@ -4734,6 +4734,7 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::CreateTaskSessionSpan { .. } => "CreateTaskSessionSpan",
         Effect::CloseTaskSessionSpan { .. } => "CloseTaskSessionSpan",
         Effect::SpawnForTask { .. } => "SpawnForTask",
+        Effect::MarkPrReviewed { .. } => "MarkPrReviewed",
     }
 }
 
