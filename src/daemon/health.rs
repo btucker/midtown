@@ -1396,12 +1396,12 @@ pub fn check_and_shutdown_idle_coworkers(ps: &DaemonPersistentState) -> Vec<Effe
         .map(|(name, _)| name.to_lowercase())
         .collect();
 
-    // For ci_passed, review_feedback, and unblocked_deps we pass empty sets.
-    // These require complex derivation (PR CI checks, review comment parsing,
-    // dependency graph resolution) that is not yet collected in tick fields.
-    // As a backstop, missing these exclusions makes the idle detector slightly
-    // more aggressive, which is acceptable — the primary path handles these
-    // cases correctly.
+    // TODO: Wire ci_passed, review_feedback, and unblocked_deps from tick fields.
+    // Currently empty — the backstop may shut down a coworker right as CI passes
+    // or deps unblock, forcing the primary path to re-launch it. Acceptable for
+    // now but adds unnecessary churn. These require complex derivation (PR CI
+    // checks, review comment parsing, dependency graph resolution) that should
+    // be added as tick_* fields in a follow-up.
     let empty = std::collections::HashSet::new();
 
     let ctx = IdleShutdownContext {
