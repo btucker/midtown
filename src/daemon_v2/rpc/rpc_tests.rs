@@ -2,6 +2,11 @@ use super::*;
 use crate::daemon_v2::Projections;
 use crate::daemon_v2::events::*;
 use serde_json::json;
+use std::path::Path;
+
+fn test_channels_dir() -> &'static Path {
+    Path::new("/tmp/midtown-rpc-test-nonexistent")
+}
 
 fn projections_with_agents() -> Projections {
     let mut proj = Projections::default();
@@ -76,7 +81,7 @@ fn agent_list_filters_running_only() {
 fn dispatch_routes_status() {
     let proj = projections_with_agents();
     let request = json!({"jsonrpc": "2.0", "method": "status", "id": 1});
-    let (response, events) = dispatch_request(request, &proj);
+    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
     assert!(response["error"].is_null());
     assert!(response["result"]["agents"]["total"].is_number());
     assert!(events.is_empty());
@@ -86,7 +91,7 @@ fn dispatch_routes_status() {
 fn dispatch_routes_agent_list() {
     let proj = projections_with_agents();
     let request = json!({"jsonrpc": "2.0", "method": "agent.list", "id": 2});
-    let (response, events) = dispatch_request(request, &proj);
+    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
     assert!(response["error"].is_null());
     assert!(response["result"].is_array());
     assert!(events.is_empty());
@@ -96,7 +101,7 @@ fn dispatch_routes_agent_list() {
 fn dispatch_unknown_method_returns_error() {
     let proj = Projections::default();
     let request = json!({"jsonrpc": "2.0", "method": "nonexistent", "id": 3});
-    let (response, events) = dispatch_request(request, &proj);
+    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
     assert_eq!(response["error"]["code"], -32601);
     assert!(events.is_empty());
 }
@@ -115,7 +120,7 @@ fn task_create_returns_events() {
             "blocked_by": ["task-41"]
         }
     });
-    let (response, events) = dispatch_request(request, &proj);
+    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
     assert!(response["error"].is_null());
     assert_eq!(response["result"]["ok"], true);
     assert_eq!(events.len(), 1);
@@ -144,7 +149,7 @@ fn task_create_missing_params_returns_error() {
         "method": "task.create",
         "id": 11
     });
-    let (response, events) = dispatch_request(request, &proj);
+    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
     assert_eq!(response["error"]["code"], -32602);
     assert!(events.is_empty());
 }
@@ -162,7 +167,7 @@ fn task_create_missing_required_field_returns_error() {
             // missing "channel"
         }
     });
-    let (response, events) = dispatch_request(request, &proj);
+    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
     assert_eq!(response["error"]["code"], -32602);
     assert!(events.is_empty());
 }

@@ -1,5 +1,7 @@
 pub mod handlers;
 
+use std::path::Path;
+
 use handlers::{AgentFilter, RpcError};
 use serde_json::{Value, json};
 
@@ -12,7 +14,11 @@ mod tests;
 
 /// Dispatch a JSON-RPC request, returning the response JSON and any domain
 /// events produced by mutating methods (e.g., `task.create`).
-pub fn dispatch_request(request: Value, proj: &Projections) -> (Value, Vec<DomainEvent>) {
+pub fn dispatch_request(
+    request: Value,
+    proj: &Projections,
+    channels_dir: &Path,
+) -> (Value, Vec<DomainEvent>) {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = match request.get("method").and_then(|m| m.as_str()) {
         Some(m) => m,
@@ -38,6 +44,13 @@ pub fn dispatch_request(request: Value, proj: &Projections) -> (Value, Vec<Domai
                 Err(err) => (err.to_json(&id), vec![]),
             }
         }
+        "channel.post" => match handlers::handle_channel_post(params, channels_dir) {
+            Ok((value, events)) => {
+                let response = json!({ "jsonrpc": "2.0", "result": value, "id": id });
+                (response, events)
+            }
+            Err(err) => (err.to_json(&id), vec![]),
+        },
         _ => {
             // Read-only methods — no events produced.
             let result = match method {
@@ -46,6 +59,8 @@ pub fn dispatch_request(request: Value, proj: &Projections) -> (Value, Vec<Domai
                     let filter = AgentFilter::from_params(params);
                     handlers::handle_agent_list(proj, filter)
                 }
+                "channel.list" => handlers::handle_channel_list(channels_dir),
+                "channel.read" => handlers::handle_channel_read(params, channels_dir),
                 _ => Err(RpcError::method_not_found()),
             };
             let response = match result {

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -24,6 +24,8 @@ pub struct DaemonV2Config {
     pub events_dir: PathBuf,
     /// Default channel name (used for lead health checks).
     pub default_channel: String,
+    /// Base directory for channel logs (contains `channels/` subdirectory).
+    pub channels_dir: PathBuf,
 }
 
 /// The v2 daemon: owns the event store, projections, and scheduler.
@@ -158,7 +160,7 @@ impl DaemonV2 {
                 accept_result = listener.accept() => {
                     match accept_result {
                         Ok((stream, _addr)) => {
-                            let (outcome, events) = handle_rpc_connection(stream, &self.projections).await;
+                            let (outcome, events) = handle_rpc_connection(stream, &self.projections, &self.config.channels_dir).await;
                             self.apply_events(&events);
                             if outcome == RpcOutcome::Shutdown {
                                 tracing::info!("shutdown requested via RPC");
@@ -199,9 +201,14 @@ impl DaemonV2 {
             self.scheduler.mark_ran(decision.name, now);
 
             for command in commands {
-                let events =
-                    executor::execute(command, &mut self.sessions, &self.paths, &self.projections)
-                        .await;
+                let events = executor::execute(
+                    command,
+                    &mut self.sessions,
+                    &self.paths,
+                    &self.projections,
+                    &self.config.channels_dir,
+                )
+                .await;
                 self.apply_events(&events);
             }
         }
@@ -222,6 +229,7 @@ enum RpcOutcome {
 async fn handle_rpc_connection(
     mut stream: UnixStream,
     proj: &Projections,
+    channels_dir: &Path,
 ) -> (RpcOutcome, Vec<crate::daemon_v2::events::DomainEvent>) {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
@@ -269,7 +277,7 @@ async fn handle_rpc_connection(
         return (RpcOutcome::Shutdown, vec![]);
     }
 
-    let (response, events) = rpc::dispatch_request(request, proj);
+    let (response, events) = rpc::dispatch_request(request, proj, channels_dir);
     let _ = write_response(&mut stream, &response).await;
 
     (RpcOutcome::Continue, events)

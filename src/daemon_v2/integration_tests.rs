@@ -1,8 +1,14 @@
+use std::path::Path;
+
 use crate::daemon_v2::events::*;
 use crate::daemon_v2::projections::Projections;
 use crate::daemon_v2::rpc;
 use serde_json::json;
 use tempfile::TempDir;
+
+fn test_channels_dir() -> &'static Path {
+    Path::new("/tmp/midtown-integration-test-nonexistent")
+}
 
 #[test]
 fn full_lifecycle_through_store_and_projections() {
@@ -45,6 +51,7 @@ fn full_lifecycle_through_store_and_projections() {
     let (status, _) = rpc::dispatch_request(
         json!({"jsonrpc": "2.0", "method": "status", "id": 1}),
         &proj,
+        test_channels_dir(),
     );
     assert_eq!(status["result"]["agents"]["running"], 1);
     assert_eq!(status["result"]["tasks"]["pending"], 1);
@@ -60,6 +67,7 @@ fn full_lifecycle_through_store_and_projections() {
     let (status, _) = rpc::dispatch_request(
         json!({"jsonrpc": "2.0", "method": "status", "id": 2}),
         &proj,
+        test_channels_dir(),
     );
     assert_eq!(status["result"]["tasks"]["pending"], 0);
     assert_eq!(status["result"]["tasks"]["in_progress"], 1);
@@ -82,6 +90,7 @@ fn full_lifecycle_through_store_and_projections() {
     let (status, _) = rpc::dispatch_request(
         json!({"jsonrpc": "2.0", "method": "status", "id": 3}),
         &recovered_proj,
+        test_channels_dir(),
     );
     assert_eq!(status["result"]["tasks"]["in_progress"], 0);
     assert_eq!(status["result"]["agents"]["running"], 1);
@@ -100,6 +109,7 @@ fn recover_from_empty_directory() {
     let (status, _) = rpc::dispatch_request(
         json!({"jsonrpc": "2.0", "method": "status", "id": 1}),
         &proj,
+        test_channels_dir(),
     );
     assert_eq!(status["result"]["agents"]["total"], 0);
 }

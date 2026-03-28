@@ -534,11 +534,14 @@ fn main() {
 
         let events_dir = paths.base_dir().join("events");
 
+        let channels_dir = paths.base_dir().to_path_buf();
+
         let config = midtown::daemon_v2::DaemonV2Config {
             dir_key,
             socket_path,
             events_dir,
             default_channel: channel.clone(),
+            channels_dir,
         };
 
         let daemon = match midtown::daemon_v2::DaemonV2::new(config) {
