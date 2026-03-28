@@ -4,15 +4,18 @@ use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::mpsc;
 
 use crate::daemon_v2::decisions::{self, Command, health};
 use crate::daemon_v2::events::{DomainEvent, EventStore};
 use crate::daemon_v2::executor;
+use crate::daemon_v2::executor::webhook::webhook_to_events;
 use crate::daemon_v2::projections::Projections;
 use crate::daemon_v2::rpc;
 use crate::daemon_v2::scheduler::Scheduler;
 use crate::headless::HeadlessSession;
 use crate::paths::ProjectPaths;
+use crate::webhook::WebhookEvent;
 
 /// Configuration for DaemonV2.
 pub struct DaemonV2Config {
@@ -26,6 +29,15 @@ pub struct DaemonV2Config {
     pub default_channel: String,
     /// Base directory for channel logs (contains `channels/` subdirectory).
     pub channels_dir: PathBuf,
+    /// Optional receiver half of a webhook channel.
+    ///
+    /// Callers that want real-time webhook integration should:
+    /// 1. Create `let (tx, rx) = tokio::sync::mpsc::channel(64);`
+    /// 2. Pass `rx` here.
+    /// 3. Keep `tx` and give it to the HTTP webhook server (see `src/webhook.rs`).
+    ///
+    /// When `None`, webhook integration is disabled.
+    pub webhook_rx: Option<mpsc::Receiver<WebhookEvent>>,
 }
 
 /// The v2 daemon: owns the event store, projections, and scheduler.
@@ -39,6 +51,9 @@ pub struct DaemonV2 {
     /// Commands to resume agents that were running before the daemon restarted.
     /// Populated during `new()`, drained at the start of `run()`.
     pending_resumes: Vec<Command>,
+    /// Receiver half of the webhook event channel.  Populated from
+    /// `DaemonV2Config::webhook_rx`; `None` when webhook integration is disabled.
+    webhook_rx: Option<mpsc::Receiver<WebhookEvent>>,
 }
 
 /// Exit status returned by [`DaemonV2::run`].
@@ -98,7 +113,12 @@ fn suspend_authors_with_prs_fn(proj: &Projections, _channel: &str) -> Vec<Comman
 
 impl DaemonV2 {
     /// Create a new DaemonV2, recovering state from the event store.
-    pub fn new(config: DaemonV2Config) -> std::io::Result<Self> {
+    ///
+    /// If `config.webhook_rx` is `Some`, the daemon wires the receiver into
+    /// its event loop so webhook events are processed in real time.  The
+    /// matching sender should be retained by the caller and passed to the
+    /// HTTP webhook server (see `src/webhook.rs`).
+    pub fn new(mut config: DaemonV2Config) -> std::io::Result<Self> {
         let (mut store, snapshot, replay_events) = EventStore::recover(config.events_dir.clone())?;
 
         let mut projections = snapshot.unwrap_or_default();
@@ -203,6 +223,9 @@ impl DaemonV2 {
             suspend_authors_with_prs_fn,
         );
 
+        // Move the receiver out so `config` can be stored on the daemon.
+        let webhook_rx = config.webhook_rx.take();
+
         Ok(Self {
             config,
             store,
@@ -211,6 +234,7 @@ impl DaemonV2 {
             paths,
             sessions: HashMap::new(),
             pending_resumes,
+            webhook_rx,
         })
     }
 
@@ -247,6 +271,15 @@ impl DaemonV2 {
             let sleep = tokio::time::sleep(deadline);
             tokio::pin!(sleep);
 
+            // Build a future for the webhook receiver that resolves when a
+            // webhook event arrives, or never resolves when disabled.
+            let webhook_recv: std::pin::Pin<
+                Box<dyn std::future::Future<Output = Option<WebhookEvent>> + Send>,
+            > = match self.webhook_rx.as_mut() {
+                Some(rx) => Box::pin(async move { rx.recv().await }),
+                None => Box::pin(std::future::pending()),
+            };
+
             tokio::select! {
                 accept_result = listener.accept() => {
                     match accept_result {
@@ -271,6 +304,21 @@ impl DaemonV2 {
                         }
                         Err(e) => {
                             tracing::error!(%e, "accept error");
+                        }
+                    }
+                }
+
+                maybe_event = webhook_recv => {
+                    match maybe_event {
+                        Some(webhook_event) => {
+                            tracing::debug!("webhook event received");
+                            let domain_events = webhook_to_events(&webhook_event);
+                            self.apply_events(&domain_events);
+                        }
+                        None => {
+                            // Channel closed — disable future webhook receives.
+                            tracing::debug!("webhook channel closed");
+                            self.webhook_rx = None;
                         }
                     }
                 }

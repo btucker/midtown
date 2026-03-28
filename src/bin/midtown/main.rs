@@ -542,6 +542,7 @@ fn main() {
             events_dir,
             default_channel: channel.clone(),
             channels_dir,
+            webhook_rx: None,
         };
 
         let daemon = match midtown::daemon_v2::DaemonV2::new(config) {

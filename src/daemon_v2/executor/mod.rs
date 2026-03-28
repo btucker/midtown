@@ -1,6 +1,7 @@
 pub mod channel_io;
 pub mod github;
 pub mod spawn;
+pub mod webhook;
 
 use std::collections::HashMap;
 use std::path::Path;
