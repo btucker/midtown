@@ -3537,12 +3537,13 @@ async fn test_post_to_channel_routes_mentions_for_session_senders() {
     );
 }
 
-/// PostToChannel from pure-system senders ("system", "github") must NOT
-/// call route_mentions — these are daemon-generated messages that should
-/// never trigger coworker call-ins.
+/// PostToChannel from system/user senders ("system", "github", "user") must
+/// NOT call route_mentions — system messages are daemon-generated, and user
+/// PostToChannel effects are observability echoes (e.g., DM task.prompt) that
+/// have dedicated mention routing in handle_channel_post.
 #[tokio::test]
 async fn test_post_to_channel_skips_mentions_for_system_senders() {
-    for sender in &["system", "github"] {
+    for sender in &["system", "github", "user"] {
         let (state, _project_dir, _guard) =
             make_workflow_test_state(&format!("post-to-channel-skip-mention-{}", sender));
 

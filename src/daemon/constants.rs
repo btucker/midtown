@@ -215,11 +215,13 @@ pub(super) const OPS_CHANNEL: &str = "ops";
 /// Senders whose messages are skipped by the chat monitor (not routed for @mentions).
 pub(super) const SKIP_SENDERS: &[&str] = &["midtown", "system", "github", "user"];
 
-/// Senders whose @mentions should never be routed (true system senders only).
-/// Unlike SKIP_SENDERS, this does NOT include "midtown" or "user" — the project
-/// lead's explicit mentions should be routed, and user messages are handled separately.
-/// Used by the PostToChannel effect executor and the RPC channel handler.
-pub(super) const MENTION_SKIP_SENDERS: &[&str] = &["system", "github"];
+/// Senders whose @mentions should never be routed via PostToChannel or RPC.
+/// Unlike SKIP_SENDERS, this does NOT include "midtown" — the project lead's
+/// explicit mentions should be routed. Includes "user" because user messages
+/// have dedicated mention routing in handle_channel_post; PostToChannel effects
+/// with sender "user" are observability echoes (e.g., DM task.prompt messages)
+/// that must not trigger duplicate nudges.
+pub(super) const MENTION_SKIP_SENDERS: &[&str] = &["system", "github", "user"];
 
 /// Senders that are considered "system" (not coworkers) for channel post handling.
 pub(super) const SYSTEM_SENDERS: &[&str] = &["github", "midtown", "system", "GitHub"];
