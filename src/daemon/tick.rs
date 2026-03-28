@@ -370,11 +370,11 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         ps.tick_rate_limit = ps.github.rate_limit.clone();
         ps.tick_fresh_rate_limit = None; // Set by RateLimitCheckTick handler if needed
 
-        // PR task index
-        let session_task_to_pr = super::state::task_to_pr_map_from_sessions(&ps.sessions);
-        let pr_to_task = super::state::pr_to_task_map_from_sessions(&ps.sessions);
+        // PR task index (task store is the single source of truth)
+        let task_store_task_to_pr = super::state::task_to_pr_map_from_tasks(&tasks);
+        let pr_to_task = super::state::pr_to_task_map_from_tasks(&tasks);
         ps.tick_pr_task_index = super::snapshot::PrTaskIndex::new(
-            session_task_to_pr,
+            task_store_task_to_pr,
             github_open_pr_task_ids,
             pr_to_task,
         );
@@ -469,9 +469,10 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         ps.tick_usage_limit_nudge_scheduled = usage_limit_nudge_scheduled;
         ps.tick_usage_limit_nudge_at = usage_limit_nudge_at;
 
-        // Reviewer PR assignments (from all reviewer sessions)
+        // Reviewer PR assignments (from all reviewer sessions via task store)
+        let task_to_pr = super::state::task_to_pr_map_from_tasks(&tasks);
         ps.tick_reviewer_pr_assignments =
-            super::snapshot::build_reviewer_pr_assignments_from_spans(&ps);
+            super::snapshot::build_reviewer_pr_assignments_from_spans(&ps, &task_to_pr);
 
         // PR → restart_count for stuck reviewer backoff (from TaskStore).
         ps.tick_reviewer_restart_counts = tasks

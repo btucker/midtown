@@ -711,12 +711,10 @@ async fn test_completed_with_unverifiable_disk_pr_completes_directly() {
     };
     state.task_store.save(&task).expect("save task to store");
 
-    // Set up in-memory task assignment
-    state.set_test_task_assignment("riverside", task_id).await;
-
-    // NOTE: sessions is empty — simulates daemon restart.
-    // The task has pr=99 on disk but no in-memory PR tracking.
-    // In test env, gh pr view won't find this PR, so is_pr_open returns false.
+    // NOTE: no session created — simulates daemon restart where sessions
+    // haven't been recovered. The task has pr=99 on disk but since there is
+    // no in-memory session, task_has_open_pr Source 1 won't match. Source 2
+    // checks the disk pr field via GitHub API which fails in test env.
 
     // Report completed — task.pr is set on disk but unverifiable
     let response = handle_coworker_report_state(
@@ -1006,6 +1004,17 @@ async fn test_reviewer_idle_nudged_when_review_not_posted() {
         }
         // Deliberately NOT calling mark_reviewed_pr — review hasn't been posted
     }
+    // Task store entry: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "task-43".to_string(),
+            pr: Some(pr_number),
+            agent_type: "midtown-code-reviewer".to_string(),
+            agent_name: reviewer_name.to_string(),
+            ..Default::default()
+        })
+        .unwrap();
 
     // Reviewer reports idle — SHOULD be nudged since review isn't posted
     let response = handle_coworker_report_state(

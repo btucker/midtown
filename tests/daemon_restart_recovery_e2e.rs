@@ -137,6 +137,7 @@ fn test_persistent_state_prevents_duplicate_spawns() {
             session_id: "session-park-456".to_string(),
             name: "park".to_string(),
             agent_type: "midtown-code-reviewer".to_string(),
+            task_id: Some("review-42".to_string()),
             pr_number: Some(42),
             purpose: "reviewer for PR #42".to_string(),
             pid: Some(12346),
@@ -152,6 +153,7 @@ fn test_persistent_state_prevents_duplicate_spawns() {
             session_id: "session-madison-789".to_string(),
             name: "madison".to_string(),
             agent_type: "midtown-code-reviewer".to_string(),
+            task_id: Some("review-43".to_string()),
             pr_number: Some(43),
             purpose: "reviewer for PR #43".to_string(),
             pid: Some(12347),
@@ -170,13 +172,17 @@ fn test_persistent_state_prevents_duplicate_spawns() {
     let loaded_state_json = fs::read_to_string(&state_file).unwrap();
     let loaded_state: DaemonPersistentState = serde_json::from_str(&loaded_state_json).unwrap();
 
+    // Build pr_to_task map for the reviewer sessions
+    let pr_to_task: HashMap<u64, String> =
+        HashMap::from([(42, "review-42".to_string()), (43, "review-43".to_string())]);
+
     // Verify reviewer spans are available for dispatch logic
     assert!(
-        loaded_state.pr_has_active_reviewer(42),
+        loaded_state.pr_has_active_reviewer(42, &pr_to_task),
         "PR #42 should have active reviewer span"
     );
     assert!(
-        loaded_state.pr_has_active_reviewer(43),
+        loaded_state.pr_has_active_reviewer(43, &pr_to_task),
         "PR #43 should have active reviewer span"
     );
 

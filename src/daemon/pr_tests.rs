@@ -2222,6 +2222,17 @@ async fn test_poll_prs_session_based_owner_resolution() {
     // active coworkers are already set via ps.tick_active_coworkers
 
     let (state, _tmp, _guard) = make_test_state("test-repo");
+    // Task store entry: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "123".to_string(),
+            pr: Some(42),
+            agent_type: "midtown-code-author".to_string(),
+            agent_name: "madison".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
     // Populate persistent_state with session record and tick fields
     {
         let mut locked_ps = state.persistent_state.lock().await;
@@ -2398,6 +2409,17 @@ async fn test_reviewer_not_assigned_to_pr_author() {
             },
         );
     }
+    // Task store entry: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "100".to_string(),
+            pr: Some(9998),
+            agent_type: "midtown-code-author".to_string(),
+            agent_name: "riverside".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
     let registry = crate::worktree_registry::WorktreeRegistry::new();
     // "riverside" is active (it's the PR author), so the PR is not orphaned
     let active_names: std::collections::HashSet<String> =
@@ -2798,6 +2820,17 @@ async fn test_review_mode_both_allows_local_reviewer_spawn() {
             },
         );
     }
+    // Task store entry: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "778".to_string(),
+            pr: Some(99994),
+            agent_type: "midtown-code-author".to_string(),
+            agent_name: "york".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
 
     let mut config =
         crate::config::FullProjectConfig::minimal("test-repo", &tmp.path().to_string_lossy());
@@ -2871,6 +2904,17 @@ async fn test_reviewer_spawn_warns_pr_author_via_nudge() {
             },
         );
     }
+    // Task store entry: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "200".to_string(),
+            pr: Some(99994),
+            agent_type: "midtown-code-author".to_string(),
+            agent_name: "madison".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
 
     let effects = collect_reviewer_effects_with_source(
         &registry,
@@ -3647,6 +3691,7 @@ async fn pr_approved_not_suppressed_when_review_cached() {
             pr_number,
             std::collections::HashMap::new(),
             std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
         )
     };
 
@@ -4004,6 +4049,17 @@ async fn auto_merge_blocked_when_reviewer_active() {
             s.pr_number = Some(pr_number);
         }
     }
+    // Task store entry: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "task-42".to_string(),
+            pr: Some(pr_number),
+            agent_type: "midtown-code-reviewer".to_string(),
+            agent_name: "york".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
 
     // Build a PR JSON that passes is_auto_mergeable() — approved + CI green
     let pr_json = json!({
@@ -4174,6 +4230,7 @@ async fn auto_merge_emits_workflow_event_when_script_exists() {
         .task_store
         .save(&crate::task_store::Task {
             id: task_id.into(),
+            pr: Some(pr_number),
             channel: Some(channel.into()),
             ..Default::default()
         })
@@ -4339,7 +4396,9 @@ async fn test_reviewer_spawn_inherits_task_channel() {
         .task_store
         .save(&crate::task_store::Task {
             id: task_id.into(),
+            pr: Some(pr_number),
             channel: Some(channel_name.into()),
+            agent_name: "madison".to_string(),
             ..Default::default()
         })
         .unwrap();
@@ -4433,6 +4492,17 @@ async fn test_reviewer_spawn_no_channel_when_no_task_association() {
         );
         // Deliberately do NOT add "task-77771" to task_channel — that keeps channel: None
     }
+    // Task store entry with PR but no channel: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "task-77771".to_string(),
+            pr: Some(pr_number),
+            agent_type: "midtown-code-author".to_string(),
+            agent_name: "madison".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
 
     let effects = collect_reviewer_effects_with_source(
         &registry,
@@ -4515,6 +4585,17 @@ async fn test_reviewer_spawn_includes_post_pr_comment_on_success() {
             },
         );
     }
+    // Task store entry: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "300".to_string(),
+            pr: Some(pr_number),
+            agent_type: "midtown-code-author".to_string(),
+            agent_name: "york".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
 
     let effects = collect_reviewer_effects_with_source(
         &registry,
@@ -4582,6 +4663,17 @@ async fn test_placeholder_body_has_correct_tags_no_escaped_exclamation() {
             },
         );
     }
+    // Task store entry: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "301".to_string(),
+            pr: Some(pr_number),
+            agent_type: "midtown-code-author".to_string(),
+            agent_name: "york".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
 
     let effects = collect_reviewer_effects_with_source(
         &registry,
@@ -4762,6 +4854,17 @@ async fn test_polling_uses_normal_delay_without_workflow_script() {
         );
         ps.save_for_repo("test-repo").unwrap();
     }
+    // Task store entry: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "43".to_string(),
+            pr: Some(101),
+            agent_type: "midtown-code-author".to_string(),
+            agent_name: "madison".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
 
     // PR created 60 seconds ago — passes normal 45s delay.
     let created_at = (chrono::Utc::now() - chrono::Duration::seconds(60))

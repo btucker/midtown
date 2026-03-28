@@ -104,15 +104,16 @@ impl PrContext {
         pr_number: u64,
         task_channel: HashMap<String, String>,
         task_thread_id: HashMap<String, String>,
+        pr_task_associations: HashMap<u64, String>,
     ) -> Self {
-        let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
-
         // Gate check: active reviewer span exists for this PR.
         //
         // Bypass: if the review is already cached (complete), don't suppress
         // PrApproved even if the span hasn't been closed yet. This handles
         // the race between webhook review completion and span closure.
-        let has_active_reviewer = ps.active_reviewer_for_pr(pr_number).is_some()
+        let has_active_reviewer = ps
+            .active_reviewer_for_pr(pr_number, &pr_task_associations)
+            .is_some()
             && !ps.github.has_cached_review(pr_number);
 
         Self {
@@ -134,9 +135,10 @@ impl PrContext {
         ps: &super::state::DaemonPersistentState,
         task_channel: HashMap<String, String>,
         task_thread_id: HashMap<String, String>,
+        pr_task_associations: HashMap<u64, String>,
     ) -> Self {
         Self {
-            pr_task_associations: super::state::pr_to_task_map_from_sessions(&ps.sessions),
+            pr_task_associations,
             task_channel,
             task_thread_id,
             has_active_reviewer: false,
@@ -166,8 +168,11 @@ impl PrContext {
 
 /// Get coworker names that have sessions with open PRs.
 ///
-/// Derived from `SessionRecord.pr_number` cross-referenced with `tick_open_prs`.
-fn sessions_with_open_prs(ps: &super::state::DaemonPersistentState) -> HashSet<String> {
+/// Uses `task_to_pr` (from TaskStore) to look up PR numbers via task_id.
+fn sessions_with_open_prs(
+    ps: &super::state::DaemonPersistentState,
+    task_to_pr: &HashMap<String, u64>,
+) -> HashSet<String> {
     let open_pr_numbers: HashSet<u64> = ps
         .tick_open_prs
         .iter()
@@ -176,7 +181,12 @@ fn sessions_with_open_prs(ps: &super::state::DaemonPersistentState) -> HashSet<S
 
     ps.sessions
         .values()
-        .filter(|s| s.pr_number.is_some_and(|pr| open_pr_numbers.contains(&pr)))
+        .filter(|s| {
+            s.task_id
+                .as_ref()
+                .and_then(|tid| task_to_pr.get(tid))
+                .is_some_and(|pr| open_pr_numbers.contains(pr))
+        })
         .filter_map(|s| {
             if s.name.is_empty() {
                 None
@@ -189,13 +199,18 @@ fn sessions_with_open_prs(ps: &super::state::DaemonPersistentState) -> HashSet<S
 
 /// Get coworker names that have sessions with recently merged PRs.
 ///
-/// Derived from `SessionRecord.pr_number` cross-referenced with `tick_merged_pr_numbers`.
-fn sessions_with_merged_prs(ps: &super::state::DaemonPersistentState) -> HashSet<String> {
+/// Uses `task_to_pr` (from TaskStore) to look up PR numbers via task_id.
+fn sessions_with_merged_prs(
+    ps: &super::state::DaemonPersistentState,
+    task_to_pr: &HashMap<String, u64>,
+) -> HashSet<String> {
     ps.sessions
         .values()
         .filter(|s| {
-            s.pr_number
-                .is_some_and(|pr| ps.tick_merged_pr_numbers.contains(&pr))
+            s.task_id
+                .as_ref()
+                .and_then(|tid| task_to_pr.get(tid))
+                .is_some_and(|pr| ps.tick_merged_pr_numbers.contains(pr))
         })
         .filter_map(|s| {
             if s.name.is_empty() {
@@ -218,7 +233,7 @@ const MERGED_PRS_FETCH_INTERVAL_SECS: u64 = 300;
 ///
 /// Returns `(merged_pr_numbers, merged_prs_data)` — raw GitHub data without
 /// coworker ownership derivation. Ownership is resolved at snapshot time via
-/// `SessionRecord.pr_number`.
+/// TaskStore (task_id → pr mapping).
 pub(super) fn fetch_merged_pr_data(state: &DaemonState) -> (HashSet<u64>, Vec<serde_json::Value>) {
     // Check if we need to refresh (uses CooldownTracker instead of standalone timestamp)
     let needs_refresh = {
@@ -444,8 +459,9 @@ fn resolve_pr_owner(pf: &PrFields<'_>, tick: &PrPollTickState) -> Option<String>
 ///
 /// Locks persistent_state once, uses session-based resolution only.
 async fn resolve_pr_owner_from_state(state: &DaemonState, pr_number: u64) -> Option<String> {
+    let all_tasks = state.task_store.load_all();
     let ps = state.persistent_state.lock().await;
-    let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
+    let pr_task_associations = super::state::pr_to_task_map_from_tasks(&all_tasks);
 
     let session_task_map: HashMap<String, String> = ps
         .sessions
@@ -666,9 +682,17 @@ async fn decide_and_build_pr_issue_effects(
         .filter_map(|t| t.channel.map(|ch| (t.id, ch)))
         .collect();
     let task_thread_map = task_thread_map_from_store(&state.task_store);
+    let all_tasks = state.task_store.load_all();
+    let pr_task_associations = super::state::pr_to_task_map_from_tasks(&all_tasks);
     let mut pr_ctx = {
         let ps = state.persistent_state.lock().await;
-        PrContext::from_persistent_state(&ps, pr_number, task_channel_map, task_thread_map)
+        PrContext::from_persistent_state(
+            &ps,
+            pr_number,
+            task_channel_map,
+            task_thread_map,
+            pr_task_associations,
+        )
     };
 
     // Defense-in-depth: check reviewer_pr_assignments from tick state.
@@ -1610,17 +1634,26 @@ async fn collect_stuck_condition_effects(
 
     // Pre-fetch async data so per-PR scenario functions can be synchronous.
     let ctx = {
+        let all_tasks = state.task_store.load_all();
+        let pr_task_associations = super::state::pr_to_task_map_from_tasks(&all_tasks);
         let ps = state.persistent_state.lock().await;
         let assigned: HashSet<u64> = prs
             .iter()
             .filter_map(|pr| pr.get("number").and_then(|n| n.as_u64()))
-            .filter(|&n| ps.active_reviewer_for_pr(n).is_some())
+            .filter(|&n| {
+                ps.active_reviewer_for_pr(n, &pr_task_associations)
+                    .is_some()
+            })
             .collect();
         let active_reviewers: HashSet<u64> = prs
             .iter()
             .filter_map(|pr| {
                 let n = pr.get("number").and_then(|n| n.as_u64())?;
-                if ps.active_reviewer_for_pr(n).is_some() && !ps.github.has_cached_review(n) {
+                if ps
+                    .active_reviewer_for_pr(n, &pr_task_associations)
+                    .is_some()
+                    && !ps.github.has_cached_review(n)
+                {
                     Some(n)
                 } else {
                     None
@@ -1631,7 +1664,6 @@ async fn collect_stuck_condition_effects(
         // With task-based naming, there is always a name available.
         // The only constraint is the in-progress task limit.
         let has_available_slots = !at_task_limit;
-        let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
         let pr_session_names: HashMap<u64, String> = {
             let task_to_name: HashMap<&str, &str> = ps
                 .sessions
@@ -1654,7 +1686,6 @@ async fn collect_stuck_condition_effects(
                 })
                 .collect()
         };
-        let all_tasks = state.task_store.load_all();
         let task_channel: HashMap<String, String> = all_tasks
             .iter()
             .filter_map(|t| t.channel.as_ref().map(|ch| (t.id.clone(), ch.clone())))
@@ -2413,8 +2444,10 @@ async fn collect_comment_notification_effects(
         let pr_ctx = {
             let tc = task_channel_map_from_store(&state.task_store);
             let tt = task_thread_map_from_store(&state.task_store);
+            let all_tasks = state.task_store.load_all();
+            let pr_task_associations = super::state::pr_to_task_map_from_tasks(&all_tasks);
             let ps = state.persistent_state.lock().await;
-            PrContext::from_persistent_state(&ps, pr_number, tc, tt)
+            PrContext::from_persistent_state(&ps, pr_number, tc, tt, pr_task_associations)
         };
 
         // If the linked task is completed, create a follow-up task rather than
@@ -2568,16 +2601,20 @@ async fn collect_review_complete_effects(
     // idle reviewers stuck with assignments preventing break dispatch.
     {
         let mut ps = state.persistent_state.lock().await;
-        if ps.active_reviewer_for_pr(pr_number).is_some() {
+        if ps
+            .active_reviewer_for_pr(pr_number, pr_task_associations)
+            .is_some()
+        {
             debug!(
                 "PR #{} review completed, marking reviewer sessions as stopped",
                 pr_number
             );
             // Find session IDs of active reviewers for this PR
+            let task_id = pr_task_associations.get(&pr_number);
             let session_ids: Vec<String> = ps
                 .active_reviewer_sessions()
                 .iter()
-                .filter(|s| s.pr_number == Some(pr_number))
+                .filter(|s| task_id.is_some_and(|tid| s.task_id.as_deref() == Some(tid.as_str())))
                 .map(|s| s.session_id.clone())
                 .collect();
             // Mark them as stopped so pr_has_active_reviewer returns false
@@ -2951,7 +2988,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
     ) = {
         let ps = state.persistent_state.lock().await;
         let all_tasks = state.task_store.load_all();
-        let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
+        let pr_task_associations = super::state::pr_to_task_map_from_tasks(&all_tasks);
         let session_task_map: HashMap<String, String> = ps
             .sessions
             .iter()
@@ -2973,7 +3010,12 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             .iter()
             .filter_map(|t| t.thread_id.as_ref().map(|tid| (t.id.clone(), tid.clone())))
             .collect();
-        let pr_ctx = PrContext::routing_only(&ps, task_channel.clone(), task_thread);
+        let pr_ctx = PrContext::routing_only(
+            &ps,
+            task_channel.clone(),
+            task_thread,
+            pr_task_associations.clone(),
+        );
         let is_at_task_limit = at_task_limit;
         let channel_workflow_channels: std::collections::HashSet<String> =
             ps.channel_workflows.keys().cloned().collect();
@@ -3526,8 +3568,9 @@ pub(super) async fn handle_pr_comment_nudge(
 
     // Check if this PR is linked to a task, and handle based on task status.
     if let Some((task_id, channel_lead_names)) = {
+        let all_tasks = state.task_store.load_all();
         let ps = state.persistent_state.lock().await;
-        let pr_task_map = super::state::pr_to_task_map_from_sessions(&ps.sessions);
+        let pr_task_map = super::state::pr_to_task_map_from_tasks(&all_tasks);
         pr_task_map
             .get(&pr_number)
             .cloned()
@@ -3648,8 +3691,10 @@ pub(super) async fn handle_pr_comment_nudge(
 
         // Look up the reviewer span and task association from persistent state
         let (reviewer_name, reviewer_session_id, task_id) = {
+            let all_tasks = state.task_store.load_all();
+            let pr_to_task = super::state::pr_to_task_map_from_tasks(&all_tasks);
             let ps = state.persistent_state.lock().await;
-            let span = ps.active_reviewer_for_pr(pr_number);
+            let span = ps.active_reviewer_for_pr(pr_number, &pr_to_task);
             match span {
                 Some(s) => {
                     let name = s.name.clone();
@@ -3658,9 +3703,7 @@ pub(super) async fn handle_pr_comment_nudge(
                     } else {
                         Some(s.session_id.clone())
                     };
-                    let tid = super::state::pr_to_task_map_from_sessions(&ps.sessions)
-                        .get(&pr_number)
-                        .cloned();
+                    let tid = pr_to_task.get(&pr_number).cloned();
                     (name, sid, tid)
                 }
                 None => {
@@ -3762,8 +3805,10 @@ pub(super) async fn handle_pr_comment_nudge(
     let pr_ctx = {
         let tc = task_channel_map_from_store(&state.task_store);
         let tt = task_thread_map_from_store(&state.task_store);
+        let all_tasks = state.task_store.load_all();
+        let pr_task_associations = super::state::pr_to_task_map_from_tasks(&all_tasks);
         let ps = state.persistent_state.lock().await;
-        PrContext::from_persistent_state(&ps, pr_number, tc, tt)
+        PrContext::from_persistent_state(&ps, pr_number, tc, tt, pr_task_associations)
     };
 
     // Decide action using pure decision function with handoff support
@@ -3911,12 +3956,17 @@ pub(super) async fn handle_webhook_review_state_change(
     let pr_ctx = {
         let tc = task_channel_map_from_store(&state.task_store);
         let tt = task_thread_map_from_store(&state.task_store);
+        let all_tasks = state.task_store.load_all();
+        let pr_task_associations = super::state::pr_to_task_map_from_tasks(&all_tasks);
         let ps = state.persistent_state.lock().await;
-        let mut ctx = PrContext::from_persistent_state(&ps, pr_number, tc, tt);
+        let mut ctx =
+            PrContext::from_persistent_state(&ps, pr_number, tc, tt, pr_task_associations.clone());
 
         // Defense-in-depth: check spans for an active reviewer on this PR.
         if !ctx.has_active_reviewer {
-            ctx.has_active_reviewer = ps.active_reviewer_for_pr(pr_number).is_some();
+            ctx.has_active_reviewer = ps
+                .active_reviewer_for_pr(pr_number, &pr_task_associations)
+                .is_some();
         }
 
         ctx
@@ -4116,8 +4166,10 @@ pub(super) async fn handle_webhook_ci_failure(
     let pr_ctx = {
         let tc = task_channel_map_from_store(&state.task_store);
         let tt = task_thread_map_from_store(&state.task_store);
+        let all_tasks = state.task_store.load_all();
+        let pr_task_associations = super::state::pr_to_task_map_from_tasks(&all_tasks);
         let ps = state.persistent_state.lock().await;
-        PrContext::from_persistent_state(&ps, pr_number, tc, tt)
+        PrContext::from_persistent_state(&ps, pr_number, tc, tt, pr_task_associations)
     };
 
     let at_task_limit = state.is_at_task_limit();
@@ -4564,6 +4616,7 @@ pub fn collect_pr_task_link_effects(
                 task_id: task_id_str.to_string(),
                 pr_number,
                 dir_key: ps.tick_dir_key.clone(),
+                branch: None,
             });
         }
     }
@@ -4619,7 +4672,10 @@ pub fn collect_merged_pr_cleanup_effects(ps: &super::state::DaemonPersistentStat
 /// - The coworker whose PR just merged (they're being cleaned up)
 /// - Coworkers on the merge-rebase nudge cooldown
 /// - Coworkers without an active session (no `name_session_map` entry)
-pub fn collect_merge_rebase_nudge_effects(ps: &super::state::DaemonPersistentState) -> Vec<Effect> {
+pub fn collect_merge_rebase_nudge_effects(
+    ps: &super::state::DaemonPersistentState,
+    task_to_pr: &HashMap<String, u64>,
+) -> Vec<Effect> {
     if ps.tick_merged_pr_numbers.is_empty() {
         return vec![];
     }
@@ -4651,8 +4707,8 @@ pub fn collect_merge_rebase_nudge_effects(ps: &super::state::DaemonPersistentSta
         .collect::<Vec<_>>()
         .join(", ");
 
-    let open_pr_coworkers = sessions_with_open_prs(ps);
-    let merged_pr_coworkers = sessions_with_merged_prs(ps);
+    let open_pr_coworkers = sessions_with_open_prs(ps, task_to_pr);
+    let merged_pr_coworkers = sessions_with_merged_prs(ps, task_to_pr);
 
     for coworker_name in &open_pr_coworkers {
         // Skip the coworker(s) whose PR just merged
@@ -4749,7 +4805,6 @@ fn effect_variant_name(e: &Effect) -> &'static str {
         Effect::ClearOrphanedPrLeadNudge { .. } => "ClearOrphanedPrLeadNudge",
         Effect::RerunWorkflow { .. } => "RerunWorkflow",
         Effect::UpdatePrComment { .. } => "UpdatePrComment",
-        Effect::LinkPrToSession { .. } => "LinkPrToSession",
         Effect::CompleteTask { .. } => "CompleteTask",
         Effect::ClearBlockedBy { .. } => "ClearBlockedBy",
         Effect::SetTaskPr { .. } => "SetTaskPr",
@@ -4987,9 +5042,12 @@ fn run_git_in_worktree(working_dir: &str, args: &[&str]) -> Vec<String> {
 /// 4. If overlap detected, nudges the coworker and posts to ops
 ///
 /// Called from `evaluate_tick(PrPollTick)`.
-pub async fn check_for_rebase_regressions(ps: &super::state::DaemonPersistentState) -> Vec<Effect> {
+pub async fn check_for_rebase_regressions(
+    ps: &super::state::DaemonPersistentState,
+    task_to_pr: &HashMap<String, u64>,
+) -> Vec<Effect> {
     let mut effects = Vec::new();
-    let open_pr_coworkers = sessions_with_open_prs(ps);
+    let open_pr_coworkers = sessions_with_open_prs(ps, task_to_pr);
 
     for coworker_name in &open_pr_coworkers {
         // Skip coworkers on cooldown

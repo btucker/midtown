@@ -1132,9 +1132,10 @@ impl DaemonState {
 
         // Slow path: check via API calls (no lock held)
         let (cached, assigned_reviewer, assigned_session_id) = {
+            let pr_to_task = self.task_store.pr_to_task_map();
             let ps = self.persistent_state.lock().await;
             let cached = ps.github.has_cached_review(pr_number);
-            let span = ps.active_reviewer_for_pr(pr_number);
+            let span = ps.active_reviewer_for_pr(pr_number, &pr_to_task);
             let reviewer = span.map(|s| s.name.clone());
             let session_id = span.map(|s| s.session_id.clone());
             (cached, reviewer, session_id)
@@ -1593,7 +1594,6 @@ impl DaemonState {
                     task_id: config.task_id.clone(),
                     name: name.clone(),
                     working_dir: working_dir_for_record.clone(),
-                    pr_number: config.pr_number,
                     initial_prompt: config
                         .persisted_initial_prompt
                         .clone()
@@ -2353,13 +2353,11 @@ async fn persist_sessions_for_restart(state: &DaemonState) -> crate::Result<()> 
                     .map(|s| (s.task_id.clone(),));
                 if let Some((task_id,)) = reviewer_span {
                     info.coworker_type = Some("reviewer".to_string());
-                    let pr_num = task_id.as_ref().and_then(|tid| {
-                        persistent
-                            .sessions
-                            .values()
-                            .find(|s| s.task_id.as_deref() == Some(tid))
-                            .and_then(|s| s.pr_number)
-                    });
+                    let task_to_pr = state.task_store.task_to_pr_map();
+                    let pr_num = task_id
+                        .as_ref()
+                        .and_then(|tid| task_to_pr.get(tid))
+                        .copied();
                     if let Some(pr_num) = pr_num {
                         info.pr_number = Some(pr_num);
                         info.purpose = format!("reviewer for PR #{}", pr_num);
@@ -2832,8 +2830,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
 
     // Recover coworker sessions from session records. Channel leads are recovered
     // separately below.
-    let (session_recovery_effects, recovered_session_ids) =
-        startup::recover_from_session_records(&state.persistent_state, paths.dir_key()).await;
+    let task_to_pr = state.task_store.task_to_pr_map();
+    let (session_recovery_effects, recovered_session_ids) = startup::recover_from_session_records(
+        &state.persistent_state,
+        paths.dir_key(),
+        &task_to_pr,
+    )
+    .await;
     if !session_recovery_effects.is_empty() {
         info!(
             "Executing {} session record recovery effect(s)",
@@ -3192,30 +3195,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     );
                 }
 
-                // Handle PR-opened events: store author session + auto-set task PR association
+                // Handle PR-opened events: set task PR association + link worktree
                 if let Some(ref pr_opened) = webhook_event.pr_opened {
                     let mut pr_effects = Vec::new();
-
-                    // Store author session for PR handoff (allows any coworker to resume the PR)
-                    if let Some(ref author) = pr_opened.author_coworker {
-                        if let Some(session_id) = state.coworkers.get_session_id(author) {
-                            pr_effects.push(effects::Effect::LinkPrToSession {
-                                pr_number: pr_opened.pr_number,
-                                session_id,
-                                branch: pr_opened.branch.clone(),
-                                author: author.clone(),
-                                title: pr_opened.title.clone(),
-                            });
-                        } else {
-                            debug!(
-                                "PR #{} author {} has no known session ID (discovered coworker?)",
-                                pr_opened.pr_number, author
-                            );
-                        }
-
-                        // Auto-merge warning is now sent by the workflow script's
-                        // pr.opened handler (policy, not mechanism).
-                    }
 
                     // Auto-set task PR association when PR title contains [Midtown !XX]
                     if let Some(task_id) =
@@ -3225,6 +3207,7 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                             task_id: task_id.to_string(),
                             pr_number: pr_opened.pr_number,
                             dir_key: state.paths.dir_key().to_string(),
+                            branch: Some(pr_opened.branch.clone()),
                         });
                         info!(
                             "Auto-setting PR #{} association for task !{}",
@@ -3376,8 +3359,9 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 // the assigned reviewer is still working. (Bug fix for !1924)
                 if let Some(pr_number) = webhook_event.reviewed_pr {
                     let (assigned_reviewer, assigned_session_id) = {
+                        let pr_to_task = state.task_store.pr_to_task_map();
                         let ps = state.persistent_state.lock().await;
-                        let span = ps.active_reviewer_for_pr(pr_number);
+                        let span = ps.active_reviewer_for_pr(pr_number, &pr_to_task);
                         let reviewer = span.map(|s| s.name.clone());
                         let session_id = span.map(|s| s.session_id.clone());
                         (reviewer, session_id)

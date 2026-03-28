@@ -453,17 +453,6 @@ pub enum Effect {
         repo_full_name: String,
         new_body: String,
     },
-    /// Link a PR to its session record and worktree.
-    ///
-    /// When a coworker opens a PR, backfill `pr_number` and `branch` on the
-    /// SessionRecord and link the PR to the worktree by branch name.
-    LinkPrToSession {
-        pr_number: u64,
-        session_id: String,
-        branch: String,
-        author: String,
-        title: String,
-    },
     /// Mark a task as completed.
     ///
     /// Called when a PR is merged with `[Midtown !XX]` in the title (dispatch.rs).
@@ -475,13 +464,17 @@ pub enum Effect {
         completed_task_id: String,
         dir_key: String,
     },
-    /// Set the explicit PR association for a task.
+    /// Set the explicit PR association for a task and link worktree.
     ///
-    /// Called when a PR is opened with `[Midtown !XX]` in the title to link the task to the PR.
+    /// Called when a PR is opened with `[Midtown !XX]` in the title.
+    /// Also backfills branch on the session and links the PR to the worktree.
     SetTaskPr {
         task_id: String,
         pr_number: u64,
         dir_key: String,
+        /// Branch from the PR event — used to backfill session branch and link worktree.
+        #[allow(dead_code)]
+        branch: Option<String>,
     },
 
     /// Create a child review task for a PR that needs code review.
@@ -2157,54 +2150,6 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     warn!("Failed to update comment {}: {}", comment_id, e);
                 }
             },
-            Effect::LinkPrToSession {
-                pr_number,
-                session_id,
-                branch,
-                author,
-                title: _,
-            } => {
-                let mut ps = state.persistent_state.lock().await;
-                // Backfill pr_number on the SessionRecord (if it exists).
-                if let Some(record) = ps.sessions.get_mut(&session_id)
-                    && record.pr_number.is_none()
-                {
-                    record.pr_number = Some(pr_number);
-                    debug!(
-                        "Backfilled pr_number={} on SessionRecord {} (task={:?})",
-                        pr_number, session_id, record.task_id
-                    );
-                }
-                // Backfill SessionRecord.branch from PR head_ref (often None at spawn time).
-                if let Some(record) = ps.sessions.get_mut(&session_id)
-                    && record.branch.is_none()
-                {
-                    record.branch = Some(branch.clone());
-                    debug!(
-                        "Backfilled branch={} on SessionRecord {} (task={:?})",
-                        branch, session_id, record.task_id
-                    );
-                }
-                // Link the PR to the worktree by matching branch name.
-                // Use get_by_branch instead of get_by_coworker because coworkers can have
-                // multiple worktrees (one per task), and we need to match the exact branch.
-                if let Some(assignment) = ps.worktree_registry.get_by_branch(&branch) {
-                    let wt_id = assignment.worktree_id.clone();
-                    ps.worktree_registry.set_pr_number(&wt_id, pr_number);
-                    debug!(
-                        "Linked PR #{} to worktree {} via branch {} (author: {})",
-                        pr_number, wt_id, branch, author
-                    );
-                }
-                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
-                    warn!("Failed to persist PR→session link: {}", e);
-                } else {
-                    info!(
-                        "Linked PR #{} to session {} (author={})",
-                        pr_number, session_id, author
-                    );
-                }
-            }
             Effect::CompleteTask { task_id, dir_key } => {
                 if let Err(e) = state.task_store.complete_task(&task_id) {
                     warn!("Failed to complete task !{}: {}", task_id, e);
@@ -2245,6 +2190,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 task_id,
                 pr_number,
                 dir_key: _,
+                branch,
             } => {
                 if let Err(e) = state.task_store.update_task_fields(
                     &task_id,
@@ -2261,6 +2207,36 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         "Set PR association for task !{}: PR #{}",
                         task_id, pr_number
                     );
+                }
+                // Link the PR to the worktree by matching branch name.
+                // Backfill SessionRecord.branch from PR head_ref if needed.
+                let mut ps = state.persistent_state.lock().await;
+                // Prefer branch from PR event, fall back to session record
+                let resolved_branch =
+                    branch.or_else(|| ps.session_by_task(&task_id).and_then(|s| s.branch.clone()));
+                if let Some(ref branch_name) = resolved_branch {
+                    // Backfill branch on session if missing
+                    if let Some(session_id) = ps
+                        .session_by_task(&task_id)
+                        .filter(|s| s.branch.is_none())
+                        .map(|s| s.session_id.clone())
+                        && let Some(record) = ps.sessions.get_mut(&session_id)
+                    {
+                        record.branch = Some(branch_name.clone());
+                        debug!(
+                            "Backfilled branch={} on session {} (task !{})",
+                            branch_name, session_id, task_id
+                        );
+                    }
+                    // Link worktree to PR
+                    if let Some(assignment) = ps.worktree_registry.get_by_branch(branch_name) {
+                        let wt_id = assignment.worktree_id.clone();
+                        ps.worktree_registry.set_pr_number(&wt_id, pr_number);
+                        debug!(
+                            "Linked PR #{} to worktree via branch {} (task !{})",
+                            pr_number, branch_name, task_id
+                        );
+                    }
                 }
             }
             Effect::CreateReviewTask {
@@ -3855,12 +3831,14 @@ async fn rerun_workflow(state: &DaemonState, run_id: u64, check_name: &str, pr_n
 async fn lookup_existing_placeholder(state: &DaemonState, pr_number: u64) -> Option<u64> {
     // Tier 1: Check TaskStore for placeholder_comment_id on reviewer tasks.
     {
+        let pr_to_task = state.task_store.pr_to_task_map();
         let ps = state.persistent_state.lock().await;
-        let task_id = ps
-            .active_reviewer_sessions()
-            .iter()
-            .filter(|s| s.pr_number == Some(pr_number))
-            .find_map(|s| s.task_id.clone());
+        let task_id = pr_to_task.get(&pr_number).and_then(|tid| {
+            ps.active_reviewer_sessions()
+                .iter()
+                .find(|s| s.task_id.as_deref() == Some(tid.as_str()))
+                .and_then(|s| s.task_id.clone())
+        });
         drop(ps);
         if let Some(tid) = task_id
             && let Ok(task) = state.task_store.load(&tid)
@@ -3995,12 +3973,17 @@ async fn post_pr_comment(state: &DaemonState, pr_number: u64, reviewer_name: &st
 
         // Store the comment ID in TaskStore.
         {
+            let pr_to_task = state.task_store.pr_to_task_map();
             let ps = state.persistent_state.lock().await;
-            let task_ids: Vec<String> = ps
-                .active_reviewer_sessions()
-                .iter()
-                .filter(|s| s.pr_number == Some(pr_number))
-                .filter_map(|s| s.task_id.clone())
+            let task_ids: Vec<String> = pr_to_task
+                .get(&pr_number)
+                .into_iter()
+                .filter(|tid| {
+                    ps.active_reviewer_sessions()
+                        .iter()
+                        .any(|s| s.task_id.as_deref() == Some(tid.as_str()))
+                })
+                .cloned()
                 .collect();
             drop(ps);
             // Write to TaskStore (primary)

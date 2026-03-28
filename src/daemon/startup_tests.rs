@@ -323,8 +323,12 @@ async fn test_recover_from_session_records_generates_resume_effects() {
         state.sessions.insert("sess-abc".to_string(), record);
     }
 
-    let (effects, recovered_ids) =
-        recover_from_session_records(&persistent_state, "test-repo").await;
+    let (effects, recovered_ids) = recover_from_session_records(
+        &persistent_state,
+        "test-repo",
+        &std::collections::HashMap::new(),
+    )
+    .await;
 
     assert_eq!(effects.len(), 1);
     assert!(recovered_ids.contains("sess-abc"));
@@ -349,8 +353,12 @@ async fn test_recover_from_session_records_skips_non_resumable() {
         state.sessions.insert("sess-abc".to_string(), record);
     }
 
-    let (effects, recovered_ids) =
-        recover_from_session_records(&persistent_state, "test-repo").await;
+    let (effects, recovered_ids) = recover_from_session_records(
+        &persistent_state,
+        "test-repo",
+        &std::collections::HashMap::new(),
+    )
+    .await;
 
     assert!(
         effects.is_empty(),
@@ -371,8 +379,12 @@ async fn test_recover_from_session_records_skips_channel_leads() {
         state.sessions.insert("sess-cl".to_string(), record);
     }
 
-    let (effects, recovered_ids) =
-        recover_from_session_records(&persistent_state, "test-repo").await;
+    let (effects, recovered_ids) = recover_from_session_records(
+        &persistent_state,
+        "test-repo",
+        &std::collections::HashMap::new(),
+    )
+    .await;
 
     assert!(
         effects.is_empty(),
@@ -391,12 +403,17 @@ async fn test_recover_from_session_records_reviewer_with_pr() {
         let mut state = persistent_state.lock().await;
         let mut record = test_session_record("sess-rev", "amsterdam", "midtown-code-reviewer");
         record.agent_type = "midtown-code-reviewer".to_string();
+        record.task_id = Some("task-rev-123".to_string());
         record.pr_number = Some(123);
         state.sessions.insert("sess-rev".to_string(), record);
     }
 
+    // task_to_pr map: recover_from_session_records now uses this to find PR for reviewer tasks
+    let task_to_pr: std::collections::HashMap<String, u64> =
+        [("task-rev-123".to_string(), 123u64)].into_iter().collect();
+
     let (effects, recovered_ids) =
-        recover_from_session_records(&persistent_state, "test-repo").await;
+        recover_from_session_records(&persistent_state, "test-repo", &task_to_pr).await;
 
     assert_eq!(effects.len(), 1);
     assert!(recovered_ids.contains("sess-rev"));
@@ -425,8 +442,12 @@ async fn test_recover_from_session_records_reviewer_without_pr_skipped() {
         state.sessions.insert("sess-rev".to_string(), record);
     }
 
-    let (effects, recovered_ids) =
-        recover_from_session_records(&persistent_state, "test-repo").await;
+    let (effects, recovered_ids) = recover_from_session_records(
+        &persistent_state,
+        "test-repo",
+        &std::collections::HashMap::new(),
+    )
+    .await;
 
     assert!(
         effects.is_empty(),
@@ -448,7 +469,12 @@ async fn test_recover_from_session_records_restores_working_dir() {
         state.sessions.insert("sess-abc".to_string(), record);
     }
 
-    let (effects, _) = recover_from_session_records(&persistent_state, "test-repo").await;
+    let (effects, _) = recover_from_session_records(
+        &persistent_state,
+        "test-repo",
+        &std::collections::HashMap::new(),
+    )
+    .await;
 
     assert_eq!(effects.len(), 1);
     match &effects[0] {
@@ -468,8 +494,12 @@ async fn test_recover_from_session_records_restores_working_dir() {
 async fn test_recover_from_session_records_empty() {
     let persistent_state = tokio::sync::Mutex::new(DaemonPersistentState::default());
 
-    let (effects, recovered_ids) =
-        recover_from_session_records(&persistent_state, "test-repo").await;
+    let (effects, recovered_ids) = recover_from_session_records(
+        &persistent_state,
+        "test-repo",
+        &std::collections::HashMap::new(),
+    )
+    .await;
 
     assert!(effects.is_empty());
     assert!(recovered_ids.is_empty());
@@ -486,7 +516,12 @@ async fn test_recover_from_session_records_uses_preferred_name() {
         state.sessions.insert("sess-abc".to_string(), record);
     }
 
-    let (effects, _) = recover_from_session_records(&persistent_state, "test-repo").await;
+    let (effects, _) = recover_from_session_records(
+        &persistent_state,
+        "test-repo",
+        &std::collections::HashMap::new(),
+    )
+    .await;
 
     assert_eq!(effects.len(), 1);
     match &effects[0] {
@@ -508,7 +543,12 @@ async fn test_recover_from_session_records_falls_back_to_current_name() {
         state.sessions.insert("sess-abc".to_string(), record);
     }
 
-    let (effects, _) = recover_from_session_records(&persistent_state, "test-repo").await;
+    let (effects, _) = recover_from_session_records(
+        &persistent_state,
+        "test-repo",
+        &std::collections::HashMap::new(),
+    )
+    .await;
 
     assert_eq!(effects.len(), 1);
     match &effects[0] {
@@ -552,8 +592,12 @@ async fn test_recover_from_session_records_uses_lead_config_for_lead() {
         state.sessions.insert("sess-lead".to_string(), record);
     }
 
-    let (effects, recovered_ids) =
-        recover_from_session_records(&persistent_state, "test-repo").await;
+    let (effects, recovered_ids) = recover_from_session_records(
+        &persistent_state,
+        "test-repo",
+        &std::collections::HashMap::new(),
+    )
+    .await;
 
     assert_eq!(effects.len(), 1);
     assert!(recovered_ids.contains("sess-lead"));
@@ -600,8 +644,12 @@ async fn test_recover_from_session_records_uses_lead_config_for_codex_lead_recor
         state.sessions.insert("sess-lead-codex".to_string(), record);
     }
 
-    let (effects, recovered_ids) =
-        recover_from_session_records(&persistent_state, "test-repo").await;
+    let (effects, recovered_ids) = recover_from_session_records(
+        &persistent_state,
+        "test-repo",
+        &std::collections::HashMap::new(),
+    )
+    .await;
 
     assert_eq!(effects.len(), 1);
     assert!(recovered_ids.contains("sess-lead-codex"));
@@ -672,7 +720,12 @@ async fn test_recover_from_session_records_skips_stopped_sessions() {
         state.sessions.insert("sess-stopped".to_string(), stopped);
     }
 
-    let (effects, _) = recover_from_session_records(&persistent_state, "test-repo").await;
+    let (effects, _) = recover_from_session_records(
+        &persistent_state,
+        "test-repo",
+        &std::collections::HashMap::new(),
+    )
+    .await;
 
     // Only the running session should produce an effect
     assert_eq!(effects.len(), 1, "Should only recover running sessions");
@@ -705,7 +758,12 @@ async fn test_recover_from_session_records_deduplicates_by_name() {
         state.sessions.insert("sess-new".to_string(), newer);
     }
 
-    let (effects, _) = recover_from_session_records(&persistent_state, "test-repo").await;
+    let (effects, _) = recover_from_session_records(
+        &persistent_state,
+        "test-repo",
+        &std::collections::HashMap::new(),
+    )
+    .await;
 
     // Should only produce one effect despite two sessions with the same name
     assert_eq!(effects.len(), 1, "Should deduplicate by name");
@@ -985,8 +1043,12 @@ async fn test_recover_worker_named_same_as_repo_not_treated_as_lead() {
         state.sessions.insert("sess-worker".to_string(), record);
     }
 
-    let (effects, recovered_ids) =
-        recover_from_session_records(&persistent_state, "test-repo").await;
+    let (effects, recovered_ids) = recover_from_session_records(
+        &persistent_state,
+        "test-repo",
+        &std::collections::HashMap::new(),
+    )
+    .await;
 
     assert_eq!(effects.len(), 1);
     assert!(recovered_ids.contains("sess-worker"));

@@ -310,17 +310,18 @@ pub(crate) fn compute_active_reviewers_from_spans(
 
 /// Build the reviewer → PR number assignment map from reviewer sessions.
 ///
-/// Maps agent_name → PR number from `SessionRecord.pr_number`.
+/// Maps agent_name → PR number via TaskStore (task_id → pr lookup).
 /// Dead reviewers (whose process has exited but whose session record is
 /// still open) are included so that `decide_dead_reviewer_respawns` can
 /// detect and respawn them.
 pub(crate) fn build_reviewer_pr_assignments_from_spans(
     ps: &crate::daemon::state::DaemonPersistentState,
+    task_to_pr: &HashMap<String, u64>,
 ) -> HashMap<String, u64> {
     let mut assignments = HashMap::new();
     for span in ps.all_reviewer_sessions() {
-        if let Some(pr) = span.pr_number {
-            assignments.insert(span.name.clone(), pr);
+        if let Some(pr) = span.task_id.as_ref().and_then(|tid| task_to_pr.get(tid)) {
+            assignments.insert(span.name.clone(), *pr);
         }
     }
     assignments

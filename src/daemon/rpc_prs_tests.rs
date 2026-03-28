@@ -88,6 +88,17 @@ async fn test_merge_blocked_while_reviewer_actively_assigned() {
             s.pr_number = Some(pr_number);
         }
     }
+    // Task store entry: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "task-1624".to_string(),
+            pr: Some(pr_number),
+            agent_type: "midtown-code-reviewer".to_string(),
+            agent_name: "park".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
 
     // Attempt to merge — should be rejected because reviewer is active
     let response = handle_pr_merge(crate::rpc::RequestId::Number(1), pr_number, &state).await;
@@ -150,6 +161,17 @@ async fn test_merge_not_blocked_when_reviewed_but_assignment_not_yet_cleared() {
         }
         ps.github.mark_reviewed_pr(pr_number);
     }
+    // Task store entry: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "task-88".to_string(),
+            pr: Some(pr_number),
+            agent_type: "midtown-code-reviewer".to_string(),
+            agent_name: "park".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
 
     let response = handle_pr_merge(crate::rpc::RequestId::Number(4), pr_number, &state).await;
 
@@ -186,6 +208,17 @@ async fn test_merge_not_blocked_after_reviewer_assignment_removed() {
             s.is_running = false;
         }
     }
+    // Task store entry: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "task-42".to_string(),
+            pr: Some(pr_number),
+            agent_type: "midtown-code-reviewer".to_string(),
+            agent_name: "park".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
 
     let response = handle_pr_merge(crate::rpc::RequestId::Number(3), pr_number, &state).await;
 
@@ -360,7 +393,10 @@ async fn test_review_post_with_stored_comment_id_succeeds() {
         .task_store
         .save(&crate::task_store::Task {
             id: "task-42".into(),
+            pr: Some(pr_number),
             placeholder_comment_id: Some(comment_id),
+            agent_type: "midtown-code-reviewer".to_string(),
+            agent_name: "park".to_string(),
             ..Default::default()
         })
         .unwrap();
@@ -474,6 +510,17 @@ async fn test_review_post_body_format() {
             s.pr_number = Some(pr_number);
         }
     }
+    // Task store entry: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "task-50".to_string(),
+            pr: Some(pr_number),
+            agent_type: "midtown-code-reviewer".to_string(),
+            agent_name: "lexington".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
 
     // The handler constructs the body at line 1015-1018 of rpc_prs.rs:
     //   <!-- midtown: {reviewer_name} -->\n\n{body}\n\n🌃 Co-built with [Midtown](...)
@@ -554,7 +601,10 @@ async fn test_review_post_gh_api_failure_returns_error() {
         .task_store
         .save(&crate::task_store::Task {
             id: "task-77".into(),
+            pr: Some(pr_number),
             placeholder_comment_id: Some(11111u64),
+            agent_type: "midtown-code-reviewer".to_string(),
+            agent_name: "york".to_string(),
             ..Default::default()
         })
         .unwrap();

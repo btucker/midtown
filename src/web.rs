@@ -1168,6 +1168,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         .unwrap_or_default();
 
     // Transform open PRs: enrich with reviewer info from persistent state
+    let pr_to_task = task_store.pr_to_task_map();
     let pull_requests: Vec<serde_json::Value> = pull_requests
         .into_iter()
         .map(|pr| {
@@ -1175,7 +1176,7 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
             // RPC returns "ci_status" / "reviewer" / "reviewed_at"; gh CLI returns
             // "isDraft" / "reviewDecision". Handle both shapes.
             // Look up reviewer from active spans (covers both RPC and CLI shapes)
-            let span = persistent_state.active_reviewer_for_pr(pr_number);
+            let span = persistent_state.active_reviewer_for_pr(pr_number, &pr_to_task);
             let reviewer = pr
                 .str_field("reviewer")
                 .map(|s| s.to_string())

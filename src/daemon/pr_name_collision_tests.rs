@@ -124,6 +124,17 @@ async fn test_reviewer_allocation_excludes_active_session_names() {
             },
         );
     }
+    // Task store entry: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "200".to_string(),
+            pr: Some(7777),
+            agent_type: "midtown-code-author".to_string(),
+            agent_name: "park".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
 
     let registry = crate::worktree_registry::WorktreeRegistry::new();
 

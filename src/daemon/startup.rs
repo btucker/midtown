@@ -488,6 +488,7 @@ pub async fn recoverable_session_pids(
 pub async fn recover_from_session_records(
     persistent_state: &tokio::sync::Mutex<DaemonPersistentState>,
     repo_name: &str,
+    task_to_pr: &HashMap<String, u64>,
 ) -> (Vec<Effect>, HashSet<String>) {
     let mut effects = Vec::new();
     let mut recovered_session_ids = HashSet::new();
@@ -573,7 +574,12 @@ pub async fn recover_from_session_records(
             // Must match recover_from_session_records() which also special-cases the lead.
             LaunchConfig::lead(repo_name, None)
         } else if record.is_reviewer() {
-            if let Some(pr_number) = record.pr_number {
+            let pr_number = record
+                .task_id
+                .as_ref()
+                .and_then(|tid| task_to_pr.get(tid))
+                .copied();
+            if let Some(pr_number) = pr_number {
                 let reviewer_provider = crate::config::get_execution_provider_for_role(
                     repo_name,
                     crate::config::ExecutionRole::Reviewer,

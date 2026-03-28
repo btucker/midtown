@@ -82,6 +82,17 @@ async fn test_pr_review_already_assigned_returns_message() {
             s.pr_number = Some(42);
         }
     }
+    // Task store entry: PR-task association is now task-store-driven
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: "task-42".to_string(),
+            pr: Some(42),
+            agent_type: "midtown-code-reviewer".to_string(),
+            agent_name: "lexington".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
 
     let response = handle_pr_review(RequestId::Number(1), 42, &state).await;
 
