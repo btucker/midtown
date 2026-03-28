@@ -373,6 +373,7 @@ pub(crate) async fn prepare_tick(state: &DaemonState) -> Vec<Task> {
         // PR task index (task store is the single source of truth)
         let task_store_task_to_pr = super::state::task_to_pr_map_from_tasks(&tasks);
         let pr_to_task = super::state::pr_to_task_map_from_tasks(&tasks);
+        ps.tick_task_to_pr = task_store_task_to_pr.clone();
         ps.tick_pr_task_index = super::snapshot::PrTaskIndex::new(
             task_store_task_to_pr,
             github_open_pr_task_ids,

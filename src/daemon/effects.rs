@@ -2238,6 +2238,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                         );
                     }
                 }
+                // Persist session branch backfill and worktree-PR link
+                if let Err(e) = ps.save_for_repo(state.paths.dir_key()) {
+                    warn!(
+                        "Failed to persist SetTaskPr state for task !{}: {}",
+                        task_id, e
+                    );
+                }
             }
             Effect::CreateReviewTask {
                 pr_number,

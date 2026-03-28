@@ -360,6 +360,10 @@ pub struct DaemonPersistentState {
     #[serde(skip)]
     pub tick_pr_task_index: crate::daemon::snapshot::PrTaskIndex,
 
+    /// task_id → pr_number map derived from tasks (pre-loaded for purity).
+    #[serde(skip)]
+    pub tick_task_to_pr: HashMap<String, u64>,
+
     /// Pre-evaluated cooldown states.
     #[serde(skip)]
     pub tick_orphan_spawn_cooldown_active: bool,

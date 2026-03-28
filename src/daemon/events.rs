@@ -154,7 +154,7 @@ pub async fn evaluate_tick(
                 effects.extend(super::health::detect_stale_attached_sessions(&ps));
                 effects.extend(super::health::ensure_lead_alive(&ps));
                 effects.extend(super::health::ensure_channel_leads_alive(&ps));
-                effects.extend(super::health::check_and_fire_reminders(&ps, state).await);
+                effects.extend(super::health::check_and_fire_reminders(&ps));
             }
             dedup_spawn_effects(effects)
         }

@@ -841,13 +841,11 @@ pub fn detect_stale_attached_sessions(ps: &DaemonPersistentState) -> Vec<Effect>
         .collect()
 }
 
-pub(super) async fn check_and_fire_reminders(
-    ps: &DaemonPersistentState,
-    state: &DaemonState,
-) -> Vec<Effect> {
-    let task_to_pr = state.task_store.task_to_pr_map();
-    let open_pr_coworkers: Vec<String> =
-        ps.sessions_with_open_prs(&task_to_pr).into_iter().collect();
+pub(super) fn check_and_fire_reminders(ps: &DaemonPersistentState) -> Vec<Effect> {
+    let open_pr_coworkers: Vec<String> = ps
+        .sessions_with_open_prs(&ps.tick_task_to_pr)
+        .into_iter()
+        .collect();
     let now = chrono::Utc::now();
 
     let mut effects = build_reminder_effects_at(
