@@ -18,6 +18,7 @@ use super::DaemonState;
 use super::constants::*;
 use super::effects::{self, Effect};
 use super::helpers::is_project_lead;
+use super::trackers::PrIssueType;
 
 /// Look up a task by ID in a task slice.
 fn task_by_id<'a>(tasks: &'a [Task], id: &str) -> Option<&'a Task> {
@@ -2015,29 +2016,35 @@ pub fn auto_close_completed_tasks(ps: &DaemonPersistentState, tasks: &[Task]) ->
             push_url,
         ));
 
-        // Notify the parent task's session when a review task completes.
-        // This ensures the PR author is nudged immediately rather than waiting
-        // for the next PR polling tick (~30s). A RecordPermanentPrNudge prevents
-        // the polling path (collect_review_complete_effects) from double-notifying.
+        // Route review feedback to the author session when a review task auto-closes.
+        // Uses the task.parent linkage to find the author's implementation task.
+        // RecordPermanentPrNudge prevents double-notification from the polling path.
         if task.agent_type == "midtown-code-reviewer"
-            && let (Some(parent_id), Some(pr_number)) = (&task.parent, task.pr)
+            && let (Some(pr_number), Some(parent_id)) = (task.pr, task.parent.as_ref())
         {
-            effects.push(Effect::TaskPrompt {
-                task_id: parent_id.clone(),
-                message: format!(
-                    "Review for PR #{} has been completed. Check the PR for review feedback and address any requested changes.",
+            let already_notified = ps
+                .permanent_pr_nudges
+                .iter()
+                .any(|(pr, it)| *pr == pr_number && *it == PrIssueType::ReviewComplete);
+            if !already_notified && let Some(_parent_task) = task_by_id(tasks, parent_id) {
+                let msg = format!(
+                    "Review of PR #{} is complete. Check the PR for reviewer feedback and address any issues.",
                     pr_number
-                ),
-                model: Some("opus".to_string()),
-                pr_context: Some(effects::TaskPromptPrContext {
+                );
+                effects.push(Effect::TaskPrompt {
+                    task_id: parent_id.clone(),
+                    message: msg,
+                    model: Some("opus".to_string()),
+                    pr_context: Some(effects::TaskPromptPrContext {
+                        pr_number,
+                        issue_type: PrIssueType::ReviewComplete,
+                    }),
+                });
+                effects.push(Effect::RecordPermanentPrNudge {
                     pr_number,
-                    issue_type: crate::daemon::trackers::PrIssueType::ReviewComplete,
-                }),
-            });
-            effects.push(Effect::RecordPermanentPrNudge {
-                pr_number,
-                issue_type: crate::daemon::trackers::PrIssueType::ReviewComplete,
-            });
+                    issue_type: PrIssueType::ReviewComplete,
+                });
+            }
         }
     }
 

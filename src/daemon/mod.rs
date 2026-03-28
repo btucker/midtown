@@ -3434,6 +3434,13 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                                 pr::cleanup_review_placeholders(pr_number, &repo).await;
                             });
                         }
+                        // Route review feedback to the author task immediately
+                        // (don't wait for the ~2min polling cycle).
+                        let state_for_review = Arc::clone(&state);
+                        tokio::spawn(async move {
+                            pr::handle_webhook_review_complete(&state_for_review, pr_number)
+                                .await;
+                        });
                     } else {
                         debug!(
                             "Webhook: ignoring review for PR #{} — author {:?} does not match assigned reviewer {:?}",
