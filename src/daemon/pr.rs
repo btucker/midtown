@@ -4023,15 +4023,19 @@ pub(super) async fn handle_webhook_review_complete(state: &DaemonState, pr_numbe
     }
 
     // Find the review task for this PR, its parent (author) task ID,
-    // and verify the parent task actually exists.
-    let parent_task_id = {
+    // the reviewer name, and verify the parent task actually exists.
+    let (parent_task_id, reviewer_name) = {
         let tasks = state.task_store.load_all();
-        let review_parent = tasks
+        let review_task = tasks
             .iter()
-            .find(|t| t.agent_type == "midtown-code-reviewer" && t.pr == Some(pr_number))
-            .and_then(|review_task| review_task.parent.clone());
+            .find(|t| t.agent_type == "midtown-code-reviewer" && t.pr == Some(pr_number));
+        let reviewer = review_task
+            .map(|t| t.agent_name.clone())
+            .unwrap_or_default();
+        let parent_id = review_task.and_then(|t| t.parent.clone());
         // Verify the parent task exists (guard against stale parent references)
-        review_parent.filter(|pid| tasks.iter().any(|t| t.id == *pid))
+        let verified = parent_id.filter(|pid| tasks.iter().any(|t| t.id == *pid));
+        (verified, reviewer)
     };
 
     let Some(parent_task_id) = parent_task_id else {
@@ -4050,7 +4054,15 @@ pub(super) async fn handle_webhook_review_complete(state: &DaemonState, pr_numbe
         pr_number, review_suffix
     );
 
-    let effects = vec![
+    // Build PrContext for the transparency thread post.
+    let pr_ctx = {
+        let tc = task_channel_map_from_store(&state.task_store);
+        let tt = task_thread_map_from_store(&state.task_store);
+        let ps = state.persistent_state.lock().await;
+        PrContext::from_persistent_state(&ps, pr_number, tc, tt)
+    };
+
+    let mut effects = vec![
         super::effects::Effect::TaskPrompt {
             task_id: parent_task_id,
             message: msg,
@@ -4065,6 +4077,16 @@ pub(super) async fn handle_webhook_review_complete(state: &DaemonState, pr_numbe
             issue_type: PrIssueType::ReviewComplete,
         },
     ];
+
+    // Post review feedback summary to the task's channel thread for transparency.
+    if let Some(thread_post) = review_feedback_thread_post(
+        pr_number,
+        PrIssueType::ReviewComplete,
+        &reviewer_name,
+        &pr_ctx,
+    ) {
+        effects.push(thread_post);
+    }
 
     info!(
         "PR #{} routing review-complete feedback to author task (webhook fast path)",
