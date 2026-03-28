@@ -24,7 +24,7 @@ pub struct Agent {
     pub stopped_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentIndex {
     pub by_id: HashMap<AgentId, Agent>,
     pub by_name: HashMap<String, AgentId>,

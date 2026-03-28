@@ -267,6 +267,10 @@ enum Commands {
         /// Default channel name
         #[arg(long, default_value = "main")]
         channel: String,
+
+        /// Port for the Axum web API server
+        #[arg(long)]
+        web_port: Option<u16>,
     },
     /// Run a one-shot Claude Code session via the daemon (JSON streaming)
     #[command(hide = true)]
@@ -521,6 +525,7 @@ fn main() {
         socket,
         workdir,
         channel,
+        web_port,
     } = &command
     {
         let dir_key = workdir
@@ -543,6 +548,7 @@ fn main() {
             default_channel: channel.clone(),
             channels_dir,
             webhook_rx: None,
+            web_port: *web_port,
         };
 
         let daemon = match midtown::daemon_v2::DaemonV2::new(config) {

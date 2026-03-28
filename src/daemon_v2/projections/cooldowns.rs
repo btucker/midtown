@@ -34,7 +34,7 @@ impl CooldownCategory {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct CooldownTracker {
     entries: HashMap<(CooldownCategory, String), Instant>,
 }

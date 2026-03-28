@@ -33,7 +33,7 @@ pub struct PrState {
     pub needs_review: bool,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkIndex {
     pub tasks: HashMap<TaskId, Task>,
     pub prs: HashMap<u64, PrState>,

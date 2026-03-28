@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 use crate::daemon_v2::decisions::{self, Command, health};
 use crate::daemon_v2::events::{DomainEvent, EventStore};
@@ -38,6 +38,9 @@ pub struct DaemonV2Config {
     ///
     /// When `None`, webhook integration is disabled.
     pub webhook_rx: Option<mpsc::Receiver<WebhookEvent>>,
+    /// Optional port for the Axum web API server.
+    /// When `Some`, the daemon starts an HTTP server on this port.
+    pub web_port: Option<u16>,
 }
 
 /// The v2 daemon: owns the event store, projections, and scheduler.
@@ -54,6 +57,8 @@ pub struct DaemonV2 {
     /// Receiver half of the webhook event channel.  Populated from
     /// `DaemonV2Config::webhook_rx`; `None` when webhook integration is disabled.
     webhook_rx: Option<mpsc::Receiver<WebhookEvent>>,
+    /// Broadcast sender for domain events — feeds WebSocket clients.
+    event_tx: broadcast::Sender<DomainEvent>,
 }
 
 /// Exit status returned by [`DaemonV2::run`].
@@ -226,6 +231,9 @@ impl DaemonV2 {
         // Move the receiver out so `config` can be stored on the daemon.
         let webhook_rx = config.webhook_rx.take();
 
+        // Broadcast channel for domain events (feeds WebSocket clients).
+        let (event_tx, _) = broadcast::channel::<DomainEvent>(256);
+
         Ok(Self {
             config,
             store,
@@ -235,6 +243,7 @@ impl DaemonV2 {
             sessions: HashMap::new(),
             pending_resumes,
             webhook_rx,
+            event_tx,
         })
     }
 
@@ -248,6 +257,24 @@ impl DaemonV2 {
             UnixListener::bind(&self.config.socket_path).expect("failed to bind daemon socket");
 
         tracing::info!(socket = %self.config.socket_path.display(), "DaemonV2 listening");
+
+        // Start the web server if a port is configured.
+        if let Some(port) = self.config.web_port {
+            let web_state = std::sync::Arc::new(crate::daemon_v2::web::WebState {
+                projections: std::sync::Arc::new(tokio::sync::Mutex::new(self.projections.clone())),
+                channels_dir: self.config.channels_dir.clone(),
+                event_tx: self.event_tx.clone(),
+            });
+            let router = crate::daemon_v2::web::create_router(web_state);
+            let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+            let tcp_listener = tokio::net::TcpListener::bind(addr)
+                .await
+                .expect("failed to bind web server port");
+            tracing::info!(%port, "DaemonV2 web API listening");
+            tokio::spawn(async move {
+                axum::serve(tcp_listener, router).await.ok();
+            });
+        }
 
         // Resume agents that were running before the daemon restarted.
         for cmd in std::mem::take(&mut self.pending_resumes) {
@@ -337,6 +364,8 @@ impl DaemonV2 {
                 tracing::error!(%e, "failed to append event");
             }
             self.projections.apply(event);
+            // Broadcast to WebSocket clients (ignore if no receivers).
+            let _ = self.event_tx.send(event.clone());
         }
     }
 

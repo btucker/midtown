@@ -31,7 +31,7 @@ pub struct ChannelMeta {
     known_threads: HashSet<String>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChannelIndex {
     pub channels: HashMap<String, ChannelMeta>,
     pub read_state: HashMap<String, DateTime<Utc>>,

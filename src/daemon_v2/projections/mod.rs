@@ -11,7 +11,7 @@ pub use channels::ChannelIndex;
 pub use cooldowns::CooldownTracker;
 pub use work::WorkIndex;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Projections {
     pub agents: AgentIndex,
     pub work: WorkIndex,
