@@ -4071,8 +4071,9 @@ pub(super) async fn handle_webhook_review_complete(state: &DaemonState, pr_numbe
     let pr_ctx = {
         let tc = task_channel_map_from_store(&state.task_store);
         let tt = task_thread_map_from_store(&state.task_store);
+        let pr_task_associations = state.task_store.pr_to_task_map();
         let ps = state.persistent_state.lock().await;
-        PrContext::from_persistent_state(&ps, pr_number, tc, tt)
+        PrContext::from_persistent_state(&ps, pr_number, tc, tt, pr_task_associations)
     };
 
     let mut effects = vec![

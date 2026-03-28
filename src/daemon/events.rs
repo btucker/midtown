@@ -76,7 +76,9 @@ pub async fn evaluate_tick(
             effects.extend(super::health::check_and_restart_tool_name_conflicts(&ps));
             effects.extend(super::health::maybe_refresh_lead_session(&ps));
             effects.extend(super::health::check_channel_lead_worktree_freshness(&ps));
-            effects.extend(super::health::check_and_shutdown_idle_coworkers(&ps));
+            effects.extend(super::health::check_and_shutdown_idle_coworkers(
+                &ps, &tasks,
+            ));
             drop(ps);
             effects
         }
