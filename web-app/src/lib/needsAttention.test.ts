@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { computeAttentionItems, isTaskStale, threadNeedsAttention } from "./needsAttention.ts";
+import {
+	computeAttentionItems,
+	computeCompletedTaskItems,
+	computeStaleTaskItems,
+	computeThreadAttentionItems,
+	isTaskStale,
+	threadNeedsAttention,
+} from "./needsAttention.ts";
 
 describe("threadNeedsAttention", () => {
 	const now = Date.now();
@@ -311,5 +318,227 @@ describe("computeAttentionItems", () => {
 		// task_completed uses `now` as timestamp, thread uses the message timestamp (15min ago)
 		expect(items[0].type).toBe("task_completed");
 		expect(items[1].type).toBe("thread_waiting");
+	});
+});
+
+// ── Sub-function tests (independent derived branches) ───────────────────────
+
+describe("computeThreadAttentionItems", () => {
+	const now = Date.now();
+
+	it("returns thread_waiting items for unread threads with old messages", () => {
+		const threadId = "msg-100";
+		const items = computeThreadAttentionItems({
+			trackedThreads: {
+				[threadId]: {
+					channelName: "web",
+					subject: "Auth discussion",
+					lastActivity: new Date(now - 20 * 60000).toISOString(),
+					replyCount: 3,
+					lastReplySender: "ghost-town",
+				},
+			},
+			lastMessages: {
+				[threadId]: {
+					sender: "ghost-town",
+					content: "what do you think?",
+					timestamp: new Date(now - 20 * 60000).toISOString(),
+				},
+			},
+			threadReadState: {},
+			userSender: "human",
+			now,
+		});
+		expect(items).toHaveLength(1);
+		expect(items[0].type).toBe("thread_waiting");
+		expect(items[0].threadId).toBe(threadId);
+	});
+
+	it("returns mention items when user is @mentioned", () => {
+		const threadId = "msg-101";
+		const items = computeThreadAttentionItems({
+			trackedThreads: {
+				[threadId]: {
+					channelName: "web",
+					subject: "Review needed",
+					lastActivity: new Date(now - 1000).toISOString(),
+					replyCount: 1,
+				},
+			},
+			lastMessages: {
+				[threadId]: {
+					sender: "ghost-town",
+					content: "hey @human please review",
+					timestamp: new Date(now - 1000).toISOString(),
+				},
+			},
+			threadReadState: {},
+			userSender: "human",
+			now,
+		});
+		expect(items).toHaveLength(1);
+		expect(items[0].type).toBe("mention");
+	});
+
+	it("skips threads already read", () => {
+		const threadId = "msg-102";
+		const msgTimestamp = new Date(now - 20 * 60000).toISOString();
+		const items = computeThreadAttentionItems({
+			trackedThreads: {
+				[threadId]: {
+					channelName: "web",
+					subject: "Already read",
+					lastActivity: msgTimestamp,
+					replyCount: 1,
+				},
+			},
+			lastMessages: {
+				[threadId]: { sender: "ghost-town", content: "update?", timestamp: msgTimestamp },
+			},
+			threadReadState: { [threadId]: new Date(now - 10 * 60000).toISOString() },
+			userSender: "human",
+			now,
+		});
+		expect(items).toHaveLength(0);
+	});
+
+	it("does not depend on tasks or coworkers", () => {
+		// Calling with only thread data — no task/coworker fields needed
+		const items = computeThreadAttentionItems({
+			trackedThreads: {},
+			lastMessages: {},
+			threadReadState: {},
+			userSender: "human",
+			now,
+		});
+		expect(items).toHaveLength(0);
+	});
+});
+
+describe("computeCompletedTaskItems", () => {
+	const now = Date.now();
+	const cwMap = new Map([["ghost-town", { name: "ghost-town", pr_number: 42 }]]);
+
+	it("returns completed tasks within 24h that are unread", () => {
+		const items = computeCompletedTaskItems({
+			tasks: [
+				{
+					id: 1,
+					subject: "Fix bug",
+					status: "completed",
+					owner: "ghost-town",
+					channel: "web",
+					updated_at: new Date(now - 60000).toISOString(),
+				},
+			],
+			coworkerMap: cwMap,
+			threadReadState: {},
+			mainChannel: "midtown",
+			now,
+		});
+		expect(items).toHaveLength(1);
+		expect(items[0].type).toBe("task_completed");
+		expect(items[0].context).toContain("PR #42");
+	});
+
+	it("filters out tasks older than 24h", () => {
+		const items = computeCompletedTaskItems({
+			tasks: [
+				{
+					id: 1,
+					subject: "Old task",
+					status: "completed",
+					owner: "ghost-town",
+					updated_at: new Date(now - 25 * 3600000).toISOString(),
+				},
+			],
+			coworkerMap: cwMap,
+			threadReadState: {},
+			mainChannel: "midtown",
+			now,
+		});
+		expect(items).toHaveLength(0);
+	});
+
+	it("filters out already-read completed tasks", () => {
+		const updatedAt = new Date(now - 60000).toISOString();
+		const items = computeCompletedTaskItems({
+			tasks: [
+				{
+					id: 1,
+					subject: "Read task",
+					status: "completed",
+					owner: "ghost-town",
+					updated_at: updatedAt,
+				},
+			],
+			coworkerMap: cwMap,
+			threadReadState: { "task:1": new Date(now).toISOString() },
+			mainChannel: "midtown",
+			now,
+		});
+		expect(items).toHaveLength(0);
+	});
+
+	it("skips non-completed tasks", () => {
+		const items = computeCompletedTaskItems({
+			tasks: [{ id: 1, subject: "In progress", status: "in_progress", owner: "ghost-town" }],
+			coworkerMap: cwMap,
+			threadReadState: {},
+			mainChannel: "midtown",
+			now,
+		});
+		expect(items).toHaveLength(0);
+	});
+});
+
+describe("computeStaleTaskItems", () => {
+	const now = Date.now();
+	const cwMap = new Map([["silver-fox", { name: "silver-fox", progress: 30 }]]);
+
+	it("returns stale in-progress tasks", () => {
+		const items = computeStaleTaskItems({
+			tasks: [{ id: 10, subject: "Refactor auth", status: "in_progress", owner: "silver-fox", channel: "web" }],
+			coworkerMap: cwMap,
+			progressTimestamps: { "10": now - 3 * 3600000 },
+			mainChannel: "midtown",
+			now,
+		});
+		expect(items).toHaveLength(1);
+		expect(items[0].type).toBe("stale_work");
+		expect(items[0].context).toContain("30%");
+	});
+
+	it("skips tasks with recent progress", () => {
+		const items = computeStaleTaskItems({
+			tasks: [{ id: 10, subject: "Active work", status: "in_progress", owner: "silver-fox" }],
+			coworkerMap: cwMap,
+			progressTimestamps: { "10": now - 30 * 60000 },
+			mainChannel: "midtown",
+			now,
+		});
+		expect(items).toHaveLength(0);
+	});
+
+	it("skips tasks without progress timestamps", () => {
+		const items = computeStaleTaskItems({
+			tasks: [{ id: 10, subject: "New task", status: "in_progress", owner: "silver-fox" }],
+			coworkerMap: cwMap,
+			progressTimestamps: {},
+			mainChannel: "midtown",
+			now,
+		});
+		expect(items).toHaveLength(0);
+	});
+
+	it("skips completed tasks", () => {
+		const items = computeStaleTaskItems({
+			tasks: [{ id: 10, subject: "Done", status: "completed", owner: "silver-fox" }],
+			coworkerMap: cwMap,
+			progressTimestamps: { "10": now - 3 * 3600000 },
+			mainChannel: "midtown",
+			now,
+		});
+		expect(items).toHaveLength(0);
 	});
 });

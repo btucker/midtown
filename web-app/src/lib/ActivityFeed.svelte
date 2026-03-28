@@ -1,12 +1,14 @@
 <script lang="ts">
 import { openTaskThread } from "./api.ts";
-import { getSenderColor } from "./messageUtils.ts";
-import { computeAttentionItems, type LastMessage } from "./needsAttention.ts";
+import {
+	computeCompletedTaskItems,
+	computeStaleTaskItems,
+	computeThreadAttentionItems,
+	type LastMessage,
+} from "./needsAttention.ts";
 import {
 	activeProject,
-	channelReadState,
 	coworkerMap as coworkerMapStore,
-	coworkers,
 	kanbanData,
 	progressTimestamps,
 	reviewerByTaskId as reviewerByTaskIdStore,
@@ -28,7 +30,9 @@ let olderCollapsed = $state(true);
 
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
 
-// ── Attention items ──────────────────────────────────────────────────────────
+// ── Attention items (three independent branches) ────────────────────────────
+// Each sub-derived reads only the stores it needs, so a kanban update doesn't
+// recompute thread attention (and vice versa).
 
 function deriveLastMessages(threads: Record<string, TrackedThread>): Record<string, LastMessage> {
 	const result: Record<string, LastMessage> = {};
@@ -44,17 +48,39 @@ function deriveLastMessages(threads: Record<string, TrackedThread>): Record<stri
 	return result;
 }
 
-const attentionItems = $derived(
-	computeAttentionItems({
+// Branch 1: Thread attention — depends on trackedThreads, threadReadState, userSenderName
+const threadAttentionItems = $derived(
+	computeThreadAttentionItems({
 		trackedThreads: $trackedThreads,
 		lastMessages: deriveLastMessages($trackedThreads),
-		coworkers: $coworkers,
-		tasks: [...($kanbanData.inProgress ?? []), ...($kanbanData.backlog ?? []), ...($kanbanData.completedTasks ?? [])],
-		progressTimestamps: $progressTimestamps,
 		threadReadState: $threadReadState,
 		userSender: $userSenderName,
+	}),
+);
+
+// Branch 2: Completed tasks — depends on kanbanData, coworkerMapStore, threadReadState, activeProject
+const completedTaskItems = $derived(
+	computeCompletedTaskItems({
+		tasks: [...($kanbanData.inProgress ?? []), ...($kanbanData.backlog ?? []), ...($kanbanData.completedTasks ?? [])],
+		coworkerMap: $coworkerMapStore,
+		threadReadState: $threadReadState,
 		mainChannel: $activeProject ?? "midtown",
 	}),
+);
+
+// Branch 3: Stale tasks — depends on kanbanData, coworkerMapStore, progressTimestamps, activeProject
+const staleTaskItems = $derived(
+	computeStaleTaskItems({
+		tasks: [...($kanbanData.inProgress ?? []), ...($kanbanData.backlog ?? [])],
+		coworkerMap: $coworkerMapStore,
+		progressTimestamps: $progressTimestamps,
+		mainChannel: $activeProject ?? "midtown",
+	}),
+);
+
+// Combined + sorted — only re-sorts when any branch changes
+const attentionItems = $derived(
+	[...threadAttentionItems, ...completedTaskItems, ...staleTaskItems].sort((a, b) => b.timestamp - a.timestamp),
 );
 
 const typeConfig: Record<string, { accent: string; halo: string; icon: string }> = {
@@ -71,12 +97,31 @@ const mainChannel = $derived($activeProject ?? "midtown");
 // Shared store-level derived (avoids per-component recomputation)
 const reviewerByTaskId = $derived($reviewerByTaskIdStore);
 
-// All tasks including completed, so children of active parents show as filled segments
-const allTasks = $derived([
-	...$kanbanData.inProgress.map((t) => ({ ...t, status: "in_progress" as const })),
-	...$kanbanData.backlog.map((t) => ({ ...t, status: "pending" as const })),
-	...($kanbanData.completedTasks || []).map((t) => ({ ...t, status: "completed" as const })),
-]);
+// All tasks including completed, so children of active parents show as filled segments.
+// Memoized by input-array references so groupTasksByParent's memo can hit.
+const EMPTY_TASKS: Task[] = [];
+let _prevInProgress: Task[] | undefined;
+let _prevBacklog: Task[] | undefined;
+let _prevCompleted: Task[] | undefined;
+let _prevAllTasks: Task[] = [];
+
+const allTasks = $derived.by(() => {
+	const ip = $kanbanData.inProgress;
+	const bl = $kanbanData.backlog;
+	const ct = $kanbanData.completedTasks ?? EMPTY_TASKS;
+	if (ip === _prevInProgress && bl === _prevBacklog && ct === _prevCompleted) {
+		return _prevAllTasks;
+	}
+	_prevInProgress = ip;
+	_prevBacklog = bl;
+	_prevCompleted = ct;
+	_prevAllTasks = [
+		...ip.map((t) => ({ ...t, status: "in_progress" as const })),
+		...bl.map((t) => ({ ...t, status: "pending" as const })),
+		...ct.map((t) => ({ ...t, status: "completed" as const })),
+	];
+	return _prevAllTasks;
+});
 
 function taskSortKey(task: Task): number {
 	if (reviewerByTaskId.get(String(task.id))) return 0;
