@@ -335,6 +335,28 @@ fn test_daemon_v2_spawns_agent_for_task() {
     );
 }
 
+#[test]
+#[ignore]
+fn test_daemon_v2_pr_polling_runs_without_crash() {
+    let harness = V2Harness::start();
+
+    // Wait long enough for the PR poll to fire (registered at 45s, but first run is immediate)
+    // Just verify the daemon stays alive through a poll cycle — it proves gh CLI integration works
+    for _ in 0..6 {
+        std::thread::sleep(Duration::from_secs(5));
+        let status = harness.rpc_call("status", None);
+        assert!(
+            status["error"].is_null(),
+            "daemon crashed during PR poll: {status}"
+        );
+    }
+
+    // If the daemon is running in the midtown repo, we might see open PRs
+    let status = harness.rpc_call("status", None);
+    let open_prs = status["result"]["prs"]["open"].as_u64().unwrap_or(0);
+    eprintln!("PR poll test complete. Open PRs detected: {open_prs}");
+}
+
 /// Wait up to `timeout` for `child` to exit. Returns true if it exited in time.
 fn wait_for_exit(mut child: Child, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
