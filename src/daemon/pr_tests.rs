@@ -5912,6 +5912,7 @@ fn orphan_detection_active_worktree_not_orphaned() {
         sessions: &empty_sessions,
         active_names: &empty_active,
         repo_owner: None,
+        all_tasks: &[],
     };
     assert!(!is_pr_orphaned(
         42,
@@ -5937,6 +5938,7 @@ fn orphan_detection_completed_worktree_not_orphaned() {
         sessions: &empty_sessions,
         active_names: &empty_active,
         repo_owner: None,
+        all_tasks: &[],
     };
     assert!(!is_pr_orphaned(
         42,
@@ -5962,6 +5964,7 @@ fn orphan_detection_lead_branch_not_orphaned() {
         sessions: &empty_sessions,
         active_names: &empty_active,
         repo_owner: None,
+        all_tasks: &[],
     };
     assert!(!is_pr_orphaned(
         42,
@@ -5992,6 +5995,7 @@ fn orphan_detection_lead_authored_pr_not_orphaned() {
         sessions: &empty_sessions,
         active_names: &empty_active,
         repo_owner: Some("btucker"),
+        all_tasks: &[],
     };
     assert!(!is_pr_orphaned(
         42,
@@ -6034,6 +6038,7 @@ fn orphan_detection_active_session_owner_not_orphaned() {
         sessions: &sessions,
         active_names: &active_names,
         repo_owner: None,
+        all_tasks: &[],
     };
     assert!(!is_pr_orphaned(
         42,
@@ -6076,6 +6081,7 @@ fn orphan_detection_inactive_session_owner_is_orphaned() {
         sessions: &sessions,
         active_names: &active_names,
         repo_owner: None,
+        all_tasks: &[],
     };
     assert!(is_pr_orphaned(
         42,
@@ -6101,6 +6107,7 @@ fn orphan_detection_no_owner_no_worktree_is_orphaned() {
         sessions: &empty_sessions,
         active_names: &empty_active,
         repo_owner: None,
+        all_tasks: &[],
     };
     assert!(is_pr_orphaned(
         42,
@@ -6109,6 +6116,109 @@ fn orphan_detection_no_owner_no_worktree_is_orphaned() {
         &pr,
         &ctx,
     ));
+}
+
+#[test]
+fn orphan_detection_idle_owner_completed_task_not_orphaned() {
+    // Bug !2624: when a coworker finishes their task and goes idle,
+    // they're removed from active_names, causing their PR to be treated
+    // as orphaned. But if the task is completed, the PR is legitimate
+    // finished work that needs review — not orphaned.
+    let registry = empty_worktree_registry();
+    let pr = make_pr_json(42, "some-branch", "feat: stuff [Midtown !99]");
+
+    let mut pr_task_associations = HashMap::new();
+    pr_task_associations.insert(42u64, "99".to_string());
+
+    let mut session_task_map = HashMap::new();
+    session_task_map.insert("99".to_string(), "session-abc".to_string());
+
+    let mut sessions = HashMap::new();
+    sessions.insert(
+        "session-abc".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "session-abc".to_string(),
+            task_id: Some("99".to_string()),
+            name: "madison".to_string(),
+            ..Default::default()
+        },
+    );
+
+    // Owner is NOT active (idle after completing task)
+    let active_names = HashSet::new();
+
+    // But the associated task is completed
+    let all_tasks = vec![crate::task_store::Task {
+        id: "99".to_string(),
+        status: crate::task_store::TaskStatus::Completed,
+        pr: Some(42),
+        agent_name: "madison".to_string(),
+        ..Default::default()
+    }];
+
+    let ctx = OrphanCheckCtx {
+        worktree_registry: &registry,
+        pr_task_associations: &pr_task_associations,
+        session_task_map: &session_task_map,
+        sessions: &sessions,
+        active_names: &active_names,
+        repo_owner: None,
+        all_tasks: &all_tasks,
+    };
+    assert!(
+        !is_pr_orphaned(42, "some-branch", "feat: stuff [Midtown !99]", &pr, &ctx,),
+        "PR with completed task should NOT be orphaned even if owner is idle"
+    );
+}
+
+#[test]
+fn orphan_detection_idle_owner_pending_task_is_orphaned() {
+    // If the task is NOT completed and the owner is idle, the PR is
+    // genuinely orphaned (coworker died mid-task).
+    let registry = empty_worktree_registry();
+    let pr = make_pr_json(42, "some-branch", "feat: stuff [Midtown !99]");
+
+    let mut pr_task_associations = HashMap::new();
+    pr_task_associations.insert(42u64, "99".to_string());
+
+    let mut session_task_map = HashMap::new();
+    session_task_map.insert("99".to_string(), "session-abc".to_string());
+
+    let mut sessions = HashMap::new();
+    sessions.insert(
+        "session-abc".to_string(),
+        crate::daemon::state::SessionRecord {
+            session_id: "session-abc".to_string(),
+            task_id: Some("99".to_string()),
+            name: "madison".to_string(),
+            ..Default::default()
+        },
+    );
+
+    let active_names = HashSet::new();
+
+    // Task is still in progress — coworker died mid-task
+    let all_tasks = vec![crate::task_store::Task {
+        id: "99".to_string(),
+        status: crate::task_store::TaskStatus::InProgress,
+        pr: Some(42),
+        agent_name: "madison".to_string(),
+        ..Default::default()
+    }];
+
+    let ctx = OrphanCheckCtx {
+        worktree_registry: &registry,
+        pr_task_associations: &pr_task_associations,
+        session_task_map: &session_task_map,
+        sessions: &sessions,
+        active_names: &active_names,
+        repo_owner: None,
+        all_tasks: &all_tasks,
+    };
+    assert!(
+        is_pr_orphaned(42, "some-branch", "feat: stuff [Midtown !99]", &pr, &ctx,),
+        "PR with in-progress task and idle owner should be orphaned"
+    );
 }
 
 // ---------------------------------------------------------------------------
