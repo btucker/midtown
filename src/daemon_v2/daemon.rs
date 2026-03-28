@@ -160,8 +160,19 @@ impl DaemonV2 {
                 accept_result = listener.accept() => {
                     match accept_result {
                         Ok((stream, _addr)) => {
-                            let (outcome, events) = handle_rpc_connection(stream, &self.projections, &self.config.channels_dir).await;
+                            let (outcome, events, commands) = handle_rpc_connection(stream, &self.projections, &self.config.channels_dir).await;
                             self.apply_events(&events);
+                            for command in commands {
+                                let cmd_events = executor::execute(
+                                    command,
+                                    &mut self.sessions,
+                                    &self.paths,
+                                    &self.projections,
+                                    &self.config.channels_dir,
+                                )
+                                .await;
+                                self.apply_events(&cmd_events);
+                            }
                             if outcome == RpcOutcome::Shutdown {
                                 tracing::info!("shutdown requested via RPC");
                                 return DaemonV2ExitStatus::Shutdown;
@@ -225,12 +236,17 @@ enum RpcOutcome {
 
 /// Read one JSON-RPC request from `stream`, dispatch it, and write the response.
 /// Returns `RpcOutcome::Shutdown` if the request was a shutdown request, plus any
-/// domain events produced by mutating RPC methods (e.g., `task.create`).
+/// domain events produced by mutating RPC methods (e.g., `task.create`), and any
+/// commands to execute (e.g., `session.fork` spawning a new agent).
 async fn handle_rpc_connection(
     mut stream: UnixStream,
     proj: &Projections,
     channels_dir: &Path,
-) -> (RpcOutcome, Vec<crate::daemon_v2::events::DomainEvent>) {
+) -> (
+    RpcOutcome,
+    Vec<crate::daemon_v2::events::DomainEvent>,
+    Vec<crate::daemon_v2::decisions::Command>,
+) {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
 
@@ -247,7 +263,7 @@ async fn handle_rpc_connection(
             }
             Err(e) => {
                 tracing::warn!(%e, "RPC read error");
-                return (RpcOutcome::Continue, vec![]);
+                return (RpcOutcome::Continue, vec![], vec![]);
             }
         }
     }
@@ -256,7 +272,7 @@ async fn handle_rpc_connection(
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(%e, "malformed RPC request");
-            return (RpcOutcome::Continue, vec![]);
+            return (RpcOutcome::Continue, vec![], vec![]);
         }
     };
 
@@ -274,13 +290,13 @@ async fn handle_rpc_connection(
             "id": id
         });
         let _ = write_response(&mut stream, &response).await;
-        return (RpcOutcome::Shutdown, vec![]);
+        return (RpcOutcome::Shutdown, vec![], vec![]);
     }
 
-    let (response, events) = rpc::dispatch_request(request, proj, channels_dir);
+    let (response, events, commands) = rpc::dispatch_request(request, proj, channels_dir);
     let _ = write_response(&mut stream, &response).await;
 
-    (RpcOutcome::Continue, events)
+    (RpcOutcome::Continue, events, commands)
 }
 
 async fn write_response(

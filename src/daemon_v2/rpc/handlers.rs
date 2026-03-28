@@ -3,7 +3,8 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use crate::daemon_v2::Projections;
-use crate::daemon_v2::events::{AgentKind, DomainEvent};
+use crate::daemon_v2::decisions::{Command, SpawnConfig};
+use crate::daemon_v2::events::{AgentKind, DomainEvent, Provider};
 use crate::daemon_v2::executor::channel_io;
 
 #[derive(Debug, Clone)]
@@ -176,6 +177,71 @@ impl RpcError {
             "id": id,
         })
     }
+}
+
+// ── Session RPC handlers ─────────────────────────────────────────────────
+
+/// Handle `session.fork` — spawn a fork session bound to a thread.
+///
+/// Required fields: `thread_parent_id`, `channel`.
+/// Optional fields: `name`, `message` (initial prompt).
+///
+/// If a running fork already exists for the given thread, returns its ID
+/// without spawning a new one.
+pub fn handle_session_fork(
+    params: Option<&Value>,
+    proj: &Projections,
+) -> Result<(Value, Vec<Command>), RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+    let thread_parent_id = params
+        .get("thread_parent_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing thread_parent_id"))?;
+    let channel = params
+        .get("channel")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing channel"))?;
+
+    // Check if a running fork already exists for this thread
+    if let Some(existing) = proj.agents.fork_for_thread(thread_parent_id)
+        && proj.agents.running.contains(&existing.id)
+    {
+        return Ok((
+            json!({"ok": true, "fork_id": existing.id, "existing": true}),
+            vec![],
+        ));
+    }
+
+    let name = params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            format!(
+                "fork-{}",
+                &thread_parent_id[..8.min(thread_parent_id.len())]
+            )
+        });
+
+    let initial_message = params
+        .get("message")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let command = Command::SpawnAgent(SpawnConfig {
+        name,
+        kind: AgentKind::Fork,
+        agent_type: "midtown-channel-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some(channel.to_string()),
+        task_id: None,
+        initial_prompt: initial_message,
+        working_dir: None,
+        model: None,
+        bound_thread_id: Some(thread_parent_id.to_string()),
+    });
+
+    Ok((json!({"ok": true, "forking": true}), vec![command]))
 }
 
 // ── Channel RPC handlers ─────────────────────────────────────────────────
