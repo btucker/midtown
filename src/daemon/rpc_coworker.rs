@@ -707,13 +707,7 @@ pub(super) async fn handle_coworker_report_state(
                 ];
                 effects::execute_effects(complete_effects, state).await;
             }
-        }
-
-        // If this reviewer has posted their review, complete the review task immediately
-        // rather than waiting for the next poll tick. The reviewer_pr check above already
-        // confirmed is_pr_reviewed == true (otherwise we'd have returned with a nudge).
-        // Cross-validate task.pr matches the session's PR to avoid completing the wrong task.
-        if let Some(pr_number) = reviewer_pr
+        } else if let Some(pr_number) = reviewer_pr
             && let Some(task_id) = state.get_task_id_for_coworker(name).await
             && state
                 .task_store
