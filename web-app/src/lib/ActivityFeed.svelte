@@ -5,9 +5,11 @@ import { computeAttentionItems, type LastMessage } from "./needsAttention.ts";
 import {
 	activeProject,
 	channelReadState,
+	coworkerMap as coworkerMapStore,
 	coworkers,
 	kanbanData,
 	progressTimestamps,
+	reviewerByTaskId as reviewerByTaskIdStore,
 	threadReadState,
 	trackedThreads,
 	userSenderName,
@@ -66,19 +68,8 @@ const typeConfig: Record<string, { accent: string; halo: string; icon: string }>
 
 const mainChannel = $derived($activeProject ?? "midtown");
 
-// Map task_id → { reviewer, reviewPosted } from kanban review data
-const reviewerByTaskId = $derived.by(() => {
-	const map = new Map<string, { reviewer: string; reviewPosted: boolean }>();
-	for (const pr of $kanbanData.review) {
-		if (pr.task_id != null && pr.reviewer) {
-			map.set(String(pr.task_id), {
-				reviewer: pr.reviewer,
-				reviewPosted: pr.review_posted || false,
-			});
-		}
-	}
-	return map;
-});
+// Shared store-level derived (avoids per-component recomputation)
+const reviewerByTaskId = $derived($reviewerByTaskIdStore);
 
 // All tasks including completed, so children of active parents show as filled segments
 const allTasks = $derived([
@@ -99,7 +90,7 @@ const groupedActiveTasks = $derived.by(() => {
 	return groups.filter((g) => g.task.status !== "completed").sort((a, b) => taskSortKey(a.task) - taskSortKey(b.task));
 });
 
-const cwMap = $derived(new Map($coworkers.map((cw) => [cw.name, cw])));
+const cwMap = $derived($coworkerMapStore);
 
 function getChannelLabel(task: Task): string {
 	return task.channel && task.channel !== mainChannel ? task.channel : "";
@@ -130,7 +121,7 @@ const allThreadsSorted = $derived.by(() => {
 			const lastActivityMs = new Date(t.lastActivity).getTime();
 			const isRecent = now - lastActivityMs < FIFTEEN_MINUTES_MS;
 			const lastRead = $threadReadState[id];
-			const isUnread = !lastRead || new Date(lastRead) < new Date(t.lastActivity);
+			const isUnread = !lastRead || new Date(lastRead).getTime() < lastActivityMs;
 			return { id, thread: t, lastActivityMs, isRecent, isUnread };
 		})
 		.sort((a, b) => b.lastActivityMs - a.lastActivityMs);

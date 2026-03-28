@@ -1,4 +1,4 @@
-import { get, writable } from "svelte/store";
+import { derived, get, writable } from "svelte/store";
 import type {
 	AuthProfile,
 	Channel,
@@ -112,6 +112,10 @@ export const connected = writable<boolean>(false);
 // Coworker status
 export const coworkers = writable<Coworker[]>([]);
 
+// Shared coworker lookup map — one computation shared by all components.
+// Replaces per-instance `new Map($coworkers.map(...))` in TaskRow, TaskList, ActivityFeed.
+export const coworkerMap = derived(coworkers, ($cw) => new Map($cw.map((c) => [c.name, c])));
+
 // Maximum number of in-progress tasks
 export const maxInProgressTasks = writable<number>(8);
 
@@ -124,6 +128,17 @@ export const kanbanData = writable<KanbanData>({
 	inProgress: [],
 	review: [],
 	done: [],
+});
+
+// Shared reviewer lookup by task ID — one computation shared by TaskList & ActivityFeed.
+export const reviewerByTaskId = derived(kanbanData, ($kd) => {
+	const map = new Map<string, { reviewer: string; reviewPosted: boolean }>();
+	for (const pr of $kd.review) {
+		if (pr.task_id != null && pr.reviewer) {
+			map.set(String(pr.task_id), { reviewer: pr.reviewer, reviewPosted: pr.review_posted || false });
+		}
+	}
+	return map;
 });
 
 // Repository status (commit, CI, release) - primary repo

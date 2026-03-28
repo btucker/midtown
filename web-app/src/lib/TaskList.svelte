@@ -1,7 +1,7 @@
 <script lang="ts">
 import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
 import { openTaskThread } from "./api.ts";
-import { coworkers, kanbanData } from "./store.ts";
+import { coworkerMap as coworkerMapStore, kanbanData, reviewerByTaskId as reviewerByTaskIdStore } from "./store.ts";
 import TaskRow from "./TaskRow.svelte";
 import { groupTasksByParent } from "./taskGrouping.ts";
 
@@ -43,19 +43,9 @@ const groupedTasks = $derived.by(() => {
 	return groups.filter((g) => g.task.status !== "completed");
 });
 
-// Map coworker name → coworker object for progress/phase lookup
-const cwMap = $derived(new Map($coworkers.map((cw) => [cw.name, cw])));
-
-// Map task_id → { reviewer, reviewPosted } for showing reviewer avatar + glow state
-const taskReviewerMap = $derived.by(() => {
-	const map = new Map();
-	for (const pr of $kanbanData.review) {
-		if (pr.task_id != null && pr.reviewer) {
-			map.set(String(pr.task_id), { reviewer: pr.reviewer, reviewPosted: pr.review_posted || false });
-		}
-	}
-	return map;
-});
+// Shared store-level deriveds (avoids per-component recomputation)
+const cwMap = $derived($coworkerMapStore);
+const taskReviewerMap = $derived($reviewerByTaskIdStore);
 
 function handleTaskClick(task) {
 	if (sidebar.isMobile) sidebar.setOpenMobile(false);
