@@ -46,10 +46,10 @@ pub fn dispatch_request(
                 Err(err) => (err.to_json(&id), vec![], vec![]),
             }
         }
-        "channel.post" => match handlers::handle_channel_post(params, channels_dir) {
-            Ok((value, events)) => {
+        "channel.post" => match handlers::handle_channel_post(params, channels_dir, proj) {
+            Ok((value, events, commands)) => {
                 let response = json!({ "jsonrpc": "2.0", "result": value, "id": id });
-                (response, events, vec![])
+                (response, events, commands)
             }
             Err(err) => (err.to_json(&id), vec![], vec![]),
         },

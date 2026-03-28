@@ -3,7 +3,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 
 use crate::daemon_v2::Projections;
-use crate::daemon_v2::decisions::{Command, SpawnConfig};
+use crate::daemon_v2::decisions::{Command, SpawnConfig, chat};
 use crate::daemon_v2::events::{AgentKind, DomainEvent, Provider};
 use crate::daemon_v2::executor::channel_io;
 
@@ -294,11 +294,12 @@ pub fn handle_channel_list(channels_dir: &Path) -> Result<Value, RpcError> {
     Ok(json!(list))
 }
 
-/// Post a message to a channel. Returns events for the daemon to apply.
+/// Post a message to a channel. Returns events and mention-routing commands.
 pub fn handle_channel_post(
     params: Option<&Value>,
     channels_dir: &Path,
-) -> Result<(Value, Vec<DomainEvent>), RpcError> {
+    proj: &Projections,
+) -> Result<(Value, Vec<DomainEvent>, Vec<Command>), RpcError> {
     let params = params.ok_or_else(|| RpcError {
         code: -32602,
         message: "Missing params".into(),
@@ -346,7 +347,13 @@ pub fn handle_channel_post(
         thread_id: thread_id.map(String::from),
     }];
 
-    Ok((json!({ "ok": true, "id": msg_id }), events))
+    let mention_commands = chat::route_mentions(proj, channel, sender, content);
+
+    Ok((
+        json!({ "ok": true, "id": msg_id }),
+        events,
+        mention_commands,
+    ))
 }
 
 /// Update channel settings. Returns events for the daemon to apply.
