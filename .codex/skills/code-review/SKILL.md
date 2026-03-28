@@ -182,10 +182,16 @@ For CLAUDE.md issues: double-check that CLAUDE.md actually calls out the specifi
 ### Step 6: Filter and Re-check
 
 1. Keep only issues with score >= 80
-2. If no issues meet threshold, prepare "no issues found" message
+2. If no issues meet threshold: **stop here — do not proceed to Step 7.** Output the following message and return control to the caller:
+   ```
+   No issues met the confidence threshold. Review is clean.
+   ```
+   The caller is responsible for posting the review result (e.g., via `midtown pr review post` or `gh pr comment`).
 3. Re-run eligibility check from Step 1 to ensure PR is still open
 
-### Step 7: Post Comment
+### Step 7: Post Comment (issues found only)
+
+Only reach this step if Step 6 produced issues above threshold.
 
 Get the full git SHA for links:
 
@@ -193,7 +199,7 @@ Get the full git SHA for links:
 HEAD_SHA=$(gh pr view <PR_NUMBER> --json headRefOid --jq '.headRefOid')
 ```
 
-**If issues found, use this format:**
+**Use this format:**
 
 ```
 ### Code review
@@ -205,14 +211,6 @@ Found N issues:
 https://github.com/OWNER/REPO/blob/<FULL_SHA>/path/to/file.py#L10-L15
 
 2. <next issue>...
-```
-
-**If no issues found:**
-
-```
-### Code review
-
-No issues found. Checked for bugs and CLAUDE.md compliance.
 ```
 
 **Link format requirements:**
@@ -243,13 +241,12 @@ Do NOT flag these as issues:
 
 ## Completion
 
-After posting the GitHub comment, confirm in the project channel:
+**If the skill exited early in Step 6 (no issues):** The review is clean. Return control to the caller — do not post anything from the skill. The caller handles posting.
+
+**If the skill posted issues in Step 7:** Confirm in the project channel:
 
 ```bash
 midtown channel post "Posted review on PR #<PR_NUMBER>: https://github.com/OWNER/REPO/pull/<PR_NUMBER>#issuecomment-<COMMENT_ID>"
 ```
 
-**A code review is NOT complete until:**
-
-1. A GitHub PR comment has been posted (even if "no issues found")
-2. The comment URL has been shared in the channel
+**A code review is NOT complete until the review has been posted to GitHub** — either by the skill (Step 7, issues found) or by the caller (Step 6, clean review).
