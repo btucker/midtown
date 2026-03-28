@@ -841,11 +841,11 @@ pub fn detect_stale_attached_sessions(ps: &DaemonPersistentState) -> Vec<Effect>
         .collect()
 }
 
-pub(super) async fn check_and_fire_reminders(
-    ps: &DaemonPersistentState,
-    _state: &DaemonState,
-) -> Vec<Effect> {
-    let open_pr_coworkers: Vec<String> = ps.sessions_with_open_prs().into_iter().collect();
+pub(super) fn check_and_fire_reminders(ps: &DaemonPersistentState) -> Vec<Effect> {
+    let open_pr_coworkers: Vec<String> = ps
+        .sessions_with_open_prs(&ps.tick_task_to_pr)
+        .into_iter()
+        .collect();
     let now = chrono::Utc::now();
 
     let mut effects = build_reminder_effects_at(
@@ -1358,7 +1358,10 @@ pub fn check_channel_lead_worktree_freshness(ps: &DaemonPersistentState) -> Vec<
 /// The primary shutdown path is task completion (`stop_sessions_for_completed_tasks`
 /// in dispatch.rs). This catches coworkers that slip through: stuck sessions,
 /// inconsistent task state, etc.
-pub fn check_and_shutdown_idle_coworkers(ps: &DaemonPersistentState) -> Vec<Effect> {
+pub fn check_and_shutdown_idle_coworkers(
+    ps: &DaemonPersistentState,
+    tasks: &[crate::task_store::Task],
+) -> Vec<Effect> {
     use crate::rules::{CoworkerSnapshot, IdleShutdownContext, decide_idle_shutdowns};
 
     // Build coworker snapshots from tick data
@@ -1377,7 +1380,8 @@ pub fn check_and_shutdown_idle_coworkers(ps: &DaemonPersistentState) -> Vec<Effe
     }
 
     // Collect exclusion sets from tick state
-    let open_prs = ps.sessions_with_open_prs();
+    let task_to_pr = super::state::task_to_pr_map_from_tasks(tasks);
+    let open_prs = ps.sessions_with_open_prs(&task_to_pr);
     let usage_limited = ps.usage_limited_coworkers();
     let api_errors = ps.api_error_coworkers();
     let auth_errors = ps.auth_error_coworkers();

@@ -108,7 +108,8 @@ fn reviewer_pr_assignments_includes_dead_reviewers() {
     // No active process (riverside has died — is_running=false, health absent).
     let process_health: HashMap<String, ProcessHealth> = HashMap::new();
 
-    let assignments = super::build_reviewer_pr_assignments_from_spans(&ps);
+    let task_to_pr = HashMap::from([("review-42".to_string(), 1352u64)]);
+    let assignments = super::build_reviewer_pr_assignments_from_spans(&ps, &task_to_pr);
 
     assert!(
         assignments.contains_key("riverside"),
@@ -232,7 +233,8 @@ fn build_reviewer_pr_assignments_includes_stopped_sessions() {
         s.is_running = false;
     }
 
-    let assignments = super::build_reviewer_pr_assignments_from_spans(&ps);
+    let task_to_pr = HashMap::from([("review-400".to_string(), 4000u64)]);
+    let assignments = super::build_reviewer_pr_assignments_from_spans(&ps, &task_to_pr);
 
     assert!(
         assignments.contains_key("park"),

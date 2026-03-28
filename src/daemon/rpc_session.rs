@@ -181,12 +181,17 @@ async fn resolve_attach_target_candidates(
         AttachTarget::Pr(pr_num) => {
             let mut matches: Vec<String> = Vec::new();
             // Check reviewer assignments
+            let pr_to_task = state.task_store.pr_to_task_map();
             let persistent = state.persistent_state.lock().await;
-            if let Some(span) = persistent.active_reviewer_for_pr(pr_num) {
+            if let Some(span) = persistent.active_reviewer_for_pr(pr_num, &pr_to_task) {
                 matches.push(span.name.to_lowercase());
             }
+            // Find sessions whose task maps to this PR
+            let task_id = pr_to_task.get(&pr_num);
             matches.extend(persistent.sessions.values().filter_map(|record| {
-                if record.pr_number == Some(pr_num) {
+                let has_pr =
+                    task_id.is_some_and(|tid| record.task_id.as_deref() == Some(tid.as_str()));
+                if has_pr {
                     if record.name.is_empty() {
                         None
                     } else {
@@ -944,7 +949,12 @@ pub(super) async fn handle_session_clear(
         c.persisted_initial_prompt = session_info.initial_prompt.clone();
         // Restore agent_type so reviewer/channel-lead context survives the clear.
         c.agent_type = session_info.agent_type.clone();
-        c.pr_number = session_info.pr_number;
+        // Look up PR from task store (single source of truth)
+        c.pr_number = session_info
+            .task_id
+            .as_ref()
+            .and_then(|tid| state.task_store.load(tid).ok())
+            .and_then(|t| t.pr);
         c.channel = session_info.channel.clone();
         c
     };
@@ -1099,7 +1109,12 @@ pub(super) async fn handle_session_cancel(
         );
         c.persisted_initial_prompt = session_info.initial_prompt.clone();
         c.agent_type = session_info.agent_type.clone();
-        c.pr_number = session_info.pr_number;
+        // Look up PR from task store (single source of truth)
+        c.pr_number = session_info
+            .task_id
+            .as_ref()
+            .and_then(|tid| state.task_store.load(tid).ok())
+            .and_then(|t| t.pr);
         c.channel = session_info.channel.clone();
         c
     };

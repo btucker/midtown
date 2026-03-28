@@ -396,6 +396,22 @@ impl TaskStore {
         self.save(&task)
             .map_err(|e| format!("Failed to save task {}: {}", id, e))
     }
+
+    /// Build a `pr_number → task_id` map from all tasks with `pr` set.
+    pub fn pr_to_task_map(&self) -> HashMap<u64, String> {
+        self.load_all()
+            .into_iter()
+            .filter_map(|t| Some((t.pr?, t.id)))
+            .collect()
+    }
+
+    /// Build a `task_id → pr_number` map from all tasks with `pr` set.
+    pub fn task_to_pr_map(&self) -> HashMap<String, u64> {
+        self.load_all()
+            .into_iter()
+            .filter_map(|t| Some((t.id, t.pr?)))
+            .collect()
+    }
 }
 
 // ── Utility functions (moved from tasks.rs) ─────────────────────────────

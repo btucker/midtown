@@ -45,11 +45,17 @@ pub(super) async fn handle_status(id: RequestId, state: &DaemonState) -> Respons
     // rate limit, channel lead names, task-message-id map, and task-thread-id map.
     // Avoids multiple lock acquires.
     let (reviewer_pr_map, worktree_pr_map, rate_limit, channel_lead_names) = {
+        let task_to_pr_map = state.task_store.task_to_pr_map();
         let ps = state.persistent_state.lock().await;
         let rev_map: std::collections::HashMap<String, u64> = ps
             .active_reviewer_sessions()
             .into_iter()
-            .filter_map(|s| s.pr_number.map(|pr| (s.name.clone(), pr)))
+            .filter_map(|s| {
+                s.task_id
+                    .as_ref()
+                    .and_then(|tid| task_to_pr_map.get(tid))
+                    .map(|&pr| (s.name.clone(), pr))
+            })
             .collect();
         let wt_map: std::collections::HashMap<String, u64> = ps
             .worktree_registry

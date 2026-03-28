@@ -628,8 +628,9 @@ pub(super) async fn handle_coworker_report_state(
         // (reviewer posts then immediately idles) happens before any poll tick runs,
         // so the negative cache is empty. (Bug fix for !1990)
         let reviewer_pr = {
+            let task_to_pr = state.task_store.task_to_pr_map();
             let ps = state.persistent_state.lock().await;
-            snapshot::build_reviewer_pr_assignments_from_spans(&ps)
+            snapshot::build_reviewer_pr_assignments_from_spans(&ps, &task_to_pr)
                 .get(name)
                 .copied()
         };
@@ -977,8 +978,8 @@ pub(super) async fn handle_coworker_questions(id: RequestId, state: &DaemonState
 ///
 /// Returns true if the task has an associated open PR, checking two sources:
 ///
-/// 1. **`SessionRecord.pr_number` (primary — task-centric model)**: Checks if
-///    any session for this task has a `pr_number` set.
+/// 1. **TaskStore `task.pr` field (primary — task-centric model)**: Checks if
+///    the task has a PR number set in the task store.
 ///
 /// 2. **`task.pr` field on disk + GitHub API verification**: The task file may
 ///    have an explicit PR number set via `--pr` or auto-detected. This survives
@@ -991,12 +992,17 @@ pub(super) async fn handle_coworker_questions(id: RequestId, state: &DaemonState
 /// - Tasks WITH open PRs defer completion to the merge path (auto-complete on merge).
 /// - Tasks WITHOUT open PRs are completed directly to avoid the respawn loop (!1879).
 async fn task_has_open_pr(task_id: &str, state: &DaemonState) -> bool {
-    // Source 1: SessionRecord (primary — task-centric model)
+    // Source 1: TaskStore (primary — task-centric model)
+    let task_to_pr = state.task_store.task_to_pr_map();
     let in_memory = {
         let ps = state.persistent_state.lock().await;
-        ps.sessions
-            .values()
-            .any(|s| s.task_id.as_deref() == Some(task_id) && s.pr_number.is_some())
+        ps.sessions.values().any(|s| {
+            s.task_id.as_deref() == Some(task_id)
+                && s.task_id
+                    .as_ref()
+                    .and_then(|tid| task_to_pr.get(tid))
+                    .is_some()
+        })
     };
     if in_memory {
         return true;
@@ -1103,6 +1109,7 @@ async fn build_coworkers_data(
 ) -> (Vec<serde_json::Value>, std::collections::HashSet<String>) {
     // Get reviewer assignments, worktree registry, and channel lead names from persistent state
     // (best-effort via try_lock)
+    let task_to_pr = state.task_store.task_to_pr_map();
     let (reviewer_pr_map, worktree_pr_map, channel_lead_names): (
         HashMap<String, u64>,
         HashMap<String, u64>,
@@ -1111,11 +1118,16 @@ async fn build_coworkers_data(
         .persistent_state
         .try_lock()
         .map(|ps| {
-            // Build reviewer -> PR map from active spans
+            // Build reviewer -> PR map from active spans via task store
             let rev_map: HashMap<String, u64> = ps
                 .active_reviewer_sessions()
                 .into_iter()
-                .filter_map(|s| s.pr_number.map(|pr| (s.name.clone(), pr)))
+                .filter_map(|s| {
+                    s.task_id
+                        .as_ref()
+                        .and_then(|tid| task_to_pr.get(tid))
+                        .map(|&pr| (s.name.clone(), pr))
+                })
                 .collect();
             // Build coworker -> PR map from worktree registry (for reviewers)
             let wt_map: HashMap<String, u64> = ps

@@ -57,13 +57,19 @@ pub(crate) async fn handle_prs_status(id: RequestId, state: &DaemonState) -> Res
     debug!("Cache miss, fetching fresh PR data");
 
     // Get reviewer assignments from active spans (best-effort via try_lock)
+    let task_to_pr = state.task_store.task_to_pr_map();
     let reviewer_assignments: HashMap<u64, String> = state
         .persistent_state
         .try_lock()
         .map(|ps| {
             ps.active_reviewer_sessions()
                 .into_iter()
-                .filter_map(|s| s.pr_number.map(|pr| (pr, s.name.clone())))
+                .filter_map(|s| {
+                    s.task_id
+                        .as_ref()
+                        .and_then(|tid| task_to_pr.get(tid))
+                        .map(|&pr| (pr, s.name.clone()))
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -542,8 +548,9 @@ pub(super) async fn handle_pr_review(
 
     // Check if already assigned via active spans.
     {
+        let pr_to_task = state.task_store.pr_to_task_map();
         let ps = state.persistent_state.lock().await;
-        if let Some(span) = ps.active_reviewer_for_pr(pr_number) {
+        if let Some(span) = ps.active_reviewer_for_pr(pr_number, &pr_to_task) {
             let reviewer = span.name.clone();
             return Response::success(
                 id,
@@ -740,8 +747,9 @@ pub(super) async fn handle_pr_merge(
     //
     // Checked before any API calls for fast rejection.
     {
+        let pr_to_task = state.task_store.pr_to_task_map();
         let ps = state.persistent_state.lock().await;
-        if let Some(span) = ps.active_reviewer_for_pr(pr_number) {
+        if let Some(span) = ps.active_reviewer_for_pr(pr_number, &pr_to_task) {
             if !ps.github.has_cached_review(pr_number) {
                 let reviewer = span.name.clone();
                 let message = format!(
@@ -992,8 +1000,9 @@ pub(super) async fn handle_pr_review_post(
 
     // Step 1: Look up the reviewer assignment via spans (session ID, task ID, name, placeholder)
     let (reviewer_session_id, reviewer_task_id, reviewer_name, placeholder_comment_id) = {
+        let pr_to_task = state.task_store.pr_to_task_map();
         let ps = state.persistent_state.lock().await;
-        match ps.active_reviewer_for_pr(pr_number) {
+        match ps.active_reviewer_for_pr(pr_number, &pr_to_task) {
             Some(span) => {
                 let session_id = if span.session_id.is_empty() {
                     None

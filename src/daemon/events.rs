@@ -76,7 +76,9 @@ pub async fn evaluate_tick(
             effects.extend(super::health::check_and_restart_tool_name_conflicts(&ps));
             effects.extend(super::health::maybe_refresh_lead_session(&ps));
             effects.extend(super::health::check_channel_lead_worktree_freshness(&ps));
-            effects.extend(super::health::check_and_shutdown_idle_coworkers(&ps));
+            effects.extend(super::health::check_and_shutdown_idle_coworkers(
+                &ps, &tasks,
+            ));
             drop(ps);
             effects
         }
@@ -152,7 +154,7 @@ pub async fn evaluate_tick(
                 effects.extend(super::health::detect_stale_attached_sessions(&ps));
                 effects.extend(super::health::ensure_lead_alive(&ps));
                 effects.extend(super::health::ensure_channel_leads_alive(&ps));
-                effects.extend(super::health::check_and_fire_reminders(&ps, state).await);
+                effects.extend(super::health::check_and_fire_reminders(&ps));
             }
             dedup_spawn_effects(effects)
         }
@@ -182,7 +184,11 @@ pub async fn evaluate_tick(
                 effects.extend(super::pr::collect_merged_pr_cleanup_effects(&ps));
 
                 // Nudge coworkers with open PRs to rebase after a merge
-                effects.extend(super::pr::collect_merge_rebase_nudge_effects(&ps));
+                let task_to_pr = super::state::task_to_pr_map_from_tasks(&tasks);
+                effects.extend(super::pr::collect_merge_rebase_nudge_effects(
+                    &ps,
+                    &task_to_pr,
+                ));
 
                 // Polling fallback for PR→task auto-link: repair missing SetTaskPr links
                 // that webhooks may have missed (no API calls, pure tick state comparison)
@@ -247,7 +253,10 @@ pub async fn evaluate_tick(
             // Check for post-rebase regressions (reads tick state, spawns blocking git)
             {
                 let ps = state.persistent_state.lock().await;
-                effects.extend(super::pr::check_for_rebase_regressions(&ps).await);
+                let task_to_pr_for_rebase = super::state::task_to_pr_map_from_tasks(&tasks);
+                effects.extend(
+                    super::pr::check_for_rebase_regressions(&ps, &task_to_pr_for_rebase).await,
+                );
             }
 
             dedup_spawn_effects(effects)

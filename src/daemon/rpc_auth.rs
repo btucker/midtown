@@ -289,6 +289,7 @@ pub(super) async fn handle_auth_switch(
     // Capture reviewer + channel-lead role context before relaunch so role-aware
     // provider resolution can decide between resume and fresh spawn.
     let (reviewer_pr_by_name, channel_lead_session_names): (HashMap<String, u64>, HashSet<String>) = {
+        let task_to_pr = state.task_store.task_to_pr_map();
         let persistent = state.persistent_state.lock().await;
         let reviewers = running_coworkers
             .iter()
@@ -297,7 +298,12 @@ pub(super) async fn handle_auth_switch(
                     .active_reviewer_sessions()
                     .into_iter()
                     .find(|s| s.name == cw.name)
-                    .and_then(|s| s.pr_number.map(|pr| (cw.name.clone(), pr)))
+                    .and_then(|s| {
+                        s.task_id
+                            .as_ref()
+                            .and_then(|tid| task_to_pr.get(tid))
+                            .map(|&pr| (cw.name.clone(), pr))
+                    })
             })
             .collect();
         let channel_leads = persistent

@@ -2,53 +2,39 @@ use super::*;
 use tempfile::tempdir;
 
 #[test]
-fn test_pr_to_task_map_from_sessions() {
-    let mut sessions = HashMap::new();
-    sessions.insert(
-        "sess1".to_string(),
-        SessionRecord {
-            session_id: "sess1".to_string(),
-            pr_number: Some(42),
-            task_id: Some("7".to_string()),
+fn test_pr_to_task_map_from_tasks() {
+    let tasks = vec![
+        crate::task_store::Task {
+            id: "7".to_string(),
+            pr: Some(42),
             ..Default::default()
         },
-    );
-    sessions.insert(
-        "sess2".to_string(),
-        SessionRecord {
-            session_id: "sess2".to_string(),
-            pr_number: None, // no PR — should be excluded
-            task_id: Some("8".to_string()),
+        crate::task_store::Task {
+            id: "8".to_string(),
+            pr: None, // no PR — should be excluded
             ..Default::default()
         },
-    );
-    let map = pr_to_task_map_from_sessions(&sessions);
+    ];
+    let map = pr_to_task_map_from_tasks(&tasks);
     assert_eq!(map.get(&42), Some(&"7".to_string()));
     assert_eq!(map.len(), 1);
 }
 
 #[test]
-fn test_task_to_pr_map_from_sessions() {
-    let mut sessions = HashMap::new();
-    sessions.insert(
-        "sess1".to_string(),
-        SessionRecord {
-            session_id: "sess1".to_string(),
-            pr_number: Some(42),
-            task_id: Some("7".to_string()),
+fn test_task_to_pr_map_from_tasks() {
+    let tasks = vec![
+        crate::task_store::Task {
+            id: "7".to_string(),
+            pr: Some(42),
             ..Default::default()
         },
-    );
-    sessions.insert(
-        "sess2".to_string(),
-        SessionRecord {
-            session_id: "sess2".to_string(),
-            pr_number: Some(99),
-            task_id: None, // no task — should be excluded
+        crate::task_store::Task {
+            id: "8".to_string(),
+            pr: None, // no PR — should be excluded
             ..Default::default()
         },
-    );
-    let map = task_to_pr_map_from_sessions(&sessions);
+    ];
+    let map = task_to_pr_map_from_tasks(&tasks);
     assert_eq!(map.get("7"), Some(&42u64));
     assert_eq!(map.len(), 1);
 }

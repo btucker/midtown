@@ -3384,3 +3384,77 @@ async fn test_refresh_channel_lead_worktree_nonexistent_path() {
     super::refresh_channel_lead_worktree(&path, "main").await;
     // No panic = success
 }
+
+/// SetTaskPr should write task.pr in the task store and backfill branch on
+/// the session if a branch is provided. session.pr_number is a legacy field
+/// and is NOT written by SetTaskPr — the task store is the single source of
+/// truth for PR-task mapping.
+#[tokio::test]
+async fn test_set_task_pr_backfills_session_pr_number() {
+    let (state, _temp_dir, _guard) = make_insight_test_state("set-task-pr-backfill");
+
+    let session_id = "sess-pr-backfill";
+    let task_id = "100";
+
+    // Create a session with a task_id but no branch (simulating early spawn)
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            session_id.to_string(),
+            super::super::state::SessionRecord {
+                session_id: session_id.to_string(),
+                name: "ghost-link".to_string(),
+                agent_type: "midtown-code-author".to_string(),
+                is_running: true,
+                task_id: Some(task_id.to_string()),
+                pr_number: None,
+                branch: None,
+                ..Default::default()
+            },
+        );
+    }
+
+    // Create the task in the task store (so SetTaskPr can update it)
+    state
+        .task_store
+        .save(&crate::task_store::Task {
+            id: task_id.to_string(),
+            subject: "Fix something".to_string(),
+            status: crate::task_store::TaskStatus::InProgress,
+            agent_type: "midtown-code-author".to_string(),
+            agent_name: "ghost-link".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // Execute SetTaskPr with a branch name
+    let effects = vec![Effect::SetTaskPr {
+        task_id: task_id.to_string(),
+        pr_number: 42,
+        dir_key: String::new(),
+        branch: Some("ghost-link/fix-something".to_string()),
+    }];
+    execute_effects(effects, &state).await;
+
+    // Verify task.pr was set in the task store
+    let task = state.task_store.load(task_id).unwrap();
+    assert_eq!(task.pr, Some(42), "SetTaskPr should write task.pr");
+
+    // Verify session.branch was backfilled from the PR event
+    let ps = state.persistent_state.lock().await;
+    let record = ps.sessions.get(session_id).expect("session should exist");
+    assert_eq!(
+        record.branch,
+        Some("ghost-link/fix-something".to_string()),
+        "SetTaskPr should backfill session.branch when branch is provided"
+    );
+
+    // Verify pr_to_task_map_from_tasks now includes the mapping
+    let task = state.task_store.load(task_id).unwrap();
+    let pr_task_map = super::super::state::pr_to_task_map_from_tasks(&[task]);
+    assert_eq!(
+        pr_task_map.get(&42).map(|s| s.as_str()),
+        Some(task_id),
+        "pr_to_task_map_from_tasks should return the mapping after SetTaskPr"
+    );
+}

@@ -70,7 +70,10 @@ pub struct SessionRecord {
     pub working_dir: String,
     /// Git branch the session is working on.
     pub branch: Option<String>,
-    /// Associated PR number (set when coworker opens a PR).
+    /// Legacy field — PR mapping now lives in TaskStore.task.pr.
+    /// Kept for backwards-compatible deserialization of old daemon-state.json.
+    /// Do not read from this field; use `TaskStore::pr_to_task_map()` instead.
+    #[serde(default, skip_serializing)]
     pub pr_number: Option<u64>,
     /// Initial prompt used to start the session (for restart/clear).
     pub initial_prompt: Option<String>,
@@ -356,6 +359,10 @@ pub struct DaemonPersistentState {
     /// PR↔task index built from sessions + GitHub PR titles.
     #[serde(skip)]
     pub tick_pr_task_index: crate::daemon::snapshot::PrTaskIndex,
+
+    /// task_id → pr_number map derived from tasks (pre-loaded for purity).
+    #[serde(skip)]
+    pub tick_task_to_pr: HashMap<String, u64>,
 
     /// Pre-evaluated cooldown states.
     #[serde(skip)]
@@ -653,16 +660,28 @@ impl DaemonPersistentState {
     }
 
     /// Returns the active reviewer session for a PR, if any.
-    pub fn active_reviewer_for_pr(&self, pr_number: u64) -> Option<&SessionRecord> {
+    ///
+    /// Uses `pr_to_task` (from TaskStore) to find the task_id for the PR,
+    /// then looks up the reviewer session by task_id.
+    pub fn active_reviewer_for_pr(
+        &self,
+        pr_number: u64,
+        pr_to_task: &HashMap<u64, String>,
+    ) -> Option<&SessionRecord> {
+        let task_id = pr_to_task.get(&pr_number)?;
         self.sessions
             .values()
             .filter(|s| s.is_active_reviewer())
-            .find(|s| s.pr_number == Some(pr_number))
+            .find(|s| s.task_id.as_deref() == Some(task_id.as_str()))
     }
 
     /// Returns true if PR has an active reviewer session that is currently running.
-    pub fn pr_has_active_reviewer(&self, pr_number: u64) -> bool {
-        self.active_reviewer_for_pr(pr_number).is_some()
+    pub fn pr_has_active_reviewer(
+        &self,
+        pr_number: u64,
+        pr_to_task: &HashMap<u64, String>,
+    ) -> bool {
+        self.active_reviewer_for_pr(pr_number, pr_to_task).is_some()
     }
 
     /// Returns all running reviewer sessions.
@@ -940,7 +959,13 @@ impl DaemonPersistentState {
     }
 
     /// Get coworker names that have sessions with open PRs.
-    pub fn sessions_with_open_prs(&self) -> std::collections::HashSet<String> {
+    ///
+    /// Uses `task_to_pr` (from TaskStore) to look up PR numbers via task_id
+    /// instead of reading `SessionRecord.pr_number`.
+    pub fn sessions_with_open_prs(
+        &self,
+        task_to_pr: &HashMap<String, u64>,
+    ) -> std::collections::HashSet<String> {
         let open_pr_numbers: std::collections::HashSet<u64> = self
             .tick_open_prs
             .iter()
@@ -949,7 +974,12 @@ impl DaemonPersistentState {
 
         self.sessions
             .values()
-            .filter(|s| s.pr_number.is_some_and(|pr| open_pr_numbers.contains(&pr)))
+            .filter(|s| {
+                s.task_id
+                    .as_ref()
+                    .and_then(|tid| task_to_pr.get(tid))
+                    .is_some_and(|pr| open_pr_numbers.contains(pr))
+            })
             .filter_map(|s| {
                 if s.name.is_empty() {
                     None
@@ -1087,37 +1117,25 @@ impl DaemonPersistentState {
     }
 }
 
-/// Derive a `pr_number → task_id` map from session records.
+/// Derive a `pr_number → task_id` map from task store data.
 ///
-/// Only sessions that have both `pr_number` and `task_id` set are included.
-/// Used as the primary source for PR↔task mapping in the task-centric model.
-pub fn pr_to_task_map_from_sessions(
-    sessions: &HashMap<String, SessionRecord>,
-) -> HashMap<u64, String> {
-    sessions
-        .values()
-        .filter_map(|s| {
-            let pr = s.pr_number?;
-            let task = s.task_id.as_ref()?;
-            Some((pr, task.clone()))
-        })
+/// Only tasks that have `pr` set are included.
+/// The task store is the single source of truth for PR↔task mapping.
+pub fn pr_to_task_map_from_tasks(tasks: &[crate::task_store::Task]) -> HashMap<u64, String> {
+    tasks
+        .iter()
+        .filter_map(|t| Some((t.pr?, t.id.clone())))
         .collect()
 }
 
-/// Derive a `task_id → pr_number` map from session records.
+/// Derive a `task_id → pr_number` map from task store data.
 ///
-/// Only sessions that have both `pr_number` and `task_id` set are included.
-/// Used as the primary source for task↔PR mapping in the task-centric model.
-pub fn task_to_pr_map_from_sessions(
-    sessions: &HashMap<String, SessionRecord>,
-) -> HashMap<String, u64> {
-    sessions
-        .values()
-        .filter_map(|s| {
-            let pr = s.pr_number?;
-            let task = s.task_id.as_ref()?;
-            Some((task.clone(), pr))
-        })
+/// Only tasks that have `pr` set are included.
+/// The task store is the single source of truth for task↔PR mapping.
+pub fn task_to_pr_map_from_tasks(tasks: &[crate::task_store::Task]) -> HashMap<String, u64> {
+    tasks
+        .iter()
+        .filter_map(|t| Some((t.id.clone(), t.pr?)))
         .collect()
 }
 
