@@ -14,8 +14,22 @@ export interface GroupedTask {
  *
  * Children whose parent is not in the visible list are promoted to
  * top-level to avoid orphaned invisible tasks.
+ *
+ * Memoized by input reference — returns the cached result when called
+ * with the same array reference (common in Svelte derived chains).
  */
+let _lastInput: Task[] | null = null;
+let _lastResult: GroupedTask[] = [];
+
 export function groupTasksByParent(tasks: Task[]): GroupedTask[] {
+	if (tasks === _lastInput) return _lastResult;
+	_lastInput = tasks;
+	const result = _groupTasksByParentImpl(tasks);
+	_lastResult = result;
+	return result;
+}
+
+function _groupTasksByParentImpl(tasks: Task[]): GroupedTask[] {
 	const taskIds = new Set(tasks.map((t) => String(t.id)));
 	const topLevelIds = new Set<string>();
 

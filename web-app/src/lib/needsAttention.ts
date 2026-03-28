@@ -73,6 +73,9 @@ export function computeAttentionItems(opts: {
 	const now = opts.now ?? Date.now();
 	const items: NeedsAttentionItem[] = [];
 
+	// Build coworker lookup map once (O(1) lookups vs O(n) .find() per task)
+	const cwMap = new Map(opts.coworkers.map((c) => [c.name, c]));
+
 	// 1. Threads needing attention
 	for (const [threadId, tracked] of Object.entries(opts.trackedThreads)) {
 		const lastMsg = opts.lastMessages[threadId];
@@ -80,10 +83,11 @@ export function computeAttentionItems(opts: {
 
 		// Skip if thread is read (user has seen it since last message)
 		const lastRead = opts.threadReadState[threadId];
-		if (lastRead && new Date(lastRead) >= new Date(lastMsg.timestamp)) continue;
+		const msgMs = new Date(lastMsg.timestamp).getTime();
+		if (lastRead && new Date(lastRead).getTime() >= msgMs) continue;
 
 		if (threadNeedsAttention(lastMsg, opts.userSender, now)) {
-			const ageMs = now - new Date(lastMsg.timestamp).getTime();
+			const ageMs = now - msgMs;
 			const agoText = formatAgo(ageMs);
 
 			items.push({
@@ -93,7 +97,7 @@ export function computeAttentionItems(opts: {
 				context: `${lastMsg.sender} replied ${agoText} · waiting on you`,
 				channel: tracked.channelName,
 				threadId,
-				timestamp: new Date(lastMsg.timestamp).getTime(),
+				timestamp: msgMs,
 				workerName: lastMsg.sender,
 				workerColor: getSenderColor(lastMsg.sender, null),
 			});
@@ -114,7 +118,7 @@ export function computeAttentionItems(opts: {
 		if (lastRead && new Date(lastRead).getTime() >= updatedMs) continue;
 
 		const id = taskReadKey;
-		const cw = opts.coworkers.find((c) => c.name === task.owner);
+		const cw = cwMap.get(task.owner ?? "");
 		const channel = task.channel || opts.mainChannel;
 
 		items.push({
@@ -133,7 +137,7 @@ export function computeAttentionItems(opts: {
 	// 3. Stale tasks
 	for (const task of opts.tasks) {
 		if (task.status !== "in_progress") continue;
-		const cw = opts.coworkers.find((c) => c.name === task.owner);
+		const cw = cwMap.get(task.owner ?? "");
 		const lastChange = opts.progressTimestamps[String(task.id)];
 		if (!lastChange) continue;
 

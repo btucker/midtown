@@ -10,7 +10,15 @@ import { getPrUrl as getPrUrlUtil } from "./channelUtils.ts";
 import DynamicIcon from "./DynamicIcon.svelte";
 import { renderContent } from "./markdown.ts";
 import { getSenderColor } from "./messageUtils.ts";
-import { activeChannel, channels, coworkers, daemonStatus, kanbanData, repoStatus, repoStatuses } from "./store.ts";
+import {
+	activeChannel,
+	channels,
+	coworkerMap as coworkerMapStore,
+	daemonStatus,
+	kanbanData,
+	repoStatus,
+	repoStatuses,
+} from "./store.ts";
 import { rolledUpStatus as computeRolledUpStatus, statusBarColor } from "./taskStatus.ts";
 
 let {
@@ -30,8 +38,8 @@ const rolledUpStatus = $derived(computeRolledUpStatus(task, children, isCard));
 const isActive = $derived(rolledUpStatus === "in_progress");
 const isBlocked = $derived(task.blocked_by?.length > 0);
 
-// Card-only: auto-derive coworker/reviewer from stores
-const cwMap = $derived(isCard || children.length > 0 ? new Map($coworkers.map((c) => [c.name, c])) : null);
+// Use shared store-level coworkerMap (avoids per-instance Map creation)
+const cwMap = $derived(isCard || children.length > 0 ? $coworkerMapStore : null);
 const relatedPr = $derived(isCard ? $kanbanData.review.find((pr) => String(pr.task_id) === String(task.id)) : null);
 const effectiveCw = $derived(isCard ? (task.owner ? (cwMap?.get(task.owner) ?? null) : null) : cw);
 const effectiveReviewer = $derived(isCard ? (relatedPr?.reviewer ?? null) : reviewer);
