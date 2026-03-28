@@ -46,6 +46,7 @@ fn started_adds_to_running() {
     idx.apply(&DomainEvent::AgentStarted {
         id: "a1".into(),
         pid: 1234,
+        session_id: None,
     });
     assert!(idx.running.contains("a1"));
     assert_eq!(idx.by_id.get("a1").unwrap().pid, Some(1234));
@@ -58,6 +59,7 @@ fn stopped_removes_from_running() {
     idx.apply(&DomainEvent::AgentStarted {
         id: "a1".into(),
         pid: 1234,
+        session_id: None,
     });
     idx.apply(&DomainEvent::AgentStopped {
         id: "a1".into(),
@@ -99,16 +101,19 @@ fn idle_workers_returns_running_workers_without_tasks() {
     idx.apply(&DomainEvent::AgentStarted {
         id: "a1".into(),
         pid: 1,
+        session_id: None,
     });
     idx.apply(&created_event("a2", "idle", AgentKind::Worker));
     idx.apply(&DomainEvent::AgentStarted {
         id: "a2".into(),
         pid: 2,
+        session_id: None,
     });
     idx.apply(&created_event("a3", "lead", AgentKind::Lead));
     idx.apply(&DomainEvent::AgentStarted {
         id: "a3".into(),
         pid: 3,
+        session_id: None,
     });
 
     let idle = idx.idle_workers();
@@ -152,6 +157,7 @@ fn fork_removed_from_thread_index_on_stop() {
     idx.apply(&DomainEvent::AgentStarted {
         id: "f1".into(),
         pid: 999,
+        session_id: None,
     });
     idx.apply(&DomainEvent::AgentStopped {
         id: "f1".into(),

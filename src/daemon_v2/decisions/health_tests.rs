@@ -26,6 +26,7 @@ fn respawn_dead_agent_with_task() {
         DomainEvent::AgentStarted {
             id: "a1".into(),
             pid: 100,
+            session_id: None,
         },
         DomainEvent::TaskCreated {
             id: "task-1".into(),
@@ -71,6 +72,7 @@ fn no_respawn_for_completed_task() {
         DomainEvent::AgentStarted {
             id: "a1".into(),
             pid: 100,
+            session_id: None,
         },
         DomainEvent::TaskCreated {
             id: "task-1".into(),
@@ -131,6 +133,7 @@ fn ensure_leads_alive_no_op_when_running() {
         DomainEvent::AgentStarted {
             id: "lead-1".into(),
             pid: 42,
+            session_id: None,
         },
     ];
 

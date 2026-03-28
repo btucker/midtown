@@ -16,6 +16,9 @@ pub struct SpawnConfig {
     pub working_dir: Option<String>,
     pub model: Option<String>,
     pub bound_thread_id: Option<String>,
+    /// When set, fork from the given parent session ID using `--fork-session`.
+    /// The spawned session inherits the parent's conversation context.
+    pub fork_from_session: Option<String>,
 }
 
 #[derive(Debug, Clone)]

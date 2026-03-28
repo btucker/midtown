@@ -141,6 +141,7 @@ fn stops_agents_for_completed_tasks() {
         DomainEvent::AgentStarted {
             id: "a1".into(),
             pid: 100,
+            session_id: None,
         },
         DomainEvent::TaskCreated {
             id: "task-1".into(),

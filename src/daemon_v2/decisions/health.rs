@@ -66,6 +66,7 @@ pub fn ensure_leads_alive(proj: &Projections, default_channel: &str) -> Vec<Comm
             working_dir,
             model: None,
             bound_thread_id: None,
+            fork_from_session: None,
         })]
     }
 }

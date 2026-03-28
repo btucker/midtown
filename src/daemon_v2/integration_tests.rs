@@ -44,6 +44,7 @@ fn full_lifecycle_through_store_and_projections() {
     let e3 = DomainEvent::AgentStarted {
         id: "a1".into(),
         pid: 5678,
+        session_id: None,
     };
     store.append(&e3).unwrap();
     proj.apply(&e3);

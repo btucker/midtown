@@ -23,6 +23,7 @@ fn projections_with_agents() -> Projections {
     proj.apply(&DomainEvent::AgentStarted {
         id: "a1".into(),
         pid: 1234,
+        session_id: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: "a2".into(),
@@ -286,6 +287,7 @@ fn session_fork_returns_existing_running_fork() {
     proj.apply(&DomainEvent::AgentStarted {
         id: "f1".into(),
         pid: 999,
+        session_id: None,
     });
 
     let request = json!({

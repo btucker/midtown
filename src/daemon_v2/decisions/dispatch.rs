@@ -41,6 +41,7 @@ pub fn dispatch_pending_tasks(proj: &Projections, max_in_progress: usize) -> Vec
                 working_dir: None,
                 model: None,
                 bound_thread_id: None,
+                fork_from_session: None,
             }))
         })
         .collect()

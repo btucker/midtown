@@ -228,6 +228,24 @@ pub fn handle_session_fork(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    // Find the running lead for this channel to fork its session context.
+    let fork_from_session = proj
+        .agents
+        .by_channel
+        .get(channel)
+        .and_then(|ids| {
+            ids.iter().find(|id| {
+                proj.agents.running.contains(*id)
+                    && proj
+                        .agents
+                        .by_id
+                        .get(*id)
+                        .is_some_and(|a| a.kind == AgentKind::Lead)
+            })
+        })
+        .and_then(|id| proj.agents.by_id.get(id))
+        .and_then(|agent| agent.session_id.clone());
+
     let command = Command::SpawnAgent(SpawnConfig {
         name,
         kind: AgentKind::Fork,
@@ -239,6 +257,7 @@ pub fn handle_session_fork(
         working_dir: None,
         model: None,
         bound_thread_id: Some(thread_parent_id.to_string()),
+        fork_from_session,
     });
 
     Ok((json!({"ok": true, "forking": true}), vec![command]))

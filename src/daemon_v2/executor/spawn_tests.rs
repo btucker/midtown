@@ -14,6 +14,7 @@ fn worker_config() -> SpawnConfig {
         working_dir: None,
         model: Some("sonnet".into()),
         bound_thread_id: None,
+        fork_from_session: None,
     }
 }
 

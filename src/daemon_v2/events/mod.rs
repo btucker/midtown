@@ -70,6 +70,7 @@ pub enum DomainEvent {
     AgentStarted {
         id: AgentId,
         pid: u32,
+        session_id: Option<String>,
     },
     AgentStopped {
         id: AgentId,

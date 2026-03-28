@@ -54,6 +54,7 @@ fn snapshot_and_recover() {
         .append(&DomainEvent::AgentStarted {
             id: "agent-1".into(),
             pid: 1234,
+            session_id: None,
         })
         .unwrap();
 

@@ -57,10 +57,20 @@ pub async fn spawn_agent(
     let launch_config = build_launch_config(spawn_config, paths.dir_key());
     let mut headless_config = launch_config.to_headless_config(paths);
 
+    // Pre-assign a session ID so the daemon knows it immediately at spawn time.
+    let pre_assigned_session_id = uuid::Uuid::new_v4().to_string();
+    headless_config.session_id = Some(pre_assigned_session_id.clone());
+
     if let Some(thread_id) = &spawn_config.bound_thread_id {
         headless_config
             .env
             .insert("MIDTOWN_BOUND_THREAD_ID".into(), thread_id.clone());
+    }
+
+    // Fork mode: inherit the parent session's context via --fork-session.
+    if let Some(parent_session_id) = &spawn_config.fork_from_session {
+        headless_config.resume_session_id = Some(parent_session_id.clone());
+        headless_config.fork_session = true;
     }
 
     let session = HeadlessSession::spawn(&headless_config)
@@ -69,7 +79,7 @@ pub async fn spawn_agent(
 
     let pid = session.pid().unwrap_or(0);
     let agent_id: AgentId = uuid::Uuid::new_v4().to_string();
-    let events = agent_spawned_events(&agent_id, spawn_config, pid);
+    let events = agent_spawned_events(&agent_id, spawn_config, pid, Some(pre_assigned_session_id));
 
     Ok((session, events))
 }
@@ -83,7 +93,12 @@ pub async fn stop_agent(session: &mut HeadlessSession) -> Result<(), String> {
 }
 
 /// Build the events emitted when an agent is successfully spawned.
-pub fn agent_spawned_events(id: &AgentId, config: &SpawnConfig, pid: u32) -> Vec<DomainEvent> {
+pub fn agent_spawned_events(
+    id: &AgentId,
+    config: &SpawnConfig,
+    pid: u32,
+    session_id: Option<String>,
+) -> Vec<DomainEvent> {
     vec![
         DomainEvent::AgentCreated {
             id: id.clone(),
@@ -98,6 +113,7 @@ pub fn agent_spawned_events(id: &AgentId, config: &SpawnConfig, pid: u32) -> Vec
         DomainEvent::AgentStarted {
             id: id.clone(),
             pid,
+            session_id,
         },
     ]
 }

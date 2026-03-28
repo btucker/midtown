@@ -18,6 +18,7 @@ pub struct Agent {
     pub channel: Option<String>,
     pub task_id: Option<TaskId>,
     pub bound_thread_id: Option<String>,
+    pub session_id: Option<String>,
     pub pid: Option<u32>,
     pub started_at: Option<DateTime<Utc>>,
     pub stopped_at: Option<DateTime<Utc>>,
@@ -55,6 +56,7 @@ impl AgentIndex {
                     channel: channel.clone(),
                     task_id: task_id.clone(),
                     bound_thread_id: bound_thread_id.clone(),
+                    session_id: None,
                     pid: None,
                     started_at: None,
                     stopped_at: None,
@@ -74,9 +76,14 @@ impl AgentIndex {
                 }
                 self.by_id.insert(id.clone(), agent);
             }
-            DomainEvent::AgentStarted { id, pid } => {
+            DomainEvent::AgentStarted {
+                id,
+                pid,
+                session_id,
+            } => {
                 if let Some(agent) = self.by_id.get_mut(id) {
                     agent.pid = Some(*pid);
+                    agent.session_id = session_id.clone();
                     agent.started_at = Some(Utc::now());
                     agent.stopped_at = None;
                     self.running.insert(id.clone());
