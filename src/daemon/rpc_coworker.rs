@@ -637,33 +637,77 @@ pub(super) async fn handle_coworker_report_state(
         if let Some(pr_number) = reviewer_pr
             && !state.is_pr_reviewed(pr_number).await
         {
-            warn!(
-                "Reviewer {} reported idle but has not posted review for PR #{} — nudging to post first",
+            // Fallback: check if the reviewer session has posted *any* comment on the PR,
+            // even without `type:review` frontmatter. The idle signal means the reviewer
+            // believes they're done, so any attributable comment counts as evidence of
+            // a completed review. This handles cases where the reviewer (e.g., Codex)
+            // posts a review comment without midtown frontmatter.
+            let session_id = state.session_id_for_name(name).await;
+            let has_any_comment = super::pr::reviewer_session_has_any_pr_comment(
+                pr_number,
+                Some(name),
+                if session_id.is_empty() {
+                    None
+                } else {
+                    Some(session_id.as_str())
+                },
+            );
+
+            if !has_any_comment {
+                warn!(
+                    "Reviewer {} reported idle but has not posted review for PR #{} — nudging to post first",
+                    name, pr_number
+                );
+                let nudge_effects = vec![effects::Effect::nudge_session(
+                    session_id,
+                    format!(
+                        "You are assigned as reviewer for PR #{pr_number} but have not posted \
+                         your review yet. Please complete and post your review comment on the PR \
+                         before going idle."
+                    ),
+                )];
+                effects::execute_effects(nudge_effects, state).await;
+                return Response::success(
+                    id,
+                    serde_json::json!({
+                        "success": true,
+                        "message": format!("{} nudged to post review for PR #{}", name, pr_number),
+                    }),
+                );
+            }
+
+            // Fallback detected a comment — treat as review complete.
+            // Complete the task and fall through to shutdown.
+            info!(
+                "Fallback review detection: reviewer {} has comment on PR #{} — treating as reviewed",
                 name, pr_number
             );
-            let nudge_effects = vec![effects::Effect::nudge_session(
-                state.session_id_for_name(name).await,
-                format!(
-                    "You are assigned as reviewer for PR #{pr_number} but have not posted \
-                     your review yet. Please complete and post your review comment on the PR \
-                     before going idle."
-                ),
-            )];
-            effects::execute_effects(nudge_effects, state).await;
-            return Response::success(
-                id,
-                serde_json::json!({
-                    "success": true,
-                    "message": format!("{} nudged to post review for PR #{}", name, pr_number),
-                }),
-            );
-        }
-
-        // If this reviewer has posted their review, complete the review task immediately
-        // rather than waiting for the next poll tick. The reviewer_pr check above already
-        // confirmed is_pr_reviewed == true (otherwise we'd have returned with a nudge).
-        // Cross-validate task.pr matches the session's PR to avoid completing the wrong task.
-        if let Some(pr_number) = reviewer_pr
+            if let Some(task_id) = state.get_task_id_for_coworker(name).await
+                && state
+                    .task_store
+                    .load(&task_id)
+                    .ok()
+                    .and_then(|t| t.pr)
+                    .is_some_and(|p| p == pr_number)
+            {
+                let dir_key = state.paths.dir_key().to_string();
+                info!(
+                    "Completing review task !{} — fallback: reviewer {} going idle after posting comment on PR #{}",
+                    task_id, name, pr_number
+                );
+                let complete_effects = vec![
+                    effects::Effect::CompleteTask {
+                        task_id: task_id.clone(),
+                        dir_key: dir_key.clone(),
+                    },
+                    effects::Effect::ClearBlockedBy {
+                        completed_task_id: task_id,
+                        dir_key,
+                    },
+                ];
+                effects::execute_effects(complete_effects, state).await;
+            }
+        } else if let Some(pr_number) = reviewer_pr
             && let Some(task_id) = state.get_task_id_for_coworker(name).await
             && state
                 .task_store

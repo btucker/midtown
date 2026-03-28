@@ -3943,6 +3943,155 @@ fn json_review_rejects_bodyless_commented_when_reviewer_assigned() {
     );
 }
 
+// ── Fallback review detection (json_reviewer_session_has_any_comment) ────────
+
+/// A comment with matching session frontmatter (without type:review) should
+/// trigger the fallback.
+#[test]
+fn fallback_detects_session_comment_without_review_type() {
+    let json = json!({
+        "comments": [
+            {
+                "body": "<!-- midtown session:abc-123 -->\n## Code Review\n\nLGTM!",
+                "author": {"login": "btucker"}
+            }
+        ]
+    });
+
+    assert!(json_reviewer_session_has_any_comment(
+        &json,
+        Some("pleasant"),
+        Some("abc-123"),
+    ));
+}
+
+/// A comment with a different session ID should not match.
+#[test]
+fn fallback_rejects_different_session_id() {
+    let json = json!({
+        "comments": [
+            {
+                "body": "<!-- midtown session:other-456 -->\n## Code Review\n\nLGTM!",
+                "author": {"login": "btucker"}
+            }
+        ]
+    });
+
+    assert!(!json_reviewer_session_has_any_comment(
+        &json,
+        Some("pleasant"),
+        Some("abc-123"),
+    ));
+}
+
+/// No comments → fallback returns false.
+#[test]
+fn fallback_returns_false_when_no_comments() {
+    let json = json!({ "comments": [] });
+
+    assert!(!json_reviewer_session_has_any_comment(
+        &json,
+        Some("pleasant"),
+        Some("abc-123"),
+    ));
+}
+
+/// Legacy frontmatter (`<!-- midtown: name -->`) should match by reviewer name.
+#[test]
+fn fallback_detects_legacy_frontmatter_comment() {
+    let json = json!({
+        "comments": [
+            {
+                "body": "<!-- midtown: pleasant -->\n## Code Review\n\nLGTM!",
+                "author": {"login": "btucker"}
+            }
+        ]
+    });
+
+    assert!(json_reviewer_session_has_any_comment(
+        &json,
+        Some("pleasant"),
+        Some("abc-123"),
+    ));
+}
+
+/// Legacy frontmatter with wrong name should not match.
+#[test]
+fn fallback_rejects_legacy_frontmatter_wrong_name() {
+    let json = json!({
+        "comments": [
+            {
+                "body": "<!-- midtown: broadway -->\n## Code Review\n\nLGTM!",
+                "author": {"login": "btucker"}
+            }
+        ]
+    });
+
+    assert!(!json_reviewer_session_has_any_comment(
+        &json,
+        Some("pleasant"),
+        Some("abc-123"),
+    ));
+}
+
+/// Without an assigned reviewer, fallback should return false (can't attribute).
+#[test]
+fn fallback_returns_false_without_assigned_reviewer() {
+    let json = json!({
+        "comments": [
+            {
+                "body": "<!-- midtown session:abc-123 -->\nSome comment",
+                "author": {"login": "btucker"}
+            }
+        ]
+    });
+
+    assert!(!json_reviewer_session_has_any_comment(
+        &json,
+        None,
+        Some("abc-123")
+    ));
+}
+
+/// A comment with type:review frontmatter should also match the fallback
+/// (it's a superset — any comment from the session counts).
+#[test]
+fn fallback_also_matches_review_typed_comment() {
+    let json = json!({
+        "comments": [
+            {
+                "body": "<!-- midtown session:abc-123 type:review -->\n## Code Review\n\nLGTM!",
+                "author": {"login": "btucker"}
+            }
+        ]
+    });
+
+    assert!(json_reviewer_session_has_any_comment(
+        &json,
+        Some("pleasant"),
+        Some("abc-123"),
+    ));
+}
+
+/// Bot comments without midtown frontmatter should not match the fallback.
+#[test]
+fn fallback_rejects_unattributed_comments() {
+    let json = json!({
+        "comments": [
+            {
+                "body": "Coverage report: 67.03% — no midtown frontmatter here",
+                "author": {"login": "codecov-bot"}
+            }
+        ]
+    });
+
+    assert!(!json_reviewer_session_has_any_comment(
+        &json,
+        Some("pleasant"),
+        Some("abc-123"),
+    ));
+}
+
 /// Draft PRs should be skipped entirely in poll_prs_for_issues, producing no
 /// orphaned PR alerts even when they have merge conflicts and no active owner.
 ///

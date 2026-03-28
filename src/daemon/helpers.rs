@@ -708,7 +708,7 @@ pub fn extract_review_author_from_body(text: &str) -> Option<String> {
 ///
 /// Unlike `coworker_from_frontmatter` (which validates against the known
 /// coworker list), this returns the raw name for flexible matching.
-fn extract_midtown_frontmatter_name(body: &str) -> Option<String> {
+pub(super) fn extract_midtown_frontmatter_name(body: &str) -> Option<String> {
     let start = body.find("<!-- midtown:")?;
     let after_start = &body[start + 13..];
     // Skip structured frontmatter (has space-separated key:value pairs)

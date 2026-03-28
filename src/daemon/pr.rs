@@ -3264,6 +3264,93 @@ pub(super) fn json_has_completed_review(
     false
 }
 
+/// Fallback review detection: check if the assigned reviewer session has posted
+/// **any** comment on the PR, even without `type:review` frontmatter.
+///
+/// This is used when a reviewer goes idle and `is_pr_reviewed()` returns false.
+/// The idle signal implies the reviewer believes they're done, so any comment
+/// from their session is treated as evidence of a completed review.
+///
+/// Attribution is checked via:
+/// 1. Structured frontmatter `session:{id}` (without requiring `type:review`)
+/// 2. Legacy frontmatter `<!-- midtown: {name} -->`
+///
+/// Returns `false` if no attributable comment is found.
+pub(super) fn json_reviewer_session_has_any_comment(
+    json: &serde_json::Value,
+    assigned_reviewer: Option<&str>,
+    assigned_session_id: Option<&str>,
+) -> bool {
+    // Must have an assigned reviewer to attribute comments
+    let Some(reviewer_name) = assigned_reviewer else {
+        return false;
+    };
+
+    if let Some(comments) = json.array_field("comments") {
+        for comment in comments {
+            let body = comment.str_or("body", "");
+            if body.is_empty() {
+                continue;
+            }
+
+            // Check structured frontmatter (session ID match, any type)
+            if let Some(fm) = parse_frontmatter(body)
+                && let Some(ref fm_session_id) = fm.session_id
+                && assigned_session_id.is_some_and(|sid| sid == fm_session_id)
+            {
+                debug!(
+                    "Fallback review detection: found comment with session {} on PR",
+                    fm_session_id
+                );
+                return true;
+            }
+
+            // Check legacy frontmatter (name match)
+            if let Some(name) = extract_midtown_frontmatter_name(body)
+                && name.eq_ignore_ascii_case(reviewer_name)
+            {
+                debug!(
+                    "Fallback review detection: found comment with legacy name {} on PR",
+                    name
+                );
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Subprocess wrapper for `json_reviewer_session_has_any_comment`.
+///
+/// Fetches PR comments via `gh pr view` and checks if the assigned reviewer
+/// session has posted any comment (fallback for when `type:review` frontmatter
+/// is missing).
+pub(super) fn reviewer_session_has_any_pr_comment(
+    pr_number: u64,
+    assigned_reviewer: Option<&str>,
+    assigned_session_id: Option<&str>,
+) -> bool {
+    let output = std::process::Command::new("gh")
+        .args(["pr", "view", &pr_number.to_string(), "--json", "comments"])
+        .output();
+
+    let Some(json) = check_cmd_output(
+        output,
+        &format!("fetch comments for fallback review check on PR #{pr_number}"),
+    )
+    .and_then(|o| {
+        parse_json_warn::<serde_json::Value>(
+            &o.stdout,
+            &format!("parse comments for fallback review check on PR #{pr_number}"),
+        )
+    }) else {
+        return false;
+    };
+
+    json_reviewer_session_has_any_comment(&json, assigned_reviewer, assigned_session_id)
+}
+
 /// Extract review comment IDs from a JSON array of GitHub issue comments.
 ///
 /// Filters for comments containing a review signature and returns their
