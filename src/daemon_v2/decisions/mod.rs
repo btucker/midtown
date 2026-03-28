@@ -1,3 +1,4 @@
+pub mod dispatch;
 pub mod health;
 
 use crate::daemon_v2::events::{AgentId, AgentKind, Provider, TaskId};
