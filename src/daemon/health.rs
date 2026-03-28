@@ -1353,6 +1353,101 @@ pub fn check_channel_lead_worktree_freshness(ps: &DaemonPersistentState) -> Vec<
     effects
 }
 
+/// Detect and shut down idle coworkers as a backstop safety net.
+///
+/// The primary shutdown path is task completion (`stop_sessions_for_completed_tasks`
+/// in dispatch.rs). This catches coworkers that slip through: stuck sessions,
+/// inconsistent task state, etc.
+pub fn check_and_shutdown_idle_coworkers(ps: &DaemonPersistentState) -> Vec<Effect> {
+    use crate::rules::{CoworkerSnapshot, IdleShutdownContext, decide_idle_shutdowns};
+
+    // Build coworker snapshots from tick data
+    let coworkers: Vec<CoworkerSnapshot> = ps
+        .tick_coworker_start_times
+        .iter()
+        .map(|(name, started_at)| CoworkerSnapshot {
+            name: name.clone(),
+            started_at: *started_at,
+            session_id: None,
+        })
+        .collect();
+
+    if coworkers.is_empty() {
+        return vec![];
+    }
+
+    // Collect exclusion sets from tick state
+    let open_prs = ps.sessions_with_open_prs();
+    let usage_limited = ps.usage_limited_coworkers();
+    let api_errors = ps.api_error_coworkers();
+    let auth_errors = ps.auth_error_coworkers();
+    let channel_leads = ps.channel_lead_names();
+
+    let pending_owners: std::collections::HashSet<String> = ps
+        .tick_pending_tasks_with_owners
+        .iter()
+        .map(|(_, _, owner)| owner.to_lowercase())
+        .collect();
+
+    let active_tools: std::collections::HashSet<String> = ps
+        .tick_process_health
+        .iter()
+        .filter(|(_, h)| h.has_pending_tool)
+        .map(|(name, _)| name.to_lowercase())
+        .collect();
+
+    // For ci_passed, review_feedback, and unblocked_deps we pass empty sets.
+    // These require complex derivation (PR CI checks, review comment parsing,
+    // dependency graph resolution) that is not yet collected in tick fields.
+    // As a backstop, missing these exclusions makes the idle detector slightly
+    // more aggressive, which is acceptable — the primary path handles these
+    // cases correctly.
+    let empty = std::collections::HashSet::new();
+
+    let ctx = IdleShutdownContext {
+        coworkers: &coworkers,
+        busy_coworkers: &ps.tick_busy_coworkers,
+        coworkers_with_open_prs: &open_prs,
+        active_reviewers: &ps.tick_active_reviewers,
+        coworkers_with_unblocked_deps: &empty,
+        ci_passed_pr_coworkers: &empty,
+        usage_limited_coworkers: &usage_limited,
+        api_error_coworkers: &api_errors,
+        auth_error_coworkers: &auth_errors,
+        pending_task_owners: &pending_owners,
+        review_feedback_pr_coworkers: &empty,
+        coworkers_with_active_tools: &active_tools,
+        now_utc: chrono::Utc::now(),
+        minimum_lifetime: IDLE_COWORKER_MINIMUM_LIFETIME,
+        repo_name: &ps.tick_project_name,
+        channel_lead_names: &channel_leads,
+    };
+
+    let decisions = decide_idle_shutdowns(&ctx);
+
+    if decisions.is_empty() {
+        return vec![];
+    }
+
+    let mut effects = Vec::new();
+    for decision in &decisions {
+        info!(
+            "Idle backstop: shutting down coworker {} (no active work detected)",
+            decision.name
+        );
+        effects.push(Effect::post_to_ops(format!(
+            "🔄 Idle backstop: shutting down **{}** — no active work detected",
+            decision.name
+        )));
+        effects.push(Effect::ShutdownCoworker {
+            name: decision.name.clone(),
+            message: String::new(),
+        });
+    }
+
+    effects
+}
+
 #[path = "health_tests.rs"]
 #[cfg(test)]
 mod tests;
