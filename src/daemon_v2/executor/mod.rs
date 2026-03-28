@@ -26,6 +26,20 @@ pub async fn execute(
                 if let Some(DomainEvent::AgentCreated { id, .. }) = events.first() {
                     sessions.insert(id.clone(), session);
                 }
+                // Auto-create DM channel for workers so they can communicate privately.
+                if config.kind == crate::daemon_v2::events::AgentKind::Worker {
+                    let dm_channel =
+                        crate::daemon_v2::decisions::lifecycle::create_dm_channel_name(
+                            &config.name,
+                        );
+                    if let Err(e) = channel_io::post_system_message(
+                        channels_dir,
+                        &dm_channel,
+                        &format!("DM channel for {}", config.name),
+                    ) {
+                        tracing::warn!(%e, channel = %dm_channel, "failed to create DM channel");
+                    }
+                }
                 events
             }
             Err(e) => {

@@ -20,6 +20,8 @@ fn running_lead_events(channel: &str) -> Vec<DomainEvent> {
             channel: Some(channel.to_string()),
             task_id: None,
             bound_thread_id: None,
+            icon: None,
+            color: None,
         },
         DomainEvent::AgentStarted {
             id: "lead-1".into(),
@@ -69,6 +71,8 @@ fn mention_agent_by_name_routes_nudge() {
             channel: Some("main".into()),
             task_id: Some("task-1".into()),
             bound_thread_id: None,
+            icon: None,
+            color: None,
         },
         DomainEvent::AgentStarted {
             id: "worker-1".into(),
@@ -134,6 +138,8 @@ fn no_nudge_for_stopped_agent() {
             channel: Some("main".into()),
             task_id: Some("task-1".into()),
             bound_thread_id: None,
+            icon: None,
+            color: None,
         },
         DomainEvent::AgentStarted {
             id: "worker-1".into(),

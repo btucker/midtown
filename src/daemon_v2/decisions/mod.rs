@@ -1,6 +1,7 @@
 pub mod chat;
 pub mod dispatch;
 pub mod health;
+pub mod lifecycle;
 pub mod prs;
 
 use crate::daemon_v2::events::{AgentId, AgentKind, Provider, TaskId};
@@ -20,6 +21,8 @@ pub struct SpawnConfig {
     /// When set, fork from the given parent session ID using `--fork-session`.
     /// The spawned session inherits the parent's conversation context.
     pub fork_from_session: Option<String>,
+    pub icon: Option<String>,
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone)]

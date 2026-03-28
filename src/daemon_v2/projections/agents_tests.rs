@@ -11,6 +11,8 @@ fn created_event(id: &str, name: &str, kind: AgentKind) -> DomainEvent {
         channel: Some("main".into()),
         task_id: None,
         bound_thread_id: None,
+        icon: None,
+        color: None,
     }
 }
 
@@ -81,6 +83,8 @@ fn lookup_by_task() {
         channel: Some("main".into()),
         task_id: Some("task-1".into()),
         bound_thread_id: None,
+        icon: None,
+        color: None,
     });
     assert_eq!(idx.by_task.get("task-1"), Some(&"a1".to_string()));
 }
@@ -97,6 +101,8 @@ fn idle_workers_returns_running_workers_without_tasks() {
         channel: None,
         task_id: Some("task-1".into()),
         bound_thread_id: None,
+        icon: None,
+        color: None,
     });
     idx.apply(&DomainEvent::AgentStarted {
         id: "a1".into(),
@@ -133,6 +139,8 @@ fn fork_indexed_by_thread() {
         channel: Some("web".into()),
         task_id: None,
         bound_thread_id: Some("thread-123".into()),
+        icon: None,
+        color: None,
     });
 
     let fork = idx.fork_for_thread("thread-123").unwrap();
@@ -153,6 +161,8 @@ fn fork_removed_from_thread_index_on_stop() {
         channel: Some("web".into()),
         task_id: None,
         bound_thread_id: Some("thread-123".into()),
+        icon: None,
+        color: None,
     });
     idx.apply(&DomainEvent::AgentStarted {
         id: "f1".into(),

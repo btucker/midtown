@@ -120,6 +120,8 @@ fn no_duplicate_reviewer_when_already_running() {
         channel: None,
         task_id: None,
         bound_thread_id: None,
+        icon: None,
+        color: None,
     });
     proj.apply(&DomainEvent::AgentStarted {
         id: "r1".into(),
@@ -150,6 +152,8 @@ fn respawns_reviewer_when_stopped() {
         channel: None,
         task_id: None,
         bound_thread_id: None,
+        icon: None,
+        color: None,
     });
     proj.apply(&DomainEvent::AgentStarted {
         id: "r1".into(),
@@ -200,6 +204,8 @@ fn suspends_author_with_open_pr() {
         channel: Some("main".into()),
         task_id: Some("t1".into()),
         bound_thread_id: None,
+        icon: None,
+        color: None,
     });
     proj.apply(&DomainEvent::AgentStarted {
         id: "a1".into(),
@@ -239,6 +245,8 @@ fn no_suspend_for_merged_pr() {
         channel: Some("main".into()),
         task_id: Some("t1".into()),
         bound_thread_id: None,
+        icon: None,
+        color: None,
     });
     proj.apply(&DomainEvent::AgentStarted {
         id: "a1".into(),
@@ -281,6 +289,8 @@ fn no_suspend_for_closed_pr() {
         channel: Some("main".into()),
         task_id: Some("t1".into()),
         bound_thread_id: None,
+        icon: None,
+        color: None,
     });
     proj.apply(&DomainEvent::AgentStarted {
         id: "a1".into(),
@@ -314,6 +324,8 @@ fn no_suspend_for_non_worker_agents() {
         channel: Some("main".into()),
         task_id: None,
         bound_thread_id: None,
+        icon: None,
+        color: None,
     });
     proj.apply(&DomainEvent::AgentStarted {
         id: "lead1".into(),
