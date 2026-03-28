@@ -271,6 +271,19 @@ pub fn handle_channel_update(params: Option<&Value>) -> Result<Vec<DomainEvent>,
         });
     }
 
+    // Handle directory setting — subdirectory for AGENTS.md/CLAUDE.md loading
+    if params.get("directory").is_some() {
+        let directory = params
+            .get("directory")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty());
+        events.push(DomainEvent::ChannelDirectorySet {
+            channel: channel.to_string(),
+            directory,
+        });
+    }
+
     Ok(events)
 }
 

@@ -168,6 +168,11 @@ pub enum DomainEvent {
         lead_driven: bool,
     },
 
+    ChannelDirectorySet {
+        channel: String,
+        directory: Option<String>,
+    },
+
     // Config
     ConfigUpdated {
         key: String,

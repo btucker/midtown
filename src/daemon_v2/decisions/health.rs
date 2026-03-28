@@ -48,6 +48,13 @@ pub fn ensure_leads_alive(proj: &Projections, default_channel: &str) -> Vec<Comm
     if has_running_lead {
         vec![]
     } else {
+        // Use the channel's configured directory as the lead's working dir
+        // so AGENTS.md/CLAUDE.md from that subdirectory gets loaded
+        let working_dir = proj
+            .channels
+            .channel_directory(default_channel)
+            .map(|d| d.to_string());
+
         vec![Command::SpawnAgent(SpawnConfig {
             name: default_channel.to_string(),
             kind: AgentKind::Lead,
@@ -56,7 +63,7 @@ pub fn ensure_leads_alive(proj: &Projections, default_channel: &str) -> Vec<Comm
             channel: Some(default_channel.to_string()),
             task_id: None,
             initial_prompt: None,
-            working_dir: None,
+            working_dir,
             model: None,
         })]
     }
