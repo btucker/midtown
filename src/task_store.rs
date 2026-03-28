@@ -429,7 +429,7 @@ pub fn extract_task_id_from_pr_title(title: &str) -> Option<u64> {
         }
     }
     // Try parenthesized format: (!NNN)
-    if let Some(start) = title.find("(!") {
+    if let Some(start) = title.rfind("(!") {
         let rest = &title[start + 2..]; // Skip "(!"
         if let Some(end) = rest.find(')') {
             let num_str = &rest[..end];
