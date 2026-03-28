@@ -118,6 +118,26 @@ Any match prevents shutdown. Checked in this order:
 - Multiple coworkers: only non-excluded ones get shutdown decisions
 - Empty coworkers list returns empty decisions
 
+## Data Sources for Exclusion Sets
+
+The health wrapper (`check_and_shutdown_idle_coworkers`) builds the context from these sources:
+
+| Exclusion Set | Source |
+|---|---|
+| `busy_coworkers` | `ps.tick_busy_coworkers` (tick field) |
+| `active_reviewers` | `ps.tick_active_reviewers` (tick field) |
+| `coworkers_with_open_prs` | `ps.sessions_with_open_prs()` (method) |
+| `usage_limited_coworkers` | `ps.usage_limited_coworkers()` (method) |
+| `api_error_coworkers` | `ps.api_error_coworkers()` (method) |
+| `auth_error_coworkers` | `ps.auth_error_coworkers()` (method) |
+| `channel_lead_names` | `ps.channel_lead_names()` (method) |
+| `pending_task_owners` | `ps.tick_pending_tasks_with_owners` → extract owner names |
+| `coworkers_with_active_tools` | `ps.tick_process_health` → filter `has_pending_tool` |
+| `ci_passed_pr_coworkers` | `ps.tick_open_prs` + `helpers::all_ci_checks_passed()` → map to session names |
+| `coworkers_with_unblocked_deps` | Derive from `ps.tick_blocks_map` + completed tasks |
+| `review_feedback_pr_coworkers` | `ps.tick_open_prs` + review feedback helpers → map to session names |
+| `coworkers` | `ps.tick_coworker_start_times` → build `CoworkerSnapshot` vec |
+
 ## Non-goals
 
 - **No new state tracking** — uses existing `tick_*` fields from `DaemonPersistentState`
