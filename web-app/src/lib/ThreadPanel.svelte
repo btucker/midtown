@@ -13,7 +13,7 @@ let prevThreadId = null;
   import { extractPastedFile, updatePreviewUrl, uploadAndSend } from './filePaste.ts'
   import { getPrUrl as getPrUrlUtil } from './channelUtils.ts'
   import { tick, onMount, onDestroy, untrack } from 'svelte'
-  import { dateChanged } from './messageUtils.ts'
+  import { dateChanged, getSenderColor } from './messageUtils.ts'
   import SendHorizontal from '@lucide/svelte/icons/send-horizontal'
   import { openImageLightbox } from './biggerPicture.ts'
   import MessageRow from './MessageRow.svelte'
@@ -25,6 +25,9 @@ let prevThreadId = null;
   import { groupTimelineToolRuns, isToolOnly } from './toolRunGrouping.ts'
   import { clearMobileTextarea } from './mobileInput.ts'
   import Autocomplete from './Autocomplete.svelte'
+  import ChevronDown from '@lucide/svelte/icons/chevron-down'
+  import ChevronRight from '@lucide/svelte/icons/chevron-right'
+  import { statusBarColor } from './taskStatus.ts'
 
   // Thread panel resize state (desktop only)
   const THREAD_PANEL_WIDTH_KEY = 'thread-panel:width'
@@ -86,6 +89,8 @@ let prevThreadId = null;
       document.body.style.userSelect = ''
     }
   })
+
+  let tasksExpanded = $state(false)
 
   let replyText = $state('')
   let pendingFile = $state(null)
@@ -222,6 +227,7 @@ let prevThreadId = null;
       autoScroll = true
       forkPending = false
       forkError = null
+      tasksExpanded = false
     })
     if (thinkingTimeout) {
       clearTimeout(thinkingTimeout)
@@ -810,19 +816,47 @@ let prevThreadId = null;
       <div class="px-4 py-1.5 bg-destructive/10 text-destructive text-[0.72rem] border-b border-destructive/20 shrink-0">{forkError}</div>
     {/if}
 
-    <!-- Scrollable content: task cards + parent message + replies -->
+    <!-- Collapsible task summary strip (fixed, doesn't scroll) -->
+    {#if $threadData.tasks?.length > 0}
+      <div class="shrink-0 border-b border-border bg-card/50">
+        <button
+          class="flex w-full items-center gap-1.5 px-4 py-1.5 text-left text-[0.72rem] font-mono text-muted-foreground transition-colors hover:bg-accent/50"
+          onclick={() => tasksExpanded = !tasksExpanded}
+        >
+          {#if tasksExpanded}
+            <ChevronDown class="size-3 shrink-0 opacity-60" />
+          {:else}
+            <ChevronRight class="size-3 shrink-0 opacity-60" />
+          {/if}
+          <span class="flex items-center gap-1.5">
+            <span>{$threadData.tasks.length} {$threadData.tasks.length === 1 ? 'task' : 'tasks'}</span>
+            <span class="flex items-center gap-0.5">
+              {#each $threadData.tasks as t}
+                <span
+                  class="inline-block size-[6px] rounded-full"
+                  style="background: {statusBarColor(t.status, t.owner, t.color || (t.owner ? getSenderColor(t.owner) : null))}"
+                  title="!{t.id} — {t.subject}"
+                ></span>
+              {/each}
+            </span>
+          </span>
+        </button>
+        {#if tasksExpanded}
+          <div class="px-3 pb-2">
+            {#each $threadData.tasks as task}
+              <TaskRow {task} variant="card" />
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
+
+    <!-- Scrollable content: parent message + replies -->
     <div
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden text-[1rem] leading-[1.55] px-[18px] pt-[10px] pb-[10px]"
       bind:this={desktopScrollArea}
       onscroll={handleScroll}
     >
-      <!-- Task cards at top (above parent message) -->
-      {#if $threadData.tasks?.length > 0}
-        {#each $threadData.tasks as task}
-          <TaskRow {task} variant="card" />
-        {/each}
-      {/if}
-
       <!-- Parent message as first item in stream -->
       {#if $threadData.parentMessage}
           <MessageRow
@@ -982,19 +1016,47 @@ let prevThreadId = null;
       <div class="px-3 py-1.5 bg-destructive/10 text-destructive text-[0.72rem] border-b border-destructive/20 shrink-0">{forkError}</div>
     {/if}
 
+    <!-- Collapsible task summary strip (fixed, doesn't scroll) -->
+    {#if $threadData.tasks?.length > 0}
+      <div class="shrink-0 border-b border-border bg-card/50">
+        <button
+          class="flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-[0.72rem] font-mono text-muted-foreground transition-colors hover:bg-accent/50"
+          onclick={() => tasksExpanded = !tasksExpanded}
+        >
+          {#if tasksExpanded}
+            <ChevronDown class="size-3 shrink-0 opacity-60" />
+          {:else}
+            <ChevronRight class="size-3 shrink-0 opacity-60" />
+          {/if}
+          <span class="flex items-center gap-1.5">
+            <span>{$threadData.tasks.length} {$threadData.tasks.length === 1 ? 'task' : 'tasks'}</span>
+            <span class="flex items-center gap-0.5">
+              {#each $threadData.tasks as t}
+                <span
+                  class="inline-block size-[6px] rounded-full"
+                  style="background: {statusBarColor(t.status, t.owner, t.color || (t.owner ? getSenderColor(t.owner) : null))}"
+                  title="!{t.id} — {t.subject}"
+                ></span>
+              {/each}
+            </span>
+          </span>
+        </button>
+        {#if tasksExpanded}
+          <div class="px-2 pb-2">
+            {#each $threadData.tasks as task}
+              <TaskRow {task} variant="card" />
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
+
     <!-- Mobile messages -->
     <div
       class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden text-[1rem] leading-[1.55] px-[18px] pt-[10px] pb-[10px]"
       bind:this={mobileScrollArea}
       onscroll={handleScroll}
     >
-      <!-- Task cards at top -->
-      {#if $threadData.tasks?.length > 0}
-        {#each $threadData.tasks as task}
-          <TaskRow {task} variant="card" />
-        {/each}
-      {/if}
-
       <!-- Parent message as first item in stream -->
       {#if $threadData.parentMessage}
         <MessageRow
