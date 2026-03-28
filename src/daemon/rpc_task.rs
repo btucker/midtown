@@ -1096,6 +1096,7 @@ pub(crate) async fn deliver_task_prompt(
                         provider: None,
                         tool_use_id: None,
                         parent_tool_use_id: None,
+                        thread_id: None,
                     };
                     Box::pin(super::effects::execute_effects(vec![dm_effect], state)).await;
                 }

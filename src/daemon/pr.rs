@@ -57,6 +57,16 @@ fn task_channel_map_from_store(
         .collect()
 }
 
+fn task_thread_map_from_store(
+    task_store: &crate::task_store::TaskStore,
+) -> HashMap<String, String> {
+    task_store
+        .load_all()
+        .into_iter()
+        .filter_map(|t| t.thread_id.map(|tid| (t.id, tid)))
+        .collect()
+}
+
 /// Data extracted from persistent state for PR decision-making.
 ///
 /// Bundles channel routing and session context extraction into a single
@@ -67,6 +77,8 @@ struct PrContext {
     /// Channel routing: PR number → task ID → channel name
     pr_task_associations: HashMap<u64, String>,
     task_channel: HashMap<String, String>,
+    /// Task thread IDs: task ID → thread_id (for posting to task channel threads).
+    task_thread_id: HashMap<String, String>,
     /// Whether this PR has an active reviewer (assigned or in reviewing phase).
     /// Used to suppress both `PrApproved` workflow events AND inline nudge effects
     /// while a reviewer is still working, so the contract remains:
@@ -90,6 +102,7 @@ impl PrContext {
         ps: &super::state::DaemonPersistentState,
         pr_number: u64,
         task_channel: HashMap<String, String>,
+        task_thread_id: HashMap<String, String>,
     ) -> Self {
         let pr_task_associations = super::state::pr_to_task_map_from_sessions(&ps.sessions);
 
@@ -104,6 +117,7 @@ impl PrContext {
         Self {
             pr_task_associations,
             task_channel,
+            task_thread_id,
             has_active_reviewer,
             channel_workflows: ps.channel_workflows.clone(),
             lead_driven_channels: ps.lead_driven_channels.clone(),
@@ -118,10 +132,12 @@ impl PrContext {
     fn routing_only(
         ps: &super::state::DaemonPersistentState,
         task_channel: HashMap<String, String>,
+        task_thread_id: HashMap<String, String>,
     ) -> Self {
         Self {
             pr_task_associations: super::state::pr_to_task_map_from_sessions(&ps.sessions),
             task_channel,
+            task_thread_id,
             has_active_reviewer: false,
             channel_workflows: ps.channel_workflows.clone(),
             lead_driven_channels: ps.lead_driven_channels.clone(),
@@ -132,6 +148,12 @@ impl PrContext {
     fn get_channel(&self, pr_number: u64) -> Option<String> {
         let task_id = self.pr_task_associations.get(&pr_number)?;
         self.task_channel.get(task_id).cloned()
+    }
+
+    /// Look up the thread_id for a PR's associated task.
+    fn get_thread_id(&self, pr_number: u64) -> Option<String> {
+        let task_id = self.pr_task_associations.get(&pr_number)?;
+        self.task_thread_id.get(task_id).cloned()
     }
 
     /// Returns true if the PR's task channel is in lead-driven mode.
@@ -654,9 +676,10 @@ async fn decide_and_build_pr_issue_effects(
         .into_iter()
         .filter_map(|t| t.channel.map(|ch| (t.id, ch)))
         .collect();
+    let task_thread_map = task_thread_map_from_store(&state.task_store);
     let mut pr_ctx = {
         let ps = state.persistent_state.lock().await;
-        PrContext::from_persistent_state(&ps, pr_number, task_channel_map)
+        PrContext::from_persistent_state(&ps, pr_number, task_channel_map, task_thread_map)
     };
 
     // Defense-in-depth: check reviewer_pr_assignments from tick state.
@@ -1496,6 +1519,35 @@ fn action_to_effects(
     }
 
     effects
+}
+
+/// Build an optional `PostToChannel` effect that posts a review feedback summary
+/// to the task's channel thread. Returns `None` if the PR has no task or the
+/// task has no thread_id yet.
+fn review_feedback_thread_post(
+    pr_number: u64,
+    issue_type: PrIssueType,
+    actor: &str,
+    ctx: &PrContext,
+) -> Option<Effect> {
+    // Only post for review-related issue types
+    match issue_type {
+        PrIssueType::ReviewComment
+        | PrIssueType::ChangesRequested
+        | PrIssueType::Approved
+        | PrIssueType::ReviewComplete
+        | PrIssueType::GreenWithFeedback => {}
+        _ => return None,
+    }
+
+    let channel = ctx.get_channel(pr_number)?;
+    let thread_id = ctx.get_thread_id(pr_number)?;
+
+    let summary = format!(
+        "Review feedback on PR #{} from {} — {}",
+        pr_number, actor, issue_type
+    );
+    Some(Effect::post_to_task_thread(summary, channel, thread_id))
 }
 
 /// Pre-fetched data for stuck condition evaluation.
@@ -2371,8 +2423,9 @@ async fn collect_comment_notification_effects(
         // Extract all decision context from persistent state in one lock
         let pr_ctx = {
             let tc = task_channel_map_from_store(&state.task_store);
+            let tt = task_thread_map_from_store(&state.task_store);
             let ps = state.persistent_state.lock().await;
-            PrContext::from_persistent_state(&ps, pr_number, tc)
+            PrContext::from_persistent_state(&ps, pr_number, tc, tt)
         };
 
         // If the linked task is completed, create a follow-up task rather than
@@ -2637,6 +2690,7 @@ fn user_review_complete_effects(
             provider: None,
             tool_use_id: None,
             parent_tool_use_id: None,
+            thread_id: None,
         },
         Effect::RecordPermanentPrNudge {
             pr_number,
@@ -2884,7 +2938,11 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             .into_iter()
             .filter_map(|t| t.channel.map(|ch| (t.id, ch)))
             .collect();
-        let pr_ctx = PrContext::routing_only(&ps, task_channel.clone());
+        let task_thread: HashMap<String, String> = all_tasks
+            .iter()
+            .filter_map(|t| t.thread_id.as_ref().map(|tid| (t.id.clone(), tid.clone())))
+            .collect();
+        let pr_ctx = PrContext::routing_only(&ps, task_channel.clone(), task_thread);
         let is_at_task_limit = at_task_limit;
         let channel_workflow_channels: std::collections::HashSet<String> =
             ps.channel_workflows.keys().cloned().collect();
@@ -3546,6 +3604,7 @@ pub(super) async fn handle_pr_comment_nudge(
                         provider: None,
                         tool_use_id: None,
                         parent_tool_use_id: None,
+                        thread_id: None,
                     },
                     Effect::RecordPrNudge {
                         pr_number,
@@ -3715,8 +3774,9 @@ pub(super) async fn handle_pr_comment_nudge(
     // Extract all decision context from persistent state in one lock
     let pr_ctx = {
         let tc = task_channel_map_from_store(&state.task_store);
+        let tt = task_thread_map_from_store(&state.task_store);
         let ps = state.persistent_state.lock().await;
-        PrContext::from_persistent_state(&ps, pr_number, tc)
+        PrContext::from_persistent_state(&ps, pr_number, tc, tt)
     };
 
     // Decide action using pure decision function with handoff support
@@ -3745,6 +3805,18 @@ pub(super) async fn handle_pr_comment_nudge(
         state,
         &pr_ctx,
     );
+
+    // Post review feedback summary to the task's channel thread for transparency.
+    if is_actionable
+        && let Some(thread_post) = review_feedback_thread_post(
+            pr_number,
+            PrIssueType::ReviewComment,
+            &activity.actor,
+            &pr_ctx,
+        )
+    {
+        effects.push(thread_post);
+    }
 
     log_pr_decision(&PrDecisionEntry {
         repo_name: state.paths.dir_key(),
@@ -3851,8 +3923,9 @@ pub(super) async fn handle_webhook_review_state_change(
     // Extract all decision context from persistent state in one lock
     let pr_ctx = {
         let tc = task_channel_map_from_store(&state.task_store);
+        let tt = task_thread_map_from_store(&state.task_store);
         let ps = state.persistent_state.lock().await;
-        let mut ctx = PrContext::from_persistent_state(&ps, pr_number, tc);
+        let mut ctx = PrContext::from_persistent_state(&ps, pr_number, tc, tt);
 
         // Defense-in-depth: check spans for an active reviewer on this PR.
         if !ctx.has_active_reviewer {
@@ -3876,7 +3949,16 @@ pub(super) async fn handle_webhook_review_state_change(
 
     // Convert PrAction → Effects using the same pure converter as polling,
     // then execute via the standard effect pipeline.
-    let effects = action_to_effects(action, pr_number, "", issue_type, state, &pr_ctx);
+    let is_actionable = !matches!(action, crate::rules::PrAction::Skip { .. });
+    let mut effects = action_to_effects(action, pr_number, "", issue_type, state, &pr_ctx);
+
+    // Post review feedback summary to the task's channel thread for transparency.
+    if is_actionable
+        && let Some(thread_post) =
+            review_feedback_thread_post(pr_number, issue_type, &change.reviewer, &pr_ctx)
+    {
+        effects.push(thread_post);
+    }
 
     log_pr_decision(&PrDecisionEntry {
         repo_name: state.paths.dir_key(),
@@ -3953,8 +4035,9 @@ pub(super) async fn handle_webhook_ci_failure(
     // Extract all decision context from persistent state in one lock
     let pr_ctx = {
         let tc = task_channel_map_from_store(&state.task_store);
+        let tt = task_thread_map_from_store(&state.task_store);
         let ps = state.persistent_state.lock().await;
-        PrContext::from_persistent_state(&ps, pr_number, tc)
+        PrContext::from_persistent_state(&ps, pr_number, tc, tt)
     };
 
     let at_task_limit = state.is_at_task_limit();

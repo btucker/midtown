@@ -305,6 +305,10 @@ pub enum Effect {
         /// When set, the executor looks up `dm_tool_threads[parent_tool_use_id]` to
         /// resolve the thread parent message ID, posting this as a thread reply.
         parent_tool_use_id: Option<String>,
+        /// Explicit thread parent ID. When set, takes priority over session-based
+        /// thread resolution. Used for posting to task threads when the sender
+        /// (e.g. "midtown") has no session with a `bound_thread_id`.
+        thread_id: Option<String>,
     },
     /// Post a system message to the channel (and broadcast to WebSocket clients).
     ///
@@ -893,6 +897,31 @@ impl Effect {
             provider: None,
             tool_use_id: None,
             parent_tool_use_id: None,
+            thread_id: None,
+        }
+    }
+
+    /// Convenience: post a message to a task's channel thread as "midtown".
+    ///
+    /// Creates a `PostToChannel` that threads under the given `thread_id` in the
+    /// specified channel. Used to post review feedback summaries to task threads.
+    pub fn post_to_task_thread(
+        message: impl Into<String>,
+        channel: String,
+        thread_id: String,
+    ) -> Self {
+        Self::PostToChannel {
+            sender: "midtown".to_string(),
+            message: message.into(),
+            channel: Some(channel),
+            auto_output: false,
+            message_type: None,
+            nudge_type: None,
+            tool_data: None,
+            provider: None,
+            tool_use_id: None,
+            parent_tool_use_id: None,
+            thread_id: Some(thread_id),
         }
     }
 
@@ -1128,6 +1157,7 @@ pub(super) async fn deliver_coworker_nudge(
                     provider: None,
                     tool_use_id: None,
                     parent_tool_use_id: None,
+                    thread_id: None,
                 });
             }
             Ok(follow_up)
@@ -1190,6 +1220,7 @@ async fn send_session_nudge(
                     provider: None,
                     tool_use_id: None,
                     parent_tool_use_id: None,
+                    thread_id: None,
                 });
             }
             Some(follow_up)
@@ -1422,6 +1453,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 provider,
                 tool_use_id,
                 parent_tool_use_id,
+                thread_id,
             } => {
                 let msg_type = message_type.unwrap_or(crate::message::MessageType::Text);
 
@@ -1454,7 +1486,13 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                     None
                 };
 
-                let bound_thread: Option<String> = if dm_thread_parent.is_some() {
+                // Thread resolution priority:
+                // 1. Explicit thread_id (e.g., task thread for review feedback posts)
+                // 2. DM thread parent (resolved from parent_tool_use_id)
+                // 3. Session's bound_thread_id (coworker auto-threading)
+                let bound_thread: Option<String> = if thread_id.is_some() {
+                    thread_id
+                } else if dm_thread_parent.is_some() {
                     dm_thread_parent
                 } else if is_dm_channel {
                     None
@@ -3222,6 +3260,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                                         provider: None,
                                         tool_use_id: None,
                                         parent_tool_use_id: None,
+                                        thread_id: None,
                                     }],
                                     state,
                                 ))
@@ -3745,6 +3784,7 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                             provider: None,
                             tool_use_id: None,
                             parent_tool_use_id: None,
+                            thread_id: None,
                         };
                         // Execute inline via Box::pin (breaks async recursion cycle)
                         Box::pin(execute_effects(vec![fail_effect], state)).await;

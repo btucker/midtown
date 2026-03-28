@@ -221,6 +221,7 @@ fn test_dedup_preserves_non_nudge_effects() {
             provider: None,
             tool_use_id: None,
             parent_tool_use_id: None,
+            thread_id: None,
         },
         Effect::nudge_session("sess-riverside-1", "nudge 1"),
         Effect::RecordCooldown {
@@ -239,6 +240,7 @@ fn test_dedup_preserves_non_nudge_effects() {
             provider: None,
             tool_use_id: None,
             parent_tool_use_id: None,
+            thread_id: None,
         },
     ];
 
@@ -1333,6 +1335,7 @@ async fn test_post_to_channel_none_channel_with_bound_thread_uses_default() {
             provider: None,
             tool_use_id: None,
             parent_tool_use_id: None,
+            thread_id: None,
         }],
         &state,
     )
@@ -2831,6 +2834,7 @@ fn test_post_to_channel_constructor() {
             provider,
             tool_use_id,
             parent_tool_use_id,
+            thread_id,
         } => {
             assert_eq!(sender, "alice");
             assert_eq!(message, "hello world");
@@ -2842,6 +2846,7 @@ fn test_post_to_channel_constructor() {
             assert!(provider.is_none());
             assert!(tool_use_id.is_none());
             assert!(parent_tool_use_id.is_none());
+            assert!(thread_id.is_none());
         }
         _ => panic!("expected PostToChannel variant"),
     }
@@ -2869,6 +2874,7 @@ fn test_post_to_ops_constructor() {
             provider,
             tool_use_id,
             parent_tool_use_id,
+            thread_id,
         } => {
             assert_eq!(sender, "midtown");
             assert_eq!(message, "system update");
@@ -2880,6 +2886,7 @@ fn test_post_to_ops_constructor() {
             assert!(provider.is_none());
             assert!(tool_use_id.is_none());
             assert!(parent_tool_use_id.is_none());
+            assert!(thread_id.is_none());
         }
         _ => panic!("expected PostToChannel variant"),
     }
