@@ -404,6 +404,12 @@ pub enum Effect {
     },
     /// Record a permanent one-shot PR nudge that survives cleanup.
     /// Used for user-authored PR notifications that should fire exactly once.
+    ///
+    /// **Invariant:** All side effects (TaskPrompt, thread posts, etc.) must be
+    /// co-located with the code path that emits this effect. Multiple paths
+    /// (webhook, polling, task auto-close) may race to deliver the same nudge;
+    /// whichever records first wins, and the others skip. If side effects are
+    /// split across the winning and losing paths, they'll be silently dropped.
     RecordPermanentPrNudge {
         pr_number: u64,
         issue_type: PrIssueType,
