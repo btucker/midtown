@@ -172,3 +172,37 @@ fn fork_for_thread_returns_none_for_unknown() {
     let idx = AgentIndex::default();
     assert!(idx.fork_for_thread("unknown-thread").is_none());
 }
+
+#[test]
+fn resumed_updates_pid_and_restores_running() {
+    let mut idx = AgentIndex::default();
+    idx.apply(&created_event("a1", "ghost-town", AgentKind::Worker));
+    idx.apply(&DomainEvent::AgentStarted {
+        id: "a1".into(),
+        pid: 1000,
+        session_id: Some("sess-abc".into()),
+    });
+    idx.apply(&DomainEvent::AgentStopped {
+        id: "a1".into(),
+        reason: "process not found on startup".into(),
+    });
+
+    // After stop: not running, pid cleared, but session_id preserved
+    assert!(!idx.running.contains("a1"));
+    let agent = idx.by_id.get("a1").unwrap();
+    assert_eq!(agent.pid, None);
+    assert_eq!(agent.session_id, Some("sess-abc".into()));
+
+    // Resume with new PID
+    idx.apply(&DomainEvent::AgentResumed {
+        id: "a1".into(),
+        pid: 2000,
+    });
+
+    assert!(idx.running.contains("a1"));
+    let agent = idx.by_id.get("a1").unwrap();
+    assert_eq!(agent.pid, Some(2000));
+    assert!(agent.stopped_at.is_none());
+    // session_id unchanged
+    assert_eq!(agent.session_id, Some("sess-abc".into()));
+}
