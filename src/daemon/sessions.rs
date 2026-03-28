@@ -263,6 +263,10 @@ pub struct CoworkerSession {
     /// Recent stderr lines accumulated from the real-time event path.
     /// Used for crash diagnostics in exit messages.
     recent_stderr: Vec<String>,
+    /// Exit code from the process, captured when the session stops.
+    /// Used by health decision functions to distinguish clean exits (code 0)
+    /// from error exits (code 1+).
+    pub exit_code: Option<i32>,
 }
 
 impl CoworkerSession {
@@ -320,6 +324,7 @@ impl CoworkerSession {
             output_log,
             output_log_path,
             recent_stderr: Vec::new(),
+            exit_code: None,
         }
     }
 }
@@ -419,6 +424,7 @@ impl SessionManager {
                 output_log: None,
                 output_log_path: std::path::PathBuf::new(),
                 recent_stderr: Vec::new(),
+                exit_code: None,
             },
         );
     }
@@ -1720,7 +1726,7 @@ impl SessionManager {
                     has_pending_tool: cs.has_pending_tool,
                     has_tool_name_conflict: cs.has_tool_name_conflict,
                     has_pending_api_call: cs.has_pending_api_call,
-                    exit_code: None,
+                    exit_code: cs.exit_code,
                 },
             );
         }
@@ -1812,6 +1818,7 @@ impl SessionManager {
                             );
                             stderr_by_name.insert(name.clone(), stderr_lines);
                         }
+                        cs.exit_code = exit_status.code();
                         cs.status = SessionStatus::Stopped;
                         cs.session = None;
                         newly_stopped.push(name.clone());
@@ -1863,6 +1870,26 @@ impl SessionManager {
         }
         let age = Utc::now() - cs.started_at;
         age < chrono::Duration::seconds(30)
+    }
+
+    /// Mark a session as stopped and capture its exit code via `try_wait()`.
+    ///
+    /// Called when the event forwarder detects stdout closure (before
+    /// `collect_health()` runs), so the exit code is visible to health
+    /// decision functions on the next tick.
+    pub async fn mark_stopped(&self, slot_id: &str) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(cs) = sessions.get_mut(slot_id)
+            && cs.status != SessionStatus::Stopped
+        {
+            cs.exit_code = cs
+                .session
+                .as_mut()
+                .and_then(|s| s.try_wait().ok().flatten())
+                .and_then(|status| status.code());
+            cs.status = SessionStatus::Stopped;
+            cs.session = None;
+        }
     }
 
     /// Remove a stopped session entry (cleanup after the coworker is fully shut down, by name).
