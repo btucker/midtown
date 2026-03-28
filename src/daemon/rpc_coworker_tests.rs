@@ -1603,3 +1603,83 @@ fn test_prompt_composition_prompt_only() {
         "prompt-only should pass through unchanged"
     );
 }
+
+/// !2623: When a reviewer goes idle after posting their review, the review task
+/// should be auto-completed immediately (not deferred to the next poll tick).
+#[tokio::test]
+async fn test_reviewer_idle_completes_review_task() {
+    let (state, _tmp, _guard) = make_test_state();
+
+    let reviewer_name = "vernon";
+    let pr_number = 42u64;
+    let task_id = "review-42";
+
+    // Insert the reviewer as a running coworker
+    state
+        .coworkers
+        .insert_for_testing(crate::coworker::Coworker {
+            slot_id: uuid::Uuid::new_v4().to_string(),
+            name: reviewer_name.to_string(),
+            status: crate::coworker::CoworkerStatus::Running,
+            working_dir: "/tmp".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: None,
+            model: "sonnet".to_string(),
+            provider: crate::auth::AuthProvider::Claude,
+            profile: crate::auth::DEFAULT_PROFILE.to_string(),
+        });
+
+    // Create a reviewer session with task assignment
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.insert_session_for_task(
+            task_id,
+            reviewer_name,
+            "midtown-code-reviewer",
+            "sess-rev-42",
+        );
+        if let Some(s) = ps
+            .sessions
+            .values_mut()
+            .find(|s| s.task_id.as_deref() == Some(task_id))
+        {
+            s.pr_number = Some(pr_number);
+        }
+        // Mark the review as completed
+        ps.github.mark_reviewed_pr(pr_number);
+    }
+
+    // Create the review task in the task store
+    let review_task = crate::task_store::Task {
+        id: task_id.to_string(),
+        subject: format!("Review PR #{}", pr_number),
+        status: crate::task_store::TaskStatus::InProgress,
+        pr: Some(pr_number),
+        agent_type: "midtown-code-reviewer".to_string(),
+        ..Default::default()
+    };
+    state.task_store.save(&review_task).unwrap();
+
+    // Reviewer reports idle — review is posted, so task should be completed
+    let response = handle_coworker_report_state(
+        RequestId::Number(1),
+        reviewer_name,
+        "idle",
+        None,
+        None,
+        None,
+        &state,
+    )
+    .await;
+
+    assert!(!response.is_error(), "idle report should succeed");
+
+    // Verify the review task was auto-completed
+    let loaded_task = state.task_store.load(task_id).unwrap();
+    assert_eq!(
+        loaded_task.status,
+        crate::task_store::TaskStatus::Completed,
+        "Review task should be auto-completed when reviewer goes idle after posting review"
+    );
+}

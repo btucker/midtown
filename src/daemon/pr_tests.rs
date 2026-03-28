@@ -6397,3 +6397,126 @@ async fn test_review_task_parent_from_task_store_when_session_gone() {
          pr_task_associations (from session records) had no entry for this PR."
     );
 }
+
+/// !2623: When a review is posted, collect_review_complete_effects should emit
+/// CompleteTask + ClearBlockedBy for the review task.
+#[tokio::test]
+async fn test_review_complete_auto_completes_review_task() {
+    use std::collections::{HashMap, HashSet};
+    let pr_number = 8888u64;
+    let pr = json!({
+        "number": pr_number,
+        "headRefName": "worker-1/some-feature",
+        "title": "feat: something [Midtown !100]",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    // Mark the PR as reviewed
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.mark_reviewed_pr(pr_number);
+        ps.github.add_review_comment_id(pr_number, 1);
+    }
+
+    // Create an in-progress review task for this PR
+    let review_task = crate::task_store::Task {
+        id: "300".to_string(),
+        subject: format!("Review PR #{}", pr_number),
+        status: crate::task_store::TaskStatus::InProgress,
+        pr: Some(pr_number),
+        agent_type: "midtown-code-reviewer".to_string(),
+        parent: Some("100".to_string()),
+        ..Default::default()
+    };
+    state.task_store.save(&review_task).unwrap();
+
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names: HashSet<String> = HashSet::new();
+
+    let effects = collect_reviewer_effects_with_source(
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        true,
+        &HashMap::new(),
+        false,
+    )
+    .await;
+
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::CompleteTask { task_id, .. } if task_id == "300")),
+        "Should emit CompleteTask for review task !300 when review is posted. Effects: {:#?}",
+        effects
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::ClearBlockedBy { completed_task_id, .. } if completed_task_id == "300")),
+        "Should emit ClearBlockedBy for review task !300 when review is posted. Effects: {:#?}",
+        effects
+    );
+}
+
+/// !2623: Already-completed review tasks should not be re-completed when
+/// collect_review_complete_effects runs on subsequent ticks.
+#[tokio::test]
+async fn test_review_complete_skips_already_completed_review_task() {
+    use std::collections::{HashMap, HashSet};
+    let pr_number = 9999u64;
+    let pr = json!({
+        "number": pr_number,
+        "headRefName": "worker-1/another-feature",
+        "title": "feat: another thing [Midtown !100]",
+        "isDraft": false,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "state": "OPEN",
+    });
+
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.github.mark_reviewed_pr(pr_number);
+        ps.github.add_review_comment_id(pr_number, 1);
+    }
+
+    // Create an already-completed review task
+    let review_task = crate::task_store::Task {
+        id: "400".to_string(),
+        subject: format!("Review PR #{}", pr_number),
+        status: crate::task_store::TaskStatus::Completed,
+        pr: Some(pr_number),
+        agent_type: "midtown-code-reviewer".to_string(),
+        ..Default::default()
+    };
+    state.task_store.save(&review_task).unwrap();
+
+    let registry = crate::worktree_registry::WorktreeRegistry::new();
+    let active_names: HashSet<String> = HashSet::new();
+
+    let effects = collect_reviewer_effects_with_source(
+        &registry,
+        &active_names,
+        &state,
+        &[pr],
+        true,
+        &HashMap::new(),
+        false,
+    )
+    .await;
+
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::CompleteTask { task_id, .. } if task_id == "400")),
+        "Should NOT re-complete an already-completed review task. Effects: {:#?}",
+        effects
+    );
+}
