@@ -106,6 +106,26 @@ impl AgentIndex {
                     self.running.insert(id.clone());
                 }
             }
+            DomainEvent::AgentGarbageCollected { id } => {
+                if let Some(agent) = self.by_id.remove(id) {
+                    self.by_name.remove(&agent.name);
+                    self.running.remove(id);
+                    if let Some(task_id) = &agent.task_id {
+                        self.by_task.remove(task_id);
+                    }
+                    if let Some(channel) = &agent.channel
+                        && let Some(list) = self.by_channel.get_mut(channel)
+                    {
+                        list.retain(|aid| aid != id);
+                        if list.is_empty() {
+                            self.by_channel.remove(channel);
+                        }
+                    }
+                    if let Some(thread_id) = &agent.bound_thread_id {
+                        self.by_thread.remove(thread_id);
+                    }
+                }
+            }
             _ => {}
         }
     }

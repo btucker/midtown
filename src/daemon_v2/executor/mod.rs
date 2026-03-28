@@ -217,5 +217,9 @@ pub async fn execute(
             // is available in executor context
             vec![]
         }
+        Command::GarbageCollect { agent_id } => {
+            tracing::info!(%agent_id, "garbage collecting agent record");
+            vec![DomainEvent::AgentGarbageCollected { id: agent_id }]
+        }
     }
 }

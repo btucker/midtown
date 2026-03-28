@@ -80,6 +80,9 @@ pub enum DomainEvent {
         id: AgentId,
         pid: u32,
     },
+    AgentGarbageCollected {
+        id: AgentId,
+    },
 
     // Tasks
     TaskCreated {

@@ -68,4 +68,7 @@ pub enum Command {
     RemoveWorktree {
         task_id: TaskId,
     },
+    GarbageCollect {
+        agent_id: AgentId,
+    },
 }

@@ -6,7 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::daemon_v2::decisions::{self, Command, health};
+use crate::daemon_v2::decisions::{self, Command, health, lifecycle};
 use crate::daemon_v2::events::{DomainEvent, EventStore};
 use crate::daemon_v2::executor;
 use crate::daemon_v2::executor::webhook::webhook_to_events;
@@ -114,6 +114,11 @@ fn spawn_reviewers_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
 /// Wrapper: suspend author agents whose tasks have open PRs awaiting review.
 fn suspend_authors_with_prs_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
     decisions::prs::suspend_authors_with_prs(proj)
+}
+
+/// Wrapper: garbage collect old stopped agent records.
+fn garbage_collect_fn(proj: &Projections, channel: &str) -> Vec<Command> {
+    lifecycle::gc_decision(proj, channel)
 }
 
 impl DaemonV2 {
@@ -226,6 +231,11 @@ impl DaemonV2 {
             "suspend_authors_with_prs",
             Duration::from_secs(10),
             suspend_authors_with_prs_fn,
+        );
+        scheduler.register(
+            "garbage_collect",
+            Duration::from_secs(3600),
+            garbage_collect_fn,
         );
 
         // Move the receiver out so `config` can be stored on the daemon.
