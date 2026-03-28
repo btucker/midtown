@@ -41,6 +41,7 @@
 
 // Daemon server
 pub mod daemon;
+pub mod daemon_v2;
 
 // Pure decision functions and shared types for the daemon tick loop
 pub mod rules;
