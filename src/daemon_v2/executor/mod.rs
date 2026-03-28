@@ -150,5 +150,17 @@ pub async fn execute(
         Command::CompleteTask { task_id } => {
             vec![DomainEvent::TaskCompleted { task_id }]
         }
+        Command::CreateWorktree { task_id, branch } => {
+            tracing::info!(%task_id, %branch, "would create worktree (not yet wired to WorktreeManager)");
+            // TODO: wire to WorktreeManager::create_task_worktree once repo root
+            // is available in executor context
+            vec![]
+        }
+        Command::RemoveWorktree { task_id } => {
+            tracing::info!(%task_id, "would remove worktree (not yet wired to WorktreeManager)");
+            // TODO: wire to WorktreeManager::remove_task_worktree once repo root
+            // is available in executor context
+            vec![]
+        }
     }
 }

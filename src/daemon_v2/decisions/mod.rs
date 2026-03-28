@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod dispatch;
 pub mod health;
 pub mod prs;
@@ -57,4 +58,11 @@ pub enum Command {
     },
     PollProcessHealth,
     PollPrs,
+    CreateWorktree {
+        task_id: TaskId,
+        branch: String,
+    },
+    RemoveWorktree {
+        task_id: TaskId,
+    },
 }
