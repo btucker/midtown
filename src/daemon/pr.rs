@@ -4022,7 +4022,11 @@ pub(super) async fn handle_webhook_review_state_change(
 /// content, and delivers a `TaskPrompt`. Uses `RecordPermanentPrNudge(ReviewComplete)`
 /// for dedup — the polling path's `collect_review_complete_effects` checks the same
 /// nudge, so whichever fires first wins.
-pub(super) async fn handle_webhook_review_complete(state: &DaemonState, pr_number: u64) {
+pub(super) async fn handle_webhook_review_complete(
+    state: &DaemonState,
+    pr_number: u64,
+    reviewer_login: Option<&str>,
+) {
     // One-shot dedup: skip if any path already delivered ReviewComplete feedback.
     {
         let tracker = state.pr_issue_tracker.lock().await;
@@ -4035,20 +4039,31 @@ pub(super) async fn handle_webhook_review_complete(state: &DaemonState, pr_numbe
         }
     }
 
-    // Find the review task for this PR, its parent (author) task ID,
-    // the reviewer name, and verify the parent task actually exists.
-    let (parent_task_id, reviewer_name) = {
+    // Find the review task for this PR and its parent (author) task ID.
+    // Use the GitHub reviewer login from the webhook event for attribution
+    // instead of task.agent_name (which is the internal creative session name).
+    let (parent_task_id, reviewer_name, owner_name) = {
         let tasks = state.task_store.load_all();
         let review_task = tasks
             .iter()
             .find(|t| t.agent_type == "midtown-code-reviewer" && t.pr == Some(pr_number));
-        let reviewer = review_task
-            .map(|t| t.agent_name.clone())
-            .unwrap_or_default();
         let parent_id = review_task.and_then(|t| t.parent.clone());
         // Verify the parent task exists (guard against stale parent references)
         let verified = parent_id.filter(|pid| tasks.iter().any(|t| t.id == *pid));
-        (verified, reviewer)
+        // Resolve the PR owner name from the parent (author) task
+        let owner = verified
+            .as_ref()
+            .and_then(|pid| tasks.iter().find(|t| t.id == *pid))
+            .map(|t| t.agent_name.clone())
+            .unwrap_or_default();
+        // Prefer the GitHub reviewer login from the webhook event over the
+        // internal agent_name. The agent_name is a creative session name
+        // (e.g., "ghost-town"), not the actual GitHub identity. (Bug fix !2645)
+        let reviewer = reviewer_login
+            .map(|s| s.to_string())
+            .or_else(|| review_task.map(|t| t.agent_name.clone()))
+            .unwrap_or_default();
+        (verified, reviewer, owner)
     };
 
     let Some(parent_task_id) = parent_task_id else {
@@ -4101,6 +4116,23 @@ pub(super) async fn handle_webhook_review_complete(state: &DaemonState, pr_numbe
     ) {
         effects.push(thread_post);
     }
+
+    // Audit log — matches handle_webhook_review_state_change and
+    // handle_webhook_ci_failure patterns. (Bug fix !2645)
+    log_pr_decision(&PrDecisionEntry {
+        repo_name: state.paths.dir_key(),
+        pr_number,
+        title: "",
+        owner: &owner_name,
+        issue_type: PrIssueType::ReviewComplete,
+        action_name: "ReviewComplete",
+        effects: &effects,
+        ctx: &pr_ctx,
+        owner_is_active: false,
+        owner_is_idle: false,
+        at_task_limit: state.is_at_task_limit(),
+        source: "webhook",
+    });
 
     info!(
         "PR #{} routing review-complete feedback to author task (webhook fast path)",

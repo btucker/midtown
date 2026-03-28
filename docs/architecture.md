@@ -527,11 +527,27 @@ Key functions: `resolve_pr_owner()` (pr.rs, session-only), `resolve_pr_owner_fro
 
 Every PR decision (both polling and webhook paths) is logged as a JSONL line to `~/.midtown/projects/<repo>/pr-decisions.jsonl`. Each entry captures the full decision context: PR number, detected issue type, owner state (active/idle), action chosen by the rules engine, and the effects emitted. The `source` field distinguishes `"polling"` from `"webhook"` triggers.
 
-Call sites: `process_pr_issue_nudges` (polling), `collect_review_feedback_effects` (polling), `handle_pr_comment_nudge` (webhook), `handle_webhook_review_state_change` (webhook), `handle_webhook_ci_failure` (webhook). All use `log_pr_decision()` with a `PrDecisionEntry` struct.
+Call sites: `process_pr_issue_nudges` (polling), `collect_review_feedback_effects` (polling), `handle_pr_comment_nudge` (webhook), `handle_webhook_review_state_change` (webhook), `handle_webhook_review_complete` (webhook), `handle_webhook_ci_failure` (webhook). All use `log_pr_decision()` with a `PrDecisionEntry` struct.
 
 **Coworker-authorship gate** (in `handle_pr_comment_nudge`): When review feedback arrives on a PR linked to a completed task, follow-up task creation is gated on `is_non_lead_coworker()`. Only coworker-owned PRs get auto-created follow-up tasks; lead and channel-lead PRs notify `@user` instead, avoiding spurious task churn for PRs the daemon didn't author.
 
 This corpus enables verifying functional equivalence when migrating PR workflow logic from Rust to Python workflow scripts. Logging failures are silently swallowed — they must never crash the daemon.
+
+### Webhook Review Handler Choreography
+
+A single GitHub `pull_request_review` webhook event can set multiple fields on `WebhookEvent`, triggering independent handlers in `mod.rs`. The dispatch logic prevents double-notification:
+
+| Handler | Trigger field | PrIssueType | Dedup | Purpose |
+|---------|--------------|-------------|-------|---------|
+| `handle_webhook_review_state_change` | `review_state_change` | `Approved` / `ChangesRequested` | Cooldown | Nudge PR owner about formal review verdict |
+| `handle_webhook_review_complete` | `reviewed_pr` | `ReviewComplete` | Permanent (one-shot) | Route review feedback to author task |
+| `handle_pr_comment_nudge` | `pr_activity` | `ReviewComment` | Cooldown | Nudge about review comments |
+
+**Double-notification guard**: For formal APPROVED/CHANGES_REQUESTED reviews, both `reviewed_pr` and `review_state_change` are set on the same event. The dispatch in `mod.rs` skips `handle_webhook_review_complete` when `review_state_change` is present (`is_strong_formal_review` guard), since `handle_webhook_review_state_change` already handles notification. Without this guard, both handlers fire with different `PrIssueType` keys, bypassing dedup.
+
+**Reviewer identity**: `handle_webhook_review_complete` receives the GitHub reviewer login from `pr_activity.actor` (extracted before `pr_activity` is moved). This is used for reviewer attribution in thread posts instead of `task.agent_name`, which is the internal creative session name.
+
+**Review status caching**: The `reviewed_pr` block in `mod.rs` always runs (even when `review_state_change` is set) to cache review status via `mark_reviewed_pr()`. Only the `handle_webhook_review_complete` spawn is gated — caching and placeholder cleanup proceed regardless.
 
 ## Webhook Ports
 
