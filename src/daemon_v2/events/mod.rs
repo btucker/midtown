@@ -65,6 +65,7 @@ pub enum DomainEvent {
         provider: Provider,
         channel: Option<String>,
         task_id: Option<TaskId>,
+        bound_thread_id: Option<String>,
     },
     AgentStarted {
         id: AgentId,

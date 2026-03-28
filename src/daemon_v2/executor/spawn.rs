@@ -55,7 +55,13 @@ pub async fn spawn_agent(
     paths: &ProjectPaths,
 ) -> Result<(HeadlessSession, Vec<DomainEvent>), String> {
     let launch_config = build_launch_config(spawn_config, paths.dir_key());
-    let headless_config = launch_config.to_headless_config(paths);
+    let mut headless_config = launch_config.to_headless_config(paths);
+
+    if let Some(thread_id) = &spawn_config.bound_thread_id {
+        headless_config
+            .env
+            .insert("MIDTOWN_BOUND_THREAD_ID".into(), thread_id.clone());
+    }
 
     let session = HeadlessSession::spawn(&headless_config)
         .await
@@ -87,6 +93,7 @@ pub fn agent_spawned_events(id: &AgentId, config: &SpawnConfig, pid: u32) -> Vec
             provider: config.provider.clone(),
             channel: config.channel.clone(),
             task_id: config.task_id.clone(),
+            bound_thread_id: config.bound_thread_id.clone(),
         },
         DomainEvent::AgentStarted {
             id: id.clone(),

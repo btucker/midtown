@@ -136,6 +136,7 @@ fn stops_agents_for_completed_tasks() {
             provider: Provider::ClaudeCode,
             channel: Some("main".into()),
             task_id: Some("task-1".into()),
+            bound_thread_id: None,
         },
         DomainEvent::AgentStarted {
             id: "a1".into(),

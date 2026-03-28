@@ -21,6 +21,7 @@ fn respawn_dead_agent_with_task() {
             provider: Provider::ClaudeCode,
             channel: Some("main".into()),
             task_id: Some("task-1".into()),
+            bound_thread_id: None,
         },
         DomainEvent::AgentStarted {
             id: "a1".into(),
@@ -65,6 +66,7 @@ fn no_respawn_for_completed_task() {
             provider: Provider::ClaudeCode,
             channel: Some("main".into()),
             task_id: Some("task-1".into()),
+            bound_thread_id: None,
         },
         DomainEvent::AgentStarted {
             id: "a1".into(),
@@ -124,6 +126,7 @@ fn ensure_leads_alive_no_op_when_running() {
             provider: Provider::ClaudeCode,
             channel: Some("main".into()),
             task_id: None,
+            bound_thread_id: None,
         },
         DomainEvent::AgentStarted {
             id: "lead-1".into(),

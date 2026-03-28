@@ -13,6 +13,7 @@ fn worker_config() -> SpawnConfig {
         initial_prompt: Some("Fix the bug".into()),
         working_dir: None,
         model: Some("sonnet".into()),
+        bound_thread_id: None,
     }
 }
 

@@ -18,6 +18,7 @@ fn projections_with_agents() -> Projections {
         provider: Provider::ClaudeCode,
         channel: Some("main".into()),
         task_id: Some("task-1".into()),
+        bound_thread_id: None,
     });
     proj.apply(&DomainEvent::AgentStarted {
         id: "a1".into(),
@@ -31,6 +32,7 @@ fn projections_with_agents() -> Projections {
         provider: Provider::ClaudeCode,
         channel: Some("main".into()),
         task_id: None,
+        bound_thread_id: None,
     });
     proj
 }
@@ -81,7 +83,7 @@ fn agent_list_filters_running_only() {
 fn dispatch_routes_status() {
     let proj = projections_with_agents();
     let request = json!({"jsonrpc": "2.0", "method": "status", "id": 1});
-    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
     assert!(response["error"].is_null());
     assert!(response["result"]["agents"]["total"].is_number());
     assert!(events.is_empty());
@@ -91,7 +93,7 @@ fn dispatch_routes_status() {
 fn dispatch_routes_agent_list() {
     let proj = projections_with_agents();
     let request = json!({"jsonrpc": "2.0", "method": "agent.list", "id": 2});
-    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
     assert!(response["error"].is_null());
     assert!(response["result"].is_array());
     assert!(events.is_empty());
@@ -101,7 +103,7 @@ fn dispatch_routes_agent_list() {
 fn dispatch_unknown_method_returns_error() {
     let proj = Projections::default();
     let request = json!({"jsonrpc": "2.0", "method": "nonexistent", "id": 3});
-    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
     assert_eq!(response["error"]["code"], -32601);
     assert!(events.is_empty());
 }
@@ -120,7 +122,7 @@ fn task_create_returns_events() {
             "blocked_by": ["task-41"]
         }
     });
-    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
     assert!(response["error"].is_null());
     assert_eq!(response["result"]["ok"], true);
     assert_eq!(events.len(), 1);
@@ -149,7 +151,7 @@ fn task_create_missing_params_returns_error() {
         "method": "task.create",
         "id": 11
     });
-    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
     assert_eq!(response["error"]["code"], -32602);
     assert!(events.is_empty());
 }
@@ -167,7 +169,7 @@ fn task_create_missing_required_field_returns_error() {
             // missing "channel"
         }
     });
-    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
     assert_eq!(response["error"]["code"], -32602);
     assert!(events.is_empty());
 }
@@ -184,7 +186,7 @@ fn channel_update_sets_lead_driven() {
             "lead_driven": true
         }
     });
-    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
     assert!(response["error"].is_null());
     assert_eq!(response["result"]["ok"], true);
     assert_eq!(events.len(), 1);
@@ -209,7 +211,7 @@ fn channel_update_missing_params_returns_error() {
         "method": "channel.update",
         "id": 21
     });
-    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
     assert_eq!(response["error"]["code"], -32602);
     assert!(events.is_empty());
 }
@@ -225,8 +227,136 @@ fn channel_update_no_known_fields_returns_empty_events() {
             "channel": "manual"
         }
     });
-    let (response, events) = dispatch_request(request, &proj, test_channels_dir());
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
     assert!(response["error"].is_null());
     assert_eq!(response["result"]["ok"], true);
     assert!(events.is_empty());
+}
+
+#[test]
+fn session_fork_returns_spawn_command() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "session.fork",
+        "id": 30,
+        "params": {
+            "thread_parent_id": "thread-abc123",
+            "channel": "web",
+            "name": "investigate-bug",
+            "message": "Look into the auth issue"
+        }
+    });
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert_eq!(response["result"]["forking"], true);
+    assert!(events.is_empty());
+    assert_eq!(commands.len(), 1);
+
+    match &commands[0] {
+        crate::daemon_v2::decisions::Command::SpawnAgent(cfg) => {
+            assert_eq!(cfg.name, "investigate-bug");
+            assert_eq!(cfg.kind, AgentKind::Fork);
+            assert_eq!(cfg.agent_type, "midtown-channel-lead");
+            assert_eq!(cfg.channel.as_deref(), Some("web"));
+            assert_eq!(cfg.bound_thread_id.as_deref(), Some("thread-abc123"));
+            assert_eq!(
+                cfg.initial_prompt.as_deref(),
+                Some("Look into the auth issue")
+            );
+        }
+        other => panic!("expected SpawnAgent, got {:?}", other),
+    }
+}
+
+#[test]
+fn session_fork_returns_existing_running_fork() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "f1".into(),
+        name: "fork-abc".into(),
+        kind: AgentKind::Fork,
+        agent_type: "midtown-channel-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("web".into()),
+        task_id: None,
+        bound_thread_id: Some("thread-abc123".into()),
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "f1".into(),
+        pid: 999,
+    });
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "session.fork",
+        "id": 31,
+        "params": {
+            "thread_parent_id": "thread-abc123",
+            "channel": "web"
+        }
+    });
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert_eq!(response["result"]["existing"], true);
+    assert_eq!(response["result"]["fork_id"], "f1");
+    assert!(events.is_empty());
+    assert!(commands.is_empty());
+}
+
+#[test]
+fn session_fork_generates_name_from_thread_id() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "session.fork",
+        "id": 32,
+        "params": {
+            "thread_parent_id": "thread-abc123def456",
+            "channel": "web"
+        }
+    });
+    let (response, _events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(commands.len(), 1);
+
+    match &commands[0] {
+        crate::daemon_v2::decisions::Command::SpawnAgent(cfg) => {
+            assert_eq!(cfg.name, "fork-thread-a");
+        }
+        other => panic!("expected SpawnAgent, got {:?}", other),
+    }
+}
+
+#[test]
+fn session_fork_missing_params_returns_error() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "session.fork",
+        "id": 33
+    });
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert_eq!(response["error"]["code"], -32602);
+    assert!(events.is_empty());
+    assert!(commands.is_empty());
+}
+
+#[test]
+fn session_fork_missing_channel_returns_error() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "session.fork",
+        "id": 34,
+        "params": {
+            "thread_parent_id": "thread-abc123"
+        }
+    });
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert_eq!(response["error"]["code"], -32602);
+    assert!(events.is_empty());
+    assert!(commands.is_empty());
 }

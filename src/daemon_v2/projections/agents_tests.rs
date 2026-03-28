@@ -10,6 +10,7 @@ fn created_event(id: &str, name: &str, kind: AgentKind) -> DomainEvent {
         provider: Provider::ClaudeCode,
         channel: Some("main".into()),
         task_id: None,
+        bound_thread_id: None,
     }
 }
 
@@ -77,6 +78,7 @@ fn lookup_by_task() {
         provider: Provider::ClaudeCode,
         channel: Some("main".into()),
         task_id: Some("task-1".into()),
+        bound_thread_id: None,
     });
     assert_eq!(idx.by_task.get("task-1"), Some(&"a1".to_string()));
 }
@@ -92,6 +94,7 @@ fn idle_workers_returns_running_workers_without_tasks() {
         provider: Provider::ClaudeCode,
         channel: None,
         task_id: Some("task-1".into()),
+        bound_thread_id: None,
     });
     idx.apply(&DomainEvent::AgentStarted {
         id: "a1".into(),
@@ -111,4 +114,55 @@ fn idle_workers_returns_running_workers_without_tasks() {
     let idle = idx.idle_workers();
     assert_eq!(idle.len(), 1);
     assert_eq!(idle[0], "a2");
+}
+
+#[test]
+fn fork_indexed_by_thread() {
+    let mut idx = AgentIndex::default();
+    idx.apply(&DomainEvent::AgentCreated {
+        id: "f1".into(),
+        name: "fork-abc".into(),
+        kind: AgentKind::Fork,
+        agent_type: "midtown-channel-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("web".into()),
+        task_id: None,
+        bound_thread_id: Some("thread-123".into()),
+    });
+
+    let fork = idx.fork_for_thread("thread-123").unwrap();
+    assert_eq!(fork.id, "f1");
+    assert_eq!(fork.bound_thread_id, Some("thread-123".to_string()));
+    assert_eq!(fork.kind, AgentKind::Fork);
+}
+
+#[test]
+fn fork_removed_from_thread_index_on_stop() {
+    let mut idx = AgentIndex::default();
+    idx.apply(&DomainEvent::AgentCreated {
+        id: "f1".into(),
+        name: "fork-abc".into(),
+        kind: AgentKind::Fork,
+        agent_type: "midtown-channel-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("web".into()),
+        task_id: None,
+        bound_thread_id: Some("thread-123".into()),
+    });
+    idx.apply(&DomainEvent::AgentStarted {
+        id: "f1".into(),
+        pid: 999,
+    });
+    idx.apply(&DomainEvent::AgentStopped {
+        id: "f1".into(),
+        reason: "exited".into(),
+    });
+
+    assert!(idx.fork_for_thread("thread-123").is_none());
+}
+
+#[test]
+fn fork_for_thread_returns_none_for_unknown() {
+    let idx = AgentIndex::default();
+    assert!(idx.fork_for_thread("unknown-thread").is_none());
 }

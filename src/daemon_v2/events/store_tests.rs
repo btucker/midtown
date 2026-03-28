@@ -17,6 +17,7 @@ fn sample_agent_created() -> DomainEvent {
         provider: Provider::ClaudeCode,
         channel: Some("main".into()),
         task_id: Some("task-1".into()),
+        bound_thread_id: None,
     }
 }
 

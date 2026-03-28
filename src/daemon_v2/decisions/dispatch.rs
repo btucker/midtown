@@ -40,6 +40,7 @@ pub fn dispatch_pending_tasks(proj: &Projections, max_in_progress: usize) -> Vec
                 initial_prompt: Some(task.subject.clone()),
                 working_dir: None,
                 model: None,
+                bound_thread_id: None,
             }))
         })
         .collect()

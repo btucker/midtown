@@ -17,6 +17,7 @@ pub struct Agent {
     pub provider: Provider,
     pub channel: Option<String>,
     pub task_id: Option<TaskId>,
+    pub bound_thread_id: Option<String>,
     pub pid: Option<u32>,
     pub started_at: Option<DateTime<Utc>>,
     pub stopped_at: Option<DateTime<Utc>>,
@@ -28,6 +29,7 @@ pub struct AgentIndex {
     pub by_name: HashMap<String, AgentId>,
     pub by_task: HashMap<TaskId, AgentId>,
     pub by_channel: HashMap<String, Vec<AgentId>>,
+    pub by_thread: HashMap<String, AgentId>,
     pub running: HashSet<AgentId>,
 }
 
@@ -42,6 +44,7 @@ impl AgentIndex {
                 provider,
                 channel,
                 task_id,
+                bound_thread_id,
             } => {
                 let agent = Agent {
                     id: id.clone(),
@@ -51,6 +54,7 @@ impl AgentIndex {
                     provider: provider.clone(),
                     channel: channel.clone(),
                     task_id: task_id.clone(),
+                    bound_thread_id: bound_thread_id.clone(),
                     pid: None,
                     started_at: None,
                     stopped_at: None,
@@ -65,6 +69,9 @@ impl AgentIndex {
                         .or_default()
                         .push(id.clone());
                 }
+                if let Some(thread_id) = bound_thread_id {
+                    self.by_thread.insert(thread_id.clone(), id.clone());
+                }
                 self.by_id.insert(id.clone(), agent);
             }
             DomainEvent::AgentStarted { id, pid } => {
@@ -77,6 +84,9 @@ impl AgentIndex {
             }
             DomainEvent::AgentStopped { id, .. } => {
                 if let Some(agent) = self.by_id.get_mut(id) {
+                    if let Some(thread_id) = &agent.bound_thread_id {
+                        self.by_thread.remove(thread_id);
+                    }
                     agent.pid = None;
                     agent.stopped_at = Some(Utc::now());
                     self.running.remove(id);
@@ -90,6 +100,12 @@ impl AgentIndex {
             }
             _ => {}
         }
+    }
+
+    pub fn fork_for_thread(&self, thread_id: &str) -> Option<&Agent> {
+        self.by_thread
+            .get(thread_id)
+            .and_then(|id| self.by_id.get(id))
     }
 
     pub fn idle_workers(&self) -> Vec<AgentId> {

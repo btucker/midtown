@@ -15,6 +15,7 @@ pub struct SpawnConfig {
     pub initial_prompt: Option<String>,
     pub working_dir: Option<String>,
     pub model: Option<String>,
+    pub bound_thread_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

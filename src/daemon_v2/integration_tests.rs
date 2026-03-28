@@ -35,6 +35,7 @@ fn full_lifecycle_through_store_and_projections() {
         provider: Provider::ClaudeCode,
         channel: Some("main".into()),
         task_id: Some("t1".into()),
+        bound_thread_id: None,
     };
     store.append(&e2).unwrap();
     proj.apply(&e2);
@@ -48,7 +49,7 @@ fn full_lifecycle_through_store_and_projections() {
     proj.apply(&e3);
 
     // Verify state via RPC
-    let (status, _) = rpc::dispatch_request(
+    let (status, _, _) = rpc::dispatch_request(
         json!({"jsonrpc": "2.0", "method": "status", "id": 1}),
         &proj,
         test_channels_dir(),
@@ -64,7 +65,7 @@ fn full_lifecycle_through_store_and_projections() {
     store.append(&e4).unwrap();
     proj.apply(&e4);
 
-    let (status, _) = rpc::dispatch_request(
+    let (status, _, _) = rpc::dispatch_request(
         json!({"jsonrpc": "2.0", "method": "status", "id": 2}),
         &proj,
         test_channels_dir(),
@@ -87,7 +88,7 @@ fn full_lifecycle_through_store_and_projections() {
     let mut recovered_proj = snapshot.unwrap();
     recovered_proj.apply_all(&replay_events);
 
-    let (status, _) = rpc::dispatch_request(
+    let (status, _, _) = rpc::dispatch_request(
         json!({"jsonrpc": "2.0", "method": "status", "id": 3}),
         &recovered_proj,
         test_channels_dir(),
@@ -106,7 +107,7 @@ fn recover_from_empty_directory() {
     assert!(events.is_empty());
 
     let proj = Projections::default();
-    let (status, _) = rpc::dispatch_request(
+    let (status, _, _) = rpc::dispatch_request(
         json!({"jsonrpc": "2.0", "method": "status", "id": 1}),
         &proj,
         test_channels_dir(),
