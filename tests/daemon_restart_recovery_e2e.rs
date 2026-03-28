@@ -52,7 +52,7 @@ fn test_sessions_preserved_after_restart() {
             name: "park".to_string(),
             working_dir: "/path/to/main".to_string(),
             agent_type: "midtown-code-reviewer".to_string(),
-            pr_number: Some(42),
+            task_id: Some("200".to_string()),
             purpose: "reviewer for PR #42".to_string(),
             pid: Some(12346),
             profile: Some("test@example.com".to_string()),
@@ -89,7 +89,7 @@ fn test_sessions_preserved_after_restart() {
 
     let park = loaded_state.sessions.get("session-park-456").unwrap();
     assert_eq!(park.agent_type, "midtown-code-reviewer");
-    assert_eq!(park.pr_number, Some(42));
+    assert_eq!(park.task_id, Some("200".to_string()));
     assert!(park.resume_on_startup);
 
     // Verify serde default attributes work correctly
