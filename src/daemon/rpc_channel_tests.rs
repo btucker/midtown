@@ -1720,6 +1720,103 @@ async fn test_skip_senders_do_not_route_mentions_in_topic_channels() {
     }
 }
 
+/// When a user posts `@{project_name}` in a topic channel thread, the project
+/// lead should be nudged in ADDITION to the topic channel lead. Previously,
+/// the @midtown/@lead detection (line 650) was gated on `!is_user_sender`,
+/// so user mentions of the project lead in topic channels were silently dropped.
+///
+/// Regression test for !2618.
+#[tokio::test]
+async fn test_user_at_midtown_in_topic_channel_thread_nudges_project_lead() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-user-lead-mention");
+
+    // Post a parent message in a topic channel to create a thread
+    let parent_id = post_parent_message(&state, Some("web")).await;
+
+    // User posts @midtown-test-user-lead-mention in the topic channel thread
+    let project_mention = format!("@{}", state.project_name);
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user", // user sender
+        &format!("{} things aren't working right at all", project_mention),
+        Some("web"),      // topic channel
+        Some(&parent_id), // thread reply
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "channel.post should succeed: {:?}",
+        response.error
+    );
+
+    // Retrieve the posted message ID
+    let ch = state.channel_router.get_channel("web").unwrap();
+    let messages = ch.read_all().unwrap();
+    let posted_msg = messages
+        .last()
+        .expect("channel should contain the posted message");
+
+    // Verify the project lead was nudged: the cooldown tracker should have
+    // a "lead_mention" entry for this message, meaning the lead nudge fired.
+    let was_lead_nudged = {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        !cooldowns.check(
+            "lead_mention",
+            &posted_msg.id,
+            std::time::Duration::from_secs(3600),
+        )
+    };
+    assert!(
+        was_lead_nudged,
+        "Project lead should be nudged when user posts @midtown in a topic channel thread"
+    );
+}
+
+/// Same as above but for `@lead` alias — should also nudge the project lead.
+#[tokio::test]
+async fn test_user_at_lead_in_topic_channel_nudges_project_lead() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-user-at-lead");
+
+    // Post a parent message in a topic channel
+    let parent_id = post_parent_message(&state, Some("web")).await;
+
+    // User posts @lead in the topic channel thread
+    let response = handle_channel_post(
+        1_i64.into(),
+        "user",
+        "@lead can you help with this?",
+        Some("web"),
+        Some(&parent_id),
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "channel.post should succeed: {:?}",
+        response.error
+    );
+
+    let ch = state.channel_router.get_channel("web").unwrap();
+    let messages = ch.read_all().unwrap();
+    let posted_msg = messages
+        .last()
+        .expect("channel should contain the posted message");
+
+    let was_lead_nudged = {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        !cooldowns.check(
+            "lead_mention",
+            &posted_msg.id,
+            std::time::Duration::from_secs(3600),
+        )
+    };
+    assert!(
+        was_lead_nudged,
+        "Project lead should be nudged when user posts @lead in a topic channel thread"
+    );
+}
+
 /// Verify that channel.read with a `thread` parameter returns only messages
 /// belonging to that thread (the parent message + its replies).
 #[tokio::test]
