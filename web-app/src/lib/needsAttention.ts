@@ -57,31 +57,23 @@ export function isTaskStale(
 }
 
 /**
- * Build the full list of needs-attention items from current state.
+ * Compute thread-based attention items (mentions and waiting threads).
+ * Depends only on thread-related stores — independent of kanban/task state.
  */
-export function computeAttentionItems(opts: {
+export function computeThreadAttentionItems(opts: {
 	trackedThreads: Record<string, TrackedThread>;
 	lastMessages: Record<string, LastMessage>;
-	coworkers: Coworker[];
-	tasks: Task[];
-	progressTimestamps: Record<string, number>;
 	threadReadState: Record<string, string>;
 	userSender: string;
-	mainChannel: string;
 	now?: number;
 }): NeedsAttentionItem[] {
 	const now = opts.now ?? Date.now();
 	const items: NeedsAttentionItem[] = [];
 
-	// Build coworker lookup map once (O(1) lookups vs O(n) .find() per task)
-	const cwMap = new Map(opts.coworkers.map((c) => [c.name, c]));
-
-	// 1. Threads needing attention
 	for (const [threadId, tracked] of Object.entries(opts.trackedThreads)) {
 		const lastMsg = opts.lastMessages[threadId];
 		if (!lastMsg) continue;
 
-		// Skip if thread is read (user has seen it since last message)
 		const lastRead = opts.threadReadState[threadId];
 		const msgMs = new Date(lastMsg.timestamp).getTime();
 		if (lastRead && new Date(lastRead).getTime() >= msgMs) continue;
@@ -104,25 +96,38 @@ export function computeAttentionItems(opts: {
 		}
 	}
 
-	// 2. Completed tasks — only show if completed within the last 24 hours and not yet seen
+	return items;
+}
+
+/**
+ * Compute completed-task attention items.
+ * Depends only on task/coworker state — independent of thread tracking.
+ */
+export function computeCompletedTaskItems(opts: {
+	tasks: Task[];
+	coworkerMap: Map<string, Coworker>;
+	threadReadState: Record<string, string>;
+	mainChannel: string;
+	now?: number;
+}): NeedsAttentionItem[] {
+	const now = opts.now ?? Date.now();
+	const items: NeedsAttentionItem[] = [];
+
 	for (const task of opts.tasks) {
 		if (task.status !== "completed") continue;
 
-		// Filter out old completions — only show tasks updated in the last 24h
 		const updatedMs = task.updated_at ? new Date(task.updated_at).getTime() : 0;
 		if (now - updatedMs > TWENTY_FOUR_HOURS_MS) continue;
 
-		// Filter out if user has already seen this completed task
 		const taskReadKey = `task:${task.id}`;
 		const lastRead = opts.threadReadState[taskReadKey];
 		if (lastRead && new Date(lastRead).getTime() >= updatedMs) continue;
 
-		const id = taskReadKey;
-		const cw = cwMap.get(task.owner ?? "");
+		const cw = opts.coworkerMap.get(task.owner ?? "");
 		const channel = task.channel || opts.mainChannel;
 
 		items.push({
-			id,
+			id: taskReadKey,
 			type: "task_completed",
 			title: task.subject,
 			context: `Task completed by ${task.owner || "unknown"}${cw?.pr_number ? ` · PR #${cw.pr_number} ready` : ""} · #${channel}`,
@@ -134,21 +139,35 @@ export function computeAttentionItems(opts: {
 		});
 	}
 
-	// 3. Stale tasks
+	return items;
+}
+
+/**
+ * Compute stale-task attention items.
+ * Depends only on task/coworker/progress state — independent of threads.
+ */
+export function computeStaleTaskItems(opts: {
+	tasks: Task[];
+	coworkerMap: Map<string, Coworker>;
+	progressTimestamps: Record<string, number>;
+	mainChannel: string;
+	now?: number;
+}): NeedsAttentionItem[] {
+	const now = opts.now ?? Date.now();
+	const items: NeedsAttentionItem[] = [];
+
 	for (const task of opts.tasks) {
 		if (task.status !== "in_progress") continue;
-		const cw = cwMap.get(task.owner ?? "");
+		const cw = opts.coworkerMap.get(task.owner ?? "");
 		const lastChange = opts.progressTimestamps[String(task.id)];
 		if (!lastChange) continue;
 
 		if (isTaskStale(cw?.progress ?? null, lastChange, now)) {
-			const id = `stale:${task.id}`;
-
 			const channel = task.channel || opts.mainChannel;
 			const staleHours = Math.floor((now - lastChange) / 3600000);
 
 			items.push({
-				id,
+				id: `stale:${task.id}`,
 				type: "stale_work",
 				title: task.subject,
 				context: `No progress from ${task.owner || "unknown"} for ${staleHours}h · ${cw?.progress ?? 0}% complete · #${channel}`,
@@ -161,7 +180,54 @@ export function computeAttentionItems(opts: {
 		}
 	}
 
-	// Sort newest first
+	return items;
+}
+
+/**
+ * Build the full list of needs-attention items from current state.
+ * Combines thread, completed-task, and stale-task items into a sorted list.
+ *
+ * Prefer using the individual compute functions as separate $derived blocks
+ * to avoid cascading recomputation when only one input category changes.
+ * This combined function is retained for backward compatibility with tests.
+ */
+export function computeAttentionItems(opts: {
+	trackedThreads: Record<string, TrackedThread>;
+	lastMessages: Record<string, LastMessage>;
+	coworkers: Coworker[];
+	tasks: Task[];
+	progressTimestamps: Record<string, number>;
+	threadReadState: Record<string, string>;
+	userSender: string;
+	mainChannel: string;
+	now?: number;
+}): NeedsAttentionItem[] {
+	const coworkerMap = new Map(opts.coworkers.map((c) => [c.name, c]));
+
+	const items = [
+		...computeThreadAttentionItems({
+			trackedThreads: opts.trackedThreads,
+			lastMessages: opts.lastMessages,
+			threadReadState: opts.threadReadState,
+			userSender: opts.userSender,
+			now: opts.now,
+		}),
+		...computeCompletedTaskItems({
+			tasks: opts.tasks,
+			coworkerMap,
+			threadReadState: opts.threadReadState,
+			mainChannel: opts.mainChannel,
+			now: opts.now,
+		}),
+		...computeStaleTaskItems({
+			tasks: opts.tasks,
+			coworkerMap,
+			progressTimestamps: opts.progressTimestamps,
+			mainChannel: opts.mainChannel,
+			now: opts.now,
+		}),
+	];
+
 	items.sort((a, b) => b.timestamp - a.timestamp);
 	return items;
 }
