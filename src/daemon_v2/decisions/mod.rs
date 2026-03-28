@@ -1,5 +1,6 @@
 pub mod dispatch;
 pub mod health;
+pub mod prs;
 
 use crate::daemon_v2::events::{AgentId, AgentKind, Provider, TaskId};
 
@@ -51,4 +52,5 @@ pub enum Command {
         content: String,
     },
     PollProcessHealth,
+    PollPrs,
 }
