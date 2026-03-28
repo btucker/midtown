@@ -68,15 +68,19 @@ Use the code-review skill to analyze the PR. The skill creates sub-tasks to trac
 
 **TEST SUGGESTIONS**: For each issue, include: "Test suggestion: <description of test that would fail before the fix>". Use "N/A (style/docs issue)" when not applicable.
 
-**IMPORTANT: The skill will exit early ("do not proceed") when no issues meet the confidence threshold.** This does NOT mean the review is done — you still MUST post to GitHub. Continue to "Posting Your Review" below.
+**IMPORTANT: The skill exits early when no issues meet the confidence threshold** — it will NOT post to GitHub in that case. This does NOT mean the review is done. You MUST continue to "Posting Your Review" below regardless of whether the skill found issues or not.
 
 ## Posting Your Review
 
-After the code-review skill completes, you MUST post via `midtown pr review post` regardless of outcome. The skill may or may not have posted a `gh pr comment` itself — either way, the daemon only tracks reviews submitted through the RPC command below.
+After the code-review skill completes, you MUST post via `midtown pr review post` **regardless of outcome**. The daemon only tracks reviews submitted through this RPC command — any `gh pr comment` posted by the skill is supplementary.
 
-**If the skill found and posted issues:** collect the review content and repost it through the daemon RPC.
+### Path 1: Skill found issues (posted via `gh pr comment`)
 
-**If the skill exited early with no issues (the common case for clean PRs):** write the LGTM review yourself:
+Collect the review content from the skill's comment and repost it through the daemon RPC.
+
+### Path 2: Skill exited early — no issues above threshold
+
+This is the common case for clean PRs. Write the LGTM review yourself:
 
 ```bash
 cat > /tmp/review-<PR>.md << 'REVIEW_EOF'
@@ -86,7 +90,9 @@ No issues found. Checked for bugs and CLAUDE.md compliance.
 REVIEW_EOF
 ```
 
-Then submit via CLI. The daemon handles frontmatter and footer automatically. Use a PR-specific filename to avoid collisions when multiple reviewers run concurrently.
+### Submit (both paths)
+
+The daemon handles frontmatter and footer automatically. Use a PR-specific filename to avoid collisions when multiple reviewers run concurrently.
 
 ```bash
 midtown pr review post --pr <PR> --body-file /tmp/review-<PR>.md
@@ -95,10 +101,12 @@ midtown pr review post --pr <PR> --body-file /tmp/review-<PR>.md
 midtown channel post "$(cat /tmp/review-<PR>.md)"
 ```
 
+**WARNING**: If you skip `midtown pr review post`, the placeholder comment stays as "Review in progress" forever and the daemon will flag you as stuck. This is the most common reviewer failure mode.
+
 A code review is **not complete** until you have:
-- Run `midtown pr review post` (this is what tells the daemon the review is done)
-- Shared the review in the channel
-- Marked your task as done: `midtown task done <task-id>`
+1. Run `midtown pr review post` (this is what tells the daemon the review is done)
+2. Shared the review in the channel
+3. Marked your task as done: `midtown task done <task-id>`
 
 ## Refactor Detection
 
