@@ -1584,3 +1584,108 @@ fn test_handle_pull_request_no_head_repo_no_fork() {
     let event = handle_pull_request(payload.as_bytes()).unwrap().unwrap();
     assert_eq!(event.fork_repo, None);
 }
+
+// ── Double-notification guard (!2645) ───────────────────────────────────────
+
+#[test]
+fn test_formal_approved_review_sets_both_reviewed_pr_and_review_state_change() {
+    // Documents the precondition for bug !2645: a formal APPROVED review sets
+    // both reviewed_pr AND review_state_change on the same WebhookEvent. The
+    // mod.rs dispatch must guard against firing both handle_webhook_review_complete
+    // and handle_webhook_review_state_change for the same event.
+    let payload = r#"{
+            "action": "submitted",
+            "review": {
+                "id": 300,
+                "state": "approved",
+                "user": {"login": "reviewer_user"},
+                "body": "LGTM"
+            },
+            "pull_request": {
+                "number": 99,
+                "head": {"ref": "task-200-feature"},
+                "body": "<!-- midtown: broadway -->\n\nSome PR"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+    let event = handle_pull_request_review(payload.as_bytes())
+        .unwrap()
+        .unwrap();
+
+    // Both fields are set — this is the precondition for the double-notification bug.
+    assert!(
+        event.reviewed_pr.is_some(),
+        "formal review must set reviewed_pr"
+    );
+    assert!(
+        event.review_state_change.is_some(),
+        "APPROVED review must set review_state_change"
+    );
+    // The dispatch layer (mod.rs) must skip handle_webhook_review_complete when
+    // review_state_change is set to avoid double-notification.
+}
+
+#[test]
+fn test_commented_review_sets_reviewed_pr_but_not_review_state_change() {
+    // Comment-only reviews should still trigger handle_webhook_review_complete
+    // since there is no review_state_change handler for them.
+    let payload = r#"{
+            "action": "submitted",
+            "review": {
+                "id": 301,
+                "state": "commented",
+                "user": {"login": "reviewer_user"},
+                "body": "Some comment"
+            },
+            "pull_request": {
+                "number": 100,
+                "head": {"ref": "task-201-bugfix"}
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+    let event = handle_pull_request_review(payload.as_bytes())
+        .unwrap()
+        .unwrap();
+
+    assert!(
+        event.reviewed_pr.is_some(),
+        "commented review must set reviewed_pr"
+    );
+    assert!(
+        event.review_state_change.is_none(),
+        "commented review must NOT set review_state_change"
+    );
+}
+
+#[test]
+fn test_formal_review_pr_activity_actor_is_github_login() {
+    // Bug !2645: the pr_activity.actor field carries the GitHub login, which
+    // should be used for reviewer attribution instead of task.agent_name.
+    let payload = r#"{
+            "action": "submitted",
+            "review": {
+                "id": 302,
+                "state": "approved",
+                "user": {"login": "github-reviewer-username"},
+                "body": "Looks good"
+            },
+            "pull_request": {
+                "number": 101,
+                "head": {"ref": "task-202-refactor"},
+                "body": "<!-- midtown: columbus -->\n\nRefactor"
+            },
+            "repository": {"full_name": "org/repo"}
+        }"#;
+
+    let event = handle_pull_request_review(payload.as_bytes())
+        .unwrap()
+        .unwrap();
+
+    let activity = event.pr_activity.unwrap();
+    assert_eq!(
+        activity.actor, "github-reviewer-username",
+        "pr_activity.actor must be the GitHub login for reviewer attribution"
+    );
+}

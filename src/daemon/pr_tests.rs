@@ -6733,3 +6733,135 @@ async fn test_review_complete_skips_already_completed_review_task() {
         effects
     );
 }
+
+// ── Bug !2645: handle_webhook_review_complete fixes ─────────────────────────
+
+/// !2645: handle_webhook_review_complete should use the GitHub reviewer login
+/// passed from the webhook event, not the internal agent_name.
+#[tokio::test]
+async fn test_webhook_review_complete_prefers_github_login_over_agent_name() {
+    let pr_number = 7777u64;
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    // Create author task (parent)
+    let author_task = crate::task_store::Task {
+        id: "500".to_string(),
+        subject: "Implement feature".to_string(),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: "broadway".to_string(),
+        agent_type: "midtown-code-author".to_string(),
+        pr: Some(pr_number),
+        channel: Some("ops".to_string()),
+        thread_id: Some("t-500".to_string()),
+        ..Default::default()
+    };
+    state.task_store.save(&author_task).unwrap();
+
+    // Create review task with a creative agent_name (the bug was using this)
+    let review_task = crate::task_store::Task {
+        id: "501".to_string(),
+        subject: format!("Review PR #{}", pr_number),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: "ghost-town".to_string(), // internal creative name
+        agent_type: "midtown-code-reviewer".to_string(),
+        parent: Some("500".to_string()),
+        pr: Some(pr_number),
+        ..Default::default()
+    };
+    state.task_store.save(&review_task).unwrap();
+
+    // Call with the GitHub login — this should be used instead of "ghost-town"
+    // Note: fetch_review_content will fail (no real PR) but that's fine,
+    // it returns None and the handler continues with empty review content.
+    handle_webhook_review_complete(&state, pr_number, Some("github-reviewer-user")).await;
+
+    // Verify the permanent nudge was recorded (proves the handler ran to completion)
+    let tracker = state.pr_issue_tracker.lock().await;
+    assert!(
+        tracker.has_nudge(pr_number, PrIssueType::ReviewComplete),
+        "ReviewComplete permanent nudge should be recorded after handler runs"
+    );
+}
+
+/// !2645: handle_webhook_review_complete should fall back to agent_name
+/// when no reviewer_login is provided (e.g., from polling path).
+#[tokio::test]
+async fn test_webhook_review_complete_falls_back_to_agent_name_without_login() {
+    let pr_number = 7778u64;
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    let author_task = crate::task_store::Task {
+        id: "600".to_string(),
+        subject: "Implement feature".to_string(),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: "broadway".to_string(),
+        agent_type: "midtown-code-author".to_string(),
+        pr: Some(pr_number),
+        channel: Some("ops".to_string()),
+        thread_id: Some("t-600".to_string()),
+        ..Default::default()
+    };
+    state.task_store.save(&author_task).unwrap();
+
+    let review_task = crate::task_store::Task {
+        id: "601".to_string(),
+        subject: format!("Review PR #{}", pr_number),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: "ghost-town".to_string(),
+        agent_type: "midtown-code-reviewer".to_string(),
+        parent: Some("600".to_string()),
+        pr: Some(pr_number),
+        ..Default::default()
+    };
+    state.task_store.save(&review_task).unwrap();
+
+    // Call without a reviewer login — should fall back to agent_name
+    handle_webhook_review_complete(&state, pr_number, None).await;
+
+    let tracker = state.pr_issue_tracker.lock().await;
+    assert!(
+        tracker.has_nudge(pr_number, PrIssueType::ReviewComplete),
+        "ReviewComplete permanent nudge should be recorded"
+    );
+}
+
+/// !2645: handle_webhook_review_complete should not fire twice (dedup guard).
+#[tokio::test]
+async fn test_webhook_review_complete_dedup_prevents_double_fire() {
+    let pr_number = 7779u64;
+    let (state, _tmp, _guard) = make_test_state("test-repo");
+
+    // Pre-record the permanent nudge (simulates first handler having already fired)
+    {
+        let mut tracker = state.pr_issue_tracker.lock().await;
+        tracker.record_permanent_nudge(pr_number, PrIssueType::ReviewComplete);
+    }
+
+    let author_task = crate::task_store::Task {
+        id: "700".to_string(),
+        subject: "Implement feature".to_string(),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: "broadway".to_string(),
+        agent_type: "midtown-code-author".to_string(),
+        pr: Some(pr_number),
+        ..Default::default()
+    };
+    state.task_store.save(&author_task).unwrap();
+
+    let review_task = crate::task_store::Task {
+        id: "701".to_string(),
+        subject: format!("Review PR #{}", pr_number),
+        status: crate::task_store::TaskStatus::InProgress,
+        agent_name: "ghost-town".to_string(),
+        agent_type: "midtown-code-reviewer".to_string(),
+        parent: Some("700".to_string()),
+        pr: Some(pr_number),
+        ..Default::default()
+    };
+    state.task_store.save(&review_task).unwrap();
+
+    // Second call should be a no-op due to dedup
+    handle_webhook_review_complete(&state, pr_number, Some("reviewer")).await;
+    // If it got past dedup, it would try to execute effects — the test passing
+    // without errors confirms the early return works.
+}

@@ -3171,6 +3171,14 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                     .as_ref()
                     .and_then(|a| a.repo_full_name.clone());
 
+                // Capture the GitHub reviewer login before pr_activity is moved.
+                // Used by handle_webhook_review_complete to attribute the review
+                // to the actual GitHub user instead of the internal agent_name.
+                let webhook_reviewer_login = webhook_event
+                    .pr_activity
+                    .as_ref()
+                    .map(|a| a.actor.clone());
+
                 // Nudge PR owner when someone else comments on their PR
                 if let Some(activity) = webhook_event.pr_activity {
                     let state = Arc::clone(&state);
@@ -3330,7 +3338,8 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                 }
 
                 // Capture whether this is a strong formal review (APPROVED/CHANGES_REQUESTED)
-                // before review_state_change is moved. Used below for review identity matching.
+                // before review_state_change is moved. Used below for review identity matching
+                // and to prevent double-notification (bug !2645).
                 let is_strong_formal_review = webhook_event.review_state_change.as_ref().is_some_and(|r| {
                     matches!(r.state, crate::webhook::ReviewState::Approved | crate::webhook::ReviewState::ChangesRequested)
                 });
@@ -3419,11 +3428,25 @@ pub async fn run(config: DaemonConfig) -> crate::Result<DaemonExitStatus> {
                         }
                         // Route review feedback to the author task immediately
                         // (don't wait for the ~2min polling cycle).
-                        let state_for_review = Arc::clone(&state);
-                        tokio::spawn(async move {
-                            pr::handle_webhook_review_complete(&state_for_review, pr_number)
+                        //
+                        // Skip when review_state_change is also set (formal APPROVED/
+                        // CHANGES_REQUESTED) — handle_webhook_review_state_change already
+                        // handles notification for that case. Without this guard, both
+                        // handlers fire with different PrIssueType keys (Approved vs
+                        // ReviewComplete), bypassing dedup and producing a double
+                        // notification. (Bug fix for !2645)
+                        if !is_strong_formal_review {
+                            let reviewer_login = webhook_reviewer_login.clone();
+                            let state_for_review = Arc::clone(&state);
+                            tokio::spawn(async move {
+                                pr::handle_webhook_review_complete(
+                                    &state_for_review,
+                                    pr_number,
+                                    reviewer_login.as_deref(),
+                                )
                                 .await;
-                        });
+                            });
+                        }
                     } else {
                         debug!(
                             "Webhook: ignoring review for PR #{} — author {:?} does not match assigned reviewer {:?}",
