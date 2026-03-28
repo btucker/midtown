@@ -408,7 +408,7 @@ pub struct CoworkerStatusData {
     /// Lucide icon name for avatar (e.g., "shield", "database").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// Lucide icon name for avatar badge (e.g., "pen-tool", "eye").
+    /// Lucide icon name for avatar badge (e.g., "pen-line", "search").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub avatar_badge: Option<String>,
 }

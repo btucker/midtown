@@ -119,7 +119,7 @@ pub struct SessionRecord {
     /// Lucide icon name for avatar (e.g., "shield", "database").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
-    /// Lucide icon name for avatar badge (e.g., "pen-tool", "eye").
+    /// Lucide icon name for avatar badge (e.g., "pen-line", "search").
     /// Resolved from the agent definition's `avatar_badge` frontmatter field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar_badge: Option<String>,
