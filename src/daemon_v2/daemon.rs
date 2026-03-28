@@ -6,7 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::daemon_v2::decisions::{self, Command, health};
-use crate::daemon_v2::events::EventStore;
+use crate::daemon_v2::events::{DomainEvent, EventStore};
 use crate::daemon_v2::executor;
 use crate::daemon_v2::projections::Projections;
 use crate::daemon_v2::rpc;
@@ -86,12 +86,45 @@ fn handle_merged_prs_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
 impl DaemonV2 {
     /// Create a new DaemonV2, recovering state from the event store.
     pub fn new(config: DaemonV2Config) -> std::io::Result<Self> {
-        let (store, snapshot, replay_events) = EventStore::recover(config.events_dir.clone())?;
+        let (mut store, snapshot, replay_events) = EventStore::recover(config.events_dir.clone())?;
 
         let mut projections = snapshot.unwrap_or_default();
         projections.apply_all(&replay_events);
 
         let paths = ProjectPaths::new(&config.dir_key);
+
+        // Reconcile: agents that were "running" when the daemon last shut down
+        // may have dead processes. Check PIDs and emit AgentStopped events.
+        let mut reconcile_events = Vec::new();
+        for agent_id in projections.agents.running.clone() {
+            if let Some(agent) = projections.agents.by_id.get(&agent_id) {
+                let is_alive = agent
+                    .pid
+                    .map(|pid| {
+                        std::process::Command::new("kill")
+                            .args(["-0", &pid.to_string()])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status()
+                            .map(|s| s.success())
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+
+                if !is_alive {
+                    tracing::info!(%agent_id, name = %agent.name, "reconciling dead agent on startup");
+                    reconcile_events.push(DomainEvent::AgentStopped {
+                        id: agent_id.clone(),
+                        reason: "process not found on startup".into(),
+                    });
+                }
+            }
+        }
+
+        for event in &reconcile_events {
+            store.append(event)?;
+            projections.apply(event);
+        }
 
         let mut scheduler = Scheduler::new();
         scheduler.register(
