@@ -357,6 +357,49 @@ fn test_daemon_v2_pr_polling_runs_without_crash() {
     eprintln!("PR poll test complete. Open PRs detected: {open_prs}");
 }
 
+#[test]
+#[ignore]
+fn test_daemon_v2_channel_post_and_read() {
+    let harness = V2Harness::start();
+
+    // Post a message
+    let resp = harness.rpc_call(
+        "channel.post",
+        Some(serde_json::json!({
+            "channel": "test-chan",
+            "sender": "test-user",
+            "content": "hello from e2e test",
+        })),
+    );
+    assert!(resp["error"].is_null(), "channel.post error: {resp}");
+
+    // Read it back
+    let resp = harness.rpc_call(
+        "channel.read",
+        Some(serde_json::json!({
+            "channel": "test-chan",
+            "limit": 5,
+        })),
+    );
+    assert!(resp["error"].is_null(), "channel.read error: {resp}");
+    let messages = resp["result"].as_array().expect("should be array");
+    assert!(
+        messages
+            .iter()
+            .any(|m| m["message"] == "hello from e2e test"),
+        "posted message should appear in read: {messages:?}"
+    );
+
+    // List channels
+    let resp = harness.rpc_call("channel.list", None);
+    assert!(resp["error"].is_null(), "channel.list error: {resp}");
+    let channels = resp["result"].as_array().expect("should be array");
+    assert!(
+        channels.iter().any(|c| c["name"] == "test-chan"),
+        "test-chan should appear in list: {channels:?}"
+    );
+}
+
 /// Wait up to `timeout` for `child` to exit. Returns true if it exited in time.
 fn wait_for_exit(mut child: Child, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
