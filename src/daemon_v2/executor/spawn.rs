@@ -4,7 +4,9 @@ mod tests;
 
 use crate::daemon_v2::decisions::SpawnConfig;
 use crate::daemon_v2::events::{AgentId, DomainEvent, Provider};
+use crate::headless::HeadlessSession;
 use crate::launch::LaunchConfig;
+use crate::paths::ProjectPaths;
 
 /// Convert a daemon_v2 `Provider` to the auth `AuthProvider`.
 fn to_auth_provider(provider: &Provider) -> crate::auth::AuthProvider {
@@ -41,6 +43,37 @@ pub fn build_launch_config(config: &SpawnConfig, dir_key: &str) -> LaunchConfig 
     } else {
         launch
     }
+}
+
+/// Spawn a headless agent session from a `SpawnConfig`.
+///
+/// Builds a `LaunchConfig`, converts it to a `HeadlessConfig`, spawns the
+/// process, and returns the session handle along with the domain events
+/// that record the creation.
+pub async fn spawn_agent(
+    spawn_config: &SpawnConfig,
+    paths: &ProjectPaths,
+) -> Result<(HeadlessSession, Vec<DomainEvent>), String> {
+    let launch_config = build_launch_config(spawn_config, paths.dir_key());
+    let headless_config = launch_config.to_headless_config(paths);
+
+    let session = HeadlessSession::spawn(&headless_config)
+        .await
+        .map_err(|e| format!("failed to spawn agent '{}': {}", spawn_config.name, e))?;
+
+    let pid = session.pid().unwrap_or(0);
+    let agent_id: AgentId = uuid::Uuid::new_v4().to_string();
+    let events = agent_spawned_events(&agent_id, spawn_config, pid);
+
+    Ok((session, events))
+}
+
+/// Kill a running headless session.
+pub async fn stop_agent(session: &mut HeadlessSession) -> Result<(), String> {
+    session
+        .kill()
+        .await
+        .map_err(|e| format!("failed to kill session: {}", e))
 }
 
 /// Build the events emitted when an agent is successfully spawned.

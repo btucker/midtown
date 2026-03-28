@@ -1,15 +1,18 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
-use crate::daemon_v2::decisions::health;
+use crate::daemon_v2::decisions::{self, Command, health};
 use crate::daemon_v2::events::EventStore;
 use crate::daemon_v2::executor;
 use crate::daemon_v2::projections::Projections;
 use crate::daemon_v2::rpc;
 use crate::daemon_v2::scheduler::Scheduler;
+use crate::headless::HeadlessSession;
+use crate::paths::ProjectPaths;
 
 /// Configuration for DaemonV2.
 pub struct DaemonV2Config {
@@ -29,6 +32,8 @@ pub struct DaemonV2 {
     store: EventStore,
     projections: Projections,
     scheduler: Scheduler,
+    paths: ProjectPaths,
+    sessions: HashMap<String, HeadlessSession>,
 }
 
 /// Exit status returned by [`DaemonV2::run`].
@@ -47,11 +52,23 @@ fn check_dead_workers_fn(
 }
 
 /// Wrapper matching `DecisionFn`.
-fn ensure_leads_alive_fn(
-    proj: &Projections,
-    channel: &str,
-) -> Vec<crate::daemon_v2::decisions::Command> {
+fn ensure_leads_alive_fn(proj: &Projections, channel: &str) -> Vec<Command> {
     health::ensure_leads_alive(proj, channel)
+}
+
+/// Wrapper: dispatch pending tasks (up to 3 concurrent workers).
+fn dispatch_pending_tasks_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
+    decisions::dispatch::dispatch_pending_tasks(proj, 3)
+}
+
+/// Wrapper: stop agents whose tasks have completed.
+fn stop_completed_agents_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
+    decisions::dispatch::stop_completed_agents(proj)
+}
+
+/// Wrapper: poll process health for all running sessions.
+fn poll_process_health_fn(_proj: &Projections, _channel: &str) -> Vec<Command> {
+    vec![Command::PollProcessHealth]
 }
 
 impl DaemonV2 {
@@ -61,6 +78,8 @@ impl DaemonV2 {
 
         let mut projections = snapshot.unwrap_or_default();
         projections.apply_all(&replay_events);
+
+        let paths = ProjectPaths::new(&config.dir_key);
 
         let mut scheduler = Scheduler::new();
         scheduler.register(
@@ -73,12 +92,29 @@ impl DaemonV2 {
             Duration::from_secs(30),
             ensure_leads_alive_fn,
         );
+        scheduler.register(
+            "dispatch_pending_tasks",
+            Duration::from_secs(5),
+            dispatch_pending_tasks_fn,
+        );
+        scheduler.register(
+            "stop_completed_agents",
+            Duration::from_secs(5),
+            stop_completed_agents_fn,
+        );
+        scheduler.register(
+            "poll_process_health",
+            Duration::from_secs(10),
+            poll_process_health_fn,
+        );
 
         Ok(Self {
             config,
             store,
             projections,
             scheduler,
+            paths,
+            sessions: HashMap::new(),
         })
     }
 
@@ -106,7 +142,8 @@ impl DaemonV2 {
                 accept_result = listener.accept() => {
                     match accept_result {
                         Ok((stream, _addr)) => {
-                            let outcome = handle_rpc_connection(stream, &self.projections).await;
+                            let (outcome, events) = handle_rpc_connection(stream, &self.projections).await;
+                            self.apply_events(&events);
                             if outcome == RpcOutcome::Shutdown {
                                 tracing::info!("shutdown requested via RPC");
                                 return DaemonV2ExitStatus::Shutdown;
@@ -125,6 +162,16 @@ impl DaemonV2 {
         }
     }
 
+    /// Apply a batch of domain events to the event store and projections.
+    fn apply_events(&mut self, events: &[crate::daemon_v2::events::DomainEvent]) {
+        for event in events {
+            if let Err(e) = self.store.append(event) {
+                tracing::error!(%e, "failed to append event");
+            }
+            self.projections.apply(event);
+        }
+    }
+
     /// Run all currently due decisions, execute the resulting commands, and
     /// apply the produced events to the event store and projections.
     async fn run_due_decisions(&mut self) {
@@ -136,13 +183,8 @@ impl DaemonV2 {
             self.scheduler.mark_ran(decision.name, now);
 
             for command in commands {
-                let events = executor::execute(command, &self.config.dir_key).await;
-                for event in &events {
-                    if let Err(e) = self.store.append(event) {
-                        tracing::error!(%e, "failed to append event");
-                    }
-                    self.projections.apply(event);
-                }
+                let events = executor::execute(command, &mut self.sessions, &self.paths).await;
+                self.apply_events(&events);
             }
         }
     }
@@ -157,8 +199,12 @@ enum RpcOutcome {
 }
 
 /// Read one JSON-RPC request from `stream`, dispatch it, and write the response.
-/// Returns `RpcOutcome::Shutdown` if the request was a shutdown request.
-async fn handle_rpc_connection(mut stream: UnixStream, proj: &Projections) -> RpcOutcome {
+/// Returns `RpcOutcome::Shutdown` if the request was a shutdown request, plus any
+/// domain events produced by mutating RPC methods (e.g., `task.create`).
+async fn handle_rpc_connection(
+    mut stream: UnixStream,
+    proj: &Projections,
+) -> (RpcOutcome, Vec<crate::daemon_v2::events::DomainEvent>) {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
 
@@ -175,7 +221,7 @@ async fn handle_rpc_connection(mut stream: UnixStream, proj: &Projections) -> Rp
             }
             Err(e) => {
                 tracing::warn!(%e, "RPC read error");
-                return RpcOutcome::Continue;
+                return (RpcOutcome::Continue, vec![]);
             }
         }
     }
@@ -184,7 +230,7 @@ async fn handle_rpc_connection(mut stream: UnixStream, proj: &Projections) -> Rp
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(%e, "malformed RPC request");
-            return RpcOutcome::Continue;
+            return (RpcOutcome::Continue, vec![]);
         }
     };
 
@@ -202,13 +248,13 @@ async fn handle_rpc_connection(mut stream: UnixStream, proj: &Projections) -> Rp
             "id": id
         });
         let _ = write_response(&mut stream, &response).await;
-        return RpcOutcome::Shutdown;
+        return (RpcOutcome::Shutdown, vec![]);
     }
 
-    let response = rpc::dispatch_request(request, proj);
+    let (response, events) = rpc::dispatch_request(request, proj);
     let _ = write_response(&mut stream, &response).await;
 
-    RpcOutcome::Continue
+    (RpcOutcome::Continue, events)
 }
 
 async fn write_response(

@@ -76,24 +76,27 @@ fn agent_list_filters_running_only() {
 fn dispatch_routes_status() {
     let proj = projections_with_agents();
     let request = json!({"jsonrpc": "2.0", "method": "status", "id": 1});
-    let response = dispatch_request(request, &proj);
+    let (response, events) = dispatch_request(request, &proj);
     assert!(response["error"].is_null());
     assert!(response["result"]["agents"]["total"].is_number());
+    assert!(events.is_empty());
 }
 
 #[test]
 fn dispatch_routes_agent_list() {
     let proj = projections_with_agents();
     let request = json!({"jsonrpc": "2.0", "method": "agent.list", "id": 2});
-    let response = dispatch_request(request, &proj);
+    let (response, events) = dispatch_request(request, &proj);
     assert!(response["error"].is_null());
     assert!(response["result"].is_array());
+    assert!(events.is_empty());
 }
 
 #[test]
 fn dispatch_unknown_method_returns_error() {
     let proj = Projections::default();
     let request = json!({"jsonrpc": "2.0", "method": "nonexistent", "id": 3});
-    let response = dispatch_request(request, &proj);
+    let (response, events) = dispatch_request(request, &proj);
     assert_eq!(response["error"]["code"], -32601);
+    assert!(events.is_empty());
 }

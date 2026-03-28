@@ -42,7 +42,7 @@ fn full_lifecycle_through_store_and_projections() {
     proj.apply(&e3);
 
     // Verify state via RPC
-    let status = rpc::dispatch_request(
+    let (status, _) = rpc::dispatch_request(
         json!({"jsonrpc": "2.0", "method": "status", "id": 1}),
         &proj,
     );
@@ -57,7 +57,7 @@ fn full_lifecycle_through_store_and_projections() {
     store.append(&e4).unwrap();
     proj.apply(&e4);
 
-    let status = rpc::dispatch_request(
+    let (status, _) = rpc::dispatch_request(
         json!({"jsonrpc": "2.0", "method": "status", "id": 2}),
         &proj,
     );
@@ -79,7 +79,7 @@ fn full_lifecycle_through_store_and_projections() {
     let mut recovered_proj = snapshot.unwrap();
     recovered_proj.apply_all(&replay_events);
 
-    let status = rpc::dispatch_request(
+    let (status, _) = rpc::dispatch_request(
         json!({"jsonrpc": "2.0", "method": "status", "id": 3}),
         &recovered_proj,
     );
@@ -97,7 +97,7 @@ fn recover_from_empty_directory() {
     assert!(events.is_empty());
 
     let proj = Projections::default();
-    let status = rpc::dispatch_request(
+    let (status, _) = rpc::dispatch_request(
         json!({"jsonrpc": "2.0", "method": "status", "id": 1}),
         &proj,
     );
