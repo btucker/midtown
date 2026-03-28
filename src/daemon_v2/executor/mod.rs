@@ -122,9 +122,33 @@ pub async fn execute(
                 thread_id: None,
             }]
         }
-        other => {
-            tracing::debug!(?other, "unhandled command");
-            vec![]
+        Command::NudgeAgent { id, message } => {
+            if let Some(session) = sessions.get_mut(&id) {
+                if let Err(e) = session.send_message(&message).await {
+                    tracing::error!(%id, %e, "failed to nudge agent");
+                }
+            } else {
+                tracing::warn!(%id, "nudge target not found in sessions");
+            }
+            vec![] // nudges don't produce events
+        }
+        Command::ResumeAgent { id } => {
+            if let Some(agent) = projections.agents.by_id.get(&id) {
+                if let Some(ref sid) = agent.session_id {
+                    tracing::info!(%id, session_id = %sid, "would resume agent (not yet implemented)");
+                } else {
+                    tracing::warn!(%id, "resume requested but agent has no session_id");
+                }
+            } else {
+                tracing::warn!(%id, "resume requested for unknown agent");
+            }
+            vec![DomainEvent::AgentResumed { id }]
+        }
+        Command::AssignTask { task_id, agent_id } => {
+            vec![DomainEvent::TaskAssigned { task_id, agent_id }]
+        }
+        Command::CompleteTask { task_id } => {
+            vec![DomainEvent::TaskCompleted { task_id }]
         }
     }
 }
