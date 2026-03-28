@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 
 use crate::daemon_v2::Projections;
-use crate::daemon_v2::events::AgentKind;
+use crate::daemon_v2::events::{AgentKind, DomainEvent};
 
 #[derive(Debug, Clone)]
 pub struct AgentFilter {
@@ -88,6 +88,61 @@ pub fn handle_agent_list(
         .collect();
 
     Ok(json!(agents))
+}
+
+/// Handle `task.create` — creates a new task from RPC params.
+///
+/// Required fields: `id`, `subject`, `channel`.
+/// Optional fields: `blocked_by` (array of task IDs).
+pub fn handle_task_create(params: Option<&Value>) -> Result<Vec<DomainEvent>, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".into(),
+    })?;
+
+    let id = params
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing required field: id".into(),
+        })?
+        .to_string();
+
+    let subject = params
+        .get("subject")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing required field: subject".into(),
+        })?
+        .to_string();
+
+    let channel = params
+        .get("channel")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing required field: channel".into(),
+        })?
+        .to_string();
+
+    let blocked_by = params
+        .get("blocked_by")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(vec![DomainEvent::TaskCreated {
+        id,
+        subject,
+        channel,
+        blocked_by,
+    }])
 }
 
 #[derive(Debug)]

@@ -11,7 +11,7 @@ use crate::daemon_v2::events::DomainEvent;
 mod tests;
 
 /// Dispatch a JSON-RPC request, returning the response JSON and any domain
-/// events produced by mutating methods.
+/// events produced by mutating methods (e.g., `task.create`).
 pub fn dispatch_request(request: Value, proj: &Projections) -> (Value, Vec<DomainEvent>) {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = match request.get("method").and_then(|m| m.as_str()) {
@@ -26,18 +26,33 @@ pub fn dispatch_request(request: Value, proj: &Projections) -> (Value, Vec<Domai
     };
     let params = request.get("params");
 
-    let result = match method {
-        "status" => handlers::handle_status(proj),
-        "agent.list" => {
-            let filter = AgentFilter::from_params(params);
-            handlers::handle_agent_list(proj, filter)
+    // Mutating methods return events alongside the result.
+    match method {
+        "task.create" => {
+            let result = handlers::handle_task_create(params);
+            match result {
+                Ok(events) => {
+                    let response = json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id });
+                    (response, events)
+                }
+                Err(err) => (err.to_json(&id), vec![]),
+            }
         }
-        _ => Err(RpcError::method_not_found()),
-    };
-
-    let response = match result {
-        Ok(value) => json!({ "jsonrpc": "2.0", "result": value, "id": id }),
-        Err(err) => err.to_json(&id),
-    };
-    (response, vec![])
+        _ => {
+            // Read-only methods — no events produced.
+            let result = match method {
+                "status" => handlers::handle_status(proj),
+                "agent.list" => {
+                    let filter = AgentFilter::from_params(params);
+                    handlers::handle_agent_list(proj, filter)
+                }
+                _ => Err(RpcError::method_not_found()),
+            };
+            let response = match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "result": value, "id": id }),
+                Err(err) => err.to_json(&id),
+            };
+            (response, vec![])
+        }
+    }
 }

@@ -100,3 +100,69 @@ fn dispatch_unknown_method_returns_error() {
     assert_eq!(response["error"]["code"], -32601);
     assert!(events.is_empty());
 }
+
+#[test]
+fn task_create_returns_events() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "task.create",
+        "id": 10,
+        "params": {
+            "id": "task-42",
+            "subject": "Fix the bug",
+            "channel": "main",
+            "blocked_by": ["task-41"]
+        }
+    });
+    let (response, events) = dispatch_request(request, &proj);
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert_eq!(events.len(), 1);
+
+    match &events[0] {
+        DomainEvent::TaskCreated {
+            id,
+            subject,
+            channel,
+            blocked_by,
+        } => {
+            assert_eq!(id, "task-42");
+            assert_eq!(subject, "Fix the bug");
+            assert_eq!(channel, "main");
+            assert_eq!(blocked_by, &vec!["task-41".to_string()]);
+        }
+        other => panic!("expected TaskCreated, got {:?}", other),
+    }
+}
+
+#[test]
+fn task_create_missing_params_returns_error() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "task.create",
+        "id": 11
+    });
+    let (response, events) = dispatch_request(request, &proj);
+    assert_eq!(response["error"]["code"], -32602);
+    assert!(events.is_empty());
+}
+
+#[test]
+fn task_create_missing_required_field_returns_error() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "task.create",
+        "id": 12,
+        "params": {
+            "id": "task-42",
+            "subject": "Fix it"
+            // missing "channel"
+        }
+    });
+    let (response, events) = dispatch_request(request, &proj);
+    assert_eq!(response["error"]["code"], -32602);
+    assert!(events.is_empty());
+}
