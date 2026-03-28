@@ -71,6 +71,16 @@ fn poll_process_health_fn(_proj: &Projections, _channel: &str) -> Vec<Command> {
     vec![Command::PollProcessHealth]
 }
 
+/// Wrapper: poll GitHub PRs.
+fn poll_prs_fn(_proj: &Projections, _channel: &str) -> Vec<Command> {
+    vec![Command::PollPrs]
+}
+
+/// Wrapper: complete tasks for merged PRs.
+fn handle_merged_prs_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
+    decisions::prs::handle_merged_prs(proj)
+}
+
 impl DaemonV2 {
     /// Create a new DaemonV2, recovering state from the event store.
     pub fn new(config: DaemonV2Config) -> std::io::Result<Self> {
@@ -106,6 +116,12 @@ impl DaemonV2 {
             "poll_process_health",
             Duration::from_secs(10),
             poll_process_health_fn,
+        );
+        scheduler.register("poll_prs", Duration::from_secs(45), poll_prs_fn);
+        scheduler.register(
+            "handle_merged_prs",
+            Duration::from_secs(10),
+            handle_merged_prs_fn,
         );
 
         Ok(Self {
@@ -183,7 +199,9 @@ impl DaemonV2 {
             self.scheduler.mark_ran(decision.name, now);
 
             for command in commands {
-                let events = executor::execute(command, &mut self.sessions, &self.paths).await;
+                let events =
+                    executor::execute(command, &mut self.sessions, &self.paths, &self.projections)
+                        .await;
                 self.apply_events(&events);
             }
         }

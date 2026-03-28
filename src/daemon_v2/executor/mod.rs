@@ -1,9 +1,11 @@
+pub mod github;
 pub mod spawn;
 
 use std::collections::HashMap;
 
 use crate::daemon_v2::decisions::Command;
 use crate::daemon_v2::events::DomainEvent;
+use crate::daemon_v2::projections::Projections;
 use crate::headless::HeadlessSession;
 use crate::paths::ProjectPaths;
 
@@ -11,6 +13,7 @@ pub async fn execute(
     command: Command,
     sessions: &mut HashMap<String, HeadlessSession>,
     paths: &ProjectPaths,
+    projections: &Projections,
 ) -> Vec<DomainEvent> {
     match command {
         Command::SpawnAgent(config) => match spawn::spawn_agent(&config, paths).await {
@@ -66,6 +69,18 @@ pub async fn execute(
                 task_id,
                 reason: "agent died".into(),
             }]
+        }
+        Command::PollPrs => {
+            match (
+                github::fetch_open_prs().await,
+                github::fetch_merged_prs().await,
+            ) {
+                (Ok(open), Ok(merged)) => github::diff_pr_state(&projections.work, &open, &merged),
+                (Err(e), _) | (_, Err(e)) => {
+                    tracing::warn!(%e, "PR polling failed");
+                    vec![]
+                }
+            }
         }
         other => {
             tracing::debug!(?other, "unhandled command");
