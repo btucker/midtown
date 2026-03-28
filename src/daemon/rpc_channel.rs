@@ -389,9 +389,10 @@ pub(super) async fn handle_channel_post(
     //
     // Also route @mentions in topic channel messages from non-user senders
     // (channel leads, coworkers) so that mentioned coworkers receive nudges.
-    // Skip protected senders (SKIP_SENDERS) for consistency with chat_monitor_loop.
+    // Only skip pure-system senders ("system", "github") — the project lead
+    // ("midtown") should route mentions from explicit `midtown channel post`.
     if !state.is_user_sender(from)
-        && !super::constants::SKIP_SENDERS
+        && !super::constants::MENTION_SKIP_SENDERS
             .iter()
             .any(|&s| s.eq_ignore_ascii_case(from))
     {

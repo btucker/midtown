@@ -3458,3 +3458,159 @@ async fn test_set_task_pr_backfills_session_pr_number() {
         "pr_to_task_map_from_tasks should return the mapping after SetTaskPr"
     );
 }
+
+/// Regression test for !2647: PostToChannel effect executor must call
+/// route_mentions() so that @mentions in auto-posted lead/fork output
+/// are delivered as nudges to the mentioned coworkers.
+#[tokio::test]
+async fn test_post_to_channel_routes_mentions_for_session_senders() {
+    let (state, _project_dir, _guard) = make_workflow_test_state("post-to-channel-mention-routing");
+
+    // Register a running coworker "amsterdam" so route_mentions can find it
+    state
+        .coworkers
+        .insert_for_testing(crate::coworker::Coworker {
+            slot_id: "slot-amsterdam".to_string(),
+            name: "amsterdam".to_string(),
+            status: crate::coworker::CoworkerStatus::Running,
+            working_dir: "/tmp/test".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: Some("sess-amsterdam-1".to_string()),
+            provider: crate::auth::AuthProvider::Claude,
+            model: String::new(),
+            profile: String::new(),
+        });
+
+    // Insert session record for amsterdam
+    {
+        let mut ps = state.persistent_state.lock().await;
+        ps.sessions.insert(
+            "sess-amsterdam-1".into(),
+            crate::daemon::state::SessionRecord {
+                session_id: "sess-amsterdam-1".into(),
+                name: "amsterdam".into(),
+                is_running: true,
+                ..Default::default()
+            },
+        );
+    }
+
+    // Lead auto-output with @amsterdam mention via PostToChannel
+    execute_effects(
+        vec![Effect::PostToChannel {
+            sender: "ops-lead".into(),
+            message: "@amsterdam check the failing test".into(),
+            channel: Some("ops".into()),
+            auto_output: true,
+            message_type: None,
+            nudge_type: None,
+            tool_data: None,
+            provider: None,
+            tool_use_id: None,
+            parent_tool_use_id: None,
+            thread_id: None,
+        }],
+        &state,
+    )
+    .await;
+
+    // Verify that route_mentions was called: the cooldown tracker should have
+    // recorded a `chat_mention_amsterdam` entry.
+    let ch = state.channel_router.get_channel("ops").unwrap();
+    let messages = ch.read_all().unwrap();
+    let posted_msg = messages
+        .last()
+        .expect("channel should contain the posted message");
+
+    let was_mention_routed = {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        !cooldowns.check(
+            "chat_mention_amsterdam",
+            &posted_msg.id,
+            std::time::Duration::from_secs(3600),
+        )
+    };
+    assert!(
+        was_mention_routed,
+        "route_mentions should have been called for @amsterdam in PostToChannel auto-output"
+    );
+}
+
+/// PostToChannel from system/user senders ("system", "github", "user") must
+/// NOT call route_mentions — system messages are daemon-generated, and user
+/// PostToChannel effects are observability echoes (e.g., DM task.prompt) that
+/// have dedicated mention routing in handle_channel_post.
+#[tokio::test]
+async fn test_post_to_channel_skips_mentions_for_system_senders() {
+    for sender in &["system", "github", "user"] {
+        let (state, _project_dir, _guard) =
+            make_workflow_test_state(&format!("post-to-channel-skip-mention-{}", sender));
+
+        state
+            .coworkers
+            .insert_for_testing(crate::coworker::Coworker {
+                slot_id: "slot-amsterdam".to_string(),
+                name: "amsterdam".to_string(),
+                status: crate::coworker::CoworkerStatus::Running,
+                working_dir: "/tmp/test".to_string(),
+                started_at: chrono::Utc::now(),
+                current_task: None,
+                session_id: Some("sess-amsterdam-1".to_string()),
+                provider: crate::auth::AuthProvider::Claude,
+                model: String::new(),
+                profile: String::new(),
+            });
+
+        {
+            let mut ps = state.persistent_state.lock().await;
+            ps.sessions.insert(
+                "sess-amsterdam-1".into(),
+                crate::daemon::state::SessionRecord {
+                    session_id: "sess-amsterdam-1".into(),
+                    name: "amsterdam".into(),
+                    is_running: true,
+                    ..Default::default()
+                },
+            );
+        }
+
+        execute_effects(
+            vec![Effect::PostToChannel {
+                sender: sender.to_string(),
+                message: "@amsterdam check this out".into(),
+                channel: Some("ops".into()),
+                auto_output: false,
+                message_type: None,
+                nudge_type: None,
+                tool_data: None,
+                provider: None,
+                tool_use_id: None,
+                parent_tool_use_id: None,
+                thread_id: None,
+            }],
+            &state,
+        )
+        .await;
+
+        let ch = state.channel_router.get_channel("ops").unwrap();
+        let messages = ch.read_all().unwrap();
+        let posted_msg = messages
+            .last()
+            .expect("channel should contain the posted message");
+
+        let was_mention_routed = {
+            let cooldowns = state.cooldowns.lock().unwrap();
+            !cooldowns.check(
+                "chat_mention_amsterdam",
+                &posted_msg.id,
+                std::time::Duration::from_secs(3600),
+            )
+        };
+        assert!(
+            !was_mention_routed,
+            "route_mentions should NOT have been called for system sender '{}'",
+            sender
+        );
+    }
+}

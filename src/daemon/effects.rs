@@ -1333,6 +1333,10 @@ async fn cleanup_worktree_and_notify(
 /// during startup by avoiding long sequential pauses from worktree creation (1-5s each).
 pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
     let effects = dedup_nudge_effects(effects);
+    // Collect messages from PostToChannel effects that need @mention routing.
+    // Processed after the main loop to avoid async recursion (route_mentions
+    // calls execute_effects for NudgeSession/SpawnCoworker effects).
+    let mut pending_mention_routes: Vec<crate::message::Message> = Vec::new();
     for effect in effects {
         match effect {
             Effect::SpawnCoworker(mut config) => {
@@ -1514,6 +1518,16 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 msg.tool_use_id = tool_use_id.clone();
                 if let Err(e) = state.send_and_broadcast_async(&msg).await {
                     warn!("Failed to post channel message: {}", e);
+                }
+
+                // Collect for @mention routing after the main loop. Skip
+                // pure-system senders whose messages should never trigger
+                // coworker call-ins.
+                if !super::constants::MENTION_SKIP_SENDERS
+                    .iter()
+                    .any(|&s| s.eq_ignore_ascii_case(&sender))
+                {
+                    pending_mention_routes.push(msg.clone());
                 }
 
                 // Debug: log DM thread resolution results.
@@ -3778,6 +3792,12 @@ pub async fn execute_effects(effects: Vec<Effect>, state: &DaemonState) {
                 }
             }
         }
+    }
+
+    // Route @mentions collected from PostToChannel effects. Box::pin breaks
+    // the async recursion (route_mentions → execute_effects → route_mentions).
+    for msg in pending_mention_routes {
+        Box::pin(super::chat::route_mentions(state, &msg)).await;
     }
 }
 
