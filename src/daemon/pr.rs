@@ -2783,6 +2783,7 @@ struct OrphanCheckCtx<'a> {
     sessions: &'a HashMap<String, super::state::SessionRecord>,
     active_names: &'a HashSet<String>,
     repo_owner: Option<&'a str>,
+    all_tasks: &'a [crate::task_store::Task],
 }
 
 /// Determines whether a PR is orphaned (no active author who can address feedback).
@@ -2852,11 +2853,28 @@ fn is_pr_orphaned(
                     );
                     false
                 } else {
-                    debug!(
-                        "PR #{} is orphaned (no worktree, owner {} not active, branch: {})",
-                        pr_number, owner, head_ref
-                    );
-                    true
+                    // Check if the associated task is completed — an idle coworker
+                    // with a finished task intentionally submitted this PR.
+                    let task_is_done = ctx
+                        .pr_task_associations
+                        .get(&pr_number)
+                        .and_then(|task_id| ctx.all_tasks.iter().find(|t| t.id == *task_id))
+                        .is_some_and(|t| {
+                            matches!(t.status, crate::task_store::TaskStatus::Completed)
+                        });
+                    if task_is_done {
+                        debug!(
+                            "PR #{} owner {} idle but task done, not orphaned",
+                            pr_number, owner
+                        );
+                        false
+                    } else {
+                        debug!(
+                            "PR #{} is orphaned (no worktree, owner {} not active, branch: {})",
+                            pr_number, owner, head_ref
+                        );
+                        true
+                    }
                 }
             } else if super::helpers::is_lead_authored_pr(pr, ctx.repo_owner) {
                 debug!(
@@ -3058,6 +3076,7 @@ pub(crate) async fn collect_reviewer_effects_with_source(
             sessions: &sessions,
             active_names,
             repo_owner: state.repo_owner.as_deref(),
+            all_tasks: &all_tasks,
         };
         if is_pr_orphaned(pr_number, pf.head_ref, pf.title, pr, &orphan_ctx) {
             continue;
