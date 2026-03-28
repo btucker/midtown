@@ -10,6 +10,7 @@ let {
 	getLabel = (item) => String(item), // Function to get display label
 	getValue = (item) => String(item), // Function to get inserted value
 	getDescription = (_item) => null, // Function to get optional description
+	getSeparator = (_item) => false, // Function to check if a divider should render above this item
 	onSelect = () => {}, // Callback when item is selected
 } = $props();
 
@@ -43,6 +44,9 @@ function handleItemClick(item) {
     data-testid="autocomplete-dropdown"
   >
     {#each items as item, i}
+      {#if getSeparator(item)}
+        <div class="h-px bg-border mx-2.5 my-1"></div>
+      {/if}
       <button
         data-testid="autocomplete-item"
         type="button"

@@ -7,7 +7,7 @@ let prevThreadId = null;
 </script>
 
 <script lang="ts">
-  import { threadData, deepLinkMsgId, threadOwnership, threadForkParents, threadForkOwners, activeProject, channels as channelsStore, activeChannel, daemonStatus, kanbanData, repoStatus, repoStatuses, channelSettings } from './store.ts'
+  import { threadData, deepLinkMsgId, threadOwnership, threadForkParents, threadForkOwners, activeProject, channels as channelsStore, activeChannel, daemonStatus, kanbanData, repoStatus, repoStatuses, channelSettings, coworkers } from './store.ts'
   import { sendMessage, closeThread, forkThread, unforkThread, clearErrorCallback, openTaskThread, selectDm } from './api.ts'
   import { handleCodePaste } from './codePaste.ts'
   import { extractPastedFile, updatePreviewUrl, uploadAndSend } from './filePaste.ts'
@@ -24,6 +24,7 @@ let prevThreadId = null;
   import ToolRunSummary from './ToolRunSummary.svelte'
   import { groupTimelineToolRuns, isToolOnly } from './toolRunGrouping.ts'
   import { clearMobileTextarea } from './mobileInput.ts'
+  import Autocomplete from './Autocomplete.svelte'
 
   // Thread panel resize state (desktop only)
   const THREAD_PANEL_WIDTH_KEY = 'thread-panel:width'
@@ -96,6 +97,14 @@ let prevThreadId = null;
   let desktopTextareaEl = $state(null)
   let mobileTextareaEl = $state(null)
   let isDesktop = $state(typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches)
+
+  // Autocomplete state
+  let showAutocomplete = $state(false)
+  let autocompleteQuery = $state('')
+  let autocompleteItems = $state([])
+  let autocompletePosition = $state({ top: 0, left: 0 })
+  let autocompleteSelectedIndex = $state(0)
+  let autocompleteStartPos = $state(0)
 
   // Manage blob URL for file preview — create once per file, revoke on change/unmount.
   $effect(() => {
@@ -463,6 +472,32 @@ let prevThreadId = null;
   }
 
   function handleTextareaKeyDown(e) {
+    if (showAutocomplete) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        autocompleteSelectedIndex = (autocompleteSelectedIndex + 1) % autocompleteItems.length
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        autocompleteSelectedIndex =
+          autocompleteSelectedIndex === 0 ? autocompleteItems.length - 1 : autocompleteSelectedIndex - 1
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        if (autocompleteItems[autocompleteSelectedIndex]) {
+          insertAutocompleteItem(autocompleteItems[autocompleteSelectedIndex])
+        }
+        return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        showAutocomplete = false
+        return
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSubmit(e)
@@ -554,6 +589,137 @@ let prevThreadId = null;
       scrollArea.scrollTop = scrollArea.scrollHeight
       autoScroll = true
     }
+  }
+
+  // ── @ Autocomplete ────────────────────────────────────────────────────────
+
+  // Build the lead entry name based on channel context.
+  // Topic channels use the channel name (e.g. "web"); main channel uses project name.
+  let leadName = $derived(
+    $threadData?.channelName && $threadData.channelName !== $activeProject && !$threadData.channelName.startsWith('dm-')
+      ? $threadData.channelName
+      : ($activeProject || 'lead')
+  )
+
+  // IDs of tasks tied to this thread — used to prioritize workers
+  let threadTaskIds = $derived(new Set(($threadData?.tasks ?? []).map((t) => t.id)))
+
+  function getThreadAutocompleteItems(query) {
+    const lowerQuery = query.toLowerCase()
+    const threadParentId = $threadData?.parentMessage?.id
+
+    // Build the full list of @ mentionable people
+    const allPeople = [
+      { name: leadName, type: 'lead' },
+      ...$coworkers.map((cw) => ({ name: cw.name, type: 'coworker', task: cw.current_task, taskId: cw.task_id })),
+    ]
+
+    // Filter by query
+    const filtered = allPeople.filter((p) => p.name.toLowerCase().startsWith(lowerQuery))
+
+    // If the user has typed a query, just return filtered results (no prioritization)
+    if (query.length > 0) return filtered
+
+    // No query (bare @): split into prioritized and rest
+    const forkOwnerName = threadParentId ? ($threadForkOwners[threadParentId] ?? null) : null
+    const prioritized = []
+    const rest = []
+
+    for (const person of filtered) {
+      const isPrioritized =
+        person.type === 'lead' ||
+        (forkOwnerName && person.name === forkOwnerName) ||
+        (person.taskId != null && threadTaskIds.has(person.taskId))
+      if (isPrioritized) {
+        prioritized.push(person)
+      } else {
+        rest.push(person)
+      }
+    }
+
+    // Mark the first "rest" item so the Autocomplete can render a separator
+    if (prioritized.length > 0 && rest.length > 0) {
+      rest[0] = { ...rest[0], _separator: true }
+    }
+
+    return [...prioritized, ...rest]
+  }
+
+  function calculateAutocompletePosition() {
+    if (!textareaEl) return { top: 0, left: 0 }
+    // Walk up to the outer wrapper (div.relative.shrink-0) where <Autocomplete> is mounted.
+    // The textarea is inside: outer-wrapper > form > inner-div > textarea
+    const wrapper = textareaEl.closest('[data-autocomplete-anchor]')
+    if (!wrapper) return { top: 0, left: 0 }
+
+    const textareaRect = textareaEl.getBoundingClientRect()
+    const wrapperRect = wrapper.getBoundingClientRect()
+
+    return {
+      top: textareaRect.top - wrapperRect.top,
+      left: textareaRect.left - wrapperRect.left,
+      width: textareaRect.width,
+    }
+  }
+
+  function detectAutocompleteTrigger() {
+    const cursorPos = textareaEl?.selectionStart || 0
+    const text = textareaEl?.value || replyText
+
+    for (let i = cursorPos - 1; i >= 0; i--) {
+      const char = text[i]
+      const prevChar = i > 0 ? text[i - 1] : ' '
+
+      if (char === '@' && (prevChar === ' ' || prevChar === '\n' || i === 0)) {
+        const query = text.slice(i + 1, cursorPos)
+        autocompleteStartPos = i
+        autocompleteQuery = query
+        autocompleteItems = getThreadAutocompleteItems(query)
+        autocompletePosition = calculateAutocompletePosition()
+        autocompleteSelectedIndex = 0
+        showAutocomplete = autocompleteItems.length > 0
+        return
+      }
+
+      if (char === ' ' || char === '\n') break
+    }
+
+    showAutocomplete = false
+  }
+
+  function insertAutocompleteItem(item) {
+    const value = getAutocompleteValue(item)
+    const beforeTrigger = replyText.slice(0, autocompleteStartPos)
+    const afterCursor = replyText.slice(textareaEl?.selectionStart || 0)
+
+    replyText = `${beforeTrigger}${value} ${afterCursor}`
+    showAutocomplete = false
+
+    tick().then(() => {
+      if (textareaEl) {
+        const newPos = beforeTrigger.length + value.length + 1
+        textareaEl.focus()
+        textareaEl.setSelectionRange(newPos, newPos)
+      }
+    })
+  }
+
+  function getAutocompleteLabel(item) {
+    return `@${item.name}`
+  }
+
+  function getAutocompleteValue(item) {
+    return `@${item.name}`
+  }
+
+  function getAutocompleteDescription(item) {
+    if (item.task) return item.task
+    return null
+  }
+
+  function handleInput() {
+    resizeTextarea()
+    detectAutocompleteTrigger()
   }
 
   function resizeTextarea() {
@@ -728,45 +894,58 @@ let prevThreadId = null;
     <ThreadActivityDrawer messages={$threadData?.messages ?? []} channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} inlineMode={showInlineDiffs} />
 
     <!-- Input -->
-    <form class="flex flex-col gap-2 px-3 py-1.5 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
-      {#if pendingFile}
-        <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card" data-testid="thread-file-preview">
-          {#if pendingFile.type.startsWith('image/')}
-            <img src={pendingFileUrl} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
-          {:else}
-            <div class="flex items-center gap-2 text-foreground">
-              <span class="text-[1.5rem]">&#128196;</span>
-              <span class="text-[0.85rem] overflow-hidden text-ellipsis whitespace-nowrap">{pendingFile.name}</span>
-            </div>
-          {/if}
+    <div class="relative shrink-0" data-autocomplete-anchor>
+      <Autocomplete
+        bind:show={showAutocomplete}
+        bind:selectedIndex={autocompleteSelectedIndex}
+        items={autocompleteItems}
+        position={autocompletePosition}
+        getLabel={getAutocompleteLabel}
+        getValue={getAutocompleteValue}
+        getDescription={getAutocompleteDescription}
+        getSeparator={(item) => item._separator === true}
+        onSelect={insertAutocompleteItem}
+      />
+      <form class="flex flex-col gap-2 px-3 py-1.5 bg-card border-t border-border" onsubmit={handleSubmit}>
+        {#if pendingFile}
+          <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card" data-testid="thread-file-preview">
+            {#if pendingFile.type.startsWith('image/')}
+              <img src={pendingFileUrl} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
+            {:else}
+              <div class="flex items-center gap-2 text-foreground">
+                <span class="text-[1.5rem]">&#128196;</span>
+                <span class="text-[0.85rem] overflow-hidden text-ellipsis whitespace-nowrap">{pendingFile.name}</span>
+              </div>
+            {/if}
+            <button
+              type="button"
+              class="absolute top-1 right-1 w-6 h-6 p-0 rounded-full bg-[rgba(0,0,0,0.7)] text-white text-[1.2rem] leading-none flex items-center justify-center cursor-pointer border border-border hover:bg-[rgba(255,87,87,0.8)] hover:border-destructive"
+              onclick={clearPendingFile}
+              aria-label="Remove file"
+            >&times;</button>
+          </div>
+        {/if}
+        <div class="relative">
+          <textarea
+            data-testid="thread-input"
+            bind:this={desktopTextareaEl}
+            bind:value={replyText}
+            placeholder="Reply in thread..."
+            rows="1"
+            class="block w-full py-[13px] px-[17px] pr-[48px] border-2 border-input rounded-[18px] bg-background text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-hidden focus:border-primary placeholder:text-muted-foreground"
+            onkeydown={handleTextareaKeyDown}
+            onpaste={handlePaste}
+            oninput={handleInput}
+          ></textarea>
           <button
-            type="button"
-            class="absolute top-1 right-1 w-6 h-6 p-0 rounded-full bg-[rgba(0,0,0,0.7)] text-white text-[1.2rem] leading-none flex items-center justify-center cursor-pointer border border-border hover:bg-[rgba(255,87,87,0.8)] hover:border-destructive"
-            onclick={clearPendingFile}
-            aria-label="Remove file"
-          >&times;</button>
+            type="submit"
+            disabled={(!replyText.trim() && !pendingFile) || uploading}
+            data-testid="thread-send-button"
+            class="absolute right-[12px] bottom-[10px] p-1.5 rounded-full border-none bg-primary text-primary-foreground cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/90"
+          ><SendHorizontal size={18} /></button>
         </div>
-      {/if}
-      <div class="relative">
-        <textarea
-          data-testid="thread-input"
-          bind:this={desktopTextareaEl}
-          bind:value={replyText}
-          placeholder="Reply in thread..."
-          rows="1"
-          class="block w-full py-[13px] px-[17px] pr-[48px] border-2 border-input rounded-[18px] bg-background text-foreground text-[1.02rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-hidden focus:border-primary placeholder:text-muted-foreground"
-          onkeydown={handleTextareaKeyDown}
-          onpaste={handlePaste}
-          oninput={resizeTextarea}
-        ></textarea>
-        <button
-          type="submit"
-          disabled={(!replyText.trim() && !pendingFile) || uploading}
-          data-testid="thread-send-button"
-          class="absolute right-[12px] bottom-[10px] p-1.5 rounded-full border-none bg-primary text-primary-foreground cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/90"
-        ><SendHorizontal size={18} /></button>
-      </div>
-    </form>
+      </form>
+    </div>
   </div>
 
   <!-- Mobile: slide-in pane (inside board content area) -->
@@ -887,45 +1066,58 @@ let prevThreadId = null;
     <ThreadActivityDrawer messages={$threadData?.messages ?? []} channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} inlineMode={showInlineDiffs} />
 
     <!-- Mobile input -->
-    <form class="flex flex-col gap-2 px-3 pt-2 pb-safe-offset-2 bg-card border-t border-border shrink-0" onsubmit={handleSubmit}>
-      {#if pendingFile}
-        <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card" data-testid="thread-file-preview">
-          {#if pendingFile.type.startsWith('image/')}
-            <img src={pendingFileUrl} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
-          {:else}
-            <div class="flex items-center gap-2 text-foreground">
-              <span class="text-[1.5rem]">&#128196;</span>
-              <span class="text-[0.85rem] overflow-hidden text-ellipsis whitespace-nowrap">{pendingFile.name}</span>
-            </div>
-          {/if}
+    <div class="relative shrink-0" data-autocomplete-anchor>
+      <Autocomplete
+        bind:show={showAutocomplete}
+        bind:selectedIndex={autocompleteSelectedIndex}
+        items={autocompleteItems}
+        position={autocompletePosition}
+        getLabel={getAutocompleteLabel}
+        getValue={getAutocompleteValue}
+        getDescription={getAutocompleteDescription}
+        getSeparator={(item) => item._separator === true}
+        onSelect={insertAutocompleteItem}
+      />
+      <form class="flex flex-col gap-2 px-3 pt-2 pb-safe-offset-2 bg-card border-t border-border" onsubmit={handleSubmit}>
+        {#if pendingFile}
+          <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card" data-testid="thread-file-preview">
+            {#if pendingFile.type.startsWith('image/')}
+              <img src={pendingFileUrl} alt="Preview" class="max-w-full max-h-[120px] rounded block" />
+            {:else}
+              <div class="flex items-center gap-2 text-foreground">
+                <span class="text-[1.5rem]">&#128196;</span>
+                <span class="text-[0.85rem] overflow-hidden text-ellipsis whitespace-nowrap">{pendingFile.name}</span>
+              </div>
+            {/if}
+            <button
+              type="button"
+              class="absolute top-1 right-1 w-6 h-6 p-0 rounded-full bg-[rgba(0,0,0,0.7)] text-white text-[1.2rem] leading-none flex items-center justify-center cursor-pointer border border-border hover:bg-[rgba(255,87,87,0.8)] hover:border-destructive"
+              onclick={clearPendingFile}
+              aria-label="Remove file"
+            >&times;</button>
+          </div>
+        {/if}
+        <div class="relative">
+          <textarea
+            data-testid="thread-input"
+            bind:this={mobileTextareaEl}
+            bind:value={replyText}
+            placeholder="Reply in thread..."
+            rows="1"
+            class="block w-full py-[10px] px-[14px] pr-[42px] border-2 border-input rounded-[14px] bg-background text-foreground text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-hidden focus:border-primary placeholder:text-muted-foreground"
+            onkeydown={handleTextareaKeyDown}
+            onpaste={handlePaste}
+            oninput={handleInput}
+          ></textarea>
           <button
-            type="button"
-            class="absolute top-1 right-1 w-6 h-6 p-0 rounded-full bg-[rgba(0,0,0,0.7)] text-white text-[1.2rem] leading-none flex items-center justify-center cursor-pointer border border-border hover:bg-[rgba(255,87,87,0.8)] hover:border-destructive"
-            onclick={clearPendingFile}
-            aria-label="Remove file"
-          >&times;</button>
+            type="submit"
+            disabled={(!replyText.trim() && !pendingFile) || uploading}
+            data-testid="thread-send-button"
+            class="absolute right-[12px] bottom-[6px] p-1.5 rounded-full border-none bg-primary text-primary-foreground cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/90"
+          ><SendHorizontal size={18} /></button>
         </div>
-      {/if}
-      <div class="relative">
-        <textarea
-          data-testid="thread-input"
-          bind:this={mobileTextareaEl}
-          bind:value={replyText}
-          placeholder="Reply in thread..."
-          rows="1"
-          class="block w-full py-[10px] px-[14px] pr-[42px] border-2 border-input rounded-[14px] bg-background text-foreground text-[0.9rem] font-inherit outline-none resize-none min-h-[1.6em] max-h-[50vh] overflow-y-hidden focus:border-primary placeholder:text-muted-foreground"
-          onkeydown={handleTextareaKeyDown}
-          onpaste={handlePaste}
-          oninput={resizeTextarea}
-        ></textarea>
-        <button
-          type="submit"
-          disabled={(!replyText.trim() && !pendingFile) || uploading}
-          data-testid="thread-send-button"
-          class="absolute right-[12px] bottom-[6px] p-1.5 rounded-full border-none bg-primary text-primary-foreground cursor-pointer transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-primary/90"
-        ><SendHorizontal size={18} /></button>
-      </div>
-    </form>
+      </form>
+    </div>
   </div>
 {/if}
 
