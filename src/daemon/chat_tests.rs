@@ -8,23 +8,18 @@ use crate::{
 use std::time::Duration;
 
 #[test]
-fn mention_nudge_produces_nudge_effect() {
+fn mention_nudge_produces_nudge_coworker_effect() {
     let action = MentionAction::Nudge {
         name: "lexington".to_string(),
         message: "lead said (msg-42): @lexington check this".to_string(),
     };
-    let name_session_map = std::collections::HashMap::from([(
-        "lexington".to_string(),
-        "sess-lexington-1".to_string(),
-    )]);
-    let effects =
-        mention_action_to_effects(action, "lexington", "test-repo", &name_session_map, None);
+    let effects = mention_action_to_effects(action, "lexington", "test-repo", None);
 
     assert_eq!(effects.len(), 1);
     assert!(
-        matches!(&effects[0], Effect::NudgeSession { session_id, reason }
-            if session_id == "sess-lexington-1" && reason.to_nudge_message().contains("msg-42")),
-        "NudgeSession message must include the message ID in parentheses"
+        matches!(&effects[0], Effect::NudgeCoworker { name, message, nudge_type, .. }
+            if name == "lexington" && message.contains("msg-42") && nudge_type == "mention"),
+        "NudgeCoworker must target the coworker by name with nudge_type 'mention'"
     );
 }
 
@@ -120,9 +115,7 @@ fn mention_spawn_produces_spawn_with_callbacks() {
         name: "park".to_string(),
         message: "lead said (msg-99): @park fix the bug".to_string(),
     };
-    let name_session_map =
-        std::collections::HashMap::from([("park".to_string(), "sess-park-1".to_string())]);
-    let effects = mention_action_to_effects(action, "park", "test-repo", &name_session_map, None);
+    let effects = mention_action_to_effects(action, "park", "test-repo", None);
 
     assert_eq!(effects.len(), 1);
     match &effects[0] {
@@ -155,12 +148,7 @@ fn mention_skip_produces_no_effects() {
     let action = MentionAction::Skip {
         reason: "lexington is already active, no need to spawn".to_string(),
     };
-    let name_session_map = std::collections::HashMap::from([(
-        "lexington".to_string(),
-        "sess-lexington-1".to_string(),
-    )]);
-    let effects =
-        mention_action_to_effects(action, "lexington", "test-repo", &name_session_map, None);
+    let effects = mention_action_to_effects(action, "lexington", "test-repo", None);
     assert!(
         effects.is_empty(),
         "Skip (non dev-limit) should produce no effects"
@@ -172,12 +160,7 @@ fn mention_skip_dev_limit_posts_to_ops_channel() {
     let action = MentionAction::Skip {
         reason: "Cannot spawn amsterdam: dev limit reached".to_string(),
     };
-    let name_session_map = std::collections::HashMap::from([(
-        "amsterdam".to_string(),
-        "sess-amsterdam-1".to_string(),
-    )]);
-    let effects =
-        mention_action_to_effects(action, "amsterdam", "test-repo", &name_session_map, None);
+    let effects = mention_action_to_effects(action, "amsterdam", "test-repo", None);
 
     assert_eq!(effects.len(), 1);
     match &effects[0] {
@@ -205,22 +188,12 @@ fn mention_spawn_for_reviewer_produces_resume_coworker_effect() {
         name: "amsterdam".to_string(),
         message: "lead said (msg-77): @amsterdam triaged your review notes".to_string(),
     };
-    let name_session_map = std::collections::HashMap::from([(
-        "amsterdam".to_string(),
-        "sess-amsterdam-reviewer".to_string(),
-    )]);
     // Provide reviewer session info: the name has an existing reviewer session
     let reviewer_info = Some(ReviewerSessionInfo {
         session_id: "sess-amsterdam-reviewer".to_string(),
         task_id: Some("2253".to_string()),
     });
-    let effects = mention_action_to_effects(
-        action,
-        "amsterdam",
-        "test-repo",
-        &name_session_map,
-        reviewer_info,
-    );
+    let effects = mention_action_to_effects(action, "amsterdam", "test-repo", reviewer_info);
 
     assert_eq!(
         effects.len(),
@@ -266,9 +239,7 @@ fn mention_spawn_without_reviewer_info_produces_spawn_with_callbacks() {
         name: "park".to_string(),
         message: "lead said (msg-99): @park fix the bug".to_string(),
     };
-    let name_session_map =
-        std::collections::HashMap::from([("park".to_string(), "sess-park-1".to_string())]);
-    let effects = mention_action_to_effects(action, "park", "test-repo", &name_session_map, None);
+    let effects = mention_action_to_effects(action, "park", "test-repo", None);
 
     assert_eq!(effects.len(), 1);
     assert!(

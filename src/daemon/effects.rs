@@ -1129,6 +1129,60 @@ fn is_worktree_active(
         .any(|dir| dir == worktree_path || dir.starts_with(worktree_path))
 }
 
+/// Shared nudge delivery core: send message, record attribution, build DM post.
+///
+/// All nudge paths (by name or by session ID) converge here after resolving
+/// their target to a coworker name. Returns follow-up effects (DM channel
+/// post) on success, or an error string on failure.
+///
+/// Set `skip_dm_post` to suppress the DM observability message (e.g., when
+/// the content is already present in the DM channel via another path).
+async fn send_nudge_to_name(
+    state: &DaemonState,
+    name: &str,
+    message: &str,
+    nudge_type: &str,
+    sender: &str,
+    skip_dm_post: bool,
+) -> Result<Vec<Effect>, String> {
+    match state.session_manager.send_message(name, message).await {
+        Ok(()) => {
+            state.record_pending_nudge(name, message);
+
+            let mut follow_up = Vec::new();
+            if !skip_dm_post {
+                // Post to DM channel for observability (skip fork sessions —
+                // they are ephemeral and don't have their own DM channels).
+                let is_fork = {
+                    let ps = state.persistent_state.lock().await;
+                    ps.session_by_name(name)
+                        .is_some_and(|s| s.is_fork_session())
+                };
+                if !is_fork {
+                    follow_up.push(Effect::PostToChannel {
+                        sender: sender.to_owned(),
+                        message: message.to_owned(),
+                        channel: Some(format!("dm-{}", name)),
+                        auto_output: false,
+                        message_type: Some(crate::message::MessageType::Nudge),
+                        nudge_type: Some(nudge_type.to_owned()),
+                        tool_data: None,
+                        provider: None,
+                        tool_use_id: None,
+                        parent_tool_use_id: None,
+                        thread_id: None,
+                    });
+                }
+            }
+            Ok(follow_up)
+        }
+        Err(e) => {
+            warn!("Failed to nudge {}: {}", name, e);
+            Err(format!("Failed to nudge {}: {}", name, e))
+        }
+    }
+}
+
 /// Core nudge delivery: send message + DM post + attribution tracking.
 ///
 /// Used by `NudgeCoworker` effect executor, `handle_coworker_nudge()` RPC,
@@ -1141,39 +1195,7 @@ pub(super) async fn deliver_coworker_nudge(
     nudge_type: &str,
     sender: &str,
 ) -> Result<Vec<Effect>, String> {
-    match state.session_manager.send_message(name, message).await {
-        Ok(()) => {
-            state.record_pending_nudge(name, message);
-
-            // Post to DM channel for observability (skip fork sessions).
-            let is_fork = {
-                let ps = state.persistent_state.lock().await;
-                ps.session_by_name(name)
-                    .is_some_and(|s| s.is_fork_session())
-            };
-            let mut follow_up = Vec::new();
-            if !is_fork {
-                follow_up.push(Effect::PostToChannel {
-                    sender: sender.to_owned(),
-                    message: message.to_owned(),
-                    channel: Some(format!("dm-{}", name)),
-                    auto_output: false,
-                    message_type: Some(crate::message::MessageType::Nudge),
-                    nudge_type: Some(nudge_type.to_owned()),
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                    thread_id: None,
-                });
-            }
-            Ok(follow_up)
-        }
-        Err(e) => {
-            warn!("Failed to nudge coworker {}: {}", name, e);
-            Err(format!("Failed to nudge coworker {}: {}", name, e))
-        }
-    }
+    send_nudge_to_name(state, name, message, nudge_type, sender, false).await
 }
 
 /// Resolve a session ID to its coworker name and deliver a nudge message.
@@ -1200,43 +1222,16 @@ async fn send_session_nudge(
         return None;
     };
     let msg = reason.to_nudge_message();
-    match state.session_manager.send_message(&name, &msg).await {
-        Ok(()) => {
-            state.record_pending_nudge(&name, &msg);
-
-            // Build a PostToChannel effect for the coworker's DM channel.
-            // Only for non-fork sessions (sessions without a bound thread ID).
-            // Fork sessions are ephemeral and don't have their own DM channels.
-            // Skip DmFromUser — the user's message is already in the DM channel
-            // (written by rpc_channel.rs before the nudge effect was created).
-            let mut follow_up = Vec::new();
-            let is_fork = {
-                let ps = state.persistent_state.lock().await;
-                ps.session_by_name(&name)
-                    .is_some_and(|s| s.is_fork_session())
-            };
-            if !reason.already_in_dm_channel() && !is_fork {
-                follow_up.push(Effect::PostToChannel {
-                    sender: reason.sender().to_owned(),
-                    message: msg,
-                    channel: Some(format!("dm-{}", name)),
-                    auto_output: false,
-                    message_type: Some(crate::message::MessageType::Nudge),
-                    nudge_type: Some(reason.nudge_type().to_owned()),
-                    tool_data: None,
-                    provider: None,
-                    tool_use_id: None,
-                    parent_tool_use_id: None,
-                    thread_id: None,
-                });
-            }
-            Some(follow_up)
-        }
-        Err(e) => {
-            warn!("Failed to nudge session {}: {}", session_id, e);
-            None
-        }
-    }
+    send_nudge_to_name(
+        state,
+        &name,
+        &msg,
+        reason.nudge_type(),
+        reason.sender(),
+        reason.already_in_dm_channel(),
+    )
+    .await
+    .ok()
 }
 
 /// Clear stale task bindings from session records.

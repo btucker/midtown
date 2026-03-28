@@ -69,9 +69,19 @@ pub(super) async fn chat_monitor_loop(
                                     if !state.is_user_sender(&msg.from) {
                                         let msg_lower = msg.content.to_lowercase();
                                         let lead_mention = format!("@{}", state.project_name).to_lowercase();
-                                        if msg_lower.contains("@lead") || msg_lower.contains(&lead_mention) {
+                                        let default_channel = state.default_channel_name().to_string();
+                                        let targets: &[(&str, &str)] = &[
+                                            ("@lead", &default_channel),
+                                            ("@ops", OPS_CHANNEL),
+                                        ];
+                                        for &(pattern, channel) in targets {
+                                            let matched = msg_lower.contains(pattern)
+                                                || (pattern == "@lead" && msg_lower.contains(&lead_mention));
+                                            if !matched {
+                                                continue;
+                                            }
                                             let effect = super::effects::Effect::NudgeChannelLead {
-                                                channel_name: state.default_channel_name().to_string(),
+                                                channel_name: channel.to_string(),
                                                 reason: super::wake_reason::WakeReason::Mention {
                                                     from: msg.from.clone(),
                                                     content: msg.content.clone(),
@@ -81,25 +91,8 @@ pub(super) async fn chat_monitor_loop(
                                             };
                                             super::effects::execute_effects(vec![effect], &state).await;
                                             info!(
-                                                "Nudged lead about @{} mention in {} message",
-                                                state.project_name,
-                                                msg.from
-                                            );
-                                        }
-                                        if msg_lower.contains("@ops") {
-                                            let effect = super::effects::Effect::NudgeChannelLead {
-                                                channel_name: OPS_CHANNEL.to_string(),
-                                                reason: super::wake_reason::WakeReason::Mention {
-                                                    from: msg.from.clone(),
-                                                    content: msg.content.clone(),
-                                                    msg_id: msg.thread_anchor_id().to_string(),
-                                                    thread_ctx: None,
-                                                },
-                                            };
-                                            super::effects::execute_effects(vec![effect], &state).await;
-                                            info!(
-                                                "Nudged ops channel lead about @ops mention in {} message",
-                                                msg.from
+                                                "Nudged {} lead about {} mention in {} message",
+                                                channel, pattern, msg.from
                                             );
                                         }
                                     }
@@ -230,16 +223,6 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
         let is_running = state.coworkers.get(&target_name).is_some();
         let nudge_text = format_mention_nudge(msg, super::wake_reason::NudgeTarget::TaskWorker);
 
-        // Convert MentionAction → Effects, execute via the standard pipeline.
-        let name_session_map: std::collections::HashMap<String, String> = {
-            let ps = state.persistent_state.lock().await;
-            ps.sessions
-                .values()
-                .filter(|r| !r.name.is_empty())
-                .map(|r| (r.name.clone(), r.session_id.clone()))
-                .collect()
-        };
-
         // Look up whether the @mentioned name has an existing reviewer session via spans.
         let reviewer_session = {
             let ps = state.persistent_state.lock().await;
@@ -270,13 +253,8 @@ pub(super) async fn route_mentions(state: &DaemonState, msg: &Message) {
             &nudge_text,
         );
 
-        let effects = mention_action_to_effects(
-            action,
-            &target_name,
-            &state.project_name,
-            &name_session_map,
-            reviewer_session,
-        );
+        let effects =
+            mention_action_to_effects(action, &target_name, &state.project_name, reviewer_session);
         super::effects::execute_effects(effects, state).await;
     }
 }
@@ -315,7 +293,10 @@ async fn route_at_all(state: &DaemonState, msg: &Message) {
         }
     }
 
-    // Nudge all running coworkers (except the sender)
+    // Nudge all running coworkers (except the sender) via NudgeCoworker effects.
+    // This routes through the standard effect pipeline, adding DM observability
+    // posts and attribution tracking that direct send_message() calls skip.
+    let mut coworker_effects = Vec::new();
     for coworker in &running_coworkers {
         if coworker.name.eq_ignore_ascii_case(&msg.from) {
             continue;
@@ -335,15 +316,20 @@ async fn route_at_all(state: &DaemonState, msg: &Message) {
             continue;
         }
 
-        if let Err(e) = state
-            .session_manager
-            .send_message(&coworker.name, &nudge_text)
-            .await
-        {
-            warn!("Failed to nudge {} for @all: {}", coworker.name, e);
-        } else {
-            info!("Nudged {} for @all from {}", coworker.name, msg.from);
-        }
+        coworker_effects.push(super::effects::Effect::nudge_coworker(
+            coworker.name.clone(),
+            nudge_text.clone(),
+            "mention",
+            vec![],
+        ));
+    }
+    if !coworker_effects.is_empty() {
+        info!(
+            "Nudging {} coworker(s) for @all from {}",
+            coworker_effects.len(),
+            msg.from
+        );
+        super::effects::execute_effects(coworker_effects, state).await;
     }
 }
 
@@ -395,18 +381,13 @@ fn mention_action_to_effects(
     action: crate::rules::MentionAction,
     coworker_name: &str,
     repo_name: &str,
-    name_session_map: &std::collections::HashMap<String, String>,
     reviewer_session: Option<ReviewerSessionInfo>,
 ) -> Vec<super::effects::Effect> {
     use super::effects::Effect;
 
     match action {
         crate::rules::MentionAction::Nudge { name, message } => {
-            let session_id = name_session_map
-                .get(&name.to_lowercase())
-                .cloned()
-                .unwrap_or_default();
-            vec![Effect::nudge_session(session_id, message)]
+            vec![Effect::nudge_coworker(name, message, "mention", vec![])]
         }
         crate::rules::MentionAction::Spawn { name, message } => {
             // If the @mentioned name has an existing reviewer session, resume it
