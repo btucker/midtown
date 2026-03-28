@@ -25,6 +25,55 @@ pub struct CoworkerSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// Idle shutdown
+// ---------------------------------------------------------------------------
+
+/// Context for idle coworker shutdown decisions.
+///
+/// Each field is a set of coworker names that should be *excluded* from
+/// shutdown. A coworker not in any exclusion set and older than
+/// `minimum_lifetime` is eligible for idle shutdown.
+#[allow(dead_code)]
+pub(crate) struct IdleShutdownContext<'a> {
+    pub coworkers: &'a [CoworkerSnapshot],
+    pub busy_coworkers: &'a HashSet<String>,
+    pub coworkers_with_open_prs: &'a HashSet<String>,
+    pub active_reviewers: &'a HashSet<String>,
+    pub coworkers_with_unblocked_deps: &'a HashSet<String>,
+    pub ci_passed_pr_coworkers: &'a HashSet<String>,
+    pub usage_limited_coworkers: &'a HashSet<String>,
+    pub api_error_coworkers: &'a HashSet<String>,
+    pub auth_error_coworkers: &'a HashSet<String>,
+    pub pending_task_owners: &'a HashSet<String>,
+    pub review_feedback_pr_coworkers: &'a HashSet<String>,
+    pub coworkers_with_active_tools: &'a HashSet<String>,
+    pub now_utc: DateTime<Utc>,
+    pub minimum_lifetime: Duration,
+    pub repo_name: &'a str,
+    pub channel_lead_names: &'a HashSet<String>,
+}
+
+/// Decision to shut down an idle coworker.
+#[derive(Debug, PartialEq)]
+#[allow(dead_code)]
+pub(crate) struct IdleShutdownDecision {
+    pub name: String,
+}
+
+/// Decide which idle coworkers to shut down.
+///
+/// Returns a list of coworkers to shut down. Each coworker in the context that:
+/// - Is older than `minimum_lifetime`
+/// - Is not in any exclusion set
+///
+/// ...is eligible for idle shutdown.
+#[allow(dead_code)]
+fn decide_idle_shutdowns(_ctx: &IdleShutdownContext) -> Vec<IdleShutdownDecision> {
+    // TODO: Implement in Task 3
+    vec![]
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -1057,6 +1106,10 @@ mod rules_cooldown_tests;
 #[path = "rules_orphan_tests.rs"]
 #[cfg(test)]
 mod rules_orphan_tests;
+
+#[path = "rules_idle_tests.rs"]
+#[cfg(test)]
+mod rules_idle_tests;
 
 #[cfg(test)]
 mod tests {

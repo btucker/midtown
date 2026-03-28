@@ -60,6 +60,12 @@ pub const PR_REVIEW_DELAY_SCRIPT_SECS: u64 = 300;
 /// How often to check for idle coworkers (30 seconds)
 pub(super) const IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Minimum age before a coworker is eligible for idle shutdown (90 seconds).
+/// Session startup takes 40-60s; 90s provides a 30s buffer to protect
+/// coworkers during initialization.
+#[allow(dead_code)]
+pub(super) const IDLE_COWORKER_MINIMUM_LIFETIME: Duration = Duration::from_secs(90);
+
 /// How often to check if channel rotation is needed (1 hour)
 pub(super) const CHANNEL_ROTATION_CHECK_INTERVAL: Duration = Duration::from_secs(3600);
 
