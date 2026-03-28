@@ -1,6 +1,9 @@
+pub mod decisions;
 pub mod events;
+pub mod executor;
 pub mod projections;
 pub mod rpc;
+pub mod scheduler;
 
 pub use events::DomainEvent;
 pub use projections::Projections;
