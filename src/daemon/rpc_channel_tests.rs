@@ -1653,11 +1653,11 @@ async fn test_channel_lead_mention_in_topic_channel_routes_to_coworker() {
     );
 }
 
-/// Protected senders (SKIP_SENDERS: "system", "midtown", "github") should NOT
-/// trigger route_mentions in topic channels, consistent with chat_monitor_loop.
+/// Pure-system senders ("system", "github") should NOT trigger route_mentions
+/// in topic channels — they're daemon-generated messages, not session posts.
 #[tokio::test]
-async fn test_skip_senders_do_not_route_mentions_in_topic_channels() {
-    for sender in &["system", "midtown", "github"] {
+async fn test_system_senders_do_not_route_mentions_in_topic_channels() {
+    for sender in &["system", "github"] {
         let (state, _tmp, _guard) =
             make_test_state(&format!("midtown-test-skip-sender-{}", sender));
 
@@ -1679,7 +1679,7 @@ async fn test_skip_senders_do_not_route_mentions_in_topic_channels() {
 
         insert_test_session(&state, "sess-amsterdam-1", "amsterdam").await;
 
-        // Protected sender posts a message with @amsterdam mention in a topic channel
+        // System sender posts a message with @amsterdam mention in a topic channel
         let response = handle_channel_post(
             1_i64.into(),
             sender,
@@ -1714,10 +1714,70 @@ async fn test_skip_senders_do_not_route_mentions_in_topic_channels() {
         };
         assert!(
             !was_mention_routed,
-            "route_mentions should NOT have been called for SKIP_SENDER '{}' in topic channel",
+            "route_mentions should NOT have been called for system sender '{}' in topic channel",
             sender
         );
     }
+}
+
+/// Regression test for !2647: the project lead ("midtown") posting with
+/// `midtown channel post` should route @mentions. Previously, "midtown" was
+/// in SKIP_SENDERS which blocked mention routing for the lead's explicit posts.
+#[tokio::test]
+async fn test_lead_sender_routes_mentions_in_topic_channels() {
+    let (state, _tmp, _guard) = make_test_state("midtown-test-lead-mention-routing");
+
+    state
+        .coworkers
+        .insert_for_testing(crate::coworker::Coworker {
+            slot_id: "slot-amsterdam".to_string(),
+            name: "amsterdam".to_string(),
+            status: crate::coworker::CoworkerStatus::Running,
+            working_dir: "/tmp/test".to_string(),
+            started_at: chrono::Utc::now(),
+            current_task: None,
+            session_id: Some("sess-amsterdam-1".to_string()),
+            provider: crate::auth::AuthProvider::Claude,
+            model: String::new(),
+            profile: String::new(),
+        });
+
+    insert_test_session(&state, "sess-amsterdam-1", "amsterdam").await;
+
+    // The project lead ("midtown") explicitly posts with @amsterdam mention
+    let response = handle_channel_post(
+        1_i64.into(),
+        "midtown",
+        "@amsterdam check this failing test",
+        Some("ops"),
+        None,
+        &state,
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "channel.post should succeed: {:?}",
+        response.error
+    );
+
+    let ch = state.channel_router.get_channel("ops").unwrap();
+    let messages = ch.read_all().unwrap();
+    let posted_msg = messages
+        .last()
+        .expect("channel should contain the posted message");
+
+    let was_mention_routed = {
+        let cooldowns = state.cooldowns.lock().unwrap();
+        !cooldowns.check(
+            "chat_mention_amsterdam",
+            &posted_msg.id,
+            std::time::Duration::from_secs(3600),
+        )
+    };
+    assert!(
+        was_mention_routed,
+        "route_mentions should have been called for lead sender 'midtown' in topic channel"
+    );
 }
 
 /// When a user posts `@{project_name}` in a topic channel thread, the project
