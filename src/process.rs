@@ -89,7 +89,8 @@ pub fn parse_json_warn<T: serde::de::DeserializeOwned>(stdout: &[u8], context: &
         Ok(v) => Some(v),
         Err(e) => {
             let preview = if raw.len() > 200 {
-                format!("{}...", &raw[..200])
+                let boundary = raw.floor_char_boundary(200);
+                format!("{}...", &raw[..boundary])
             } else {
                 raw.to_string()
             };

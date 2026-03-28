@@ -107,3 +107,16 @@ fn parse_json_warn_returns_none_on_invalid_json() {
     let result: Option<serde_json::Value> = parse_json_warn(stdout, "test parse");
     assert!(result.is_none());
 }
+
+#[test]
+fn parse_json_warn_truncates_safely_on_multibyte_boundary() {
+    // Build invalid JSON >200 bytes with multi-byte chars near the boundary.
+    // Each emoji is 4 bytes; 50 emojis = 200 bytes. The "x" pushes byte 200
+    // into the middle of the last emoji, which would panic with &raw[..200].
+    let mut data = String::from("x");
+    for _ in 0..50 {
+        data.push('\u{1F600}'); // 4-byte emoji
+    }
+    let result: Option<serde_json::Value> = parse_json_warn(data.as_bytes(), "test truncation");
+    assert!(result.is_none()); // must not panic
+}
