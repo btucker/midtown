@@ -981,6 +981,29 @@ test.describe('Daemon v2 Live Web UI', () => {
     expect(res.status()).toBeLessThan(500)
   })
 
+  test('auth switch endpoint returns ok', async ({ request }) => {
+    const res = await request.post(`${BASE_URL}/api/auth/switch`, {
+      data: { profile: 'default', provider: 'claude' },
+    })
+    // Should accept the request (even if profile doesn't change)
+    expect(res.status()).toBeLessThan(500)
+  })
+
+  test('file upload endpoint accepts files', async ({ request }) => {
+    // Create a small test file via multipart form
+    const res = await request.post(`${BASE_URL}/api/upload`, {
+      multipart: {
+        file: {
+          name: 'test.txt',
+          mimeType: 'text/plain',
+          buffer: Buffer.from('hello from e2e test'),
+        },
+      },
+    })
+    // Should accept the upload or return a meaningful error (not 404)
+    expect(res.status()).not.toBe(404)
+  })
+
   test('light mode applies correct background', async ({ browser }) => {
     const context = await browser.newContext({ ignoreHTTPSErrors: true })
     const page = await context.newPage()

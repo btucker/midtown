@@ -466,8 +466,11 @@ pub async fn upload(mut multipart: axum::extract::Multipart) -> (StatusCode, Jso
             .file_name()
             .map(|f| f.to_string())
             .unwrap_or_else(|| format!("upload-{}", uuid::Uuid::new_v4()));
-        // Sanitize filename
-        let safe_name = filename.replace(['/', '\\'], "_").replace("..", "_");
+        // Sanitize: extract just the filename component, stripping any path traversal
+        let safe_name = std::path::Path::new(&filename)
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| format!("upload-{}", uuid::Uuid::new_v4()));
         let path = upload_dir.join(&safe_name);
 
         match field.bytes().await {
