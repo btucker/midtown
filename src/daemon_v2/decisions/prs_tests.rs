@@ -186,6 +186,94 @@ fn no_reviewer_for_pr_not_needing_review() {
     assert!(commands.is_empty());
 }
 
+// --- reviewer escalation tests ---
+
+const MAX_REVIEWER_RESTARTS: usize = 3;
+
+fn add_reviewer_attempt(proj: &mut Projections, pr_num: u64, attempt: usize) {
+    let id = format!("reviewer-{pr_num}-attempt-{attempt}");
+    proj.apply(&DomainEvent::AgentCreated {
+        id: id.clone(),
+        name: format!("reviewer-{pr_num}"),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-reviewer".into(),
+        provider: Provider::ClaudeCode,
+        channel: None,
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: id.clone(),
+        pid: 1000 + attempt as u32,
+        session_id: None,
+    });
+    proj.apply(&DomainEvent::AgentStopped {
+        id,
+        reason: "exited without posting review".into(),
+    });
+}
+
+#[test]
+fn spawn_reviewers_escalates_after_max_restarts() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::PrOpened {
+        number: 42,
+        branch: "fix".into(),
+        author: "dev".into(),
+    });
+    proj.apply(&DomainEvent::PrReviewRequested { number: 42 });
+
+    // Simulate MAX_REVIEWER_RESTARTS failed attempts
+    for i in 0..MAX_REVIEWER_RESTARTS {
+        add_reviewer_attempt(&mut proj, 42, i);
+    }
+
+    let commands = spawn_reviewers(&proj);
+
+    // Should NOT spawn another reviewer — should post escalation to ops instead
+    assert!(
+        !commands.iter().any(|c| matches!(c, Command::SpawnAgent(_))),
+        "should not spawn after max restarts, got {:?}",
+        commands
+    );
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            Command::PostSystem { channel, content }
+            if channel == "ops" && content.contains("42")
+        )),
+        "expected ops escalation post, got {:?}",
+        commands
+    );
+}
+
+#[test]
+fn spawn_reviewers_respawns_within_limit() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::PrOpened {
+        number: 42,
+        branch: "fix".into(),
+        author: "dev".into(),
+    });
+    proj.apply(&DomainEvent::PrReviewRequested { number: 42 });
+
+    // Only 1 failed attempt — under the limit
+    add_reviewer_attempt(&mut proj, 42, 0);
+
+    let commands = spawn_reviewers(&proj);
+
+    // Should still spawn a new reviewer
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::SpawnAgent(cfg) if cfg.name == "reviewer-42")),
+        "expected SpawnAgent for reviewer-42, got {:?}",
+        commands
+    );
+}
+
 // --- suspend_authors_with_prs tests ---
 
 #[test]

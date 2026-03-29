@@ -27,39 +27,77 @@ pub fn handle_merged_prs(proj: &Projections) -> Vec<Command> {
     commands
 }
 
+const MAX_REVIEWER_RESTARTS: usize = 3;
+
 /// For each open PR that needs review and doesn't already have a running reviewer agent,
-/// spawn a reviewer agent.
+/// spawn a reviewer agent. Escalates to ops after MAX_REVIEWER_RESTARTS failed attempts.
 pub fn spawn_reviewers(proj: &Projections) -> Vec<Command> {
-    proj.work
-        .needing_review
-        .iter()
-        .filter(|pr_num| {
-            let reviewer_name = format!("reviewer-{pr_num}");
-            !proj
-                .agents
-                .by_name
-                .get(&reviewer_name)
-                .is_some_and(|id| proj.agents.running.contains(id))
+    let mut commands = Vec::new();
+
+    for pr_num in &proj.work.needing_review {
+        let reviewer_name = format!("reviewer-{pr_num}");
+
+        // Skip if reviewer is already running
+        if proj
+            .agents
+            .by_name
+            .get(&reviewer_name)
+            .is_some_and(|id| proj.agents.running.contains(id))
+        {
+            continue;
+        }
+
+        let pr = match proj.work.prs.get(pr_num) {
+            Some(pr) => pr,
+            None => continue,
+        };
+
+        // Count stopped reviewer agents for this PR
+        let restart_count = count_stopped_reviewers(proj, *pr_num);
+
+        if restart_count >= MAX_REVIEWER_RESTARTS {
+            // Escalate to ops — don't spawn another reviewer
+            commands.push(Command::PostSystem {
+                channel: "ops".into(),
+                content: format!(
+                    "Reviewer for PR #{pr_num} failed {restart_count} times. Manual review needed."
+                ),
+            });
+            continue;
+        }
+
+        commands.push(Command::SpawnAgent(SpawnConfig {
+            name: reviewer_name,
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-reviewer".into(),
+            provider: Provider::ClaudeCode,
+            channel: None,
+            task_id: None,
+            initial_prompt: Some(format!("Review PR #{pr_num}: {}", pr.branch)),
+            working_dir: None,
+            model: None,
+            bound_thread_id: None,
+            fork_from_session: None,
+            icon: None,
+            color: None,
+        }));
+    }
+
+    commands
+}
+
+/// Count how many times a reviewer for a given PR has been created and stopped.
+fn count_stopped_reviewers(proj: &Projections, pr_num: u64) -> usize {
+    let reviewer_name = format!("reviewer-{pr_num}");
+    proj.agents
+        .by_id
+        .values()
+        .filter(|a| {
+            a.name == reviewer_name
+                && a.agent_type == "midtown-code-reviewer"
+                && a.stopped_at.is_some()
         })
-        .filter_map(|pr_num| {
-            let pr = proj.work.prs.get(pr_num)?;
-            Some(Command::SpawnAgent(SpawnConfig {
-                name: format!("reviewer-{pr_num}"),
-                kind: AgentKind::Worker,
-                agent_type: "midtown-code-reviewer".into(),
-                provider: Provider::ClaudeCode,
-                channel: None,
-                task_id: None,
-                initial_prompt: Some(format!("Review PR #{pr_num}: {}", pr.branch)),
-                working_dir: None,
-                model: None,
-                bound_thread_id: None,
-                fork_from_session: None,
-                icon: None,
-                color: None,
-            }))
-        })
-        .collect()
+        .count()
 }
 
 /// Stop worker agents whose tasks have open PRs (they're waiting for review).
