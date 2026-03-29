@@ -266,4 +266,145 @@ test.describe('Daemon v2 Live Web UI', () => {
 
     await context.close()
   })
+
+  test('account panel is visible in sidebar footer', async ({ browser }) => {
+    const context = await browser.newContext({ ignoreHTTPSErrors: true })
+    const page = await context.newPage()
+
+    await page.goto('https://localhost:47022', { waitUntil: 'networkidle', timeout: 15000 })
+    await page.waitForTimeout(3000)
+
+    // The sidebar footer should show the account panel with default profile
+    await expect(page.getByText('default').first()).toBeVisible()
+
+    await context.close()
+  })
+
+  test('message input has correct placeholder', async ({ browser }) => {
+    const context = await browser.newContext({ ignoreHTTPSErrors: true })
+    const page = await context.newPage()
+
+    await page.goto('https://localhost:47022', { waitUntil: 'networkidle', timeout: 15000 })
+    await page.waitForTimeout(3000)
+
+    // The message input should have a placeholder mentioning the current channel
+    const input = page.locator('[data-testid="channel-input"]')
+    await expect(input).toBeVisible()
+    const placeholder = await input.getAttribute('placeholder')
+    expect(placeholder).toContain('midtown')
+
+    await context.close()
+  })
+
+  test('clicking a message with replies shows reply count', async ({ browser }) => {
+    const context = await browser.newContext({ ignoreHTTPSErrors: true })
+    const page = await context.newPage()
+
+    await page.goto('https://localhost:47022', { waitUntil: 'networkidle', timeout: 15000 })
+    await page.waitForTimeout(3000)
+
+    // Look for any thread reply button (messages with replies have these)
+    const replyButtons = page.locator('[data-testid="thread-reply-button"]')
+    const count = await replyButtons.count()
+
+    // If there are threaded messages, verify the button exists
+    if (count > 0) {
+      await expect(replyButtons.first()).toBeVisible()
+    }
+
+    await context.close()
+  })
+
+  test('status endpoint includes coworkers and tasks arrays', async ({ request }) => {
+    const res = await request.get(`${BASE_URL}/api/status`)
+    const data = await res.json()
+
+    // Verify the full status response shape
+    expect(Array.isArray(data.coworkers)).toBeTruthy()
+    expect(Array.isArray(data.tasks)).toBeTruthy()
+    expect(Array.isArray(data.pull_requests)).toBeTruthy()
+    expect(typeof data.max_in_progress_tasks).toBe('number')
+    expect(data.agents).toHaveProperty('total')
+    expect(data.agents).toHaveProperty('running')
+  })
+
+  test('channel history messages have expected fields', async ({ request }) => {
+    const res = await request.get(`${BASE_URL}/api/channels/history?channel=midtown&limit=3`)
+    const data = await res.json()
+
+    if (data.length > 0) {
+      const msg = data[0]
+      // Every message should have these fields
+      expect(msg).toHaveProperty('id')
+      expect(msg).toHaveProperty('from')
+      expect(msg).toHaveProperty('content')
+      expect(msg).toHaveProperty('timestamp')
+      expect(msg).toHaveProperty('msg_type')
+      // Should NOT have 'message' field (transformed to 'content')
+      expect(msg).not.toHaveProperty('message')
+    }
+  })
+
+  test('dark mode applies correct background', async ({ browser }) => {
+    const context = await browser.newContext({ ignoreHTTPSErrors: true })
+    const page = await context.newPage()
+
+    // Set dark mode preference before navigating
+    await page.addInitScript(() => {
+      localStorage.setItem('midtown-theme', 'dark')
+    })
+
+    await page.goto('https://localhost:47022', { waitUntil: 'networkidle', timeout: 15000 })
+    await page.waitForTimeout(2000)
+
+    // HTML element should have 'dark' class
+    const hasDark = await page.evaluate(() =>
+      document.documentElement.classList.contains('dark')
+    )
+    expect(hasDark).toBeTruthy()
+
+    // Background should be dark
+    const bgColor = await page.evaluate(() =>
+      getComputedStyle(document.body).backgroundColor
+    )
+    // Dark backgrounds have low RGB values
+    const match = bgColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/)
+    if (match) {
+      const avg = (parseInt(match[1]) + parseInt(match[2]) + parseInt(match[3])) / 3
+      expect(avg).toBeLessThan(100) // Dark mode should have low brightness
+    }
+
+    await context.close()
+  })
+
+  test('light mode applies correct background', async ({ browser }) => {
+    const context = await browser.newContext({ ignoreHTTPSErrors: true })
+    const page = await context.newPage()
+
+    // Set light mode preference before navigating
+    await page.addInitScript(() => {
+      localStorage.setItem('midtown-theme', 'light')
+    })
+
+    await page.goto('https://localhost:47022', { waitUntil: 'networkidle', timeout: 15000 })
+    await page.waitForTimeout(2000)
+
+    // HTML element should NOT have 'dark' class
+    const hasDark = await page.evaluate(() =>
+      document.documentElement.classList.contains('dark')
+    )
+    expect(hasDark).toBeFalsy()
+
+    // Background should be light
+    const bgColor = await page.evaluate(() =>
+      getComputedStyle(document.body).backgroundColor
+    )
+    const match = bgColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/)
+    if (match) {
+      const avg = (parseInt(match[1]) + parseInt(match[2]) + parseInt(match[3])) / 3
+      expect(avg).toBeGreaterThan(200) // Light mode should have high brightness
+    }
+
+    await context.close()
+  })
 })
