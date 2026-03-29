@@ -1,6 +1,6 @@
 # Daemon V2 — Requirements
 
-**Status:** In progress
+**Status:** In progress — requirements under review
 **Last updated:** 2026-03-29
 
 ---
@@ -8,27 +8,27 @@
 ## 1. Message Routing
 
 ### 1.1 Thread Routing
-- WHEN a message is posted to a thread AND an agent is bound to that thread THEN the system SHALL nudge that bound agent
-- WHEN a message is posted to a thread AND no agent is bound to that thread THEN the system SHALL nudge the channel lead
+- WHEN a message is posted to a thread THEN the system SHALL nudge the thread-bound agent if one exists, OTHERWISE the channel lead
 - WHEN a top-level message is posted THEN the system SHALL nudge the channel lead
 
 ### 1.2 @Mentions
 - WHEN a message contains `@agent-name` THEN the system SHALL nudge the named agent
-- WHEN a message contains `@all` THEN the system SHALL nudge every agent in the channel except the sender
-- WHEN a message contains `@lead` or `@channel-name` THEN the system SHALL nudge the channel lead
+- WHEN a message contains `@all` in the main channel THEN the system SHALL nudge ALL channel leads AND ALL agents bound to in-progress tasks across ALL channels, excluding the sender
+- WHEN a message contains `@all` in a topic channel THEN the system SHALL nudge the channel lead AND every agent in that channel bound to an in-progress task, excluding the sender
+- WHEN a message contains `@channel-name` THEN the system SHALL nudge that channel's lead
 - WHEN a @mention refers to an unknown agent THEN the system SHALL NOT emit a nudge
 - WHEN a @mention contains trailing punctuation THEN the system SHALL strip it before lookup
 
 ### 1.3 Task References
-- WHEN a message contains `!N` THEN the system SHALL nudge the agent assigned to task N
-- WHEN a message contains `task !N` THEN the system SHALL extract the task ID and nudge the assigned agent
-- WHEN a task reference has no assigned agent THEN the system SHALL NOT emit a nudge
+- WHEN a message contains `!N` THEN the system SHALL nudge the agent assigned to task N AND agents assigned to all descendant tasks of N
+- WHEN a task is created with a `parent` field THEN the system SHALL record the parent-child relationship
+- WHEN a task reference has no assigned agent THEN the system SHALL NOT emit a nudge for that reference
 
 ### 1.4 Nudge Invariants
 - WHEN the sender is the same as the nudge target THEN the system SHALL suppress the nudge
-- WHEN multiple routing rules match the same agent THEN the system SHALL nudge it exactly once
+- WHEN multiple routing rules match the same agent for the same message THEN the system SHALL nudge it exactly once
 - WHEN the nudge target is stopped AND has a session ID THEN the system SHALL resume the agent before delivering the message
-- WHEN the nudge target is stopped AND has no session ID THEN the system SHALL drop the nudge
+- WHEN the nudge target is stopped AND has no session ID THEN the system SHALL spawn a new agent with the same configuration (kind, agent_type, channel, task_id, bound_thread_id) and deliver the nudge to it
 - WHEN the nudge target is unknown THEN the system SHALL drop the nudge
 
 ---
@@ -39,12 +39,14 @@
 - WHEN pending unblocked tasks exist AND fewer than max_in_progress tasks are running THEN the system SHALL spawn a worker for each available slot
 - WHEN a task has no `agent_type` THEN the system SHALL use `midtown-code-author` as default
 - WHEN a task is in a `lead_driven` channel THEN the system SHALL NOT auto-dispatch it
-- WHEN spawning a worker THEN the system SHALL generate a unique name, random icon, and random color
+- WHEN spawning a worker THEN the system SHALL use name/icon/color from the task if set, OTHERWISE from the spawn command if set, OTHERWISE generate random values
 
 ### 2.2 Task Lifecycle
-- WHEN a worker dies while its task is InProgress THEN the system SHALL reset the task to Pending
-- WHEN two agents are assigned to the same task THEN the system SHALL stop the older one
-- WHEN a worker has no task for more than 5 minutes THEN the system SHALL stop it
+- WHEN a worker dies while its task is InProgress THEN the system SHALL resume the worker
+- WHEN a worker cannot be resumed (no session ID) THEN the system SHALL spawn a replacement worker with the same task configuration
+- WHEN two agents are assigned to the same task THEN the system SHALL stop the newer one
+- WHEN a worker reports its state as idle via `midtown state` THEN the system SHALL stop it after 2 minutes if it remains idle
+- WHEN a worker has not reported a state change for 5 minutes THEN the system SHALL nudge it
 - WHEN a running worker's task is Completed THEN the system SHALL stop the worker
 - WHEN a task declares `blocked_by` dependencies THEN the system SHALL NOT dispatch it until all blockers are completed
 
@@ -52,11 +54,13 @@
 
 ## 3. PR Integration
 
-### 3.1 Polling
-- WHEN the system polls GitHub THEN it SHALL fetch both open and merged PR lists
-- WHEN a new open PR is detected THEN the system SHALL emit a PrOpened event
-- WHEN a PR's CI or review state changes THEN the system SHALL emit a PrUpdated event
-- WHEN a PR is merged THEN the system SHALL emit a PrMerged event
+### 3.1 Event Sources
+- WHEN a GitHub webhook reports a PR opened THEN the system SHALL emit a PrOpened event
+- WHEN polling detects a new open PR not already tracked THEN the system SHALL emit a PrOpened event as a backstop
+- WHEN a GitHub webhook reports CI or review state change THEN the system SHALL emit a PrUpdated event
+- WHEN polling detects a CI or review state change not already reflected THEN the system SHALL emit a PrUpdated event as a backstop
+- WHEN a GitHub webhook reports a PR merged THEN the system SHALL emit a PrMerged event
+- WHEN polling detects a merged PR not already tracked THEN the system SHALL emit a PrMerged event as a backstop
 - WHEN polling fails THEN the system SHALL log the error and return no events
 
 ### 3.2 Reviewer Spawning
@@ -190,7 +194,7 @@
 
 - WHEN the daemon starts THEN it SHALL recover from the event store (snapshot + replay)
 - WHEN previously-running agents have dead PIDs THEN AgentStopped SHALL be emitted for each
-- WHEN a dead agent has a session_id THEN ResumeAgent SHALL be scheduled
+- WHEN a dead agent has a session ID THEN ResumeAgent SHALL be scheduled
 - WHEN the daemon starts THEN a PID file SHALL be written and exclusively locked
 - WHEN a web port is configured THEN an HTTP server SHALL be started
 - WHEN pending resumes exist THEN they SHALL be executed before entering the main loop
@@ -317,17 +321,17 @@
 
 ## 12. Webhook Integration
 
-- WHEN a webhook contains `merged_pr` THEN PrMerged event SHALL be produced
-- WHEN a webhook contains `needs_review` THEN PrReviewRequested event SHALL be produced
-- WHEN a webhook contains `pr_opened` THEN PrOpened event SHALL be produced
-- WHEN `pr_opened` has `author_coworker` THEN it SHALL be used as author; otherwise `unknown`
+- WHEN a GitHub webhook reports a PR merged THEN PrMerged event SHALL be produced
+- WHEN a GitHub webhook reports a PR needs review THEN PrReviewRequested event SHALL be produced
+- WHEN a GitHub webhook reports a PR opened THEN PrOpened event SHALL be produced
+- WHEN pr_opened has author_coworker THEN it SHALL be used as author; otherwise `unknown`
 - WHEN a webhook has no recognized events THEN an empty event list SHALL be produced
 
 ---
 
 ## 13. Naming
 
-- WHEN generating an agent name THEN a random adjective-noun combination SHALL be used
+- WHEN generating an agent name AND none is provided THEN a random adjective-noun combination SHALL be used
 - WHEN the generated name already exists THEN generation SHALL retry (up to 100 times)
 - WHEN all retries are exhausted THEN fallback name `agent-{random 4-digit}` SHALL be used
 
@@ -370,4 +374,4 @@
 
 | Date | Change |
 |------|--------|
-| 2026-03-29 | Initial spec. ~200 requirements across 15 sections. |
+| 2026-03-29 | Initial spec. Requirements under review — sections 1-3.1 approved. |
