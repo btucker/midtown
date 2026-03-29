@@ -97,6 +97,26 @@ fn stop_completed_agents_fn(proj: &Projections, _channel: &str) -> Vec<Command> 
     decisions::dispatch::stop_completed_agents(proj)
 }
 
+/// Wrapper: stop workers that have been running without a task for > 5 minutes.
+fn check_idle_workers_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
+    health::check_idle_workers(proj)
+}
+
+/// Wrapper: stop the older of two agents assigned to the same task.
+fn check_duplicate_workers_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
+    decisions::dispatch::check_duplicate_workers(proj)
+}
+
+/// Wrapper: detect auth errors from session stderr (stub).
+fn check_auth_errors_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
+    health::check_auth_errors(proj)
+}
+
+/// Wrapper: detect usage limits from session output (stub).
+fn check_usage_limits_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
+    health::check_usage_limits(proj)
+}
+
 /// Wrapper: poll process health for all running sessions.
 fn poll_process_health_fn(_proj: &Projections, _channel: &str) -> Vec<Command> {
     vec![Command::PollProcessHealth]
@@ -242,6 +262,26 @@ impl DaemonV2 {
             "garbage_collect",
             Duration::from_secs(3600),
             garbage_collect_fn,
+        );
+        scheduler.register(
+            "check_idle_workers",
+            Duration::from_secs(30),
+            check_idle_workers_fn,
+        );
+        scheduler.register(
+            "check_duplicate_workers",
+            Duration::from_secs(30),
+            check_duplicate_workers_fn,
+        );
+        scheduler.register(
+            "check_auth_errors",
+            Duration::from_secs(30),
+            check_auth_errors_fn,
+        );
+        scheduler.register(
+            "check_usage_limits",
+            Duration::from_secs(60),
+            check_usage_limits_fn,
         );
 
         // Move the receiver out so `config` can be stored on the daemon.

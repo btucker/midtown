@@ -2,12 +2,13 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::daemon_v2::decisions::{Command, SpawnConfig};
 use crate::daemon_v2::events::{AgentKind, Provider, TaskStatus};
 use crate::daemon_v2::naming;
 use crate::daemon_v2::projections::Projections;
+use crate::daemon_v2::projections::agents::Agent;
 
 const DEFAULT_AGENT_TYPE: &str = "midtown-code-author";
 
@@ -55,6 +56,36 @@ pub fn dispatch_pending_tasks(proj: &Projections, max_in_progress: usize) -> Vec
         }));
     }
 
+    commands
+}
+
+/// Detect when two agents are assigned to the same task and stop the older one.
+/// Keeps the newest agent (by `started_at`), stops the rest.
+pub fn check_duplicate_workers(proj: &Projections) -> Vec<Command> {
+    let mut task_agents: HashMap<&str, Vec<&Agent>> = HashMap::new();
+    for id in &proj.agents.running {
+        if let Some(agent) = proj.agents.by_id.get(id)
+            && agent.kind == AgentKind::Worker
+            && let Some(ref tid) = agent.task_id
+        {
+            task_agents.entry(tid.as_str()).or_default().push(agent);
+        }
+    }
+
+    let mut commands = Vec::new();
+    for agents in task_agents.values() {
+        if agents.len() > 1 {
+            // Keep the newest, stop the rest
+            let mut sorted = agents.clone();
+            sorted.sort_by_key(|a| a.started_at);
+            for agent in &sorted[..sorted.len() - 1] {
+                commands.push(Command::StopAgent {
+                    id: agent.id.clone(),
+                    reason: "duplicate worker for task".into(),
+                });
+            }
+        }
+    }
     commands
 }
 

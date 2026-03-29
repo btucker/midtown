@@ -64,6 +64,23 @@ pub fn dispatch_request(
             }
             Err(err) => (err.to_json(&id), vec![], vec![]),
         },
+        "task.update" => {
+            let result = handlers::handle_task_update(params, proj);
+            match result {
+                Ok(events) => {
+                    let response = json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id });
+                    (response, events, vec![])
+                }
+                Err(err) => (err.to_json(&id), vec![], vec![]),
+            }
+        }
+        "pr.action" => match handlers::handle_pr_action(params, proj) {
+            Ok(commands) => {
+                let response = json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id });
+                (response, vec![], commands)
+            }
+            Err(err) => (err.to_json(&id), vec![], vec![]),
+        },
         "channel.update" => {
             let result = handlers::handle_channel_update(params);
             match result {
@@ -125,6 +142,8 @@ pub fn dispatch_request(
                     let filter = AgentFilter::from_params(params);
                     handlers::handle_agent_list(proj, filter)
                 }
+                "task.list" => handlers::handle_task_list(proj),
+                "pr.list" => handlers::handle_pr_list(proj),
                 "prs.status" => handlers::handle_prs_status(proj),
                 "channel.list" => handlers::handle_channel_list(channels_dir),
                 "channel.read" => handlers::handle_channel_read(params, channels_dir),

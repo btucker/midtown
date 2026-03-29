@@ -224,5 +224,45 @@ pub async fn execute(
             tracing::info!(%agent_id, "garbage collecting agent record");
             vec![DomainEvent::AgentGarbageCollected { id: agent_id }]
         }
+        Command::MergePr { number } => {
+            tracing::info!(%number, "merging PR");
+            match tokio::process::Command::new("gh")
+                .args(["pr", "merge", &number.to_string(), "--squash", "--auto"])
+                .output()
+                .await
+            {
+                Ok(output) if output.status.success() => {
+                    vec![DomainEvent::PrMerged {
+                        number,
+                        branch: String::new(),
+                    }]
+                }
+                Ok(output) => {
+                    let err = String::from_utf8_lossy(&output.stderr);
+                    tracing::error!(%number, %err, "gh pr merge failed");
+                    vec![]
+                }
+                Err(e) => {
+                    tracing::error!(%number, %e, "gh pr merge failed");
+                    vec![]
+                }
+            }
+        }
+        Command::PostPrComment { number, body } => {
+            tracing::info!(%number, "posting PR comment");
+            let _ = tokio::process::Command::new("gh")
+                .args(["pr", "comment", &number.to_string(), "--body", &body])
+                .output()
+                .await;
+            vec![]
+        }
+        Command::RerunCi { run_id } => {
+            tracing::info!(%run_id, "rerunning CI");
+            let _ = tokio::process::Command::new("gh")
+                .args(["run", "rerun", &run_id.to_string()])
+                .output()
+                .await;
+            vec![]
+        }
     }
 }

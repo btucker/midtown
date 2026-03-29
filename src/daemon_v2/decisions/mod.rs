@@ -71,4 +71,14 @@ pub enum Command {
     GarbageCollect {
         agent_id: AgentId,
     },
+    MergePr {
+        number: u64,
+    },
+    RerunCi {
+        run_id: u64,
+    },
+    PostPrComment {
+        number: u64,
+        body: String,
+    },
 }

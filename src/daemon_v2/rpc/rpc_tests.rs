@@ -541,6 +541,210 @@ fn v1_coworker_spawn_returns_spawn_command() {
     }
 }
 
+// ── task.list / task.update / pr.list / pr.action tests ─────────────────
+
+fn projections_with_tasks_and_prs() -> Projections {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "task-1".into(),
+        subject: "Fix the thing".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: Some("midtown-code-author".into()),
+        icon: None,
+    });
+    proj.apply(&DomainEvent::PrOpened {
+        number: 42,
+        branch: "fix-the-thing".into(),
+        author: "ghost-town".into(),
+    });
+    proj
+}
+
+#[test]
+fn task_list_returns_tasks() {
+    let proj = projections_with_tasks_and_prs();
+    let request = json!({"jsonrpc": "2.0", "method": "task.list", "id": 200});
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    let tasks = response["result"].as_array().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0]["id"], "task-1");
+    assert_eq!(tasks[0]["subject"], "Fix the thing");
+    assert_eq!(tasks[0]["channel"], "main");
+    assert!(events.is_empty());
+    assert!(commands.is_empty());
+}
+
+#[test]
+fn task_list_empty_when_no_tasks() {
+    let proj = Projections::default();
+    let request = json!({"jsonrpc": "2.0", "method": "task.list", "id": 201});
+    let (response, events, _) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    let tasks = response["result"].as_array().unwrap();
+    assert!(tasks.is_empty());
+    assert!(events.is_empty());
+}
+
+#[test]
+fn task_update_returns_ok_for_existing_task() {
+    let proj = projections_with_tasks_and_prs();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "task.update",
+        "id": 202,
+        "params": {"id": "task-1", "subject": "Updated subject"}
+    });
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert!(events.is_empty());
+    assert!(commands.is_empty());
+}
+
+#[test]
+fn task_update_returns_error_for_missing_task() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "task.update",
+        "id": 203,
+        "params": {"id": "nonexistent"}
+    });
+    let (response, events, _) = dispatch_request(request, &proj, test_channels_dir());
+    assert_eq!(response["error"]["code"], -32000);
+    assert!(events.is_empty());
+}
+
+#[test]
+fn task_update_missing_params_returns_error() {
+    let proj = Projections::default();
+    let request = json!({"jsonrpc": "2.0", "method": "task.update", "id": 204});
+    let (response, events, _) = dispatch_request(request, &proj, test_channels_dir());
+    assert_eq!(response["error"]["code"], -32602);
+    assert!(events.is_empty());
+}
+
+#[test]
+fn pr_list_returns_prs() {
+    let proj = projections_with_tasks_and_prs();
+    let request = json!({"jsonrpc": "2.0", "method": "pr.list", "id": 210});
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    let prs = response["result"].as_array().unwrap();
+    assert_eq!(prs.len(), 1);
+    assert_eq!(prs[0]["number"], 42);
+    assert_eq!(prs[0]["branch"], "fix-the-thing");
+    assert_eq!(prs[0]["author"], "ghost-town");
+    assert!(events.is_empty());
+    assert!(commands.is_empty());
+}
+
+#[test]
+fn pr_list_empty_when_no_prs() {
+    let proj = Projections::default();
+    let request = json!({"jsonrpc": "2.0", "method": "pr.list", "id": 211});
+    let (response, events, _) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    let prs = response["result"].as_array().unwrap();
+    assert!(prs.is_empty());
+    assert!(events.is_empty());
+}
+
+#[test]
+fn pr_action_merge_returns_merge_command() {
+    let proj = projections_with_tasks_and_prs();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "pr.action",
+        "id": 220,
+        "params": {"action": "merge", "number": 42}
+    });
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert!(events.is_empty());
+    assert_eq!(commands.len(), 1);
+    match &commands[0] {
+        crate::daemon_v2::decisions::Command::MergePr { number } => {
+            assert_eq!(*number, 42);
+        }
+        other => panic!("expected MergePr, got {:?}", other),
+    }
+}
+
+#[test]
+fn pr_action_comment_returns_post_comment_command() {
+    let proj = projections_with_tasks_and_prs();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "pr.action",
+        "id": 221,
+        "params": {"action": "comment", "number": 42, "body": "LGTM!"}
+    });
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert!(events.is_empty());
+    assert_eq!(commands.len(), 1);
+    match &commands[0] {
+        crate::daemon_v2::decisions::Command::PostPrComment { number, body } => {
+            assert_eq!(*number, 42);
+            assert_eq!(body, "LGTM!");
+        }
+        other => panic!("expected PostPrComment, got {:?}", other),
+    }
+}
+
+#[test]
+fn pr_action_rerun_returns_rerun_ci_command() {
+    let proj = projections_with_tasks_and_prs();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "pr.action",
+        "id": 222,
+        "params": {"action": "rerun", "number": 42, "run_id": 99}
+    });
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert!(events.is_empty());
+    assert_eq!(commands.len(), 1);
+    match &commands[0] {
+        crate::daemon_v2::decisions::Command::RerunCi { run_id } => {
+            assert_eq!(*run_id, 99);
+        }
+        other => panic!("expected RerunCi, got {:?}", other),
+    }
+}
+
+#[test]
+fn pr_action_unknown_action_returns_error() {
+    let proj = projections_with_tasks_and_prs();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "pr.action",
+        "id": 223,
+        "params": {"action": "explode", "number": 42}
+    });
+    let (response, _events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert_eq!(response["error"]["code"], -32602);
+    assert!(commands.is_empty());
+}
+
+#[test]
+fn pr_action_unknown_pr_returns_error() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "pr.action",
+        "id": 224,
+        "params": {"action": "merge", "number": 999}
+    });
+    let (response, _events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert_eq!(response["error"]["code"], -32000);
+    assert!(commands.is_empty());
+}
+
 // ── original tests continued ────────────────────────────────────────────
 
 #[test]

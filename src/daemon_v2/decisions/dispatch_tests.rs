@@ -210,3 +210,114 @@ fn skips_lead_driven_channel_tasks() {
     let commands = dispatch_pending_tasks(&proj, 5);
     assert!(commands.is_empty());
 }
+
+#[test]
+fn check_duplicate_workers_stops_older_of_two() {
+    use chrono::{Duration, Utc};
+
+    let events = vec![
+        DomainEvent::TaskCreated {
+            id: "task-1".into(),
+            subject: "Fix bug".into(),
+            channel: "main".into(),
+            blocked_by: vec![],
+            agent_type: None,
+            icon: None,
+        },
+        // First (older) worker
+        DomainEvent::AgentCreated {
+            id: "a1".into(),
+            name: "worker-old".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-1".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "a1".into(),
+            pid: 100,
+            session_id: None,
+        },
+        // Second (newer) worker for the same task
+        DomainEvent::AgentCreated {
+            id: "a2".into(),
+            name: "worker-new".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-1".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "a2".into(),
+            pid: 101,
+            session_id: None,
+        },
+    ];
+
+    let mut proj = make_projections(&events);
+
+    // Make a1 older so the sort order is deterministic.
+    proj.agents.by_id.get_mut("a1").unwrap().started_at = Some(Utc::now() - Duration::minutes(10));
+    proj.agents.by_id.get_mut("a2").unwrap().started_at = Some(Utc::now());
+
+    let commands = check_duplicate_workers(&proj);
+
+    assert_eq!(
+        commands.len(),
+        1,
+        "expected 1 StopAgent, got {:?}",
+        commands
+    );
+    assert!(
+        matches!(&commands[0], Command::StopAgent { id, reason } if id == "a1" && reason == "duplicate worker for task"),
+        "expected StopAgent for older worker a1, got {:?}",
+        commands[0]
+    );
+}
+
+#[test]
+fn check_duplicate_workers_no_op_when_no_duplicates() {
+    let events = vec![
+        DomainEvent::TaskCreated {
+            id: "task-1".into(),
+            subject: "Solo task".into(),
+            channel: "main".into(),
+            blocked_by: vec![],
+            agent_type: None,
+            icon: None,
+        },
+        DomainEvent::AgentCreated {
+            id: "a1".into(),
+            name: "solo-worker".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-1".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "a1".into(),
+            pid: 100,
+            session_id: None,
+        },
+    ];
+
+    let proj = make_projections(&events);
+    let commands = check_duplicate_workers(&proj);
+    assert!(
+        commands.is_empty(),
+        "expected no commands with single worker per task, got {:?}",
+        commands
+    );
+}

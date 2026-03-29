@@ -442,6 +442,125 @@ pub fn handle_task_done(params: Option<&Value>) -> Result<Vec<DomainEvent>, RpcE
     Ok(vec![DomainEvent::TaskCompleted { task_id: id }])
 }
 
+/// Handle `task.list` — returns all tasks from WorkIndex.
+pub fn handle_task_list(proj: &Projections) -> Result<Value, RpcError> {
+    let tasks: Vec<Value> = proj
+        .work
+        .tasks
+        .values()
+        .map(|t| {
+            json!({
+                "id": t.id,
+                "subject": t.subject,
+                "channel": t.channel,
+                "status": t.status,
+                "pr_number": t.pr_number,
+                "agent_type": t.agent_type,
+                "icon": t.icon,
+                "created_at": t.created_at.to_rfc3339(),
+                "completed_at": t.completed_at.map(|d| d.to_rfc3339()),
+            })
+        })
+        .collect();
+    Ok(json!(tasks))
+}
+
+/// Handle `task.update` — verify the task exists and return ok.
+///
+/// Required fields: `id`.
+pub fn handle_task_update(
+    params: Option<&Value>,
+    proj: &Projections,
+) -> Result<Vec<DomainEvent>, RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+    let id = params
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing id"))?;
+
+    if !proj.work.tasks.contains_key(id) {
+        return Err(RpcError {
+            code: -32000,
+            message: format!("task {id} not found"),
+        });
+    }
+
+    Ok(vec![])
+}
+
+/// Handle `pr.list` — returns all PR data from WorkIndex.
+pub fn handle_pr_list(proj: &Projections) -> Result<Value, RpcError> {
+    let prs: Vec<Value> = proj
+        .work
+        .prs
+        .values()
+        .map(|pr| {
+            json!({
+                "number": pr.number,
+                "branch": pr.branch,
+                "author": pr.author,
+                "ci_status": pr.ci_status,
+                "review_state": pr.review_state,
+                "is_merged": pr.is_merged,
+                "is_closed": pr.is_closed,
+                "needs_review": pr.needs_review,
+            })
+        })
+        .collect();
+    Ok(json!(prs))
+}
+
+/// Handle `pr.action` — merge, comment, or rerun CI for a PR.
+///
+/// Required fields: `action`, `number`.
+/// Optional fields: `body` (for comment action), `run_id` (for rerun action).
+pub fn handle_pr_action(
+    params: Option<&Value>,
+    proj: &Projections,
+) -> Result<Vec<crate::daemon_v2::decisions::Command>, RpcError> {
+    use crate::daemon_v2::decisions::Command;
+
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+    let action = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing action"))?;
+    let number = params
+        .get("number")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| RpcError::invalid_params("missing number"))?;
+
+    if !proj.work.prs.contains_key(&number) {
+        return Err(RpcError {
+            code: -32000,
+            message: format!("PR {number} not found"),
+        });
+    }
+
+    match action {
+        "merge" => Ok(vec![Command::MergePr { number }]),
+        "comment" => {
+            let body = params
+                .get("body")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok(vec![Command::PostPrComment { number, body }])
+        }
+        "rerun" => {
+            let run_id = params
+                .get("run_id")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| RpcError::invalid_params("missing run_id for rerun action"))?;
+            Ok(vec![Command::RerunCi { run_id }])
+        }
+        other => Err(RpcError {
+            code: -32602,
+            message: format!("unknown action: {other}"),
+        }),
+    }
+}
+
 /// Handle `prs.status` (v1 alias) — returns open PR info from WorkIndex.
 pub fn handle_prs_status(proj: &Projections) -> Result<Value, RpcError> {
     let prs: Vec<Value> = proj
