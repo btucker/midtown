@@ -253,6 +253,52 @@ pub async fn channel_directory_get(
     Json(json!({"directory": null, "channel": channel}))
 }
 
+pub async fn channel_archive(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Path(channel): axum::extract::Path<String>,
+) -> (StatusCode, Json<Value>) {
+    // Archive by renaming with .archived suffix (matches Channel::list convention)
+    let ch_dir = state.channels_dir.join("channels").join(&channel);
+    let archived_dir = state
+        .channels_dir
+        .join("channels")
+        .join(format!("{channel}.archived"));
+    if ch_dir.exists()
+        && let Err(e) = std::fs::rename(&ch_dir, &archived_dir)
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("failed to archive: {e}")})),
+        );
+    }
+    (StatusCode::OK, Json(json!({"ok": true})))
+}
+
+pub async fn channel_unarchive(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Path(channel): axum::extract::Path<String>,
+) -> (StatusCode, Json<Value>) {
+    let archived_dir = state
+        .channels_dir
+        .join("channels")
+        .join(format!("{channel}.archived"));
+    let ch_dir = state.channels_dir.join("channels").join(&channel);
+    if archived_dir.exists()
+        && let Err(e) = std::fs::rename(&archived_dir, &ch_dir)
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("failed to unarchive: {e}")})),
+        );
+    }
+    (StatusCode::OK, Json(json!({"ok": true})))
+}
+
+pub async fn directories() -> Json<Value> {
+    // List repo subdirectories — stub
+    Json(json!([]))
+}
+
 pub async fn mark_read(
     axum::extract::Path((_item_type, _id)): axum::extract::Path<(String, String)>,
 ) -> StatusCode {
