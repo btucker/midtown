@@ -34,23 +34,74 @@ impl AgentFilter {
 }
 
 pub fn handle_status(proj: &Projections) -> Result<Value, RpcError> {
-    let total = proj.agents.by_id.len();
-    let running = proj.agents.running.len();
-    let pending_tasks = proj.work.pending_tasks.len();
-    let in_progress_tasks = proj.work.in_progress_tasks.len();
-    let open_prs = proj.work.open_prs.len();
+    // Build coworkers array (running agents) for web UI compatibility
+    let coworkers: Vec<Value> = proj
+        .agents
+        .by_id
+        .values()
+        .filter(|a| proj.agents.running.contains(&a.id))
+        .map(|a| {
+            json!({
+                "name": a.name,
+                "status": "running",
+                "coworker_type": format!("{:?}", a.kind).to_lowercase(),
+                "current_task": a.task_id,
+                "color": a.color,
+                "icon": a.icon,
+            })
+        })
+        .collect();
+
+    // Build tasks array for kanban board
+    let tasks: Vec<Value> = proj
+        .work
+        .tasks
+        .values()
+        .map(|t| {
+            json!({
+                "id": t.id,
+                "subject": t.subject,
+                "status": match t.status {
+                    crate::daemon_v2::events::TaskStatus::Pending => "pending",
+                    crate::daemon_v2::events::TaskStatus::InProgress => "in_progress",
+                    crate::daemon_v2::events::TaskStatus::Completed => "completed",
+                },
+                "channel": t.channel,
+                "pr_number": t.pr_number,
+                "agent_type": t.agent_type,
+            })
+        })
+        .collect();
+
+    // Build pull_requests array
+    let pull_requests: Vec<Value> = proj
+        .work
+        .prs
+        .values()
+        .filter(|pr| !pr.is_merged && !pr.is_closed)
+        .map(|pr| {
+            json!({
+                "number": pr.number,
+                "title": pr.branch,
+                "author": pr.author,
+                "status": if pr.review_state == crate::daemon_v2::events::ReviewState::Approved { "approved" } else { "open" },
+                "ci_status": format!("{:?}", pr.ci_status).to_lowercase(),
+                "needs_review": pr.needs_review,
+            })
+        })
+        .collect();
 
     Ok(json!({
         "agents": {
-            "total": total,
-            "running": running,
+            "total": proj.agents.by_id.len(),
+            "running": proj.agents.running.len(),
         },
-        "tasks": {
-            "pending": pending_tasks,
-            "in_progress": in_progress_tasks,
-        },
+        "coworkers": coworkers,
+        "tasks": tasks,
+        "pull_requests": pull_requests,
+        "max_in_progress_tasks": 3,
         "prs": {
-            "open": open_prs,
+            "open": proj.work.open_prs.len(),
         },
     }))
 }

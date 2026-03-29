@@ -60,7 +60,10 @@ fn full_lifecycle_through_store_and_projections() {
         test_channels_dir(),
     );
     assert_eq!(status["result"]["agents"]["running"], 1);
-    assert_eq!(status["result"]["tasks"]["pending"], 1);
+    // tasks is now an array for the kanban board
+    let tasks = status["result"]["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0]["status"], "pending");
 
     // 4. Assign task
     let e4 = DomainEvent::TaskAssigned {
@@ -75,8 +78,9 @@ fn full_lifecycle_through_store_and_projections() {
         &proj,
         test_channels_dir(),
     );
-    assert_eq!(status["result"]["tasks"]["pending"], 0);
-    assert_eq!(status["result"]["tasks"]["in_progress"], 1);
+    let tasks = status["result"]["tasks"].as_array().unwrap();
+    assert!(tasks.iter().all(|t| t["status"] != "pending"));
+    assert!(tasks.iter().any(|t| t["status"] == "in_progress"));
 
     // 5. Snapshot and recover
     store.save_snapshot(&proj).unwrap();
@@ -98,7 +102,8 @@ fn full_lifecycle_through_store_and_projections() {
         &recovered_proj,
         test_channels_dir(),
     );
-    assert_eq!(status["result"]["tasks"]["in_progress"], 0);
+    let tasks = status["result"]["tasks"].as_array().unwrap();
+    assert!(tasks.iter().all(|t| t["status"] != "in_progress"));
     assert_eq!(status["result"]["agents"]["running"], 1);
 }
 
