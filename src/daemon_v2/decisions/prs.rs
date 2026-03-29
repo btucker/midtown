@@ -100,20 +100,25 @@ fn count_stopped_reviewers(proj: &Projections, pr_num: u64) -> usize {
         .count()
 }
 
-/// After a PR merges, nudge running workers with open PRs to rebase.
+/// After a PR merges, nudge workers with open PRs to rebase.
+/// Uses MergeRebaseNudge cooldown (1hr) per agent to avoid repeated nudging.
 pub fn nudge_rebase_after_merge(proj: &Projections) -> Vec<Command> {
-    // Only act if there are recently merged PRs
+    use crate::daemon_v2::projections::cooldowns::CooldownCategory;
+
     let has_merged = proj.work.prs.values().any(|pr| pr.is_merged);
     if !has_merged {
         return vec![];
     }
 
-    // Find running workers whose tasks have open (not merged, not closed) PRs
     proj.agents
-        .running
-        .iter()
-        .filter_map(|id| proj.agents.by_id.get(id))
+        .by_id
+        .values()
         .filter(|agent| agent.kind == AgentKind::Worker)
+        .filter(|agent| {
+            !proj
+                .cooldowns
+                .is_active(CooldownCategory::MergeRebaseNudge, &agent.id)
+        })
         .filter_map(|agent| {
             let task_id = agent.task_id.as_ref()?;
             let pr = proj.work.pr_for_task(task_id)?;

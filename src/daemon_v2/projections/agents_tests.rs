@@ -216,6 +216,8 @@ fn resumed_updates_pid_and_restores_running() {
     let agent = idx.by_id.get("a1").unwrap();
     assert_eq!(agent.pid, Some(2000));
     assert!(agent.stopped_at.is_none());
+    // started_at reset so idle checks use resume time, not original spawn time
+    assert!(agent.started_at.is_some());
     // session_id unchanged
     assert_eq!(agent.session_id, Some("sess-abc".into()));
 }

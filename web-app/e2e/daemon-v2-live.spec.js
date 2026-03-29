@@ -1004,6 +1004,99 @@ test.describe('Daemon v2 Live Web UI', () => {
     expect(res.status()).not.toBe(404)
   })
 
+  test('browser back/forward navigates between channels', async ({ browser }) => {
+    const context = await browser.newContext({ ignoreHTTPSErrors: true })
+    const page = await context.newPage()
+
+    await page.goto('https://localhost:47022', { waitUntil: 'networkidle', timeout: 15000 })
+    await page.waitForSelector('[data-testid="channel-input"]', { timeout: 10000 })
+
+    // Navigate to #ops channel
+    const opsLink = page.getByText('#ops', { exact: true })
+    if (await opsLink.isVisible()) {
+      await opsLink.click()
+      await page.waitForSelector('text=# ops', { timeout: 5000 })
+
+      // Navigate to #dev channel
+      const devLink = page.getByText('#dev', { exact: true })
+      await devLink.click()
+      await page.waitForSelector('text=# dev', { timeout: 5000 })
+
+      // Go back — should return to #ops
+      await page.goBack()
+      await expect(page.getByText('# ops').first()).toBeVisible({ timeout: 5000 })
+
+      // Go forward — should return to #dev
+      await page.goForward()
+      await expect(page.getByText('# dev').first()).toBeVisible({ timeout: 5000 })
+    }
+
+    await context.close()
+  })
+
+  test('uploaded file can be retrieved', async ({ request }) => {
+    const content = `test-content-${Date.now()}`
+
+    // Upload a file
+    const uploadRes = await request.post(`${BASE_URL}/api/upload`, {
+      multipart: {
+        file: {
+          name: 'roundtrip-test.txt',
+          mimeType: 'text/plain',
+          buffer: Buffer.from(content),
+        },
+      },
+    })
+    expect(uploadRes.ok()).toBeTruthy()
+    const uploadData = await uploadRes.json()
+    expect(uploadData.filename).toBe('roundtrip-test.txt')
+
+    // Retrieve it
+    const getRes = await request.get(`${BASE_URL}/api/uploads/roundtrip-test.txt`)
+    expect(getRes.ok()).toBeTruthy()
+    const body = await getRes.text()
+    expect(body).toBe(content)
+  })
+
+  test('coworker status shows lead agent name', async ({ request }) => {
+    // Verify the lead appears in coworkers via direct API
+    const res = await request.get(`${BASE_URL}/api/status`)
+    const data = await res.json()
+    expect(data.coworkers.length).toBeGreaterThan(0)
+    const lead = data.coworkers.find((c) => c.coworker_type === 'lead')
+    expect(lead).toBeDefined()
+    expect(lead.name).toBeTruthy()
+    expect(lead.status).toBe('running')
+  })
+
+  test('multiple messages post in sequence without duplication', async ({ browser }) => {
+    const context = await browser.newContext({ ignoreHTTPSErrors: true })
+    const page = await context.newPage()
+
+    await page.goto('https://localhost:47022', { waitUntil: 'networkidle', timeout: 15000 })
+    await page.waitForSelector('[data-testid="channel-input"]', { timeout: 10000 })
+
+    const msg1 = `seq-1-${Date.now()}`
+    const msg2 = `seq-2-${Date.now()}`
+
+    const input = page.locator('[data-testid="channel-input"]')
+    await input.fill(msg1)
+    await input.press('Enter')
+    await expect(page.getByText(msg1)).toBeVisible({ timeout: 5000 })
+
+    await input.fill(msg2)
+    await input.press('Enter')
+    await expect(page.getByText(msg2)).toBeVisible({ timeout: 5000 })
+
+    // Both messages should be visible, each appearing exactly once
+    const msg1Count = await page.getByText(msg1).count()
+    const msg2Count = await page.getByText(msg2).count()
+    expect(msg1Count).toBe(1)
+    expect(msg2Count).toBe(1)
+
+    await context.close()
+  })
+
   test('light mode applies correct background', async ({ browser }) => {
     const context = await browser.newContext({ ignoreHTTPSErrors: true })
     const page = await context.newPage()
