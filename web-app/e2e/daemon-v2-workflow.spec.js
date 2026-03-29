@@ -1,69 +1,17 @@
 // @ts-check
 import { test, expect } from '@playwright/test'
-import { execSync, spawn } from 'child_process'
-import { existsSync, unlinkSync, rmSync } from 'fs'
-import { join } from 'path'
+import { execSync } from 'child_process'
+import { startDaemon, cleanupDaemon, API, TEST_PORT } from './test-daemon.js'
 
 /**
  * Full workflow E2E tests using a dedicated test repo.
- *
- * These tests start a real v2 daemon on /Users/btucker/projects/midtown-e2e-test,
- * exercise the web UI, and verify the full pipeline works.
+ * Shares the test daemon with daemon-v2-live.spec.js.
  *
  * Run:
  *   npx playwright test e2e/daemon-v2-workflow.spec.js
  */
 
 const TEST_REPO = '/Users/btucker/projects/midtown-e2e-test'
-const MIDTOWN_BIN = execSync('which midtown').toString().trim()
-const STATE_DIR = join(process.env.HOME || '/tmp', '.local/state/midtown/midtown-e2e-test')
-const PROJECT_DIR = join(process.env.HOME || '/tmp', '.midtown/projects/midtown-e2e-test')
-
-/** @type {import('child_process').ChildProcess | null} */
-let daemonProcess = null
-let daemonPort = 47099
-
-function cleanupDaemon() {
-  if (daemonProcess) {
-    daemonProcess.kill('SIGKILL')
-    daemonProcess = null
-  }
-  try { unlinkSync(join(STATE_DIR, 'daemon.sock')) } catch {}
-  try { unlinkSync(join(PROJECT_DIR, 'daemon.pid')) } catch {}
-  try { rmSync(join(PROJECT_DIR, 'events'), { recursive: true, force: true }) } catch {}
-}
-
-async function startDaemon() {
-  cleanupDaemon()
-
-  daemonProcess = spawn(MIDTOWN_BIN, [
-    'daemon-v2',
-    '--workdir', 'midtown-e2e-test',
-    '--channel', 'midtown-e2e-test',
-    '--web-port', daemonPort.toString(),
-  ], {
-    cwd: TEST_REPO,
-    env: {
-      ...process.env,
-      MIDTOWN_CHAT_MONITOR: '0',
-      MIDTOWN_WEBHOOK_PORT: '0',
-    },
-    stdio: 'ignore',
-    detached: true,
-  })
-
-  // Wait for the web server to be ready
-  for (let i = 0; i < 30; i++) {
-    try {
-      const res = await fetch(`http://localhost:${daemonPort}/api/health`)
-      if (res.ok) return
-    } catch {}
-    await new Promise(r => setTimeout(r, 500))
-  }
-  throw new Error('Daemon web server did not start within 15s')
-}
-
-const API = `http://localhost:${daemonPort}`
 
 test.describe('Daemon v2 Workflow', () => {
   test.beforeAll(async () => {
@@ -118,7 +66,7 @@ test.describe('Daemon v2 Workflow', () => {
     const context = await browser.newContext()
     const page = await context.newPage()
 
-    await page.goto(`http://localhost:${daemonPort}`, { waitUntil: 'networkidle', timeout: 15000 })
+    await page.goto(`http://localhost:${TEST_PORT}`, { waitUntil: 'networkidle', timeout: 15000 })
     await page.waitForTimeout(3000)
 
     // Should show health endpoint at minimum
