@@ -311,16 +311,63 @@ pub async fn channel_settings_put(
 }
 
 pub async fn channel_agents_md(
+    State(state): State<Arc<WebState>>,
     axum::extract::Path(channel): axum::extract::Path<String>,
 ) -> Json<Value> {
-    // Read AGENTS.md for a channel — stub for now
-    Json(json!({"content": "", "channel": channel}))
+    let path = state
+        .channels_dir
+        .join("channels")
+        .join(&channel)
+        .join("AGENTS.md");
+    let content = std::fs::read_to_string(&path).unwrap_or_default();
+    Json(json!({"content": content, "channel": channel}))
+}
+
+pub async fn channel_agents_md_put(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Path(channel): axum::extract::Path<String>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let dir = state.channels_dir.join("channels").join(&channel);
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("AGENTS.md");
+    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    let _ = std::fs::write(&path, content);
+    Json(json!({"ok": true}))
 }
 
 pub async fn channel_directory_get(
+    State(state): State<Arc<WebState>>,
     axum::extract::Path(channel): axum::extract::Path<String>,
 ) -> Json<Value> {
-    Json(json!({"directory": null, "channel": channel}))
+    let proj = state.projections.lock().await;
+    let directory = proj
+        .channels
+        .channel_directory(&channel)
+        .map(|d| json!(d))
+        .unwrap_or(json!(null));
+    Json(json!({"directory": directory, "channel": channel}))
+}
+
+pub async fn channel_directory_put(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Path(channel): axum::extract::Path<String>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let directory = body
+        .get("directory")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    // Apply via channel.update RPC
+    let proj = state.projections.lock().await;
+    let event = crate::daemon_v2::events::DomainEvent::ChannelDirectorySet {
+        channel: channel.clone(),
+        directory,
+    };
+    drop(proj);
+    let mut proj = state.projections.lock().await;
+    proj.apply(&event);
+    Json(json!({"ok": true}))
 }
 
 pub async fn channel_archive(

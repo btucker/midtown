@@ -35,11 +35,11 @@ pub fn create_router(state: Arc<WebState>) -> Router {
         )
         .route(
             "/api/channels/{channel}/agents-md",
-            get(routes::channel_agents_md),
+            get(routes::channel_agents_md).put(routes::channel_agents_md_put),
         )
         .route(
             "/api/channels/{channel}/directory",
-            get(routes::channel_directory_get),
+            get(routes::channel_directory_get).put(routes::channel_directory_put),
         )
         .route(
             "/api/channels/{channel}/archive",
