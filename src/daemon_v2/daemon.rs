@@ -6,8 +6,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, mpsc};
 
-use crate::daemon_v2::decisions::{self, Command, health, lifecycle};
-use crate::daemon_v2::events::{DomainEvent, EventStore};
+use crate::daemon_v2::decisions::{self, Command, SpawnConfig, health, lifecycle};
+use crate::daemon_v2::events::{AgentKind, DomainEvent, EventStore};
 use crate::daemon_v2::executor;
 use crate::daemon_v2::executor::webhook::webhook_to_events;
 use crate::daemon_v2::projections::Projections;
@@ -16,6 +16,8 @@ use crate::daemon_v2::scheduler::Scheduler;
 use crate::headless::HeadlessSession;
 use crate::paths::ProjectPaths;
 use crate::webhook::WebhookEvent;
+use crate::worktree::WorktreeManager;
+use crate::worktree_registry::{self, WorktreeAssignment, WorktreeRegistry};
 
 /// Configuration for DaemonV2.
 pub struct DaemonV2Config {
@@ -59,6 +61,10 @@ pub struct DaemonV2 {
     webhook_rx: Option<mpsc::Receiver<WebhookEvent>>,
     /// Broadcast sender for domain events — feeds WebSocket clients.
     event_tx: broadcast::Sender<DomainEvent>,
+    /// Manages git worktree creation/removal for worker isolation.
+    worktree_manager: Option<WorktreeManager>,
+    /// Registry tracking worktree-to-task assignments.
+    worktree_registry: WorktreeRegistry,
 }
 
 /// Exit status returned by [`DaemonV2::run`].
@@ -244,6 +250,18 @@ impl DaemonV2 {
         // Broadcast channel for domain events (feeds WebSocket clients).
         let (event_tx, _) = broadcast::channel::<DomainEvent>(256);
 
+        let worktree_manager = match WorktreeManager::from_current_dir() {
+            Ok(wm) => {
+                tracing::info!(repo = %wm.repo_name(), "worktree manager initialized");
+                Some(wm)
+            }
+            Err(e) => {
+                tracing::warn!(%e, "failed to initialize worktree manager — workers will use repo root");
+                None
+            }
+        };
+        let worktree_registry = WorktreeRegistry::default();
+
         Ok(Self {
             config,
             store,
@@ -254,6 +272,8 @@ impl DaemonV2 {
             pending_resumes,
             webhook_rx,
             event_tx,
+            worktree_manager,
+            worktree_registry,
         })
     }
 
@@ -321,8 +341,13 @@ impl DaemonV2 {
                 accept_result = listener.accept() => {
                     match accept_result {
                         Ok((stream, _addr)) => {
-                            let (outcome, events, commands) = handle_rpc_connection(stream, &self.projections, &self.config.channels_dir).await;
+                            let (outcome, events, mut commands) = handle_rpc_connection(stream, &self.projections, &self.config.channels_dir).await;
                             self.apply_events(&events);
+                            for cmd in &mut commands {
+                                if let Command::SpawnAgent(config) = cmd {
+                                    self.prepare_worktree_for_spawn(config);
+                                }
+                            }
                             for command in commands {
                                 let cmd_events = executor::execute(
                                     command,
@@ -332,6 +357,7 @@ impl DaemonV2 {
                                     &self.config.channels_dir,
                                 )
                                 .await;
+                                self.handle_worktree_cleanup(&cmd_events);
                                 self.apply_events(&cmd_events);
                             }
                             if outcome == RpcOutcome::Shutdown {
@@ -386,8 +412,15 @@ impl DaemonV2 {
         let due = self.scheduler.due_decisions(now);
 
         for decision in due {
-            let commands = (decision.run)(&self.projections, &self.config.default_channel);
+            let mut commands = (decision.run)(&self.projections, &self.config.default_channel);
             self.scheduler.mark_ran(decision.name, now);
+
+            // Enrich SpawnAgent commands with worktree paths before execution.
+            for cmd in &mut commands {
+                if let Command::SpawnAgent(config) = cmd {
+                    self.prepare_worktree_for_spawn(config);
+                }
+            }
 
             for command in commands {
                 let events = executor::execute(
@@ -398,7 +431,111 @@ impl DaemonV2 {
                     &self.config.channels_dir,
                 )
                 .await;
+                // Clean up worktrees for completed tasks.
+                self.handle_worktree_cleanup(&events);
                 self.apply_events(&events);
+            }
+        }
+    }
+
+    /// Create a worktree for a SpawnAgent command and set its `working_dir`.
+    ///
+    /// - Workers with a task_id get a task worktree (branched).
+    /// - Leads get the shared lead worktree.
+    fn prepare_worktree_for_spawn(&mut self, config: &mut SpawnConfig) {
+        let Some(ref wm) = self.worktree_manager else {
+            return;
+        };
+
+        match config.kind {
+            AgentKind::Worker => {
+                let Some(ref task_id) = config.task_id else {
+                    return;
+                };
+
+                // If this task already has a worktree (e.g. re-dispatch after reset),
+                // reuse it instead of creating a new one.
+                if let Some(wt_id) = self.worktree_registry.find_worktree_by_task(task_id) {
+                    let path = wm.task_worktree_path(&wt_id);
+                    config.working_dir = Some(path.to_string_lossy().to_string());
+                    // Rebind the coworker (old one is dead if we're re-dispatching).
+                    let _ = self
+                        .worktree_registry
+                        .force_rebind_coworker(&wt_id, &config.name);
+                    tracing::info!(
+                        %task_id,
+                        worktree = %wt_id,
+                        "reusing existing worktree for re-dispatched task"
+                    );
+                    return;
+                }
+
+                let subject = config.initial_prompt.as_deref().unwrap_or("task");
+                let slug = worktree_registry::branch_slug_for_task(task_id, subject);
+
+                match wm.create_task_worktree(&slug) {
+                    Ok(path) => {
+                        config.working_dir = Some(path.to_string_lossy().to_string());
+                        let assignment = WorktreeAssignment {
+                            worktree_id: slug.clone(),
+                            branch_name: slug,
+                            task_id: Some(task_id.clone()),
+                            current_coworker: Some(config.name.clone()),
+                            pr_number: None,
+                            created_at: chrono::Utc::now(),
+                            completed_at: None,
+                        };
+                        if let Err(e) = self.worktree_registry.assign_worktree(assignment) {
+                            tracing::warn!(%task_id, %e, "worktree registry assignment failed");
+                        }
+                        tracing::info!(%task_id, worktree = %path.display(), "created task worktree");
+                    }
+                    Err(e) => {
+                        tracing::error!(%task_id, %e, "failed to create task worktree");
+                    }
+                }
+            }
+            AgentKind::Lead | AgentKind::Fork => {
+                // Only set working_dir from the worktree manager if it isn't
+                // already set (e.g. by a channel directory override).
+                if config.working_dir.is_some() {
+                    return;
+                }
+                match wm.create_lead_worktree() {
+                    Ok(path) => {
+                        config.working_dir = Some(path.to_string_lossy().to_string());
+                        tracing::info!(worktree = %path.display(), "lead worktree ready");
+                    }
+                    Err(e) => {
+                        tracing::error!(%e, "failed to create lead worktree");
+                    }
+                }
+            }
+        }
+    }
+
+    /// After executing a command, check for TaskCompleted events and clean up
+    /// the associated worktree.
+    fn handle_worktree_cleanup(&mut self, events: &[DomainEvent]) {
+        for event in events {
+            if let DomainEvent::TaskCompleted { task_id } = event
+                && let Some(wt_id) = self.worktree_registry.find_worktree_by_task(task_id)
+            {
+                // Mark as completed (for potential time-based deferred cleanup).
+                self.worktree_registry
+                    .mark_completed(&wt_id, chrono::Utc::now());
+                // Remove the git worktree from disk.
+                if let Some(ref wm) = self.worktree_manager {
+                    match wm.remove_task_worktree(&wt_id, false) {
+                        Ok(()) => {
+                            tracing::info!(%task_id, %wt_id, "removed task worktree");
+                        }
+                        Err(e) => {
+                            tracing::warn!(%task_id, %wt_id, %e, "failed to remove task worktree");
+                        }
+                    }
+                }
+                self.worktree_registry.remove_worktree(&wt_id);
             }
         }
     }

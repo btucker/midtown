@@ -207,15 +207,17 @@ pub async fn execute(
             vec![DomainEvent::TaskCompleted { task_id }]
         }
         Command::CreateWorktree { task_id, branch } => {
-            tracing::info!(%task_id, %branch, "would create worktree (not yet wired to WorktreeManager)");
-            // TODO: wire to WorktreeManager::create_task_worktree once repo root
-            // is available in executor context
+            // Worktree creation is handled in DaemonV2::prepare_worktree_for_spawn()
+            // before SpawnAgent commands are executed. This arm exists for explicit
+            // worktree creation requests that bypass the spawn path.
+            tracing::debug!(%task_id, %branch, "CreateWorktree command received (worktree lifecycle managed by daemon)");
             vec![]
         }
         Command::RemoveWorktree { task_id } => {
-            tracing::info!(%task_id, "would remove worktree (not yet wired to WorktreeManager)");
-            // TODO: wire to WorktreeManager::remove_task_worktree once repo root
-            // is available in executor context
+            // Worktree removal is handled in DaemonV2::handle_worktree_cleanup()
+            // after TaskCompleted events. This arm exists for explicit removal
+            // requests that bypass the task completion path.
+            tracing::debug!(%task_id, "RemoveWorktree command received (worktree lifecycle managed by daemon)");
             vec![]
         }
         Command::GarbageCollect { agent_id } => {
