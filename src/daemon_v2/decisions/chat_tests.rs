@@ -31,486 +31,86 @@ fn running_lead_events(channel: &str) -> Vec<DomainEvent> {
     ]
 }
 
-#[test]
-fn mention_lead_routes_to_channel_lead() {
-    let proj = make_projections(&running_lead_events("main"));
-    let commands = route_mentions(&proj, "main", "alice", "hey @lead can you help?");
-
-    assert_eq!(commands.len(), 1);
-    assert!(
-        matches!(&commands[0], Command::NudgeAgent { id, message }
-            if id == "lead-1" && message.contains("mention from alice")),
-        "expected NudgeAgent for lead-1, got {:?}",
-        commands[0]
-    );
-}
-
-#[test]
-fn mention_channel_name_routes_to_channel_lead() {
-    let proj = make_projections(&running_lead_events("main"));
-    let commands = route_mentions(&proj, "main", "alice", "hey @main what's the status?");
-
-    assert_eq!(commands.len(), 1);
-    assert!(
-        matches!(&commands[0], Command::NudgeAgent { id, .. } if id == "lead-1"),
-        "expected NudgeAgent for lead-1, got {:?}",
-        commands[0]
-    );
-}
-
-#[test]
-fn mention_agent_by_name_routes_nudge() {
-    let mut events = running_lead_events("main");
-    events.extend(vec![
+fn worker_events(id: &str, name: &str, channel: &str, task_id: Option<&str>) -> Vec<DomainEvent> {
+    vec![
         DomainEvent::AgentCreated {
-            id: "worker-1".into(),
-            name: "ghost-town".into(),
+            id: id.into(),
+            name: name.into(),
             kind: AgentKind::Worker,
             agent_type: "midtown-code-author".into(),
             provider: Provider::ClaudeCode,
-            channel: Some("main".into()),
-            task_id: Some("task-1".into()),
+            channel: Some(channel.into()),
+            task_id: task_id.map(String::from),
             bound_thread_id: None,
             icon: None,
             color: None,
         },
         DomainEvent::AgentStarted {
-            id: "worker-1".into(),
+            id: id.into(),
             pid: 99,
             session_id: None,
         },
-    ]);
-
-    let proj = make_projections(&events);
-    let commands = route_mentions(&proj, "main", "alice", "hey @ghost-town can you check?");
-
-    assert_eq!(commands.len(), 1);
-    assert!(
-        matches!(&commands[0], Command::NudgeAgent { id, message }
-            if id == "worker-1" && message.contains("mention from alice")),
-        "expected NudgeAgent for worker-1, got {:?}",
-        commands[0]
-    );
+    ]
 }
 
-#[test]
-fn self_mention_ignored() {
-    let proj = make_projections(&running_lead_events("main"));
-    // "main" is the lead's name and the channel — self-mentioning from "main" sender
-    let commands = route_mentions(&proj, "main", "main", "hey @lead check this");
-
-    // @lead mention from "main" sender should be ignored because target == sender
-    // Actually target is "lead" and sender is "main" — not equal. Let's test actual self-mention.
-    // Self-mention: sender mentions their own name
-    let commands2 = route_mentions(&proj, "main", "ghost-town", "hey @ghost-town oops");
-    assert!(
-        commands2.is_empty(),
-        "self-mention should be ignored, got {:?}",
-        commands2
-    );
-
-    // Suppress unused warning
-    let _ = commands;
-}
+// ── route_message: channel lead nudging ─────────────────────────────
 
 #[test]
-fn unknown_mention_no_nudge() {
+fn channel_lead_nudged_on_every_message() {
     let proj = make_projections(&running_lead_events("main"));
-    let commands = route_mentions(&proj, "main", "alice", "hey @nobody-exists do this");
+    let commands = route_message(&proj, "main", "alice", "just chatting", None);
 
     assert!(
-        commands.is_empty(),
-        "unknown mention should produce no commands, got {:?}",
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "lead-1")),
+        "lead nudged on plain message, got {:?}",
         commands
     );
 }
 
 #[test]
-fn at_all_broadcasts_to_all_running_agents() {
-    let mut events = running_lead_events("main");
-    events.extend(vec![
+fn stopped_lead_still_nudged() {
+    let events = vec![
         DomainEvent::AgentCreated {
-            id: "worker-1".into(),
-            name: "ghost-town".into(),
-            kind: AgentKind::Worker,
-            agent_type: "midtown-code-author".into(),
-            provider: Provider::ClaudeCode,
-            channel: Some("main".into()),
-            task_id: Some("task-1".into()),
-            bound_thread_id: None,
-            icon: None,
-            color: None,
-        },
-        DomainEvent::AgentStarted {
-            id: "worker-1".into(),
-            pid: 99,
-            session_id: None,
-        },
-        DomainEvent::AgentCreated {
-            id: "worker-2".into(),
-            name: "swift-river".into(),
-            kind: AgentKind::Worker,
-            agent_type: "midtown-code-author".into(),
-            provider: Provider::ClaudeCode,
-            channel: Some("main".into()),
-            task_id: Some("task-2".into()),
-            bound_thread_id: None,
-            icon: None,
-            color: None,
-        },
-        DomainEvent::AgentStarted {
-            id: "worker-2".into(),
-            pid: 100,
-            session_id: None,
-        },
-    ]);
-
-    let proj = make_projections(&events);
-    let commands = route_mentions(&proj, "main", "alice", "hey @all please rebase");
-
-    // Should nudge lead + both workers = 3 agents
-    assert_eq!(
-        commands.len(),
-        3,
-        "expected 3 nudges for @all, got {:?}",
-        commands
-    );
-    let nudge_ids: Vec<&str> = commands
-        .iter()
-        .filter_map(|c| match c {
-            Command::NudgeAgent { id, .. } => Some(id.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert!(nudge_ids.contains(&"lead-1"));
-    assert!(nudge_ids.contains(&"worker-1"));
-    assert!(nudge_ids.contains(&"worker-2"));
-}
-
-#[test]
-fn at_all_excludes_sender() {
-    let mut events = running_lead_events("main");
-    events.extend(vec![
-        DomainEvent::AgentCreated {
-            id: "worker-1".into(),
-            name: "ghost-town".into(),
-            kind: AgentKind::Worker,
-            agent_type: "midtown-code-author".into(),
-            provider: Provider::ClaudeCode,
-            channel: Some("main".into()),
-            task_id: Some("task-1".into()),
-            bound_thread_id: None,
-            icon: None,
-            color: None,
-        },
-        DomainEvent::AgentStarted {
-            id: "worker-1".into(),
-            pid: 99,
-            session_id: None,
-        },
-    ]);
-
-    let proj = make_projections(&events);
-    // Sender is "main" which is also the lead's name — lead should be excluded
-    let commands = route_mentions(&proj, "main", "main", "hey @all please rebase");
-
-    assert_eq!(
-        commands.len(),
-        1,
-        "@all should exclude sender, got {:?}",
-        commands
-    );
-    assert!(
-        matches!(&commands[0], Command::NudgeAgent { id, .. } if id == "worker-1"),
-        "expected only worker-1, got {:?}",
-        commands[0]
-    );
-}
-
-#[test]
-fn at_ops_routes_to_ops_channel_lead() {
-    // Create leads for both "main" and "ops" channels
-    let mut events = running_lead_events("main");
-    events.extend(vec![
-        DomainEvent::AgentCreated {
-            id: "ops-lead".into(),
-            name: "ops".into(),
+            id: "lead-1".into(),
+            name: "main".into(),
             kind: AgentKind::Lead,
             agent_type: "midtown-channel-lead".into(),
             provider: Provider::ClaudeCode,
-            channel: Some("ops".into()),
+            channel: Some("main".into()),
             task_id: None,
             bound_thread_id: None,
             icon: None,
             color: None,
         },
         DomainEvent::AgentStarted {
-            id: "ops-lead".into(),
-            pid: 50,
-            session_id: None,
-        },
-    ]);
-
-    let proj = make_projections(&events);
-    let commands = route_mentions(&proj, "main", "alice", "hey @ops something broke");
-
-    assert_eq!(commands.len(), 1, "expected 1 nudge, got {:?}", commands);
-    assert!(
-        matches!(&commands[0], Command::NudgeAgent { id, .. } if id == "ops-lead"),
-        "expected NudgeAgent for ops-lead, got {:?}",
-        commands[0]
-    );
-}
-
-#[test]
-fn task_reference_routes_to_assigned_agent() {
-    let mut events = running_lead_events("main");
-    events.extend(vec![
-        DomainEvent::TaskCreated {
-            id: "42".into(),
-            subject: "Fix login bug".into(),
-            channel: "main".into(),
-            blocked_by: vec![],
-            agent_type: None,
-            icon: None,
-        },
-        DomainEvent::AgentCreated {
-            id: "worker-1".into(),
-            name: "ghost-town".into(),
-            kind: AgentKind::Worker,
-            agent_type: "midtown-code-author".into(),
-            provider: Provider::ClaudeCode,
-            channel: Some("main".into()),
-            task_id: Some("42".into()),
-            bound_thread_id: None,
-            icon: None,
-            color: None,
-        },
-        DomainEvent::AgentStarted {
-            id: "worker-1".into(),
-            pid: 99,
-            session_id: None,
-        },
-        DomainEvent::TaskAssigned {
-            task_id: "42".into(),
-            agent_id: "worker-1".into(),
-        },
-    ]);
-
-    let proj = make_projections(&events);
-    // Message references task !42 — should route to the worker assigned to it
-    let commands = route_mentions(&proj, "main", "alice", "hey @lead check !42 progress");
-
-    // Should have 2 commands: nudge lead (from @lead) + nudge worker (from !42)
-    assert_eq!(commands.len(), 2, "expected 2 nudges, got {:?}", commands);
-    let nudge_ids: Vec<&str> = commands
-        .iter()
-        .filter_map(|c| match c {
-            Command::NudgeAgent { id, .. } => Some(id.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert!(
-        nudge_ids.contains(&"worker-1"),
-        "expected nudge for worker-1 (task !42 owner)"
-    );
-}
-
-#[test]
-fn task_reference_standalone_routes_to_agent() {
-    let events = vec![
-        DomainEvent::TaskCreated {
-            id: "7".into(),
-            subject: "Add tests".into(),
-            channel: "main".into(),
-            blocked_by: vec![],
-            agent_type: None,
-            icon: None,
-        },
-        DomainEvent::AgentCreated {
-            id: "worker-1".into(),
-            name: "swift-river".into(),
-            kind: AgentKind::Worker,
-            agent_type: "midtown-code-author".into(),
-            provider: Provider::ClaudeCode,
-            channel: Some("main".into()),
-            task_id: Some("7".into()),
-            bound_thread_id: None,
-            icon: None,
-            color: None,
-        },
-        DomainEvent::AgentStarted {
-            id: "worker-1".into(),
-            pid: 99,
-            session_id: None,
-        },
-        DomainEvent::TaskAssigned {
-            task_id: "7".into(),
-            agent_id: "worker-1".into(),
-        },
-    ];
-
-    let proj = make_projections(&events);
-    // Standalone !7 with no @mention — should still route to the task owner
-    let commands = route_mentions(&proj, "main", "alice", "!7 looks good, ship it");
-
-    assert_eq!(
-        commands.len(),
-        1,
-        "expected 1 nudge for task ref, got {:?}",
-        commands
-    );
-    assert!(
-        matches!(&commands[0], Command::NudgeAgent { id, message }
-            if id == "worker-1" && message.contains("!7")),
-        "expected NudgeAgent for worker-1, got {:?}",
-        commands[0]
-    );
-}
-
-#[test]
-fn task_reference_no_nudge_for_unassigned_task() {
-    let events = vec![DomainEvent::TaskCreated {
-        id: "42".into(),
-        subject: "Fix login".into(),
-        channel: "main".into(),
-        blocked_by: vec![],
-        agent_type: None,
-        icon: None,
-    }];
-
-    let proj = make_projections(&events);
-    // Task exists but has no agent assigned — no nudge
-    let commands = route_mentions(&proj, "main", "alice", "what about !42?");
-
-    assert!(
-        commands.is_empty(),
-        "unassigned task ref should produce no commands, got {:?}",
-        commands
-    );
-}
-
-#[test]
-fn no_nudge_for_stopped_agent() {
-    // Agent exists but is stopped
-    let events = vec![
-        DomainEvent::AgentCreated {
-            id: "worker-1".into(),
-            name: "ghost-town".into(),
-            kind: AgentKind::Worker,
-            agent_type: "midtown-code-author".into(),
-            provider: Provider::ClaudeCode,
-            channel: Some("main".into()),
-            task_id: Some("task-1".into()),
-            bound_thread_id: None,
-            icon: None,
-            color: None,
-        },
-        DomainEvent::AgentStarted {
-            id: "worker-1".into(),
-            pid: 99,
+            id: "lead-1".into(),
+            pid: 42,
             session_id: None,
         },
         DomainEvent::AgentStopped {
-            id: "worker-1".into(),
-            reason: "done".into(),
+            id: "lead-1".into(),
+            reason: "crashed".into(),
         },
     ];
 
     let proj = make_projections(&events);
-    let commands = route_mentions(&proj, "main", "alice", "hey @ghost-town are you there?");
-
-    assert!(
-        commands.is_empty(),
-        "stopped agent mention should produce no commands, got {:?}",
-        commands
-    );
-}
-
-// ── route_message tests ─────────────────────────────────────────────
-
-#[test]
-fn route_message_nudges_channel_lead_on_all_messages() {
-    let proj = make_projections(&running_lead_events("main"));
-
-    // A plain message with no @mentions should still nudge the lead
-    let commands = route_message(&proj, "main", "alice", "just a regular message", None);
+    let commands = route_message(&proj, "main", "alice", "hey lead", None);
 
     assert!(
         commands
             .iter()
             .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "lead-1")),
-        "channel lead should be nudged on all messages, got {:?}",
+        "stopped lead should still be nudged (executor resumes), got {:?}",
         commands
     );
 }
 
 #[test]
-fn route_message_nudges_fork_on_thread_reply() {
-    let mut events = running_lead_events("main");
-    // Fork bound to thread "thread-abc"
-    events.extend(vec![
-        DomainEvent::AgentCreated {
-            id: "fork-1".into(),
-            name: "fork-abc".into(),
-            kind: AgentKind::Fork,
-            agent_type: "midtown-channel-lead".into(),
-            provider: Provider::ClaudeCode,
-            channel: Some("main".into()),
-            task_id: None,
-            bound_thread_id: Some("thread-abc".into()),
-            icon: None,
-            color: None,
-        },
-        DomainEvent::AgentStarted {
-            id: "fork-1".into(),
-            pid: 88,
-            session_id: None,
-        },
-    ]);
-
-    let proj = make_projections(&events);
-    let commands = route_message(
-        &proj,
-        "main",
-        "alice",
-        "follow-up on this",
-        Some("thread-abc"),
-    );
-
-    // Fork should be nudged (not channel lead, since fork owns the thread)
-    assert!(
-        commands
-            .iter()
-            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "fork-1")),
-        "fork should be nudged on thread reply, got {:?}",
-        commands
-    );
-}
-
-#[test]
-fn route_message_nudges_lead_on_thread_without_fork() {
+fn no_self_nudge_for_lead() {
     let proj = make_projections(&running_lead_events("main"));
-
-    // Thread reply but no fork exists for this thread
-    let commands = route_message(&proj, "main", "alice", "follow-up here", Some("thread-xyz"));
-
-    // Channel lead should be nudged (fallback when no fork)
-    assert!(
-        commands
-            .iter()
-            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "lead-1")),
-        "channel lead should be nudged when no fork for thread, got {:?}",
-        commands
-    );
-}
-
-#[test]
-fn route_message_no_self_nudge() {
-    let proj = make_projections(&running_lead_events("main"));
-
-    // The lead itself posts a message — should not nudge itself
-    let commands = route_message(&proj, "main", "main", "I'm the lead posting", None);
+    let commands = route_message(&proj, "main", "main", "I'm posting", None);
 
     assert!(
         !commands
@@ -521,8 +121,10 @@ fn route_message_no_self_nudge() {
     );
 }
 
+// ── route_message: thread / fork routing ────────────────────────────
+
 #[test]
-fn route_message_fork_self_post_no_nudge() {
+fn thread_bound_agent_nudged_on_thread_reply() {
     let mut events = running_lead_events("main");
     events.extend(vec![
         DomainEvent::AgentCreated {
@@ -545,51 +147,113 @@ fn route_message_fork_self_post_no_nudge() {
     ]);
 
     let proj = make_projections(&events);
-    // Fork posts in its own thread — should not self-nudge
-    let commands = route_message(
-        &proj,
-        "main",
-        "fork-abc",
-        "I'm responding",
-        Some("thread-abc"),
-    );
+    let commands = route_message(&proj, "main", "alice", "follow-up", Some("thread-abc"));
 
     assert!(
-        !commands
+        commands
             .iter()
             .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "fork-1")),
-        "fork should not self-nudge, got {:?}",
+        "thread-bound agent should be nudged, got {:?}",
         commands
     );
 }
 
 #[test]
-fn route_message_includes_mention_routing() {
+fn stopped_thread_bound_agent_still_nudged() {
     let mut events = running_lead_events("main");
     events.extend(vec![
         DomainEvent::AgentCreated {
-            id: "worker-1".into(),
-            name: "ghost-town".into(),
-            kind: AgentKind::Worker,
-            agent_type: "midtown-code-author".into(),
+            id: "fork-1".into(),
+            name: "fork-abc".into(),
+            kind: AgentKind::Fork,
+            agent_type: "midtown-channel-lead".into(),
             provider: Provider::ClaudeCode,
             channel: Some("main".into()),
-            task_id: Some("task-1".into()),
-            bound_thread_id: None,
+            task_id: None,
+            bound_thread_id: Some("thread-abc".into()),
             icon: None,
             color: None,
         },
         DomainEvent::AgentStarted {
-            id: "worker-1".into(),
-            pid: 99,
+            id: "fork-1".into(),
+            pid: 88,
             session_id: None,
+        },
+        DomainEvent::AgentStopped {
+            id: "fork-1".into(),
+            reason: "done".into(),
         },
     ]);
 
     let proj = make_projections(&events);
+    let commands = route_message(&proj, "main", "alice", "follow-up", Some("thread-abc"));
+
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "fork-1")),
+        "stopped thread-bound agent should still be nudged, got {:?}",
+        commands
+    );
+}
+
+#[test]
+fn thread_without_bound_agent_falls_through_to_lead() {
+    let proj = make_projections(&running_lead_events("main"));
+    let commands = route_message(&proj, "main", "alice", "reply", Some("thread-xyz"));
+
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "lead-1")),
+        "lead should be nudged when no agent bound to thread, got {:?}",
+        commands
+    );
+}
+
+#[test]
+fn thread_bound_agent_self_post_no_nudge() {
+    let mut events = running_lead_events("main");
+    events.push(DomainEvent::AgentCreated {
+        id: "fork-1".into(),
+        name: "fork-abc".into(),
+        kind: AgentKind::Fork,
+        agent_type: "midtown-channel-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: None,
+        bound_thread_id: Some("thread-abc".into()),
+        icon: None,
+        color: None,
+    });
+    events.push(DomainEvent::AgentStarted {
+        id: "fork-1".into(),
+        pid: 88,
+        session_id: None,
+    });
+
+    let proj = make_projections(&events);
+    let commands = route_message(&proj, "main", "fork-abc", "responding", Some("thread-abc"));
+
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "fork-1")),
+        "thread-bound agent should not self-nudge, got {:?}",
+        commands
+    );
+}
+
+// ── route_message: @mentions ────────────────────────────────────────
+
+#[test]
+fn at_mention_nudges_agent_by_name() {
+    let mut events = running_lead_events("main");
+    events.extend(worker_events("w1", "ghost-town", "main", Some("t1")));
+
+    let proj = make_projections(&events);
     let commands = route_message(&proj, "main", "alice", "hey @ghost-town check this", None);
 
-    // Should nudge both the lead (all messages) and the mentioned worker
     let nudge_ids: Vec<&str> = commands
         .iter()
         .filter_map(|c| match c {
@@ -597,14 +261,199 @@ fn route_message_includes_mention_routing() {
             _ => None,
         })
         .collect();
+    assert!(nudge_ids.contains(&"lead-1"), "lead nudged");
+    assert!(nudge_ids.contains(&"w1"), "mentioned agent nudged");
+}
+
+#[test]
+fn at_mention_nudges_stopped_agent() {
+    let mut events = running_lead_events("main");
+    events.extend(worker_events("w1", "ghost-town", "main", Some("t1")));
+    events.push(DomainEvent::AgentStopped {
+        id: "w1".into(),
+        reason: "done".into(),
+    });
+
+    let proj = make_projections(&events);
+    let commands = route_message(
+        &proj,
+        "main",
+        "alice",
+        "hey @ghost-town are you there?",
+        None,
+    );
+
     assert!(
-        nudge_ids.contains(&"lead-1"),
-        "lead should be nudged, got {:?}",
-        nudge_ids
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "w1")),
+        "stopped agent should still be nudged on @mention, got {:?}",
+        commands
+    );
+}
+
+#[test]
+fn at_all_nudges_all_channel_agents() {
+    let mut events = running_lead_events("main");
+    events.extend(worker_events("w1", "ghost-town", "main", Some("t1")));
+    events.extend(worker_events("w2", "swift-river", "main", Some("t2")));
+
+    let proj = make_projections(&events);
+    let commands = route_message(&proj, "main", "alice", "@all please rebase", None);
+
+    let nudge_ids: Vec<&str> = commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::NudgeAgent { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(nudge_ids.contains(&"lead-1"));
+    assert!(nudge_ids.contains(&"w1"));
+    assert!(nudge_ids.contains(&"w2"));
+}
+
+#[test]
+fn at_all_excludes_sender() {
+    let mut events = running_lead_events("main");
+    events.extend(worker_events("w1", "ghost-town", "main", Some("t1")));
+
+    let proj = make_projections(&events);
+    // Sender is "main" — same as lead's name
+    let commands = route_message(&proj, "main", "main", "@all please rebase", None);
+
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "lead-1")),
+        "@all should exclude sender, got {:?}",
+        commands
     );
     assert!(
-        nudge_ids.contains(&"worker-1"),
-        "mentioned worker should be nudged, got {:?}",
-        nudge_ids
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "w1")),
+        "other agents still nudged",
+    );
+}
+
+#[test]
+fn at_lead_nudges_channel_lead() {
+    let proj = make_projections(&running_lead_events("main"));
+    let commands = route_message(&proj, "main", "alice", "hey @lead help", None);
+
+    // Lead gets nudged (from both the implicit channel nudge and @lead,
+    // but deduplication means only one NudgeAgent)
+    let lead_nudges: Vec<_> = commands
+        .iter()
+        .filter(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "lead-1"))
+        .collect();
+    assert_eq!(
+        lead_nudges.len(),
+        1,
+        "lead should be nudged exactly once (deduped), got {:?}",
+        commands
+    );
+}
+
+#[test]
+fn self_mention_ignored() {
+    let proj = make_projections(&running_lead_events("main"));
+    let commands = route_message(&proj, "main", "ghost-town", "hey @ghost-town oops", None);
+
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, message }
+                if message.contains("@ghost-town mention"))),
+        "self-mention should not produce a mention nudge, got {:?}",
+        commands
+    );
+}
+
+#[test]
+fn unknown_mention_no_nudge() {
+    let proj = make_projections(&running_lead_events("main"));
+    let commands = route_message(&proj, "main", "alice", "hey @nobody-exists", None);
+
+    // Should only have the implicit lead nudge, not one for @nobody-exists
+    assert_eq!(
+        commands.len(),
+        1,
+        "only lead nudge expected, got {:?}",
+        commands
+    );
+}
+
+// ── route_message: !N task references ───────────────────────────────
+
+#[test]
+fn task_ref_nudges_assigned_agent() {
+    let mut events = running_lead_events("main");
+    events.push(DomainEvent::TaskCreated {
+        id: "42".into(),
+        subject: "Fix bug".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    });
+    events.extend(worker_events("w1", "ghost-town", "main", Some("42")));
+    events.push(DomainEvent::TaskAssigned {
+        task_id: "42".into(),
+        agent_id: "w1".into(),
+    });
+
+    let proj = make_projections(&events);
+    let commands = route_message(&proj, "main", "alice", "check !42 progress", None);
+
+    let nudge_ids: Vec<&str> = commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::NudgeAgent { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(nudge_ids.contains(&"w1"), "task owner nudged");
+    assert!(nudge_ids.contains(&"lead-1"), "lead also nudged");
+}
+
+#[test]
+fn task_ref_no_nudge_for_unassigned() {
+    let events = vec![DomainEvent::TaskCreated {
+        id: "42".into(),
+        subject: "Fix".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    }];
+
+    let proj = make_projections(&events);
+    let commands = route_message(&proj, "main", "alice", "what about !42?", None);
+
+    assert!(
+        commands.is_empty(),
+        "unassigned task + no lead = no nudges, got {:?}",
+        commands
+    );
+}
+
+// ── deduplication ───────────────────────────────────────────────────
+
+#[test]
+fn no_duplicate_nudges() {
+    let proj = make_projections(&running_lead_events("main"));
+    // @lead + @main both resolve to lead-1, plus implicit channel lead nudge
+    let commands = route_message(&proj, "main", "alice", "@lead @main do something", None);
+
+    let lead_nudges = commands
+        .iter()
+        .filter(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "lead-1"))
+        .count();
+    assert_eq!(
+        lead_nudges, 1,
+        "lead nudged exactly once, got {:?}",
+        commands
     );
 }

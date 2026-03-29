@@ -97,9 +97,8 @@ impl AgentIndex {
             }
             DomainEvent::AgentStopped { id, .. } => {
                 if let Some(agent) = self.by_id.get_mut(id) {
-                    if let Some(thread_id) = &agent.bound_thread_id {
-                        self.by_thread.remove(thread_id);
-                    }
+                    // Thread binding persists through stop — the agent can be
+                    // resumed to handle new thread messages. Only GC clears it.
                     agent.pid = None;
                     agent.stopped_at = Some(Utc::now());
                     self.running.remove(id);

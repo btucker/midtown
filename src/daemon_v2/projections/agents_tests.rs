@@ -150,7 +150,7 @@ fn fork_indexed_by_thread() {
 }
 
 #[test]
-fn fork_removed_from_thread_index_on_stop() {
+fn thread_binding_persists_through_stop() {
     let mut idx = AgentIndex::default();
     idx.apply(&DomainEvent::AgentCreated {
         id: "f1".into(),
@@ -174,7 +174,10 @@ fn fork_removed_from_thread_index_on_stop() {
         reason: "exited".into(),
     });
 
-    assert!(idx.fork_for_thread("thread-123").is_none());
+    // Thread binding persists — stopped agents can be resumed on thread activity
+    let fork = idx.fork_for_thread("thread-123").unwrap();
+    assert_eq!(fork.id, "f1");
+    assert!(!idx.running.contains("f1"));
 }
 
 #[test]
