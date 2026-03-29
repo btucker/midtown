@@ -1,6 +1,10 @@
 use super::events::DomainEvent;
 use serde::{Deserialize, Serialize};
 
+#[path = "projection_spec_tests.rs"]
+#[cfg(test)]
+mod spec_tests;
+
 pub mod agents;
 pub mod channels;
 pub mod cooldowns;

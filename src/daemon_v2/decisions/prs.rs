@@ -2,6 +2,10 @@
 #[cfg(test)]
 mod tests;
 
+#[path = "prs_spec_tests.rs"]
+#[cfg(test)]
+mod spec_tests;
+
 use crate::daemon_v2::decisions::{Command, SpawnConfig};
 use crate::daemon_v2::events::{AgentKind, Provider, TaskStatus};
 use crate::daemon_v2::projections::Projections;

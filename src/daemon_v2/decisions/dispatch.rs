@@ -2,6 +2,10 @@
 #[cfg(test)]
 mod tests;
 
+#[path = "dispatch_spec_tests.rs"]
+#[cfg(test)]
+mod spec_tests;
+
 use std::collections::{HashMap, HashSet};
 
 use crate::daemon_v2::decisions::{Command, SpawnConfig};
