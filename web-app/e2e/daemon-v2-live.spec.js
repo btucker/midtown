@@ -208,6 +208,51 @@ test.describe('Daemon v2 Live Web UI', () => {
     await context.close()
   })
 
+  test('theme toggle switches between light and dark mode', async ({ browser }) => {
+    const context = await browser.newContext({ ignoreHTTPSErrors: true })
+    const page = await context.newPage()
+
+    await page.goto('https://localhost:47022', { waitUntil: 'networkidle', timeout: 15000 })
+    await page.waitForTimeout(3000)
+
+    // Get initial theme state
+    const initialHassDark = await page.evaluate(() =>
+      document.documentElement.classList.contains('dark')
+    )
+
+    // Find and click the theme toggle button
+    const themeToggle = page.locator('[data-testid="theme-toggle"]')
+    await expect(themeToggle).toBeVisible()
+    await themeToggle.click()
+    await page.waitForTimeout(500)
+
+    // Theme should have changed
+    const afterToggleDark = await page.evaluate(() =>
+      document.documentElement.classList.contains('dark')
+    )
+    expect(afterToggleDark).not.toBe(initialHassDark)
+
+    // Screenshot to verify visual change
+    await page.screenshot({ path: '/tmp/midtown-v2-toggled-theme.png' })
+
+    // Toggle back
+    await themeToggle.click()
+    await page.waitForTimeout(500)
+
+    const afterSecondToggle = await page.evaluate(() =>
+      document.documentElement.classList.contains('dark')
+    )
+    expect(afterSecondToggle).toBe(initialHassDark)
+
+    // Verify theme persists in localStorage
+    const storedTheme = await page.evaluate(() =>
+      localStorage.getItem('midtown-theme')
+    )
+    expect(['light', 'dark']).toContain(storedTheme)
+
+    await context.close()
+  })
+
   test('direct messages section is visible', async ({ browser }) => {
     const context = await browser.newContext({ ignoreHTTPSErrors: true })
     const page = await context.newPage()

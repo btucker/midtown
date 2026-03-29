@@ -112,15 +112,29 @@ pub async fn read_state() -> Json<Value> {
 }
 
 pub async fn usage() -> Json<Value> {
-    Json(json!({}))
+    // Return usage data so the AccountPanel renders (and with it, the theme toggle)
+    Json(json!({ "usage": [] }))
 }
 
 pub async fn questions() -> Json<Value> {
     Json(json!([]))
 }
 
-pub async fn auth_profiles() -> Json<Value> {
-    Json(json!([]))
+pub async fn auth_profiles(Query(params): Query<AuthProfilesParams>) -> Json<Value> {
+    // Return current auth profile so AccountPanel renders
+    let provider = params.provider.as_deref().unwrap_or("claude");
+    Json(json!([{
+        "name": "default",
+        "is_current": true,
+        "has_credentials": true,
+        "provider": provider,
+    }]))
+}
+
+#[derive(Deserialize)]
+pub struct AuthProfilesParams {
+    #[serde(default)]
+    provider: Option<String>,
 }
 
 pub async fn mark_read(
