@@ -457,6 +457,81 @@ pub async fn push_unsubscribe(Json(body): Json<Value>) -> (StatusCode, Json<Valu
     }
 }
 
+pub async fn upload(mut multipart: axum::extract::Multipart) -> (StatusCode, Json<Value>) {
+    let upload_dir = crate::paths::midtown_base_dir().join("uploads");
+    let _ = std::fs::create_dir_all(&upload_dir);
+
+    if let Ok(Some(field)) = multipart.next_field().await {
+        let filename = field
+            .file_name()
+            .map(|f| f.to_string())
+            .unwrap_or_else(|| format!("upload-{}", uuid::Uuid::new_v4()));
+        // Sanitize filename
+        let safe_name = filename.replace(['/', '\\'], "_").replace("..", "_");
+        let path = upload_dir.join(&safe_name);
+
+        match field.bytes().await {
+            Ok(data) => {
+                if let Err(e) = std::fs::write(&path, &data) {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": format!("write failed: {e}")})),
+                    );
+                }
+                return (
+                    StatusCode::OK,
+                    Json(json!({"ok": true, "filename": safe_name, "size": data.len()})),
+                );
+            }
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": format!("read failed: {e}")})),
+                );
+            }
+        }
+    }
+
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({"error": "no file in request"})),
+    )
+}
+
+pub async fn upload_get(
+    axum::extract::Path(filename): axum::extract::Path<String>,
+) -> Result<axum::response::Response, StatusCode> {
+    let upload_dir = crate::paths::midtown_base_dir().join("uploads");
+    let path = upload_dir.join(&filename);
+    if !path.exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    let body = std::fs::read(&path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(axum::response::Response::builder()
+        .header("content-type", "application/octet-stream")
+        .body(axum::body::Body::from(body))
+        .unwrap())
+}
+
+pub async fn auth_switch(Json(body): Json<Value>) -> Json<Value> {
+    let profile = body
+        .get("profile")
+        .and_then(|v| v.as_str())
+        .unwrap_or("default");
+    let provider = body
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("claude");
+    tracing::info!(%profile, %provider, "auth switch requested");
+    Json(json!({"ok": true, "profile": profile, "provider": provider}))
+}
+
+pub async fn auth_login(Json(body): Json<Value>) -> Json<Value> {
+    let email = body.get("email").and_then(|v| v.as_str()).unwrap_or("");
+    tracing::info!(%email, "auth login requested");
+    Json(json!({"ok": true}))
+}
+
 pub async fn mark_read(
     axum::extract::Path((_item_type, _id)): axum::extract::Path<(String, String)>,
 ) -> StatusCode {

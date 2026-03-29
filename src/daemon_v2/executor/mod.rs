@@ -3,6 +3,10 @@ pub mod github;
 pub mod spawn;
 pub mod webhook;
 
+#[path = "nudge_tests.rs"]
+#[cfg(test)]
+mod nudge_tests;
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -11,6 +15,34 @@ use crate::daemon_v2::events::DomainEvent;
 use crate::daemon_v2::projections::Projections;
 use crate::headless::HeadlessSession;
 use crate::paths::ProjectPaths;
+
+/// What to do when executing a NudgeAgent command.
+#[derive(Debug)]
+pub enum NudgeAction {
+    /// Agent is running — deliver the message directly.
+    Deliver,
+    /// Agent is stopped but has a session_id — resume then deliver.
+    ResumeAndDeliver { session_id: String },
+    /// Agent can't be nudged (unknown, no session_id, etc).
+    Drop,
+}
+
+/// Determine the nudge strategy for a given agent.
+pub fn resolve_nudge_action(agent_id: &str, proj: &Projections) -> NudgeAction {
+    let agent = match proj.agents.by_id.get(agent_id) {
+        Some(a) => a,
+        None => return NudgeAction::Drop,
+    };
+    if proj.agents.running.contains(agent_id) {
+        NudgeAction::Deliver
+    } else if let Some(ref session_id) = agent.session_id {
+        NudgeAction::ResumeAndDeliver {
+            session_id: session_id.clone(),
+        }
+    } else {
+        NudgeAction::Drop
+    }
+}
 
 pub async fn execute(
     command: Command,
@@ -163,65 +195,44 @@ pub async fn execute(
             }]
         }
         Command::NudgeAgent { id, message } => {
-            if let Some(session) = sessions.get_mut(&id) {
-                if let Err(e) = session.send_message(&message).await {
-                    tracing::error!(%id, %e, "failed to nudge agent");
+            match resolve_nudge_action(&id, projections) {
+                NudgeAction::Deliver => {
+                    if let Some(session) = sessions.get_mut(&id)
+                        && let Err(e) = session.send_message(&message).await
+                    {
+                        tracing::error!(%id, %e, "failed to nudge agent");
+                    }
+                    vec![]
                 }
-            } else {
-                tracing::warn!(%id, "nudge target not found in sessions");
+                NudgeAction::ResumeAndDeliver { session_id } => {
+                    tracing::info!(%id, %session_id, "resuming stopped agent for nudge");
+                    match resume_agent(&id, projections, sessions, paths).await {
+                        Ok(events) => {
+                            // Deliver the nudge to the now-resumed session
+                            if let Some(session) = sessions.get_mut(&id)
+                                && let Err(e) = session.send_message(&message).await
+                            {
+                                tracing::error!(%id, %e, "failed to nudge resumed agent");
+                            }
+                            events
+                        }
+                        Err(e) => {
+                            tracing::error!(%id, %e, "failed to resume agent for nudge");
+                            vec![]
+                        }
+                    }
+                }
+                NudgeAction::Drop => {
+                    tracing::debug!(%id, "nudge target cannot be resumed, dropping");
+                    vec![]
+                }
             }
-            vec![] // nudges don't produce events
         }
         Command::ResumeAgent { id } => {
-            let agent = match projections.agents.by_id.get(&id) {
-                Some(a) => a,
-                None => {
-                    tracing::warn!(%id, "resume requested for unknown agent");
-                    return vec![];
-                }
-            };
-            let session_id = match &agent.session_id {
-                Some(sid) => sid.clone(),
-                None => {
-                    tracing::warn!(%id, "resume requested but agent has no session_id");
-                    return vec![];
-                }
-            };
-
-            // Build a SpawnConfig so we can reuse build_launch_config
-            let spawn_config = crate::daemon_v2::decisions::SpawnConfig {
-                name: agent.name.clone(),
-                kind: agent.kind.clone(),
-                agent_type: agent.agent_type.clone(),
-                provider: agent.provider.clone(),
-                channel: agent.channel.clone(),
-                task_id: agent.task_id.clone(),
-                initial_prompt: None,
-                working_dir: None,
-                model: None,
-                bound_thread_id: agent.bound_thread_id.clone(),
-                fork_from_session: None,
-                icon: agent.icon.clone(),
-                color: agent.color.clone(),
-            };
-
-            let launch_config = spawn::build_launch_config(&spawn_config, paths.dir_key());
-            let mut headless_config = launch_config.to_headless_config(paths);
-            headless_config.resume_session_id = Some(session_id.clone());
-
-            tracing::info!(
-                %id, name = %agent.name, %session_id,
-                "resuming agent session after daemon restart"
-            );
-
-            match HeadlessSession::spawn(&headless_config).await {
-                Ok(session) => {
-                    let pid = session.pid().unwrap_or(0);
-                    sessions.insert(id.clone(), session);
-                    vec![DomainEvent::AgentResumed { id, pid }]
-                }
+            match resume_agent(&id, projections, sessions, paths).await {
+                Ok(events) => events,
                 Err(e) => {
-                    tracing::error!(%id, %e, "failed to resume agent session");
+                    tracing::error!(%id, %e, "failed to resume agent");
                     vec![]
                 }
             }
@@ -290,5 +301,61 @@ pub async fn execute(
                 .await;
             vec![]
         }
+    }
+}
+
+/// Resume a stopped agent session. Returns AgentResumed events on success.
+async fn resume_agent(
+    id: &str,
+    projections: &Projections,
+    sessions: &mut HashMap<String, HeadlessSession>,
+    paths: &ProjectPaths,
+) -> Result<Vec<DomainEvent>, String> {
+    let agent = projections
+        .agents
+        .by_id
+        .get(id)
+        .ok_or_else(|| format!("unknown agent {id}"))?;
+    let session_id = agent
+        .session_id
+        .as_ref()
+        .ok_or_else(|| format!("agent {id} has no session_id"))?
+        .clone();
+
+    let spawn_config = crate::daemon_v2::decisions::SpawnConfig {
+        name: agent.name.clone(),
+        kind: agent.kind.clone(),
+        agent_type: agent.agent_type.clone(),
+        provider: agent.provider.clone(),
+        channel: agent.channel.clone(),
+        task_id: agent.task_id.clone(),
+        initial_prompt: None,
+        working_dir: None,
+        model: None,
+        bound_thread_id: agent.bound_thread_id.clone(),
+        fork_from_session: None,
+        icon: agent.icon.clone(),
+        color: agent.color.clone(),
+    };
+
+    let launch_config = spawn::build_launch_config(&spawn_config, paths.dir_key());
+    let mut headless_config = launch_config.to_headless_config(paths);
+    headless_config.resume_session_id = Some(session_id.clone());
+
+    tracing::info!(
+        %id, name = %agent.name, %session_id,
+        "resuming agent session"
+    );
+
+    match HeadlessSession::spawn(&headless_config).await {
+        Ok(session) => {
+            let pid = session.pid().unwrap_or(0);
+            sessions.insert(id.to_string(), session);
+            Ok(vec![DomainEvent::AgentResumed {
+                id: id.to_string(),
+                pid,
+            }])
+        }
+        Err(e) => Err(format!("spawn failed: {e}")),
     }
 }
