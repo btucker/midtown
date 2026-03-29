@@ -353,6 +353,196 @@ fn session_fork_missing_params_returns_error() {
     assert!(commands.is_empty());
 }
 
+// ── v1 compatibility alias tests ─────────────────────────────────────────
+
+#[test]
+fn v1_ping_returns_pong() {
+    let proj = Projections::default();
+    let request = json!({"jsonrpc": "2.0", "method": "ping", "id": 100});
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"], "pong");
+    assert!(events.is_empty());
+}
+
+#[test]
+fn v1_version_returns_info() {
+    let proj = Projections::default();
+    let request = json!({"jsonrpc": "2.0", "method": "version", "id": 101});
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["name"], "midtown");
+    assert!(response["result"]["version"].is_string());
+    assert_eq!(response["result"]["daemon"], "v2");
+    assert!(events.is_empty());
+}
+
+#[test]
+fn v1_snapshot_aliases_to_status() {
+    let proj = projections_with_agents();
+    let request = json!({"jsonrpc": "2.0", "method": "snapshot", "id": 102});
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert!(response["result"]["agents"]["total"].is_number());
+    assert!(events.is_empty());
+}
+
+#[test]
+fn v1_coworker_list_aliases_to_agent_list() {
+    let proj = projections_with_agents();
+    let request = json!({"jsonrpc": "2.0", "method": "coworker.list", "id": 103});
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert!(response["result"].is_array());
+    assert_eq!(response["result"].as_array().unwrap().len(), 2);
+    assert!(events.is_empty());
+}
+
+#[test]
+fn v1_coworkers_status_aliases_to_agent_list() {
+    let proj = projections_with_agents();
+    let request = json!({"jsonrpc": "2.0", "method": "coworkers.status", "id": 104});
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert!(response["result"].is_array());
+    assert!(events.is_empty());
+}
+
+#[test]
+fn v1_lead_spawn_returns_ok() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "lead.spawn",
+        "id": 105,
+        "params": {"provider": "claude"}
+    });
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert!(events.is_empty());
+    assert!(commands.is_empty());
+}
+
+#[test]
+fn v1_coworker_break_stops_agent() {
+    let proj = projections_with_agents();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "coworker.break",
+        "id": 106,
+        "params": {"name": "ghost-town"}
+    });
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert!(events.is_empty());
+    assert_eq!(commands.len(), 1);
+    match &commands[0] {
+        crate::daemon_v2::decisions::Command::StopAgent { id, .. } => {
+            assert_eq!(id, "a1");
+        }
+        other => panic!("expected StopAgent, got {:?}", other),
+    }
+}
+
+#[test]
+fn v1_coworker_break_unknown_agent_returns_error() {
+    let proj = projections_with_agents();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "coworker.break",
+        "id": 107,
+        "params": {"name": "nonexistent"}
+    });
+    let (response, _events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert_eq!(response["error"]["code"], -32001);
+    assert!(commands.is_empty());
+}
+
+#[test]
+fn v1_coworker_nudge_nudges_agent() {
+    let proj = projections_with_agents();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "coworker.nudge",
+        "id": 108,
+        "params": {"name": "ghost-town", "message": "hurry up"}
+    });
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert!(events.is_empty());
+    assert_eq!(commands.len(), 1);
+    match &commands[0] {
+        crate::daemon_v2::decisions::Command::NudgeAgent { id, message } => {
+            assert_eq!(id, "a1");
+            assert_eq!(message, "hurry up");
+        }
+        other => panic!("expected NudgeAgent, got {:?}", other),
+    }
+}
+
+#[test]
+fn v1_task_done_completes_task() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "task.done",
+        "id": 109,
+        "params": {"id": "task-42"}
+    });
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        DomainEvent::TaskCompleted { task_id } => {
+            assert_eq!(task_id, "task-42");
+        }
+        other => panic!("expected TaskCompleted, got {:?}", other),
+    }
+}
+
+#[test]
+fn v1_prs_status_returns_prs() {
+    let proj = Projections::default();
+    let request = json!({"jsonrpc": "2.0", "method": "prs.status", "id": 110});
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert!(response["result"]["prs"].is_array());
+    assert!(events.is_empty());
+}
+
+#[test]
+fn v1_coworker_spawn_returns_spawn_command() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "coworker.spawn",
+        "id": 111,
+        "params": {
+            "channel": "main",
+            "prompt": "do the thing"
+        }
+    });
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert!(events.is_empty());
+    assert_eq!(commands.len(), 1);
+    match &commands[0] {
+        crate::daemon_v2::decisions::Command::SpawnAgent(cfg) => {
+            assert_eq!(cfg.kind, AgentKind::Worker);
+            assert_eq!(cfg.channel.as_deref(), Some("main"));
+            assert_eq!(cfg.initial_prompt.as_deref(), Some("do the thing"));
+        }
+        other => panic!("expected SpawnAgent, got {:?}", other),
+    }
+}
+
+// ── original tests continued ────────────────────────────────────────────
+
 #[test]
 fn session_fork_missing_channel_returns_error() {
     let proj = Projections::default();

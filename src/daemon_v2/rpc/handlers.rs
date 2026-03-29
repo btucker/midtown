@@ -416,6 +416,168 @@ pub fn handle_channel_update(params: Option<&Value>) -> Result<Vec<DomainEvent>,
     Ok(events)
 }
 
+// ── v1 compatibility handlers ───────────────────────────────────────────
+
+/// Handle `task.done` (v1 alias) — marks a task as completed.
+///
+/// Required fields: `id` (task ID string).
+pub fn handle_task_done(params: Option<&Value>) -> Result<Vec<DomainEvent>, RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+    let id = params
+        .get("id")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            // Also accept numeric id (v1 sends {"id": 42})
+            params.get("id").and_then(|v| v.as_u64()).and(None)
+        })
+        .map(String::from)
+        .or_else(|| {
+            params
+                .get("id")
+                .and_then(|v| v.as_u64())
+                .map(|n| n.to_string())
+        })
+        .ok_or_else(|| RpcError::invalid_params("missing required field: id"))?;
+
+    Ok(vec![DomainEvent::TaskCompleted { task_id: id }])
+}
+
+/// Handle `prs.status` (v1 alias) — returns open PR info from WorkIndex.
+pub fn handle_prs_status(proj: &Projections) -> Result<Value, RpcError> {
+    let prs: Vec<Value> = proj
+        .work
+        .prs
+        .values()
+        .map(|pr| {
+            json!({
+                "number": pr.number,
+                "branch": pr.branch,
+                "author": pr.author,
+                "needs_review": proj.work.needing_review.contains(&pr.number),
+            })
+        })
+        .collect();
+    Ok(json!({ "prs": prs }))
+}
+
+/// Handle `coworker.spawn` (v1 alias) — spawns a worker agent.
+///
+/// Accepts v1 params: `prompt`, `agent` (agent_type), `channel`, `task_id`.
+pub fn handle_coworker_spawn(
+    params: Option<&Value>,
+    _proj: &Projections,
+) -> Result<(Value, Vec<Command>), RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+
+    let name = params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| format!("worker-{}", &uuid::Uuid::new_v4().to_string()[..8]));
+
+    let agent_type = params
+        .get("agent")
+        .or_else(|| params.get("agent_type"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("midtown-code-author")
+        .to_string();
+
+    let channel = params
+        .get("channel")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let task_id = params
+        .get("task_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let prompt = params
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let icon = params
+        .get("icon")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let command = Command::SpawnAgent(SpawnConfig {
+        name: name.clone(),
+        kind: AgentKind::Worker,
+        agent_type,
+        provider: Provider::ClaudeCode,
+        channel,
+        task_id,
+        initial_prompt: prompt,
+        working_dir: None,
+        model: None,
+        bound_thread_id: None,
+        fork_from_session: None,
+        icon,
+        color: None,
+    });
+
+    Ok((json!({"ok": true, "name": name}), vec![command]))
+}
+
+/// Handle `coworker.break` (v1 alias) — stop an agent by name.
+pub fn handle_agent_stop(
+    params: Option<&Value>,
+    proj: &Projections,
+) -> Result<Vec<Command>, RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+    let name = params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: name"))?;
+
+    let agent_id = proj
+        .agents
+        .by_name
+        .get(name)
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: format!("Agent '{}' not found", name),
+        })?
+        .clone();
+
+    Ok(vec![Command::StopAgent {
+        id: agent_id,
+        reason: "stopped via coworker.break RPC".into(),
+    }])
+}
+
+/// Handle `coworker.nudge` (v1 alias) — nudge an agent by name.
+pub fn handle_agent_nudge(
+    params: Option<&Value>,
+    proj: &Projections,
+) -> Result<Vec<Command>, RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+    let name = params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: name"))?;
+
+    let message = params
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("nudge")
+        .to_string();
+
+    let agent_id = proj
+        .agents
+        .by_name
+        .get(name)
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: format!("Agent '{}' not found", name),
+        })?
+        .clone();
+
+    Ok(vec![Command::NudgeAgent {
+        id: agent_id,
+        message,
+    }])
+}
+
 /// Read messages from a channel.
 pub fn handle_channel_read(params: Option<&Value>, channels_dir: &Path) -> Result<Value, RpcError> {
     let params = params.ok_or_else(|| RpcError {

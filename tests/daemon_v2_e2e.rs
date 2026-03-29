@@ -526,6 +526,69 @@ fn test_daemon_v2_session_fork_spawns_agent() {
     );
 }
 
+#[test]
+#[ignore]
+fn test_daemon_v2_v1_rpc_compatibility() {
+    let harness = V2Harness::start();
+
+    // ping
+    let resp = harness.rpc_call("ping", None);
+    assert_eq!(resp["jsonrpc"], "2.0", "unexpected response: {resp}");
+    assert!(resp["error"].is_null(), "ping error: {resp}");
+    assert_eq!(resp["result"], "pong");
+
+    // version
+    let resp = harness.rpc_call("version", None);
+    assert!(resp["error"].is_null(), "version error: {resp}");
+    assert_eq!(resp["result"]["name"], "midtown");
+    assert!(resp["result"]["version"].is_string());
+    assert_eq!(resp["result"]["daemon"], "v2");
+
+    // lead.spawn (should succeed — lead is auto-managed by scheduler)
+    let resp = harness.rpc_call(
+        "lead.spawn",
+        Some(serde_json::json!({"provider": "claude"})),
+    );
+    assert!(resp["error"].is_null(), "lead.spawn error: {resp}");
+    assert_eq!(resp["result"]["ok"], true);
+
+    // snapshot (alias for status)
+    let resp = harness.rpc_call("snapshot", None);
+    assert!(resp["error"].is_null(), "snapshot error: {resp}");
+    assert!(resp["result"]["agents"]["total"].is_number());
+
+    // coworker.list (alias for agent.list)
+    let resp = harness.rpc_call("coworker.list", None);
+    assert!(resp["error"].is_null(), "coworker.list error: {resp}");
+    assert!(resp["result"].is_array());
+
+    // coworkers.status (alias for agent.list)
+    let resp = harness.rpc_call("coworkers.status", None);
+    assert!(resp["error"].is_null(), "coworkers.status error: {resp}");
+    assert!(resp["result"].is_array());
+
+    // prs.status
+    let resp = harness.rpc_call("prs.status", None);
+    assert!(resp["error"].is_null(), "prs.status error: {resp}");
+    assert!(resp["result"]["prs"].is_array());
+
+    // task.done
+    // First create a task, then complete it
+    let resp = harness.rpc_call(
+        "task.create",
+        Some(serde_json::json!({
+            "id": "compat-t1",
+            "subject": "compat test task",
+            "channel": "main",
+        })),
+    );
+    assert!(resp["error"].is_null(), "task.create error: {resp}");
+
+    let resp = harness.rpc_call("task.done", Some(serde_json::json!({"id": "compat-t1"})));
+    assert!(resp["error"].is_null(), "task.done error: {resp}");
+    assert_eq!(resp["result"]["ok"], true);
+}
+
 /// Wait up to `timeout` for `child` to exit. Returns true if it exited in time.
 fn wait_for_exit(mut child: Child, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;

@@ -46,6 +46,17 @@ pub fn dispatch_request(
                 Err(err) => (err.to_json(&id), vec![], vec![]),
             }
         }
+        // v1 alias: task.done → TaskCompleted event
+        "task.done" => {
+            let result = handlers::handle_task_done(params);
+            match result {
+                Ok(events) => {
+                    let response = json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id });
+                    (response, events, vec![])
+                }
+                Err(err) => (err.to_json(&id), vec![], vec![]),
+            }
+        }
         "channel.post" => match handlers::handle_channel_post(params, channels_dir, proj) {
             Ok((value, events, commands)) => {
                 let response = json!({ "jsonrpc": "2.0", "result": value, "id": id });
@@ -70,14 +81,51 @@ pub fn dispatch_request(
             }
             Err(err) => (err.to_json(&id), vec![], vec![]),
         },
+        // v1 alias: lead.spawn — lead is auto-spawned by scheduler, return success
+        "lead.spawn" => {
+            let response = json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id });
+            (response, vec![], vec![])
+        }
+        // v1 alias: coworker.spawn — spawn a worker agent
+        "coworker.spawn" => match handlers::handle_coworker_spawn(params, proj) {
+            Ok((value, commands)) => {
+                let response = json!({ "jsonrpc": "2.0", "result": value, "id": id });
+                (response, vec![], commands)
+            }
+            Err(err) => (err.to_json(&id), vec![], vec![]),
+        },
+        // v1 alias: coworker.break — stop an agent by name
+        "coworker.break" => match handlers::handle_agent_stop(params, proj) {
+            Ok(commands) => {
+                let response = json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id });
+                (response, vec![], commands)
+            }
+            Err(err) => (err.to_json(&id), vec![], vec![]),
+        },
+        // v1 alias: coworker.nudge — nudge an agent by name
+        "coworker.nudge" => match handlers::handle_agent_nudge(params, proj) {
+            Ok(commands) => {
+                let response = json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id });
+                (response, vec![], commands)
+            }
+            Err(err) => (err.to_json(&id), vec![], vec![]),
+        },
         _ => {
             // Read-only methods — no events produced.
             let result = match method {
-                "status" => handlers::handle_status(proj),
-                "agent.list" => {
+                // v1 compatibility aliases (read-only)
+                "ping" => Ok(json!("pong")),
+                "version" => Ok(json!({
+                    "name": "midtown",
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "daemon": "v2",
+                })),
+                "status" | "snapshot" => handlers::handle_status(proj),
+                "agent.list" | "coworker.list" | "coworkers.status" => {
                     let filter = AgentFilter::from_params(params);
                     handlers::handle_agent_list(proj, filter)
                 }
+                "prs.status" => handlers::handle_prs_status(proj),
                 "channel.list" => handlers::handle_channel_list(channels_dir),
                 "channel.read" => handlers::handle_channel_read(params, channels_dir),
                 _ => Err(RpcError::method_not_found()),
