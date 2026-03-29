@@ -137,6 +137,68 @@ pub struct AuthProfilesParams {
     provider: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct SearchParams {
+    q: String,
+    #[serde(default = "default_search_limit")]
+    limit: usize,
+}
+
+fn default_search_limit() -> usize {
+    50
+}
+
+pub async fn search(
+    State(state): State<Arc<WebState>>,
+    Query(params): Query<SearchParams>,
+) -> Json<Value> {
+    // Search across all channels for messages containing the query
+    let channels = crate::daemon_v2::executor::channel_io::list_channels(&state.channels_dir)
+        .unwrap_or_default();
+
+    let mut results = Vec::new();
+    let query_lower = params.q.to_lowercase();
+
+    for ch in &channels {
+        if results.len() >= params.limit {
+            break;
+        }
+        if let Ok(messages) = crate::daemon_v2::executor::channel_io::read_messages(
+            &state.channels_dir,
+            &ch.name,
+            Some(200),
+        ) {
+            for msg in &messages {
+                if results.len() >= params.limit {
+                    break;
+                }
+                let content = msg
+                    .get("message")
+                    .or_else(|| msg.get("content"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if content.to_lowercase().contains(&query_lower) {
+                    let mut result = msg.clone();
+                    // Ensure content field exists
+                    if let Value::Object(ref mut map) = result {
+                        if let Some(c) = map.remove("message") {
+                            map.insert("content".to_string(), c);
+                        }
+                        map.insert("channel".to_string(), json!(ch.name));
+                    }
+                    results.push(result);
+                }
+            }
+        }
+    }
+
+    Json(json!({
+        "results": results,
+        "query": params.q,
+        "total": results.len(),
+    }))
+}
+
 pub async fn mark_read(
     axum::extract::Path((_item_type, _id)): axum::extract::Path<(String, String)>,
 ) -> StatusCode {

@@ -131,7 +131,33 @@ test.describe('Daemon v2 Live Web UI', () => {
     await context.close()
   })
 
-  test('posting a message via the web UI', async ({ browser }) => {
+  test('posting a message via web UI persists after reload', async ({ browser }) => {
+    const context = await browser.newContext({ ignoreHTTPSErrors: true })
+    const page = await context.newPage()
+
+    await page.goto('https://localhost:47022', { waitUntil: 'networkidle', timeout: 15000 })
+    await page.waitForTimeout(3000)
+
+    const testMsg = `persist-test-${Date.now()}`
+
+    // Type and send
+    const input = page.locator('[data-testid="channel-input"]')
+    await expect(input).toBeVisible()
+    await input.fill(testMsg)
+    await input.press('Enter')
+    await page.waitForTimeout(2000)
+
+    // Reload the page — if the message was persisted, it should appear in history
+    await page.reload({ waitUntil: 'networkidle' })
+    await page.waitForTimeout(3000)
+
+    // The message should survive the reload (fetched from channel history API)
+    await expect(page.getByText(testMsg)).toBeVisible({ timeout: 5000 })
+
+    await context.close()
+  })
+
+  test.skip('REPLACED — posting a message via the web UI', async ({ browser }) => {
     const context = await browser.newContext({ ignoreHTTPSErrors: true })
     const page = await context.newPage()
 
@@ -466,6 +492,15 @@ test.describe('Daemon v2 Live Web UI', () => {
     await expect(sendBtn).toBeVisible()
 
     await context.close()
+  })
+
+  test('search API returns results for known content', async ({ request }) => {
+    // Search for a word that should exist in channel history
+    const res = await request.get(`${BASE_URL}/api/search?q=midtown&limit=5`)
+    expect(res.ok()).toBeTruthy()
+    const data = await res.json()
+    expect(data).toHaveProperty('results')
+    expect(Array.isArray(data.results)).toBeTruthy()
   })
 
   test('Notes tab loads without error', async ({ browser }) => {

@@ -28,6 +28,7 @@ pub fn create_router(state: Arc<WebState>) -> Router {
             "/api/read-state/{item_type}/{id}",
             axum::routing::put(routes::mark_read),
         )
+        .route("/api/search", get(routes::search))
         .route("/api/usage", get(routes::usage))
         .route("/api/questions", get(routes::questions))
         .route("/api/auth/profiles", get(routes::auth_profiles))
