@@ -72,23 +72,44 @@ pub fn check_usage_limits(_proj: &Projections) -> Vec<Command> {
 /// Uses "midtown-project-lead" for the default channel and "midtown-channel-lead" for others.
 pub fn ensure_channel_leads_alive(proj: &Projections, default_channel: &str) -> Vec<Command> {
     let mut commands = Vec::new();
+
+    // Always ensure the default channel has a lead, even if it's not in the projection yet.
+    // On fresh start, the projection has no channels — this guarantees the project lead spawns.
+    if !has_running_lead(proj, default_channel) {
+        let working_dir = proj
+            .channels
+            .channel_directory(default_channel)
+            .map(|d| d.to_string());
+        commands.push(Command::SpawnAgent(SpawnConfig {
+            name: default_channel.to_string(),
+            kind: AgentKind::Lead,
+            agent_type: "midtown-project-lead".to_string(),
+            provider: Provider::ClaudeCode,
+            channel: Some(default_channel.to_string()),
+            task_id: None,
+            initial_prompt: None,
+            working_dir,
+            model: None,
+            bound_thread_id: None,
+            fork_from_session: None,
+            icon: None,
+            color: None,
+        }));
+    }
+
+    // Also check any channels that exist in the projection
     for (name, meta) in &proj.channels.channels {
-        if meta.archived {
+        if meta.archived || name == default_channel {
             continue;
         }
         if has_running_lead(proj, name) {
             continue;
         }
-        let agent_type = if name == default_channel {
-            "midtown-project-lead"
-        } else {
-            "midtown-channel-lead"
-        };
         let working_dir = proj.channels.channel_directory(name).map(|d| d.to_string());
         commands.push(Command::SpawnAgent(SpawnConfig {
             name: name.clone(),
             kind: AgentKind::Lead,
-            agent_type: agent_type.to_string(),
+            agent_type: "midtown-channel-lead".to_string(),
             provider: Provider::ClaudeCode,
             channel: Some(name.clone()),
             task_id: None,
@@ -101,6 +122,7 @@ pub fn ensure_channel_leads_alive(proj: &Projections, default_channel: &str) -> 
             color: None,
         }));
     }
+
     commands
 }
 
