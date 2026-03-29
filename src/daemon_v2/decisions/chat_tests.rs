@@ -426,3 +426,185 @@ fn no_nudge_for_stopped_agent() {
         commands
     );
 }
+
+// ── route_message tests ─────────────────────────────────────────────
+
+#[test]
+fn route_message_nudges_channel_lead_on_all_messages() {
+    let proj = make_projections(&running_lead_events("main"));
+
+    // A plain message with no @mentions should still nudge the lead
+    let commands = route_message(&proj, "main", "alice", "just a regular message", None);
+
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "lead-1")),
+        "channel lead should be nudged on all messages, got {:?}",
+        commands
+    );
+}
+
+#[test]
+fn route_message_nudges_fork_on_thread_reply() {
+    let mut events = running_lead_events("main");
+    // Fork bound to thread "thread-abc"
+    events.extend(vec![
+        DomainEvent::AgentCreated {
+            id: "fork-1".into(),
+            name: "fork-abc".into(),
+            kind: AgentKind::Fork,
+            agent_type: "midtown-channel-lead".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: None,
+            bound_thread_id: Some("thread-abc".into()),
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "fork-1".into(),
+            pid: 88,
+            session_id: None,
+        },
+    ]);
+
+    let proj = make_projections(&events);
+    let commands = route_message(
+        &proj,
+        "main",
+        "alice",
+        "follow-up on this",
+        Some("thread-abc"),
+    );
+
+    // Fork should be nudged (not channel lead, since fork owns the thread)
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "fork-1")),
+        "fork should be nudged on thread reply, got {:?}",
+        commands
+    );
+}
+
+#[test]
+fn route_message_nudges_lead_on_thread_without_fork() {
+    let proj = make_projections(&running_lead_events("main"));
+
+    // Thread reply but no fork exists for this thread
+    let commands = route_message(&proj, "main", "alice", "follow-up here", Some("thread-xyz"));
+
+    // Channel lead should be nudged (fallback when no fork)
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "lead-1")),
+        "channel lead should be nudged when no fork for thread, got {:?}",
+        commands
+    );
+}
+
+#[test]
+fn route_message_no_self_nudge() {
+    let proj = make_projections(&running_lead_events("main"));
+
+    // The lead itself posts a message — should not nudge itself
+    let commands = route_message(&proj, "main", "main", "I'm the lead posting", None);
+
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "lead-1")),
+        "lead should not self-nudge, got {:?}",
+        commands
+    );
+}
+
+#[test]
+fn route_message_fork_self_post_no_nudge() {
+    let mut events = running_lead_events("main");
+    events.extend(vec![
+        DomainEvent::AgentCreated {
+            id: "fork-1".into(),
+            name: "fork-abc".into(),
+            kind: AgentKind::Fork,
+            agent_type: "midtown-channel-lead".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: None,
+            bound_thread_id: Some("thread-abc".into()),
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "fork-1".into(),
+            pid: 88,
+            session_id: None,
+        },
+    ]);
+
+    let proj = make_projections(&events);
+    // Fork posts in its own thread — should not self-nudge
+    let commands = route_message(
+        &proj,
+        "main",
+        "fork-abc",
+        "I'm responding",
+        Some("thread-abc"),
+    );
+
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "fork-1")),
+        "fork should not self-nudge, got {:?}",
+        commands
+    );
+}
+
+#[test]
+fn route_message_includes_mention_routing() {
+    let mut events = running_lead_events("main");
+    events.extend(vec![
+        DomainEvent::AgentCreated {
+            id: "worker-1".into(),
+            name: "ghost-town".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-1".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "worker-1".into(),
+            pid: 99,
+            session_id: None,
+        },
+    ]);
+
+    let proj = make_projections(&events);
+    let commands = route_message(&proj, "main", "alice", "hey @ghost-town check this", None);
+
+    // Should nudge both the lead (all messages) and the mentioned worker
+    let nudge_ids: Vec<&str> = commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::NudgeAgent { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        nudge_ids.contains(&"lead-1"),
+        "lead should be nudged, got {:?}",
+        nudge_ids
+    );
+    assert!(
+        nudge_ids.contains(&"worker-1"),
+        "mentioned worker should be nudged, got {:?}",
+        nudge_ids
+    );
+}

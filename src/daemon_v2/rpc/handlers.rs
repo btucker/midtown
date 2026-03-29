@@ -425,7 +425,7 @@ pub fn handle_channel_post(
         thread_id: thread_id.map(String::from),
     }];
 
-    let mention_commands = chat::route_mentions(proj, channel, sender, content);
+    let mention_commands = chat::route_message(proj, channel, sender, content, thread_id);
 
     Ok((
         json!({ "ok": true, "id": msg_id }),
