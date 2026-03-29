@@ -49,7 +49,24 @@ pub async fn channel_history(
         &proj,
         &state.channels_dir,
     );
-    Json(response.get("result").cloned().unwrap_or(json!([])))
+    let messages = response.get("result").cloned().unwrap_or(json!([]));
+    // Transform "message" field to "content" for web UI compatibility
+    let messages = match messages {
+        Value::Array(arr) => Value::Array(
+            arr.into_iter()
+                .map(|mut msg| {
+                    if let Value::Object(ref mut map) = msg
+                        && let Some(content) = map.remove("message")
+                    {
+                        map.insert("content".to_string(), content);
+                    }
+                    msg
+                })
+                .collect(),
+        ),
+        other => other,
+    };
+    Json(messages)
 }
 
 pub async fn channel_list(State(state): State<Arc<WebState>>) -> Json<Value> {
@@ -104,4 +121,10 @@ pub async fn questions() -> Json<Value> {
 
 pub async fn auth_profiles() -> Json<Value> {
     Json(json!([]))
+}
+
+pub async fn mark_read(
+    axum::extract::Path((_item_type, _id)): axum::extract::Path<(String, String)>,
+) -> StatusCode {
+    StatusCode::NO_CONTENT
 }
