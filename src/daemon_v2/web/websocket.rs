@@ -63,30 +63,89 @@ async fn handle_client_message(text: &str, state: &WebState, socket: &mut WebSoc
                 return;
             }
 
-            // Use channel from message, or default
             let channel = msg
                 .get("channel")
                 .and_then(|v| v.as_str())
                 .unwrap_or("midtown");
-            let thread_parent_id = msg
-                .get("thread_parent_id")
-                .and_then(|v| v.as_str())
-                .map(String::from);
+            let thread_parent_id = msg.get("thread_parent_id").and_then(|v| v.as_str());
 
-            // Post the message to the channel JSONL
-            if let Err(e) = channel_io::post_message(
-                &state.channels_dir,
-                channel,
-                "user",
-                content,
-                thread_parent_id.as_deref(),
-            ) {
-                tracing::error!(%e, "failed to post message via WS");
-                return;
+            // Go through the same channel.post RPC dispatch as the CLI.
+            // This ensures @mention routing, thread fork routing, and lead nudging
+            // all happen in one place — no duplicate logic.
+            let rpc_request = json!({
+                "jsonrpc": "2.0",
+                "method": "channel.post",
+                "params": {
+                    "channel": channel,
+                    "sender": "user",
+                    "content": content,
+                    "thread_id": thread_parent_id,
+                },
+                "id": 1,
+            });
+
+            let (response, events, commands) = {
+                let proj = state.projections.lock().await;
+                crate::daemon_v2::rpc::dispatch_request(rpc_request, &proj, &state.channels_dir)
+            };
+
+            // Apply events (MessagePosted)
+            if !events.is_empty() {
+                let mut proj = state.projections.lock().await;
+                for event in &events {
+                    proj.apply(event);
+                }
             }
 
-            // Send confirmation back to the client
-            let msg_id = uuid::Uuid::new_v4().to_string();
+            // Send commands (mention/thread nudges) to the daemon for execution
+            for cmd in commands {
+                if let Err(e) = state.command_tx.send(cmd).await {
+                    tracing::warn!(%e, "failed to send command to daemon");
+                }
+            }
+
+            // Also nudge the channel lead directly (channel.post's route_message
+            // handles @mentions but not the implicit "user posted, wake the lead")
+            {
+                let proj = state.projections.lock().await;
+                let lead_id = proj.agents.by_channel.get(channel).and_then(|ids| {
+                    ids.iter()
+                        .find(|id| {
+                            proj.agents.running.contains(*id)
+                                && proj.agents.by_id.get(*id).is_some_and(|a| {
+                                    a.kind == crate::daemon_v2::events::AgentKind::Lead
+                                })
+                        })
+                        .cloned()
+                });
+
+                // For thread replies, nudge the fork instead if one exists
+                let target = if let Some(tid) = thread_parent_id {
+                    proj.agents
+                        .fork_for_thread(tid)
+                        .filter(|a| proj.agents.running.contains(&a.id))
+                        .map(|a| a.id.clone())
+                        .or(lead_id)
+                } else {
+                    lead_id
+                };
+
+                if let Some(target_id) = target {
+                    let nudge_msg = format!("User message in #{channel}: {content}");
+                    let cmd = crate::daemon_v2::decisions::Command::NudgeAgent {
+                        id: target_id,
+                        message: nudge_msg,
+                    };
+                    let _ = state.command_tx.send(cmd).await;
+                }
+            }
+
+            // Send confirmation back to the WS client
+            let msg_id = response
+                .get("result")
+                .and_then(|r| r.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             let confirmation = json!({
                 "type": "channel_message",
                 "data": {
@@ -102,44 +161,6 @@ async fn handle_client_message(text: &str, state: &WebState, socket: &mut WebSoc
             let _ = socket
                 .send(Message::Text(confirmation.to_string().into()))
                 .await;
-
-            // Nudge the channel lead so it sees the new message.
-            // This is the critical piece — without it, the lead never responds.
-            let nudge_target = {
-                let proj = state.projections.lock().await;
-                // If thread has a fork, nudge the fork; otherwise nudge the channel lead
-                if let Some(ref tid) = thread_parent_id {
-                    proj.agents
-                        .fork_for_thread(tid)
-                        .filter(|a| proj.agents.running.contains(&a.id))
-                        .map(|a| a.id.clone())
-                } else {
-                    // Find the channel lead
-                    proj.agents
-                        .by_channel
-                        .get(channel)
-                        .and_then(|ids| {
-                            ids.iter().find(|id| {
-                                proj.agents.running.contains(*id)
-                                    && proj.agents.by_id.get(*id).is_some_and(|a| {
-                                        a.kind == crate::daemon_v2::events::AgentKind::Lead
-                                    })
-                            })
-                        })
-                        .cloned()
-                }
-            };
-
-            if let Some(target_id) = nudge_target {
-                let nudge_msg = format!("User message in #{channel}: {content}");
-                let cmd = crate::daemon_v2::decisions::Command::NudgeAgent {
-                    id: target_id,
-                    message: nudge_msg,
-                };
-                if let Err(e) = state.command_tx.send(cmd).await {
-                    tracing::warn!(%e, "failed to send nudge command to daemon");
-                }
-            }
         }
         "get_history" | "get_status" => {
             // These are handled via HTTP polling, ignore on WS
