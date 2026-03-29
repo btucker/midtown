@@ -45,7 +45,7 @@ mod stream;
 pub(crate) mod tick;
 mod trackers;
 pub(crate) mod wake_reason;
-mod webhook_fwd;
+pub mod webhook_fwd;
 
 use constants::*;
 pub use constants::{

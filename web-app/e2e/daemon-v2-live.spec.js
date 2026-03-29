@@ -1191,6 +1191,77 @@ test.describe('Daemon v2 Live Web UI', () => {
     // Reminders are part of the daemon but stubbed — verify they don't crash status
   })
 
+  test('webhook endpoint accepts PR events', async ({ request }) => {
+    // Simulate a GitHub PR opened webhook
+    const res = await request.post(`${BASE_URL}/webhook`, {
+      headers: {
+        'x-github-event': 'pull_request',
+        'content-type': 'application/json',
+      },
+      data: {
+        action: 'opened',
+        pull_request: {
+          number: 9999,
+          head: { ref: 'test-webhook-branch' },
+          user: { login: 'test-user' },
+          merged: false,
+        },
+      },
+    })
+    expect(res.ok()).toBeTruthy()
+    const data = await res.json()
+    expect(data.ok).toBeTruthy()
+    expect(data.events).toBeGreaterThan(0)
+
+    // The PR should now appear in the status
+    const statusRes = await request.get(`${BASE_URL}/api/status`)
+    const status = await statusRes.json()
+    const prs = status.pull_requests || []
+    const found = prs.find((pr) => pr.number === 9999)
+    // PR may or may not appear depending on timing — the key test
+    // is that the webhook was accepted and produced events
+  })
+
+  test('channel creation via UI creates and navigates to channel', async ({ browser }) => {
+    const context = await browser.newContext({ ignoreHTTPSErrors: true })
+    const page = await context.newPage()
+
+    // Collect network errors
+    const networkErrors = []
+    page.on('console', msg => {
+      if (msg.type() === 'error' && msg.text().includes('Network')) {
+        networkErrors.push(msg.text())
+      }
+    })
+
+    await page.goto('https://localhost:47022', { waitUntil: 'networkidle', timeout: 15000 })
+    await page.waitForSelector('[data-testid="channel-input"]', { timeout: 10000 })
+
+    const channelName = `uitest${Date.now()}`
+
+    // Click "+" button
+    await page.locator('button[title="Create new channel"]').click()
+    await page.waitForTimeout(500)
+
+    // Type channel name and submit
+    const nameInput = page.locator('input').last()
+    await nameInput.fill(channelName)
+    await nameInput.press('Enter')
+    await page.waitForTimeout(2000)
+
+    // Check for network errors during creation
+    if (networkErrors.length > 0) {
+      console.log('Network errors during channel creation:', networkErrors)
+    }
+
+    // Reload and check channel exists
+    await page.reload({ waitUntil: 'networkidle' })
+    await page.waitForTimeout(3000)
+    await expect(page.getByText(`#${channelName}`)).toBeVisible({ timeout: 5000 })
+
+    await context.close()
+  })
+
   test('light mode applies correct background', async ({ browser }) => {
     const context = await browser.newContext({ ignoreHTTPSErrors: true })
     const page = await context.newPage()

@@ -377,6 +377,34 @@ impl DaemonV2 {
             });
         }
 
+        // Start the webhook forwarder watchdog if we have a web port.
+        // The forwarder runs `gh webhook forward` to receive GitHub events,
+        // which get routed through the same nudge system as everything else.
+        let (_webhook_shutdown_tx, webhook_shutdown_rx) = tokio::sync::watch::channel(false);
+        if let Some(port) = web_port {
+            let webhook_port = port;
+            let restart_secs = crate::config::load_full_project_config(self.paths.dir_key())
+                .and_then(|c| c.daemon.webhook_restart_interval_secs)
+                .unwrap_or(300);
+
+            // Only start if MIDTOWN_WEBHOOK_PORT != 0 (0 means disabled for tests)
+            let disabled = std::env::var("MIDTOWN_WEBHOOK_PORT")
+                .map(|v| v == "0")
+                .unwrap_or(false);
+
+            if !disabled {
+                tokio::spawn(async move {
+                    crate::daemon::webhook_fwd::webhook_forwarder_watchdog(
+                        webhook_port,
+                        restart_secs,
+                        webhook_shutdown_rx,
+                    )
+                    .await;
+                });
+                tracing::info!(%webhook_port, "webhook forwarder watchdog started");
+            }
+        }
+
         // Resume agents that were running before the daemon restarted.
         for cmd in std::mem::take(&mut self.pending_resumes) {
             let events = {

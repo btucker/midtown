@@ -18,7 +18,7 @@ use tracing::{debug, info, warn};
 /// 1. Starting the forwarder process
 /// 2. Restarting it every `restart_interval_secs` seconds
 /// 3. Cleaning up on shutdown signal
-pub(super) async fn webhook_forwarder_watchdog(
+pub async fn webhook_forwarder_watchdog(
     port: u16,
     restart_interval_secs: u64,
     mut shutdown_rx: watch::Receiver<bool>,

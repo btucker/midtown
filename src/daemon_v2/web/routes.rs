@@ -582,6 +582,98 @@ pub async fn auth_login(Json(body): Json<Value>) -> Json<Value> {
     Json(json!({"ok": true}))
 }
 
+pub async fn webhook_handler(
+    State(state): State<Arc<WebState>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> (StatusCode, Json<Value>) {
+    let event_type = headers
+        .get("x-github-event")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+
+    // Parse the webhook payload and convert to domain events
+    let payload: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid JSON"})),
+            );
+        }
+    };
+
+    tracing::info!(%event_type, "received GitHub webhook");
+
+    // Convert to domain events using the existing webhook converter
+    // For now, handle the most common events directly
+    let mut events = Vec::new();
+
+    match event_type {
+        "pull_request" => {
+            let action = payload.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            let pr = &payload["pull_request"];
+            let number = pr.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+            let branch = pr
+                .get("head")
+                .and_then(|h| h.get("ref"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let author = pr
+                .get("user")
+                .and_then(|u| u.get("login"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+
+            match action {
+                "opened" | "ready_for_review" => {
+                    events.push(crate::daemon_v2::events::DomainEvent::PrOpened {
+                        number,
+                        branch,
+                        author,
+                    });
+                    events
+                        .push(crate::daemon_v2::events::DomainEvent::PrReviewRequested { number });
+                }
+                "closed" => {
+                    let merged = pr.get("merged").and_then(|v| v.as_bool()).unwrap_or(false);
+                    if merged {
+                        events.push(crate::daemon_v2::events::DomainEvent::PrMerged {
+                            number,
+                            branch,
+                        });
+                    } else {
+                        events.push(crate::daemon_v2::events::DomainEvent::PrClosed { number });
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {
+            tracing::debug!(%event_type, "unhandled webhook event type");
+        }
+    }
+
+    // Apply events to shared projections
+    if !events.is_empty() {
+        let mut proj = state.projections.lock().await;
+        for event in &events {
+            proj.apply(event);
+        }
+        // Broadcast to WebSocket clients
+        for event in &events {
+            let _ = state.event_tx.send(event.clone());
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({"ok": true, "events": events.len()})),
+    )
+}
+
 pub async fn mark_read(
     axum::extract::Path((_item_type, _id)): axum::extract::Path<(String, String)>,
 ) -> StatusCode {
