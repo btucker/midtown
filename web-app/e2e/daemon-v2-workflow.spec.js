@@ -166,4 +166,70 @@ test.describe('Daemon v2 Workflow', () => {
       expect(res.ok()).toBeTruthy()
     }
   })
+
+  test('status response has correct structure', async ({ request }) => {
+    const res = await request.get(`${API}/api/status`)
+    expect(res.ok()).toBeTruthy()
+    const data = await res.json()
+
+    // Verify full status shape
+    expect(data).toHaveProperty('agents')
+    expect(data).toHaveProperty('coworkers')
+    expect(data).toHaveProperty('tasks')
+    expect(data).toHaveProperty('pull_requests')
+    expect(data).toHaveProperty('max_in_progress_tasks')
+    expect(data).toHaveProperty('prs')
+
+    // Types
+    expect(Array.isArray(data.coworkers)).toBeTruthy()
+    expect(Array.isArray(data.tasks)).toBeTruthy()
+    expect(Array.isArray(data.pull_requests)).toBeTruthy()
+    expect(typeof data.agents.total).toBe('number')
+    expect(typeof data.agents.running).toBe('number')
+  })
+
+  test('channels endpoint returns wrapped list', async ({ request }) => {
+    const res = await request.get(`${API}/api/channels`)
+    expect(res.ok()).toBeTruthy()
+    const data = await res.json()
+
+    // Must be { channels: [...] } not a bare array
+    expect(data).toHaveProperty('channels')
+    expect(Array.isArray(data.channels)).toBeTruthy()
+  })
+
+  test('history defaults to 100 messages when no limit', async ({ request }) => {
+    const res = await request.get(`${API}/api/channels/history`)
+    expect(res.ok()).toBeTruthy()
+    const data = await res.json()
+    expect(Array.isArray(data)).toBeTruthy()
+    // Should not exceed default limit of 100
+    expect(data.length).toBeLessThanOrEqual(100)
+  })
+
+  test('auth profiles returns at least default profile', async ({ request }) => {
+    const res = await request.get(`${API}/api/auth/profiles?provider=claude`)
+    expect(res.ok()).toBeTruthy()
+    const data = await res.json()
+    expect(Array.isArray(data)).toBeTruthy()
+    expect(data.length).toBeGreaterThan(0)
+    expect(data[0]).toHaveProperty('name')
+    expect(data[0]).toHaveProperty('is_current')
+  })
+
+  test('read-state PUT returns 204', async ({ request }) => {
+    const res = await request.put(`${API}/api/read-state/channel/test`)
+    expect(res.status()).toBe(204)
+  })
+
+  test('daemon survives rapid status polling', async ({ request }) => {
+    // Simulate what the web UI does — poll status every second
+    for (let i = 0; i < 10; i++) {
+      const res = await request.get(`${API}/api/status`)
+      expect(res.ok()).toBeTruthy()
+    }
+    // Daemon should still be healthy after rapid polling
+    const health = await request.get(`${API}/api/health`)
+    expect(health.ok()).toBeTruthy()
+  })
 })
