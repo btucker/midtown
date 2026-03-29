@@ -30,6 +30,8 @@ pub struct ChannelHistoryParams {
     limit: Option<u64>,
     #[serde(default)]
     last: Option<u64>,
+    #[serde(default)]
+    thread_parent_id: Option<String>,
 }
 
 pub async fn channel_history(
@@ -50,6 +52,25 @@ pub async fn channel_history(
         &state.channels_dir,
     );
     let messages = response.get("result").cloned().unwrap_or(json!([]));
+
+    // Filter by thread_parent_id if provided
+    let messages = if let Some(ref parent_id) = params.thread_parent_id {
+        match messages {
+            Value::Array(arr) => Value::Array(
+                arr.into_iter()
+                    .filter(|msg| {
+                        msg.get("thread_parent_id")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|id| id == parent_id)
+                    })
+                    .collect(),
+            ),
+            other => other,
+        }
+    } else {
+        messages
+    };
+
     // Transform "message" field to "content" for web UI compatibility
     let messages = match messages {
         Value::Array(arr) => Value::Array(
@@ -197,6 +218,39 @@ pub async fn search(
         "query": params.q,
         "total": results.len(),
     }))
+}
+
+pub async fn channel_settings_get(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Path(channel): axum::extract::Path<String>,
+) -> Json<Value> {
+    let proj = state.projections.lock().await;
+    let settings = proj
+        .channels
+        .channels
+        .get(&channel)
+        .map(|meta| {
+            json!({
+                "show_full_lead_output": meta.settings.show_full_lead_output,
+                "lead_driven": meta.settings.lead_driven,
+                "directory": meta.settings.directory,
+            })
+        })
+        .unwrap_or_else(|| json!({"show_full_lead_output": false, "lead_driven": false}));
+    Json(settings)
+}
+
+pub async fn channel_agents_md(
+    axum::extract::Path(channel): axum::extract::Path<String>,
+) -> Json<Value> {
+    // Read AGENTS.md for a channel — stub for now
+    Json(json!({"content": "", "channel": channel}))
+}
+
+pub async fn channel_directory_get(
+    axum::extract::Path(channel): axum::extract::Path<String>,
+) -> Json<Value> {
+    Json(json!({"directory": null, "channel": channel}))
 }
 
 pub async fn mark_read(

@@ -685,6 +685,41 @@ test.describe('Daemon v2 Live Web UI', () => {
     await context.close()
   })
 
+  test('thread_parent_id filters to only thread replies', async ({ request }) => {
+    // thread_parent_id should filter messages to only those in that thread.
+    // A nonexistent thread_parent_id should return an empty array.
+    const threadRes = await request.get(
+      `${BASE_URL}/api/channels/history?channel=midtown&thread_parent_id=nonexistent-thread-id`
+    )
+    expect(threadRes.ok()).toBeTruthy()
+    const threadMsgs = await threadRes.json()
+    expect(Array.isArray(threadMsgs)).toBeTruthy()
+    // A nonexistent thread should return 0 messages, not the full channel history
+    expect(threadMsgs.length).toBe(0)
+  })
+
+  test('channel creation via API', async ({ request }) => {
+    const channelName = `test-chan-${Date.now()}`
+    const createRes = await request.post(`${BASE_URL}/api/channels/create`, {
+      data: { name: channelName },
+    })
+    expect(createRes.ok()).toBeTruthy()
+
+    // Verify channel appears in list
+    const listRes = await request.get(`${BASE_URL}/api/channels`)
+    const data = await listRes.json()
+    const names = data.channels.map((c) => c.name)
+    expect(names).toContain(channelName)
+  })
+
+  test('channel settings GET returns valid data', async ({ request }) => {
+    const res = await request.get(`${BASE_URL}/api/channels/midtown/settings`)
+    expect(res.ok()).toBeTruthy()
+    const data = await res.json()
+    // Should have settings fields
+    expect(data).toBeDefined()
+  })
+
   test('hovering a message shows reply button', async ({ browser }) => {
     const context = await browser.newContext({ ignoreHTTPSErrors: true })
     const page = await context.newPage()

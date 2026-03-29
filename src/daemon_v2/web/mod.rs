@@ -29,6 +29,18 @@ pub fn create_router(state: Arc<WebState>) -> Router {
             axum::routing::put(routes::mark_read),
         )
         .route("/api/search", get(routes::search))
+        .route(
+            "/api/channels/{channel}/settings",
+            get(routes::channel_settings_get),
+        )
+        .route(
+            "/api/channels/{channel}/agents-md",
+            get(routes::channel_agents_md),
+        )
+        .route(
+            "/api/channels/{channel}/directory",
+            get(routes::channel_directory_get),
+        )
         .route("/api/usage", get(routes::usage))
         .route("/api/questions", get(routes::questions))
         .route("/api/auth/profiles", get(routes::auth_profiles))
