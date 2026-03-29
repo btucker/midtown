@@ -106,6 +106,95 @@ async fn handle_client_message(text: &str, state: &WebState, socket: &mut WebSoc
         "get_history" | "get_status" => {
             // These are handled via HTTP polling, ignore on WS
         }
+        "answer_question" => {
+            let coworker = msg
+                .get("coworker_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let answer = msg.get("answer").and_then(|v| v.as_str()).unwrap_or("");
+            tracing::info!(%coworker, "answering question via WS");
+            // Post the answer to the coworker's DM channel
+            if !coworker.is_empty() && !answer.is_empty() {
+                let dm = format!("dm-{coworker}");
+                let _ = channel_io::post_message(&state.channels_dir, &dm, "user", answer, None);
+            }
+        }
+        "fork_thread" => {
+            let thread_parent_id = msg
+                .get("thread_parent_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let channel = msg
+                .get("channel")
+                .and_then(|v| v.as_str())
+                .unwrap_or("midtown");
+            tracing::info!(%thread_parent_id, %channel, "fork_thread via WS");
+            // Send back thread_ownership event
+            let ownership = json!({
+                "type": "thread_ownership",
+                "data": {
+                    "thread_parent_id": thread_parent_id,
+                    "channel": channel,
+                    "has_dedicated_session": false,
+                }
+            });
+            let _ = socket
+                .send(Message::Text(ownership.to_string().into()))
+                .await;
+        }
+        "unfork_thread" => {
+            let thread_parent_id = msg
+                .get("thread_parent_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            tracing::info!(%thread_parent_id, "unfork_thread via WS");
+        }
+        "get_thread_ownership" => {
+            let thread_parent_id = msg
+                .get("thread_parent_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let channel = msg
+                .get("channel")
+                .and_then(|v| v.as_str())
+                .unwrap_or("midtown");
+            // Check if a fork session exists for this thread
+            let proj = state.projections.lock().await;
+            let has_fork = proj
+                .agents
+                .fork_for_thread(thread_parent_id)
+                .map(|a| proj.agents.running.contains(&a.id))
+                .unwrap_or(false);
+            drop(proj);
+            let ownership = json!({
+                "type": "thread_ownership",
+                "data": {
+                    "thread_parent_id": thread_parent_id,
+                    "channel": channel,
+                    "has_dedicated_session": has_fork,
+                }
+            });
+            let _ = socket
+                .send(Message::Text(ownership.to_string().into()))
+                .await;
+        }
+        "cancel_lead" => {
+            let channel = msg
+                .get("channel")
+                .and_then(|v| v.as_str())
+                .unwrap_or("midtown");
+            tracing::info!(%channel, "cancel_lead via WS");
+            // TODO: find and stop the lead for this channel
+        }
+        "nudge" => {
+            let target = msg.get("target").and_then(|v| v.as_str()).unwrap_or("");
+            let message = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
+            tracing::info!(%target, "nudge via WS");
+            if !target.is_empty() && !message.is_empty() {
+                let dm = format!("dm-{target}");
+                let _ = channel_io::post_message(&state.channels_dir, &dm, "user", message, None);
+            }
+        }
         _ => {
             tracing::debug!(msg_type, "unhandled WS message type");
         }
