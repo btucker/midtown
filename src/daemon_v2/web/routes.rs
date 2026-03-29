@@ -24,21 +24,26 @@ pub async fn status(State(state): State<Arc<WebState>>) -> Json<Value> {
 
 #[derive(Deserialize)]
 pub struct ChannelHistoryParams {
-    channel: String,
+    #[serde(default)]
+    channel: Option<String>,
     #[serde(default)]
     limit: Option<u64>,
+    #[serde(default)]
+    last: Option<u64>,
 }
 
 pub async fn channel_history(
     State(state): State<Arc<WebState>>,
     Query(params): Query<ChannelHistoryParams>,
 ) -> Json<Value> {
+    let channel = params.channel.as_deref().unwrap_or("midtown");
+    let limit = params.limit.or(params.last).or(Some(100)); // Default to last 100 messages
     let proj = state.projections.lock().await;
     let (response, _, _) = rpc::dispatch_request(
         json!({
             "jsonrpc": "2.0",
             "method": "channel.read",
-            "params": {"channel": params.channel, "limit": params.limit},
+            "params": {"channel": channel, "limit": limit},
             "id": 1
         }),
         &proj,
