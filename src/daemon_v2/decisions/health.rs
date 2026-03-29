@@ -2,6 +2,10 @@
 #[cfg(test)]
 mod tests;
 
+#[path = "channel_spec_tests.rs"]
+#[cfg(test)]
+mod channel_spec_tests;
+
 use chrono::Utc;
 
 use crate::daemon_v2::decisions::{Command, SpawnConfig};

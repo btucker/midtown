@@ -8,6 +8,10 @@ use std::path::PathBuf;
 #[cfg(test)]
 mod tests;
 
+#[path = "event_store_spec_tests.rs"]
+#[cfg(test)]
+mod spec_tests;
+
 pub struct EventStore {
     dir: PathBuf,
     sequence: u64,

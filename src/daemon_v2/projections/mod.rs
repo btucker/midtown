@@ -5,6 +5,14 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 mod spec_tests;
 
+#[path = "agent_lifecycle_spec_tests.rs"]
+#[cfg(test)]
+mod agent_lifecycle_spec_tests;
+
+#[path = "cooldown_spec_tests.rs"]
+#[cfg(test)]
+mod cooldown_spec_tests;
+
 pub mod agents;
 pub mod channels;
 pub mod cooldowns;
