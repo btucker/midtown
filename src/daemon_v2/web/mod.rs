@@ -41,6 +41,15 @@ pub fn create_router(state: Arc<WebState>) -> Router {
             "/api/channels/{channel}/directory",
             get(routes::channel_directory_get),
         )
+        .route(
+            "/api/channels/{channel}/archive",
+            post(routes::channel_archive),
+        )
+        .route(
+            "/api/channels/{channel}/unarchive",
+            post(routes::channel_unarchive),
+        )
+        .route("/api/directories", get(routes::directories))
         .route("/api/usage", get(routes::usage))
         .route("/api/questions", get(routes::questions))
         .route("/api/auth/profiles", get(routes::auth_profiles))
