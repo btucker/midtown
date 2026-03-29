@@ -360,11 +360,16 @@ impl DaemonV2 {
             crate::config::load_full_project_config(self.paths.dir_key())
                 .and_then(|c| c.daemon.webhook_port)
         });
+        // Command channel: the web layer sends commands (nudges) to the daemon event loop.
+        let (web_cmd_tx, mut web_cmd_rx) =
+            tokio::sync::mpsc::channel::<crate::daemon_v2::decisions::Command>(64);
+
         if let Some(port) = web_port {
             let web_state = std::sync::Arc::new(crate::daemon_v2::web::WebState {
                 projections: self.projections.clone(),
                 channels_dir: self.config.channels_dir.clone(),
                 event_tx: self.event_tx.clone(),
+                command_tx: web_cmd_tx.clone(),
             });
             let router = crate::daemon_v2::web::create_router(web_state);
             let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
@@ -492,6 +497,22 @@ impl DaemonV2 {
                             self.webhook_rx = None;
                         }
                     }
+                }
+
+                // Commands from the web layer (e.g., nudge after user message)
+                Some(cmd) = web_cmd_rx.recv() => {
+                    let events = {
+                        let proj = self.projections.lock().await;
+                        executor::execute(
+                            cmd,
+                            &mut self.sessions,
+                            &self.paths,
+                            &proj,
+                            &self.config.channels_dir,
+                        )
+                        .await
+                    };
+                    self.apply_events(&events).await;
                 }
 
                 () = &mut sleep => {

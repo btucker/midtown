@@ -14,6 +14,9 @@ pub struct WebState {
     pub projections: Arc<Mutex<Projections>>,
     pub channels_dir: PathBuf,
     pub event_tx: broadcast::Sender<DomainEvent>,
+    /// Channel for sending commands from the web layer to the daemon event loop.
+    /// Used when WS messages need to trigger agent nudges (e.g., user posts a message).
+    pub command_tx: tokio::sync::mpsc::Sender<crate::daemon_v2::decisions::Command>,
 }
 
 pub fn create_router(state: Arc<WebState>) -> Router {

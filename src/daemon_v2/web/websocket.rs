@@ -102,6 +102,44 @@ async fn handle_client_message(text: &str, state: &WebState, socket: &mut WebSoc
             let _ = socket
                 .send(Message::Text(confirmation.to_string().into()))
                 .await;
+
+            // Nudge the channel lead so it sees the new message.
+            // This is the critical piece — without it, the lead never responds.
+            let nudge_target = {
+                let proj = state.projections.lock().await;
+                // If thread has a fork, nudge the fork; otherwise nudge the channel lead
+                if let Some(ref tid) = thread_parent_id {
+                    proj.agents
+                        .fork_for_thread(tid)
+                        .filter(|a| proj.agents.running.contains(&a.id))
+                        .map(|a| a.id.clone())
+                } else {
+                    // Find the channel lead
+                    proj.agents
+                        .by_channel
+                        .get(channel)
+                        .and_then(|ids| {
+                            ids.iter().find(|id| {
+                                proj.agents.running.contains(*id)
+                                    && proj.agents.by_id.get(*id).is_some_and(|a| {
+                                        a.kind == crate::daemon_v2::events::AgentKind::Lead
+                                    })
+                            })
+                        })
+                        .cloned()
+                }
+            };
+
+            if let Some(target_id) = nudge_target {
+                let nudge_msg = format!("User message in #{channel}: {content}");
+                let cmd = crate::daemon_v2::decisions::Command::NudgeAgent {
+                    id: target_id,
+                    message: nudge_msg,
+                };
+                if let Err(e) = state.command_tx.send(cmd).await {
+                    tracing::warn!(%e, "failed to send nudge command to daemon");
+                }
+            }
         }
         "get_history" | "get_status" => {
             // These are handled via HTTP polling, ignore on WS
