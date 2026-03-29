@@ -54,7 +54,9 @@ pub async fn channel_list(State(state): State<Arc<WebState>>) -> Json<Value> {
         &proj,
         &state.channels_dir,
     );
-    Json(response.get("result").cloned().unwrap_or(json!([])))
+    let channels = response.get("result").cloned().unwrap_or(json!([]));
+    // Web UI expects { channels: [...] }, not a bare array
+    Json(json!({ "channels": channels }))
 }
 
 #[derive(Deserialize)]
@@ -78,4 +80,23 @@ pub async fn channel_create(
         ),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))),
     }
+}
+
+// Stub routes for endpoints the web UI calls but v2 doesn't fully implement yet.
+// Return empty/default data instead of 404 so the UI doesn't break.
+
+pub async fn read_state() -> Json<Value> {
+    Json(json!({}))
+}
+
+pub async fn usage() -> Json<Value> {
+    Json(json!({}))
+}
+
+pub async fn questions() -> Json<Value> {
+    Json(json!([]))
+}
+
+pub async fn auth_profiles() -> Json<Value> {
+    Json(json!([]))
 }
