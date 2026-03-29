@@ -138,7 +138,7 @@ pub fn dispatch_request(
                     "daemon": "v2",
                 })),
                 "status" | "snapshot" => handlers::handle_status(proj),
-                "agent.list" | "coworker.list" | "coworkers.status" => {
+                "agent.list" | "coworker.list" | "coworkers.status" | "session.list" => {
                     let filter = AgentFilter::from_params(params);
                     handlers::handle_agent_list(proj, filter)
                 }
@@ -147,6 +147,25 @@ pub fn dispatch_request(
                 "prs.status" => handlers::handle_prs_status(proj),
                 "channel.list" => handlers::handle_channel_list(channels_dir),
                 "channel.read" => handlers::handle_channel_read(params, channels_dir),
+                // Stubs for CLI methods that don't have full v2 implementations yet
+                "channel.create"
+                | "channel.archive"
+                | "channel.unarchive"
+                | "reminder.list"
+                | "reminder.create"
+                | "reminder.cancel"
+                | "workflow.set_state"
+                | "workflow.list"
+                | "coworker.report-state"
+                | "session.detach"
+                | "task.update"
+                | "task.prompt"
+                | "task.handoff"
+                | "pr.review"
+                | "pr.merge"
+                | "pr.list-external"
+                | "pr.allow"
+                | "daemon.check-pending" => Ok(json!({"ok": true, "stub": true})),
                 _ => Err(RpcError::method_not_found()),
             };
             let response = match result {
