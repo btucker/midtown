@@ -104,41 +104,8 @@ async fn handle_client_message(text: &str, state: &WebState, socket: &mut WebSoc
                 }
             }
 
-            // Also nudge the channel lead directly (channel.post's route_message
-            // handles @mentions but not the implicit "user posted, wake the lead")
-            {
-                let proj = state.projections.lock().await;
-                let lead_id = proj.agents.by_channel.get(channel).and_then(|ids| {
-                    ids.iter()
-                        .find(|id| {
-                            proj.agents.running.contains(*id)
-                                && proj.agents.by_id.get(*id).is_some_and(|a| {
-                                    a.kind == crate::daemon_v2::events::AgentKind::Lead
-                                })
-                        })
-                        .cloned()
-                });
-
-                // For thread replies, nudge the fork instead if one exists
-                let target = if let Some(tid) = thread_parent_id {
-                    proj.agents
-                        .fork_for_thread(tid)
-                        .filter(|a| proj.agents.running.contains(&a.id))
-                        .map(|a| a.id.clone())
-                        .or(lead_id)
-                } else {
-                    lead_id
-                };
-
-                if let Some(target_id) = target {
-                    let nudge_msg = format!("User message in #{channel}: {content}");
-                    let cmd = crate::daemon_v2::decisions::Command::NudgeAgent {
-                        id: target_id,
-                        message: nudge_msg,
-                    };
-                    let _ = state.command_tx.send(cmd).await;
-                }
-            }
+            // No explicit lead nudge needed — route_message() in channel.post
+            // already nudges the channel lead (or thread fork) on every user message.
 
             // Send confirmation back to the WS client
             let msg_id = response
