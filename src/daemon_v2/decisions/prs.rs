@@ -27,7 +27,7 @@ pub fn handle_merged_prs(proj: &Projections) -> Vec<Command> {
     commands
 }
 
-const MAX_REVIEWER_RESTARTS: usize = 3;
+pub(crate) const MAX_REVIEWER_RESTARTS: usize = 3;
 
 /// For each open PR that needs review and doesn't already have a running reviewer agent,
 /// spawn a reviewer agent. Escalates to ops after MAX_REVIEWER_RESTARTS failed attempts.

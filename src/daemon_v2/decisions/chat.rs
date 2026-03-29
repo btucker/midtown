@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 
 use crate::daemon_v2::decisions::Command;
-use crate::daemon_v2::events::AgentKind;
 use crate::daemon_v2::projections::Projections;
 
 #[path = "chat_tests.rs"]
@@ -173,22 +172,9 @@ fn nudge_channel_lead(
     nudged: &mut HashSet<String>,
     commands: &mut Vec<Command>,
 ) {
-    if let Some(agent) = find_channel_lead(proj, channel) {
+    if let Some(agent) = proj.agents.channel_lead(channel) {
         nudge(agent, sender, message, nudged, commands);
     }
-}
-
-/// Find the lead agent for a channel (any running state).
-fn find_channel_lead<'a>(
-    proj: &'a Projections,
-    channel: &str,
-) -> Option<&'a crate::daemon_v2::projections::agents::Agent> {
-    proj.agents
-        .by_channel
-        .get(channel)?
-        .iter()
-        .filter_map(|id| proj.agents.by_id.get(id))
-        .find(|a| a.kind == AgentKind::Lead)
 }
 
 /// Extract task references like `!42` or `task !7` from content.

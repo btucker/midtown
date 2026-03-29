@@ -142,6 +142,15 @@ impl AgentIndex {
             .and_then(|id| self.by_id.get(id))
     }
 
+    /// Find the lead agent for a channel (regardless of running state).
+    pub fn channel_lead(&self, channel: &str) -> Option<&Agent> {
+        self.by_channel
+            .get(channel)?
+            .iter()
+            .filter_map(|id| self.by_id.get(id))
+            .find(|a| a.kind == AgentKind::Lead)
+    }
+
     pub fn idle_workers(&self) -> Vec<AgentId> {
         self.running
             .iter()

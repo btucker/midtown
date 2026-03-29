@@ -287,18 +287,34 @@ pub async fn execute(
         }
         Command::PostPrComment { number, body } => {
             tracing::info!(%number, "posting PR comment");
-            let _ = tokio::process::Command::new("gh")
+            match tokio::process::Command::new("gh")
                 .args(["pr", "comment", &number.to_string(), "--body", &body])
                 .output()
-                .await;
+                .await
+            {
+                Ok(output) if !output.status.success() => {
+                    let err = String::from_utf8_lossy(&output.stderr);
+                    tracing::warn!(%number, %err, "gh pr comment failed");
+                }
+                Err(e) => tracing::warn!(%number, %e, "gh pr comment failed"),
+                _ => {}
+            }
             vec![]
         }
         Command::RerunCi { run_id } => {
             tracing::info!(%run_id, "rerunning CI");
-            let _ = tokio::process::Command::new("gh")
+            match tokio::process::Command::new("gh")
                 .args(["run", "rerun", &run_id.to_string()])
                 .output()
-                .await;
+                .await
+            {
+                Ok(output) if !output.status.success() => {
+                    let err = String::from_utf8_lossy(&output.stderr);
+                    tracing::warn!(%run_id, %err, "gh run rerun failed");
+                }
+                Err(e) => tracing::warn!(%run_id, %e, "gh run rerun failed"),
+                _ => {}
+            }
             vec![]
         }
     }

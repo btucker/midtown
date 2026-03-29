@@ -35,21 +35,6 @@ pub fn garbage_collect_agents(proj: &Projections) -> Vec<String> {
         .collect()
 }
 
-/// Return RemoveWorktree commands for completed tasks.
-/// The executor handles actual filesystem cleanup.
-pub fn cleanup_completed_worktrees(proj: &Projections) -> Vec<Command> {
-    use crate::daemon_v2::events::TaskStatus;
-
-    proj.work
-        .tasks
-        .iter()
-        .filter(|(_, task)| task.status == TaskStatus::Completed)
-        .map(|(task_id, _)| Command::RemoveWorktree {
-            task_id: task_id.clone(),
-        })
-        .collect()
-}
-
 /// Decision function wrapper for scheduler registration.
 /// Returns GarbageCollect commands for all eligible agents.
 pub fn gc_decision(proj: &Projections, _channel: &str) -> Vec<Command> {

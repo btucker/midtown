@@ -84,8 +84,8 @@ fn check_dead_workers_fn(
 }
 
 /// Wrapper matching `DecisionFn`.
-fn ensure_leads_alive_fn(proj: &Projections, channel: &str) -> Vec<Command> {
-    health::ensure_leads_alive(proj, channel)
+fn ensure_channel_leads_alive_fn(proj: &Projections, channel: &str) -> Vec<Command> {
+    health::ensure_channel_leads_alive(proj, channel)
 }
 
 /// Wrapper: dispatch pending tasks (up to 3 concurrent workers).
@@ -224,9 +224,9 @@ impl DaemonV2 {
             check_dead_workers_fn,
         );
         scheduler.register(
-            "ensure_leads_alive",
+            "ensure_channel_leads_alive",
             Duration::from_secs(30),
-            ensure_leads_alive_fn,
+            ensure_channel_leads_alive_fn,
         );
         scheduler.register(
             "dispatch_pending_tasks",

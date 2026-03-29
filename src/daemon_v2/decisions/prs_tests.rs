@@ -188,7 +188,7 @@ fn no_reviewer_for_pr_not_needing_review() {
 
 // --- reviewer escalation tests ---
 
-const MAX_REVIEWER_RESTARTS: usize = 3;
+use super::MAX_REVIEWER_RESTARTS;
 
 fn add_reviewer_attempt(proj: &mut Projections, pr_num: u64, attempt: usize) {
     let id = format!("reviewer-{pr_num}-attempt-{attempt}");

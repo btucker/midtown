@@ -111,20 +111,6 @@ fn no_respawn_for_completed_task() {
 }
 
 #[test]
-fn ensure_leads_alive_spawns_missing_lead() {
-    // No agents at all — should spawn a lead
-    let proj = Projections::default();
-    let commands = ensure_leads_alive(&proj, "main");
-
-    assert_eq!(commands.len(), 1);
-    assert!(
-        matches!(&commands[0], Command::SpawnAgent(cfg) if cfg.channel.as_deref() == Some("main") && cfg.kind == AgentKind::Lead && cfg.agent_type == "midtown-project-lead"),
-        "expected SpawnAgent for project lead, got {:?}",
-        commands[0]
-    );
-}
-
-#[test]
 fn check_idle_workers_stops_long_running_taskless_worker() {
     use chrono::{Duration, Utc};
 
@@ -247,38 +233,6 @@ fn check_idle_workers_ignores_worker_with_task() {
     assert!(
         commands.is_empty(),
         "expected no commands for worker with task, got {:?}",
-        commands
-    );
-}
-
-#[test]
-fn ensure_leads_alive_no_op_when_running() {
-    // A running lead for the channel — no spawn needed
-    let events = vec![
-        DomainEvent::AgentCreated {
-            id: "lead-1".into(),
-            name: "main".into(),
-            kind: AgentKind::Lead,
-            agent_type: "midtown-channel-lead".into(),
-            provider: Provider::ClaudeCode,
-            channel: Some("main".into()),
-            task_id: None,
-            bound_thread_id: None,
-            icon: None,
-            color: None,
-        },
-        DomainEvent::AgentStarted {
-            id: "lead-1".into(),
-            pid: 42,
-            session_id: None,
-        },
-    ];
-
-    let proj = make_projections(&events);
-    let commands = ensure_leads_alive(&proj, "main");
-    assert!(
-        commands.is_empty(),
-        "expected no commands, got {:?}",
         commands
     );
 }
