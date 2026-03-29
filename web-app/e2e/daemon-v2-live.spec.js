@@ -720,43 +720,8 @@ test.describe('Daemon v2 Live Web UI', () => {
     expect(data).toBeDefined()
   })
 
-  test('thread reply via WS is persisted with thread_parent_id', async ({ browser }) => {
-    const context = await browser.newContext({ ignoreHTTPSErrors: true })
-    const page = await context.newPage()
-
-    await page.goto('https://localhost:47022', { waitUntil: 'networkidle', timeout: 15000 })
-    await page.waitForTimeout(3000)
-
-    // Get a message ID to use as thread parent
-    const parentId = await page.evaluate(async () => {
-      const res = await fetch('/api/channels/history?channel=midtown&limit=1')
-      const msgs = await res.json()
-      return msgs.length > 0 ? msgs[0].id : null
-    })
-
-    if (!parentId) {
-      // No messages to reply to — skip
-      await context.close()
-      return
-    }
-
-    const replyContent = `thread-reply-${Date.now()}`
-
-    // Send a thread reply via WebSocket
-    await page.evaluate(({ content, parentId }) => {
-      const ws = window.__mockWebSockets?.[0] || null
-      // Use the real WS if available
-      const sockets = document.querySelectorAll('*')  // can't access WS directly
-      // Instead, use the app's sendMessage function via the global API
-      // The web app exposes sendMessage which sends via WS
-    }, { content: replyContent, parentId })
-
-    // Alternative: directly test via the API that a posted reply is filterable
-    // Post via the channel_io (using the daemon's WS endpoint isn't easy from Playwright)
-    // Instead, verify the thread filtering works with real data
-
-    await context.close()
-  })
+  // Thread reply via WS is tested indirectly via thread_parent_id filtering test
+  // and message persistence test. Direct WS testing from Playwright is complex.
 
   test('channel archive and unarchive via API', async ({ request }) => {
     // Create a channel to archive
@@ -854,6 +819,58 @@ test.describe('Daemon v2 Live Web UI', () => {
     }
 
     await context.close()
+  })
+
+  test('status API shows running coworker with name', async ({ request }) => {
+    // The lead should appear as a coworker in the status response
+    const res = await request.get(`${BASE_URL}/api/status`)
+    const data = await res.json()
+    expect(data.coworkers.length).toBeGreaterThan(0)
+    const lead = data.coworkers.find((c) => c.coworker_type === 'lead')
+    expect(lead).toBeDefined()
+    expect(lead.name).toBeTruthy()
+    expect(lead.status).toBe('running')
+  })
+
+  test('channel archive shows in archived list', async ({ request }) => {
+    const name = `arch-verify-${Date.now()}`
+    // Create
+    await request.post(`${BASE_URL}/api/channels/create`, { data: { name } })
+    // Archive
+    const archRes = await request.post(`${BASE_URL}/api/channels/${name}/archive`)
+    expect(archRes.ok()).toBeTruthy()
+
+    // Should appear as archived
+    const listRes = await request.get(`${BASE_URL}/api/channels?include_archived=true`)
+    const data = await listRes.json()
+    const found = data.channels.find((c) => c.name === name)
+    expect(found).toBeDefined()
+    expect(found.is_archived).toBeTruthy()
+
+    // Unarchive and verify
+    await request.post(`${BASE_URL}/api/channels/${name}/unarchive`)
+    const listRes2 = await request.get(`${BASE_URL}/api/channels`)
+    const data2 = await listRes2.json()
+    const found2 = data2.channels.find((c) => c.name === name)
+    expect(found2).toBeDefined()
+    expect(found2.is_archived).toBeFalsy()
+  })
+
+  test('channel settings PUT updates lead_driven', async ({ request }) => {
+    // Use a test channel to avoid affecting the main channel
+    const ch = `settings-test-${Date.now()}`
+    await request.post(`${BASE_URL}/api/channels/create`, { data: { name: ch } })
+
+    // Set lead_driven to true
+    const putRes = await request.put(`${BASE_URL}/api/channels/${ch}/settings`, {
+      data: { lead_driven: true },
+    })
+    expect(putRes.ok()).toBeTruthy()
+
+    // Verify it stuck
+    const getRes = await request.get(`${BASE_URL}/api/channels/${ch}/settings`)
+    const data = await getRes.json()
+    expect(data.lead_driven).toBeTruthy()
   })
 
   test('light mode applies correct background', async ({ browser }) => {

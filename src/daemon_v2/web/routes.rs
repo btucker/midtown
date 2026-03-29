@@ -147,8 +147,31 @@ pub async fn read_state() -> Json<Value> {
 }
 
 pub async fn usage() -> Json<Value> {
-    // Return usage data so the AccountPanel renders (and with it, the theme toggle)
-    Json(json!({ "usage": [] }))
+    // Return usage data for active auth profiles.
+    // Full usage stats (session_util, week_util) require API calls to Anthropic —
+    // for now return profile info so the AccountPanel renders correctly.
+    let mut usage = Vec::new();
+
+    for provider in &[
+        crate::auth::AuthProvider::Claude,
+        crate::auth::AuthProvider::Codex,
+    ] {
+        let profile = crate::auth::current_profile_for(*provider);
+        let profile_dir = crate::auth::current_profile_dir_for(*provider);
+        if profile_dir.exists() {
+            usage.push(json!({
+                "provider": provider.as_str(),
+                "profile": profile,
+                "account_email": profile,
+                "session_util": null,
+                "session_resets": null,
+                "week_util": null,
+                "week_resets": null,
+            }));
+        }
+    }
+
+    Json(json!({ "usage": usage }))
 }
 
 pub async fn questions() -> Json<Value> {
