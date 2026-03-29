@@ -126,6 +126,143 @@ fn unknown_mention_no_nudge() {
 }
 
 #[test]
+fn at_all_broadcasts_to_all_running_agents() {
+    let mut events = running_lead_events("main");
+    events.extend(vec![
+        DomainEvent::AgentCreated {
+            id: "worker-1".into(),
+            name: "ghost-town".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-1".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "worker-1".into(),
+            pid: 99,
+            session_id: None,
+        },
+        DomainEvent::AgentCreated {
+            id: "worker-2".into(),
+            name: "swift-river".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-2".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "worker-2".into(),
+            pid: 100,
+            session_id: None,
+        },
+    ]);
+
+    let proj = make_projections(&events);
+    let commands = route_mentions(&proj, "main", "alice", "hey @all please rebase");
+
+    // Should nudge lead + both workers = 3 agents
+    assert_eq!(
+        commands.len(),
+        3,
+        "expected 3 nudges for @all, got {:?}",
+        commands
+    );
+    let nudge_ids: Vec<&str> = commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::NudgeAgent { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(nudge_ids.contains(&"lead-1"));
+    assert!(nudge_ids.contains(&"worker-1"));
+    assert!(nudge_ids.contains(&"worker-2"));
+}
+
+#[test]
+fn at_all_excludes_sender() {
+    let mut events = running_lead_events("main");
+    events.extend(vec![
+        DomainEvent::AgentCreated {
+            id: "worker-1".into(),
+            name: "ghost-town".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-1".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "worker-1".into(),
+            pid: 99,
+            session_id: None,
+        },
+    ]);
+
+    let proj = make_projections(&events);
+    // Sender is "main" which is also the lead's name — lead should be excluded
+    let commands = route_mentions(&proj, "main", "main", "hey @all please rebase");
+
+    assert_eq!(
+        commands.len(),
+        1,
+        "@all should exclude sender, got {:?}",
+        commands
+    );
+    assert!(
+        matches!(&commands[0], Command::NudgeAgent { id, .. } if id == "worker-1"),
+        "expected only worker-1, got {:?}",
+        commands[0]
+    );
+}
+
+#[test]
+fn at_ops_routes_to_ops_channel_lead() {
+    // Create leads for both "main" and "ops" channels
+    let mut events = running_lead_events("main");
+    events.extend(vec![
+        DomainEvent::AgentCreated {
+            id: "ops-lead".into(),
+            name: "ops".into(),
+            kind: AgentKind::Lead,
+            agent_type: "midtown-channel-lead".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("ops".into()),
+            task_id: None,
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "ops-lead".into(),
+            pid: 50,
+            session_id: None,
+        },
+    ]);
+
+    let proj = make_projections(&events);
+    let commands = route_mentions(&proj, "main", "alice", "hey @ops something broke");
+
+    assert_eq!(commands.len(), 1, "expected 1 nudge, got {:?}", commands);
+    assert!(
+        matches!(&commands[0], Command::NudgeAgent { id, .. } if id == "ops-lead"),
+        "expected NudgeAgent for ops-lead, got {:?}",
+        commands[0]
+    );
+}
+
+#[test]
 fn no_nudge_for_stopped_agent() {
     // Agent exists but is stopped
     let events = vec![

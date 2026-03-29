@@ -23,7 +23,33 @@ pub fn route_mentions(
         let target = word
             .trim_start_matches('@')
             .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
-        if target.is_empty() || target == sender {
+        if target.is_empty() {
+            continue;
+        }
+
+        // @all → nudge every running agent in this channel (except sender)
+        if target == "all" {
+            if let Some(channel_agents) = proj.agents.by_channel.get(channel) {
+                for agent_id in channel_agents {
+                    if !proj.agents.running.contains(agent_id) {
+                        continue;
+                    }
+                    // Skip if agent's name matches sender
+                    if let Some(agent) = proj.agents.by_id.get(agent_id)
+                        && agent.name == sender
+                    {
+                        continue;
+                    }
+                    commands.push(Command::NudgeAgent {
+                        id: agent_id.clone(),
+                        message: format!("@all from {sender}: {content}"),
+                    });
+                }
+            }
+            continue;
+        }
+
+        if target == sender {
             continue; // Don't self-mention
         }
 
