@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{Mutex, broadcast, mpsc};
 
 use crate::daemon_v2::decisions::{self, Command, SpawnConfig, health, lifecycle};
 use crate::daemon_v2::events::{AgentKind, DomainEvent, EventStore};
@@ -49,7 +50,7 @@ pub struct DaemonV2Config {
 pub struct DaemonV2 {
     config: DaemonV2Config,
     store: EventStore,
-    projections: Projections,
+    projections: Arc<Mutex<Projections>>,
     scheduler: Scheduler,
     paths: ProjectPaths,
     sessions: HashMap<String, HeadlessSession>,
@@ -302,6 +303,8 @@ impl DaemonV2 {
         };
         let worktree_registry = WorktreeRegistry::default();
 
+        let projections = Arc::new(Mutex::new(projections));
+
         Ok(Self {
             config,
             store,
@@ -359,7 +362,7 @@ impl DaemonV2 {
         });
         if let Some(port) = web_port {
             let web_state = std::sync::Arc::new(crate::daemon_v2::web::WebState {
-                projections: std::sync::Arc::new(tokio::sync::Mutex::new(self.projections.clone())),
+                projections: self.projections.clone(),
                 channels_dir: self.config.channels_dir.clone(),
                 event_tx: self.event_tx.clone(),
             });
@@ -376,15 +379,18 @@ impl DaemonV2 {
 
         // Resume agents that were running before the daemon restarted.
         for cmd in std::mem::take(&mut self.pending_resumes) {
-            let events = executor::execute(
-                cmd,
-                &mut self.sessions,
-                &self.paths,
-                &self.projections,
-                &self.config.channels_dir,
-            )
-            .await;
-            self.apply_events(&events);
+            let events = {
+                let proj = self.projections.lock().await;
+                executor::execute(
+                    cmd,
+                    &mut self.sessions,
+                    &self.paths,
+                    &proj,
+                    &self.config.channels_dir,
+                )
+                .await
+            };
+            self.apply_events(&events).await;
         }
 
         loop {
@@ -409,24 +415,30 @@ impl DaemonV2 {
                 accept_result = listener.accept() => {
                     match accept_result {
                         Ok((stream, _addr)) => {
-                            let (outcome, events, mut commands) = handle_rpc_connection(stream, &self.projections, &self.config.channels_dir).await;
-                            self.apply_events(&events);
+                            let (outcome, events, mut commands) = {
+                                let proj = self.projections.lock().await;
+                                handle_rpc_connection(stream, &proj, &self.config.channels_dir).await
+                            };
+                            self.apply_events(&events).await;
                             for cmd in &mut commands {
                                 if let Command::SpawnAgent(config) = cmd {
                                     self.prepare_worktree_for_spawn(config);
                                 }
                             }
                             for command in commands {
-                                let cmd_events = executor::execute(
-                                    command,
-                                    &mut self.sessions,
-                                    &self.paths,
-                                    &self.projections,
-                                    &self.config.channels_dir,
-                                )
-                                .await;
+                                let cmd_events = {
+                                    let proj = self.projections.lock().await;
+                                    executor::execute(
+                                        command,
+                                        &mut self.sessions,
+                                        &self.paths,
+                                        &proj,
+                                        &self.config.channels_dir,
+                                    )
+                                    .await
+                                };
                                 self.handle_worktree_cleanup(&cmd_events);
-                                self.apply_events(&cmd_events);
+                                self.apply_events(&cmd_events).await;
                             }
                             if outcome == RpcOutcome::Shutdown {
                                 tracing::info!("shutdown requested via RPC");
@@ -444,7 +456,7 @@ impl DaemonV2 {
                         Some(webhook_event) => {
                             tracing::debug!("webhook event received");
                             let domain_events = webhook_to_events(&webhook_event);
-                            self.apply_events(&domain_events);
+                            self.apply_events(&domain_events).await;
                         }
                         None => {
                             // Channel closed — disable future webhook receives.
@@ -462,12 +474,16 @@ impl DaemonV2 {
     }
 
     /// Apply a batch of domain events to the event store and projections.
-    fn apply_events(&mut self, events: &[crate::daemon_v2::events::DomainEvent]) {
+    async fn apply_events(&mut self, events: &[crate::daemon_v2::events::DomainEvent]) {
+        if events.is_empty() {
+            return;
+        }
+        let mut proj = self.projections.lock().await;
         for event in events {
             if let Err(e) = self.store.append(event) {
                 tracing::error!(%e, "failed to append event");
             }
-            self.projections.apply(event);
+            proj.apply(event);
             // Broadcast to WebSocket clients (ignore if no receivers).
             let _ = self.event_tx.send(event.clone());
         }
@@ -480,7 +496,10 @@ impl DaemonV2 {
         let due = self.scheduler.due_decisions(now);
 
         for decision in due {
-            let mut commands = (decision.run)(&self.projections, &self.config.default_channel);
+            let mut commands = {
+                let proj = self.projections.lock().await;
+                (decision.run)(&proj, &self.config.default_channel)
+            };
             self.scheduler.mark_ran(decision.name, now);
 
             // Enrich SpawnAgent commands with worktree paths before execution.
@@ -491,17 +510,20 @@ impl DaemonV2 {
             }
 
             for command in commands {
-                let events = executor::execute(
-                    command,
-                    &mut self.sessions,
-                    &self.paths,
-                    &self.projections,
-                    &self.config.channels_dir,
-                )
-                .await;
+                let events = {
+                    let proj = self.projections.lock().await;
+                    executor::execute(
+                        command,
+                        &mut self.sessions,
+                        &self.paths,
+                        &proj,
+                        &self.config.channels_dir,
+                    )
+                    .await
+                };
                 // Clean up worktrees for completed tasks.
                 self.handle_worktree_cleanup(&events);
-                self.apply_events(&events);
+                self.apply_events(&events).await;
             }
         }
     }
