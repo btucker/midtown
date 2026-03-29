@@ -340,6 +340,11 @@ impl DaemonV2 {
             f // Hold the lock for the daemon's lifetime
         };
 
+        // Ensure the socket directory exists.
+        if let Some(parent) = self.config.socket_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
         let listener =
             UnixListener::bind(&self.config.socket_path).expect("failed to bind daemon socket");
 
