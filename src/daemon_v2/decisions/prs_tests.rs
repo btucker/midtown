@@ -432,3 +432,154 @@ fn no_suspend_for_non_worker_agents() {
     let commands = suspend_authors_with_prs(&proj);
     assert!(commands.is_empty());
 }
+
+// --- nudge_rebase_after_merge tests ---
+
+#[test]
+fn nudge_rebase_after_merge_nudges_open_pr_workers() {
+    let mut proj = Projections::default();
+
+    // PR #1 is merged
+    proj.apply(&DomainEvent::PrOpened {
+        number: 1,
+        branch: "feat-a".into(),
+        author: "dev1".into(),
+    });
+    proj.apply(&DomainEvent::PrMerged {
+        number: 1,
+        branch: "feat-a".into(),
+    });
+
+    // PR #2 is still open with a running worker
+    proj.apply(&DomainEvent::PrOpened {
+        number: 2,
+        branch: "feat-b".into(),
+        author: "dev2".into(),
+    });
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t2".into(),
+        subject: "Task B".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    });
+    proj.apply(&DomainEvent::PrLinkedToTask {
+        number: 2,
+        task_id: "t2".into(),
+    });
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "a2".into(),
+        name: "worker-2".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t2".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "a2".into(),
+        pid: 200,
+        session_id: None,
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t2".into(),
+        agent_id: "a2".into(),
+    });
+
+    let commands = nudge_rebase_after_merge(&proj);
+
+    // Should nudge worker-2 to rebase their PR
+    assert_eq!(commands.len(), 1, "expected 1 nudge, got {:?}", commands);
+    assert!(
+        matches!(&commands[0], Command::NudgeAgent { id, message }
+            if id == "a2" && message.contains("rebase")),
+        "expected rebase nudge for a2, got {:?}",
+        commands[0]
+    );
+}
+
+#[test]
+fn no_rebase_nudge_when_no_merged_prs() {
+    let mut proj = Projections::default();
+
+    // Only open PRs, nothing merged
+    proj.apply(&DomainEvent::PrOpened {
+        number: 1,
+        branch: "feat".into(),
+        author: "dev".into(),
+    });
+
+    let commands = nudge_rebase_after_merge(&proj);
+    assert!(
+        commands.is_empty(),
+        "no nudges when nothing merged, got {:?}",
+        commands
+    );
+}
+
+#[test]
+fn no_rebase_nudge_for_stopped_workers() {
+    let mut proj = Projections::default();
+
+    // PR #1 merged
+    proj.apply(&DomainEvent::PrOpened {
+        number: 1,
+        branch: "feat-a".into(),
+        author: "dev1".into(),
+    });
+    proj.apply(&DomainEvent::PrMerged {
+        number: 1,
+        branch: "feat-a".into(),
+    });
+
+    // PR #2 open, but worker is stopped
+    proj.apply(&DomainEvent::PrOpened {
+        number: 2,
+        branch: "feat-b".into(),
+        author: "dev2".into(),
+    });
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t2".into(),
+        subject: "Task B".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    });
+    proj.apply(&DomainEvent::PrLinkedToTask {
+        number: 2,
+        task_id: "t2".into(),
+    });
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "a2".into(),
+        name: "worker-2".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t2".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "a2".into(),
+        pid: 200,
+        session_id: None,
+    });
+    proj.apply(&DomainEvent::AgentStopped {
+        id: "a2".into(),
+        reason: "stopped".into(),
+    });
+
+    let commands = nudge_rebase_after_merge(&proj);
+    assert!(
+        commands.is_empty(),
+        "no nudges for stopped workers, got {:?}",
+        commands
+    );
+}

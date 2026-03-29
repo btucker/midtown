@@ -100,6 +100,37 @@ fn count_stopped_reviewers(proj: &Projections, pr_num: u64) -> usize {
         .count()
 }
 
+/// After a PR merges, nudge running workers with open PRs to rebase.
+pub fn nudge_rebase_after_merge(proj: &Projections) -> Vec<Command> {
+    // Only act if there are recently merged PRs
+    let has_merged = proj.work.prs.values().any(|pr| pr.is_merged);
+    if !has_merged {
+        return vec![];
+    }
+
+    // Find running workers whose tasks have open (not merged, not closed) PRs
+    proj.agents
+        .running
+        .iter()
+        .filter_map(|id| proj.agents.by_id.get(id))
+        .filter(|agent| agent.kind == AgentKind::Worker)
+        .filter_map(|agent| {
+            let task_id = agent.task_id.as_ref()?;
+            let pr = proj.work.pr_for_task(task_id)?;
+            if pr.is_merged || pr.is_closed {
+                return None;
+            }
+            Some(Command::NudgeAgent {
+                id: agent.id.clone(),
+                message: format!(
+                    "A PR was recently merged. Please rebase your branch for PR #{} to avoid merge conflicts.",
+                    pr.number
+                ),
+            })
+        })
+        .collect()
+}
+
 /// Stop worker agents whose tasks have open PRs (they're waiting for review).
 pub fn suspend_authors_with_prs(proj: &Projections) -> Vec<Command> {
     proj.agents
