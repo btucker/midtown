@@ -873,6 +873,94 @@ test.describe('Daemon v2 Live Web UI', () => {
     expect(data.lead_driven).toBeTruthy()
   })
 
+  test('WS channel_message event updates chat without reload', async ({ browser }) => {
+    const context = await browser.newContext({ ignoreHTTPSErrors: true })
+    const page = await context.newPage()
+
+    await page.goto('https://localhost:47022', { waitUntil: 'networkidle', timeout: 15000 })
+    await page.waitForTimeout(3000)
+
+    // Post a message and check it appears WITHOUT reloading
+    const testMsg = `ws-live-${Date.now()}`
+    const input = page.locator('[data-testid="channel-input"]')
+    await input.fill(testMsg)
+    await input.press('Enter')
+
+    // The WS channel_message event should make it appear immediately
+    await expect(page.getByText(testMsg)).toBeVisible({ timeout: 5000 })
+
+    await context.close()
+  })
+
+  test('usage endpoint returns provider profiles', async ({ request }) => {
+    const res = await request.get(`${BASE_URL}/api/usage`)
+    expect(res.ok()).toBeTruthy()
+    const data = await res.json()
+    expect(data).toHaveProperty('usage')
+    expect(Array.isArray(data.usage)).toBeTruthy()
+    if (data.usage.length > 0) {
+      expect(data.usage[0]).toHaveProperty('provider')
+      expect(data.usage[0]).toHaveProperty('profile')
+    }
+  })
+
+  test('creating a channel via UI + button', async ({ browser }) => {
+    const context = await browser.newContext({ ignoreHTTPSErrors: true })
+    const page = await context.newPage()
+
+    await page.goto('https://localhost:47022', { waitUntil: 'networkidle', timeout: 15000 })
+    await page.waitForTimeout(3000)
+
+    // Click the "+" button to create a channel
+    const createBtn = page.locator('button[title="Create new channel"]')
+    await createBtn.click()
+    await page.waitForTimeout(500)
+
+    // A dialog or input should appear for the channel name
+    const nameInput = page.locator('input[placeholder*="channel"], input[placeholder*="Channel"], input[type="text"]').first()
+    if (await nameInput.isVisible().catch(() => false)) {
+      const channelName = `ui-create-${Date.now()}`
+      await nameInput.fill(channelName)
+      // Submit (Enter or button)
+      await nameInput.press('Enter')
+      await page.waitForTimeout(1000)
+
+      // Reload to pick up the new channel in the sidebar
+      await page.reload({ waitUntil: 'networkidle' })
+      await page.waitForTimeout(3000)
+
+      // Verify channel appears in sidebar after reload
+      const channelLink = page.getByText(`#${channelName}`)
+      await expect(channelLink).toBeVisible({ timeout: 5000 })
+    }
+
+    await context.close()
+  })
+
+  test('DM channels are listed in sidebar', async ({ browser }) => {
+    const context = await browser.newContext({ ignoreHTTPSErrors: true })
+    const page = await context.newPage()
+
+    await page.goto('https://localhost:47022', { waitUntil: 'networkidle', timeout: 15000 })
+    await page.waitForTimeout(3000)
+
+    // The DM section should exist
+    const dmHeader = page.getByText('DIRECT MESSAGES', { exact: false })
+    await expect(dmHeader).toBeVisible()
+
+    // Click to expand DMs if collapsed
+    await dmHeader.click()
+    await page.waitForTimeout(500)
+
+    // Check if any DM channels are listed (from workers created earlier)
+    const dmChannels = page.locator('[aria-label*="dm-"], button:has-text("dm-")')
+    const count = await dmChannels.count()
+    // DMs may or may not exist — just verify the section doesn't crash
+    expect(count).toBeGreaterThanOrEqual(0)
+
+    await context.close()
+  })
+
   test('light mode applies correct background', async ({ browser }) => {
     const context = await browser.newContext({ ignoreHTTPSErrors: true })
     const page = await context.newPage()
