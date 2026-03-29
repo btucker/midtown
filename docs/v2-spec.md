@@ -1,191 +1,127 @@
-# Midtown Daemon V2 — Functional Specification
+# Daemon V2 — Requirements
 
-| Field | Value |
-|-------|-------|
-| **Status** | In progress |
-| **Authors** | @btucker |
-| **Last updated** | 2026-03-29 |
-| **Tracking** | [v2 design spec](superpowers/specs/2026-03-28-daemon-v2-design.md), [v2 architecture](v2-architecture.md) |
+**Status:** In progress
+**Last updated:** 2026-03-29
 
-## 1. Overview
+## User Stories
 
-Midtown's daemon coordinates autonomous AI coding agents across a repository. V2 is an event-sourced rewrite that replaces V1's mutable state model while preserving CLI and web UI compatibility.
+### US-1: Daemon Startup
+As a developer, I want to start the v2 daemon with a single command, so that all agent coordination begins automatically.
 
-### 1.1 Goals
+**Acceptance Criteria:**
+- WHEN the user runs `MIDTOWN_DAEMON_V2=1 midtown start` THEN the system SHALL recover state from the event store (snapshot + replay)
+- WHEN the daemon starts AND agents were previously running THEN the system SHALL check PIDs AND resume agents with valid session IDs
+- WHEN the daemon starts THEN the system SHALL bind the same Unix socket as v1 so CLI and web UI work transparently
+- WHEN a web port is configured THEN the system SHALL start an HTTP server for the web UI
 
-- **Reliable state**: Event-sourced persistence with crash-safe recovery. No more state corruption from partial writes.
-- **Simpler model**: One projection per domain (agents, work, channels) replaces 50+ ad-hoc tick fields.
-- **Resume-on-nudge**: Stopped agents are resumed when addressed, instead of silently dropping messages.
-- **Multi-channel leads**: Every active channel gets its own lead agent, not just the default.
-- **Reviewer escalation**: Failed reviewers escalate to humans instead of restarting forever.
+### US-2: Agent Lifecycle
+As a developer, I want agents to be spawned, stopped, and resumed reliably, so that work continues without manual intervention.
 
-### 1.2 Non-Goals
+**Acceptance Criteria:**
+- WHEN a worker agent is spawned THEN the system SHALL create an isolated git worktree with a task-specific branch
+- WHEN a lead or fork agent is spawned THEN the system SHALL use the shared lead worktree
+- WHEN an agent process dies THEN the system SHALL detect it via process health polling AND emit an AgentStopped event
+- WHEN a stopped agent has a session ID AND receives a nudge THEN the system SHALL resume the session before delivering the message
+- WHEN an agent has been stopped for more than 24 hours AND is not a lead THEN the system SHALL garbage-collect its record
 
-- New user-facing features beyond parity with V1.
-- Changes to the web UI frontend (it talks to the same API).
-- Changes to agent definitions or the Claude Code CLI interface.
+### US-3: Task Dispatch
+As a developer, I want tasks to be automatically assigned to workers, so that pending work is picked up without manual coordination.
 
-## 2. User-Facing Behavior
+**Acceptance Criteria:**
+- WHEN a task is pending AND unblocked AND fewer than max concurrent tasks are in progress THEN the system SHALL spawn a worker agent for it
+- WHEN a worker dies while its task is in progress THEN the system SHALL reset the task to pending for re-dispatch
+- WHEN two agents are assigned to the same task THEN the system SHALL stop the older one
+- WHEN a worker has no task for more than 5 minutes THEN the system SHALL stop it
+- WHEN a task declares `blocked_by` dependencies THEN the system SHALL NOT dispatch it until all blockers are completed
 
-### 2.1 Starting the Daemon
+### US-4: Message Routing
+As a developer, I want messages to reach the right agent automatically, so that communication flows without explicit addressing.
 
-```bash
-MIDTOWN_DAEMON_V2=1 midtown start
-```
+**Acceptance Criteria:**
+- WHEN a message is posted to a channel THEN the system SHALL nudge the channel lead
+- WHEN a thread reply is posted AND an agent is bound to that thread THEN the system SHALL nudge the thread-bound agent instead of the channel lead
+- WHEN a thread reply is posted AND no agent is bound to that thread THEN the system SHALL nudge the channel lead
+- WHEN a message contains `@agent-name` THEN the system SHALL nudge the named agent
+- WHEN a message contains `@all` THEN the system SHALL nudge every agent in the channel except the sender
+- WHEN a message contains `@lead` or `@channel-name` THEN the system SHALL nudge the channel lead
+- WHEN a message contains `!N` THEN the system SHALL nudge the agent assigned to task N
+- WHEN the nudge target is stopped AND has a session ID THEN the system SHALL resume the agent before delivering the message
+- WHEN the sender is the same as the nudge target THEN the system SHALL NOT nudge (self-nudge suppression)
+- WHEN multiple routing rules match the same agent THEN the system SHALL nudge it exactly once (deduplication)
 
-Same socket path as V1. The CLI and web UI work without changes.
+### US-5: PR Integration
+As a developer, I want PRs to be monitored and reviewed automatically, so that the review cycle doesn't stall.
 
-### 2.2 Agents
+**Acceptance Criteria:**
+- WHEN the system polls GitHub AND a new PR is open THEN the system SHALL emit a PrOpened event
+- WHEN a PR needs review AND no reviewer agent is running for it THEN the system SHALL spawn a reviewer agent
+- WHEN a reviewer agent dies without posting a review AND fewer than 3 attempts have been made THEN the system SHALL spawn a new reviewer
+- WHEN a reviewer agent has failed 3 times for a PR THEN the system SHALL post an escalation message to the ops channel AND SHALL NOT spawn another reviewer
+- WHEN a PR merges AND a task is linked to it THEN the system SHALL complete the task AND clean up the worktree
+- WHEN a PR merges THEN the system SHALL nudge workers with other open PRs to rebase (at most once per hour per agent)
+- WHEN a worker's task has an open PR awaiting review THEN the system SHALL stop the worker (it's waiting)
 
-An **agent** is a managed Claude Code process. Three kinds:
+### US-6: Channel Leads
+As a developer, I want every active channel to have a lead agent, so that messages are always handled.
 
-| Kind | Bound to | Named | Example |
-|------|----------|-------|---------|
-| **Lead** | Channel | After the channel | `main`, `backend` |
-| **Fork** | Thread | `fork-{thread_id_prefix}` | `fork-abc12345` |
-| **Worker** | Task | Creative name | `ghost-town`, `swift-river` |
+**Acceptance Criteria:**
+- WHEN a non-archived channel exists AND has no running lead THEN the system SHALL spawn a lead agent for it
+- WHEN the channel is the default channel THEN the system SHALL use `midtown-project-lead` as the agent type
+- WHEN the channel is a topic channel THEN the system SHALL use `midtown-channel-lead` as the agent type
+- WHEN a channel has a `directory` setting THEN the system SHALL pass it as the lead's working directory so AGENTS.md loads from that subdirectory
+- WHEN a channel has `lead_driven: true` THEN the system SHALL NOT auto-dispatch tasks for that channel
 
-Agents run in isolated git worktrees. Workers get task-specific branches; leads and forks share a lead worktree.
+### US-7: Session Persistence
+As a developer, I want agent sessions to survive daemon restarts, so that work isn't lost.
 
-### 2.3 Task Lifecycle
+**Acceptance Criteria:**
+- WHEN the daemon restarts AND an agent was previously running with a session ID THEN the system SHALL resume the agent session
+- WHEN an agent is resumed THEN the system SHALL reset its `started_at` timestamp so idle checks use the resume time
+- WHEN a fork agent stops THEN the system SHALL preserve its thread binding so it can be resumed on future thread activity
+- WHEN an agent is garbage-collected THEN the system SHALL remove its thread binding AND all index entries
 
-```
-Pending  ──dispatch──▶  InProgress  ──PR merges──▶  Completed
-   ▲                        │
-   └──agent dies────────────┘  (reset to pending, re-dispatched)
-```
+### US-8: Web UI
+As a developer, I want a web interface for monitoring and interacting with the system.
 
-- Tasks can declare `blocked_by` dependencies. Only unblocked pending tasks are dispatched.
-- Up to 3 tasks run concurrently (configurable).
-- When a worker dies, the task resets to pending and a new worker is spawned.
-- When two workers claim the same task, the older one is stopped.
-- Idle workers (no task for 5 minutes) are shut down.
+**Acceptance Criteria:**
+- WHEN a domain event occurs THEN the system SHALL broadcast it to all connected WebSocket clients
+- WHEN the web UI requests channel history THEN the system SHALL return messages with optional thread filtering
+- WHEN the web UI searches with `GET /api/search?q=...` THEN the system SHALL return matches across all channels
+- WHEN the web UI requests status THEN the system SHALL return agent counts, task list, and open PRs
 
-### 2.4 Message Routing
+### US-9: Cooldowns
+As a developer, I want rate-limiting on repeated actions, so that the system doesn't spam agents or APIs.
 
-Every message posted to a channel produces nudges. The rules, in priority order:
+**Acceptance Criteria:**
+- WHEN a rebase nudge has been sent to an agent THEN the system SHALL NOT send another for 1 hour
+- WHEN a spawn fails THEN the system SHALL NOT retry for 2 minutes
+- WHEN an orphan spawn occurs THEN the system SHALL NOT spawn another for 1 minute
 
-1. **Thread reply with a bound agent** → Nudge that agent.
-2. **Thread reply without a bound agent** → Nudge the channel lead.
-3. **Top-level message** → Nudge the channel lead.
-4. **@mention** → Nudge the named agent.
-5. **@all** → Nudge every agent in the channel.
-6. **@lead / @channel-name** → Nudge the channel lead.
-7. **!N task reference** → Nudge the agent assigned to task N.
+## Unchanged Behavior
 
-**Invariants:**
-- Self-nudges are always suppressed (sender == agent name).
-- Each agent is nudged at most once per message (deduplication).
-- Running state is irrelevant — stopped agents are resumed before the message is delivered.
-- Routing is determined by bindings (thread, channel, name, task), not agent type.
+These behaviors from v1 SHALL CONTINUE TO work identically:
 
-### 2.5 PR Integration
+- WHEN the user runs `midtown status` THEN the system SHALL CONTINUE TO return daemon status via the same RPC protocol
+- WHEN the user runs `midtown channel post` THEN the system SHALL CONTINUE TO write messages to channel JSONL files
+- WHEN the user runs `midtown task create` THEN the system SHALL CONTINUE TO accept the same parameters
+- WHEN v1 RPC methods (`coworker.spawn`, `coworker.break`, `ping`, `version`) are called THEN the system SHALL CONTINUE TO handle them via compatibility aliases
 
-The daemon polls GitHub every 45 seconds for PR state changes.
+## Not Yet Implemented
 
-| Event | Response |
-|-------|----------|
-| PR opened | Link to task if title contains `[Midtown !N]` |
-| PR needs review | Spawn a reviewer agent |
-| Reviewer dies | Respawn (up to 3 attempts), then escalate to ops channel |
-| PR approved + CI green | Suspend the author agent (it's waiting for merge) |
-| PR merged | Complete the linked task; clean up worktree; nudge other workers to rebase |
-| PR closed without merge | No action (task stays in progress) |
+The following v1 capabilities are not yet ported:
 
-Rebase nudges use a 1-hour per-agent cooldown to prevent spam.
-
-### 2.6 Channel Leads
-
-Every non-archived channel gets a lead agent, spawned automatically. The default channel's lead uses `midtown-project-lead`; topic channels use `midtown-channel-lead`. Leads receive every message in their channel.
-
-Channel settings:
-- **`lead_driven`** — When true, automatic task dispatch is skipped for this channel. The lead manages work manually.
-- **`directory`** — Subdirectory of the repo (e.g., `packages/auth`). The lead loads AGENTS.md/CLAUDE.md from this directory.
-
-### 2.7 Session Persistence
-
-- Agent sessions survive daemon restarts. On startup, the daemon checks PIDs, marks dead agents, and resumes those with session IDs.
-- Thread bindings (fork → thread) persist through agent stops. A stopped fork is resumed when someone posts to its thread.
-- Agent records are garbage-collected 24 hours after stopping. Leads are never GC'd.
-
-### 2.8 Web UI
-
-REST API + WebSocket on the configured port. The shared webserver (port 47022) proxies to it.
-
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /api/status` | Agent/task/PR counts for dashboard |
-| `GET /api/channels` | List all channels |
-| `GET /api/channels/history` | Message history with thread filtering |
-| `GET /api/search?q=...` | Full-text search across channels |
-| `POST /api/channels/create` | Create a channel |
-| `GET /api/ws` | WebSocket: real-time domain event stream |
-
-## 3. Behavioral Changes from V1
-
-| Behavior | V1 | V2 |
-|----------|----|----|
-| Dead forks | Stay dead. Thread replies fall through to lead. | Resumed when someone posts to their thread. |
-| @mention stopped agent | Silently dropped. | Agent is resumed, then receives the message. |
-| Channel leads | Only default channel gets auto-spawned lead. | All active channels get leads. |
-| Reviewer failures | Restart indefinitely. | Escalate to ops after 3 failures. |
-| Rebase nudging | Not implemented. | Workers nudged to rebase after PR merges. |
-| State persistence | Mutable JSON blob, prone to corruption. | Event-sourced: append-only log + snapshots. |
-
-## 4. Configuration
-
-V2 reads the same `config.toml` as V1.
-
-```toml
-[daemon]
-webhook_port = 6969          # HTTP port for webhooks + web UI
-max_in_progress_tasks = 8    # concurrent task limit
-```
-
-| Environment Variable | Purpose |
-|---------------------|---------|
-| `MIDTOWN_DAEMON_V2=1` | Launch V2 instead of V1 |
-| `MIDTOWN_WEBHOOK_PORT=0` | Disable webhook server (testing) |
-| `MIDTOWN_CHAT_MONITOR=0` | Disable chat monitor (testing) |
-
-## 5. Implementation Status
-
-### 5.1 Complete
-
-- Event store with JSONL append, snapshots, crash-safe recovery
-- Agent lifecycle: spawn, stop, resume, nudge, GC
-- Task dispatch with blocking dependencies and duplicate detection
-- PR polling, reviewer spawning with escalation, rebase nudging
-- Multi-channel lead management
-- Binding-based message routing with resume-on-nudge
-- RPC with V1 compatibility aliases
-- Web API with WebSocket event broadcast
-- Worktree management (create, reuse, cleanup on task completion)
-
-### 5.2 Not Yet Ported
-
-**Critical:**
 - Webhook forwarder watchdog (`gh webhook forward` process management)
 - Background chat monitor (tail loop on channel JSONL)
 - GitHub API rate limit monitoring
 - Auth profile pooling (multi-account rotation)
-
-**Important:**
 - Reminder system (cron + event-based triggers)
 - Workflow system (assignment, state machine)
 - Task prompt / handoff between agents
 - Session attach/detach (interactive takeover)
 - CI issue detection (stale checks, auto-rerun)
 
-**Nice to have:**
-- Channel rename/merge
-- Oneshot execute
-- Daemon exec-restart / draining mode
-- Push notifications
-- RPC response caching
-
-## 6. Revision History
+## Revision History
 
 | Date | Change |
 |------|--------|
-| 2026-03-29 | Initial spec. Covers agent lifecycle, task dispatch, PR integration, message routing, multi-channel leads, reviewer escalation, resume-on-nudge. |
+| 2026-03-29 | Initial spec covering US-1 through US-9. |
