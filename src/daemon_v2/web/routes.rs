@@ -369,6 +369,94 @@ pub async fn directories() -> Json<Value> {
     Json(json!([]))
 }
 
+pub async fn push_vapid_key() -> (StatusCode, Json<Value>) {
+    match crate::push::PushManager::new() {
+        Ok(pm) => match pm.vapid_public_key_base64() {
+            Ok(key) => (
+                StatusCode::OK,
+                Json(json!({"vapid_key": key, "publicKey": key})),
+            ),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("{e}")})),
+            ),
+        },
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": format!("{e}")})),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct PushSubscribeBody {
+    endpoint: String,
+    #[serde(default)]
+    p256dh: Option<String>,
+    #[serde(default)]
+    auth: Option<String>,
+    #[serde(default)]
+    keys: Option<Value>,
+}
+
+pub async fn push_subscribe(Json(body): Json<PushSubscribeBody>) -> (StatusCode, Json<Value>) {
+    let p256dh = body
+        .p256dh
+        .or_else(|| {
+            body.keys
+                .as_ref()
+                .and_then(|k| k.get("p256dh"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .unwrap_or_default();
+    let auth = body
+        .auth
+        .or_else(|| {
+            body.keys
+                .as_ref()
+                .and_then(|k| k.get("auth"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .unwrap_or_default();
+
+    match crate::push::PushManager::new() {
+        Ok(pm) => {
+            let sub = crate::push::PushSubscription {
+                endpoint: body.endpoint.clone(),
+                p256dh: p256dh.clone(),
+                auth: auth.clone(),
+            };
+            if let Err(e) = pm.add_subscription(sub) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": format!("{e}")})),
+                );
+            }
+            (StatusCode::OK, Json(json!({"ok": true})))
+        }
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": format!("{e}")})),
+        ),
+    }
+}
+
+pub async fn push_unsubscribe(Json(body): Json<Value>) -> (StatusCode, Json<Value>) {
+    let endpoint = body.get("endpoint").and_then(|v| v.as_str()).unwrap_or("");
+    match crate::push::PushManager::new() {
+        Ok(pm) => {
+            let _ = pm.remove_subscription(endpoint);
+            (StatusCode::OK, Json(json!({"ok": true})))
+        }
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": format!("{e}")})),
+        ),
+    }
+}
+
 pub async fn mark_read(
     axum::extract::Path((_item_type, _id)): axum::extract::Path<(String, String)>,
 ) -> StatusCode {

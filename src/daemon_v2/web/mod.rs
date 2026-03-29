@@ -53,6 +53,9 @@ pub fn create_router(state: Arc<WebState>) -> Router {
         .route("/api/usage", get(routes::usage))
         .route("/api/questions", get(routes::questions))
         .route("/api/auth/profiles", get(routes::auth_profiles))
+        .route("/api/push/vapid-key", get(routes::push_vapid_key))
+        .route("/api/push/subscribe", post(routes::push_subscribe))
+        .route("/api/push/unsubscribe", post(routes::push_unsubscribe))
         .route("/api/ws", get(websocket::ws_handler))
         .with_state(state)
 }

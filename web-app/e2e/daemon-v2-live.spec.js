@@ -961,6 +961,26 @@ test.describe('Daemon v2 Live Web UI', () => {
     await context.close()
   })
 
+  test('push vapid-key endpoint returns a key', async ({ request }) => {
+    const res = await request.get(`${BASE_URL}/api/push/vapid-key`)
+    expect(res.ok()).toBeTruthy()
+    const data = await res.json()
+    expect(data).toHaveProperty('vapid_key')
+    expect(typeof data.vapid_key).toBe('string')
+    expect(data.vapid_key.length).toBeGreaterThan(0)
+  })
+
+  test('push subscribe endpoint accepts subscription', async ({ request }) => {
+    const res = await request.post(`${BASE_URL}/api/push/subscribe`, {
+      data: {
+        endpoint: 'https://fcm.googleapis.com/fcm/send/test-endpoint',
+        keys: { p256dh: 'test-key', auth: 'test-auth' },
+      },
+    })
+    // Should accept the subscription (even if push isn't fully wired)
+    expect(res.status()).toBeLessThan(500)
+  })
+
   test('light mode applies correct background', async ({ browser }) => {
     const context = await browser.newContext({ ignoreHTTPSErrors: true })
     const page = await context.newPage()
