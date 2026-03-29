@@ -1,0 +1,86 @@
+<h2>Needs Attention — Two-Line Items</h2>
+<p class="subtitle">Primary line: what happened. Secondary line: context (who, where, when).</p>
+
+<div class="split">
+  <div class="mockup" data-choice="current" onclick="toggleSelect(this)">
+    <div class="mockup-header">Before: Single Line</div>
+    <div class="mockup-body" style="font-family: system-ui; font-size: 13px; background: #1a1a2e; color: #ccc; padding: 12px;">
+      <div style="padding: 7px 8px; border-radius: 6px; background: rgba(74,222,128,0.06); border: 1px solid rgba(74,222,128,0.12); margin-bottom: 3px; display: flex; align-items: center; gap: 7px; font-size: 12px;">
+        <span style="color: #4ade80; font-size: 11px;">✓</span>
+        <span style="color: #e0e0e0; flex: 1;">add rate limiting</span>
+        <span style="color: #555; font-size: 10px;">#api</span>
+        <span style="color: #444; font-size: 10px;">✕</span>
+      </div>
+      <div style="padding: 7px 8px; border-radius: 6px; background: rgba(59,130,246,0.06); border: 1px solid rgba(59,130,246,0.12); margin-bottom: 3px; display: flex; align-items: center; gap: 7px; font-size: 12px;">
+        <span style="color: #3b82f6; font-size: 11px;">↩</span>
+        <span style="color: #e0e0e0; flex: 1;">token refresh logic</span>
+        <span style="color: #555; font-size: 10px;">#auth</span>
+        <span style="color: #444; font-size: 10px;">✕</span>
+      </div>
+      <div style="padding: 7px 8px; border-radius: 6px; background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.12); margin-bottom: 3px; display: flex; align-items: center; gap: 7px; font-size: 12px;">
+        <span style="color: #f59e0b; font-size: 11px;">@</span>
+        <span style="color: #e0e0e0; flex: 1;">mentioned in thread</span>
+        <span style="color: #555; font-size: 10px;">#api</span>
+        <span style="color: #444; font-size: 10px;">✕</span>
+      </div>
+      <div style="padding: 7px 8px; border-radius: 6px; background: rgba(239,68,68,0.06); border: 1px solid rgba(239,68,68,0.12); margin-bottom: 3px; display: flex; align-items: center; gap: 7px; font-size: 12px;">
+        <span style="color: #ef4444; font-size: 11px;">⏱</span>
+        <span style="color: #e0e0e0; flex: 1;">fix mobile scroll perf</span>
+        <span style="color: #555; font-size: 10px;">stale 2h</span>
+        <span style="color: #444; font-size: 10px;">✕</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="mockup" data-choice="two-line" onclick="toggleSelect(this)">
+    <div class="mockup-header">After: Two Lines</div>
+    <div class="mockup-body" style="font-family: system-ui; font-size: 13px; background: #1a1a2e; color: #ccc; padding: 12px;">
+      <!-- Completed task -->
+      <div style="padding: 8px 8px; border-radius: 6px; background: rgba(74,222,128,0.06); border: 1px solid rgba(74,222,128,0.12); margin-bottom: 4px; cursor: pointer;">
+        <div style="display: flex; align-items: center; gap: 7px; font-size: 12px;">
+          <span style="color: #4ade80; font-size: 11px;">✓</span>
+          <span style="color: #e0e0e0; flex: 1;">add rate limiting</span>
+          <span style="color: #444; font-size: 10px;">✕</span>
+        </div>
+        <div style="font-size: 11px; color: #777; margin-top: 3px; padding-left: 18px;">
+          Task completed by <span style="color: #a78bfa;">ghost-town</span> · PR #142 ready · <span style="color: #555;">#api</span>
+        </div>
+      </div>
+      <!-- Thread waiting on you -->
+      <div style="padding: 8px 8px; border-radius: 6px; background: rgba(59,130,246,0.06); border: 1px solid rgba(59,130,246,0.12); margin-bottom: 4px; cursor: pointer;">
+        <div style="display: flex; align-items: center; gap: 7px; font-size: 12px;">
+          <span style="color: #3b82f6; font-size: 11px;">↩</span>
+          <span style="color: #e0e0e0; flex: 1;">token refresh logic</span>
+          <span style="color: #444; font-size: 10px;">✕</span>
+        </div>
+        <div style="font-size: 11px; color: #777; margin-top: 3px; padding-left: 18px;">
+          <span style="color: #38bdf8;">neon-spark</span> replied 5m ago · waiting on you · <span style="color: #555;">#auth</span>
+        </div>
+      </div>
+      <!-- @mention -->
+      <div style="padding: 8px 8px; border-radius: 6px; background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.12); margin-bottom: 4px; cursor: pointer;">
+        <div style="display: flex; align-items: center; gap: 7px; font-size: 12px;">
+          <span style="color: #f59e0b; font-size: 11px;">@</span>
+          <span style="color: #e0e0e0; flex: 1;">error response format</span>
+          <span style="color: #444; font-size: 10px;">✕</span>
+        </div>
+        <div style="font-size: 11px; color: #777; margin-top: 3px; padding-left: 18px;">
+          <span style="color: #fb923c;">silver-fox</span> mentioned you 12m ago · <span style="color: #555;">#api</span>
+        </div>
+      </div>
+      <!-- Stale task -->
+      <div style="padding: 8px 8px; border-radius: 6px; background: rgba(239,68,68,0.06); border: 1px solid rgba(239,68,68,0.12); margin-bottom: 4px; cursor: pointer;">
+        <div style="display: flex; align-items: center; gap: 7px; font-size: 12px;">
+          <span style="color: #ef4444; font-size: 11px;">⏱</span>
+          <span style="color: #e0e0e0; flex: 1;">fix mobile scroll perf</span>
+          <span style="color: #444; font-size: 10px;">✕</span>
+        </div>
+        <div style="font-size: 11px; color: #777; margin-top: 3px; padding-left: 18px;">
+          No progress from <span style="color: #f87171;">drift-wave</span> for 2h · 22% complete · <span style="color: #555;">#mobile</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top: 16px;">The second line adds: who (worker name), what happened, when, and which channel. Click to compare.</p>

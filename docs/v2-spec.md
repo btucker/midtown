@@ -1,6 +1,6 @@
 # Daemon V2 — Requirements
 
-**Status:** In progress — requirements under review
+**Status:** Reviewed
 **Last updated:** 2026-03-29
 
 ---
@@ -64,8 +64,9 @@
 - WHEN polling fails THEN the system SHALL log the error and return no events
 
 ### 3.2 Reviewer Spawning
-- WHEN a PR needs review AND no reviewer is running for it THEN the system SHALL spawn a reviewer named `reviewer-{pr_num}`
-- WHEN a reviewer dies AND fewer than 3 attempts have been made THEN the system SHALL spawn a new reviewer
+- WHEN a PR needs review AND no reviewer is running for it THEN the system SHALL spawn a reviewer named `{author_name}-reviewer`
+- WHEN a reviewer dies THEN the system SHALL resume it
+- WHEN a reviewer cannot be resumed (no session ID) AND fewer than 3 attempts have been made THEN the system SHALL spawn a replacement reviewer
 - WHEN a reviewer has failed 3 times THEN the system SHALL post to the ops channel AND SHALL NOT spawn another
 - WHEN spawning a reviewer THEN the initial prompt SHALL be `Review PR #{pr_num}: {branch}`
 
@@ -73,6 +74,7 @@
 - WHEN a PR merges AND has a linked InProgress task THEN the system SHALL complete the task
 - WHEN a PR merges THEN the system SHALL nudge workers with other open PRs to rebase (1hr cooldown per agent)
 - WHEN a worker's task has an open PR awaiting review THEN the system SHALL stop the worker
+- WHEN a new comment is posted on a PR (top-level or inline) THEN the system SHALL post the comment to the task's channel thread AND nudge the author agent, UNLESS the comment's frontmatter identifies the commenter as the author agent
 
 ### 3.4 CI Status Parsing
 - WHEN statusCheckRollup contains any FAILURE/TIMED_OUT/CANCELLED THEN CI status SHALL be Failed
@@ -89,30 +91,30 @@
 - WHEN a lead or fork is spawned THEN the system SHALL use the shared lead worktree
 - WHEN a lead already has a working_dir override (channel directory) THEN the worktree manager SHALL NOT override it
 - WHEN a task already has a worktree from a previous dispatch THEN the system SHALL reuse it
-- WHEN a worker is spawned THEN the system SHALL auto-create a DM channel `dm-{agent_name}`
+- WHEN an agent is spawned AND its output is not bound to a channel or thread THEN the system SHALL auto-create a DM channel `dm-{agent_name}`
 - WHEN spawning succeeds THEN AgentCreated and AgentStarted events SHALL be emitted
-- WHEN spawning fails THEN the error SHALL be logged and no events emitted
+- WHEN spawning fails THEN the system SHALL emit an AgentSpawnFailed event with the agent configuration and error reason
 - WHEN a session is spawned THEN stdout/stderr SHALL be drained in a background task
 
 ### 4.2 Stopping
-- WHEN StopAgent is executed THEN the session SHALL be killed and removed from the sessions map
-- WHEN the kill fails THEN the error SHALL be logged but AgentStopped SHALL still be emitted
+- WHEN StopAgent is executed THEN the session process SHALL be killed AND AgentStopped emitted, but the session ID SHALL be preserved for potential resume
+- WHEN the kill fails THEN the system SHALL emit AgentStopFailed with the error reason
 - WHEN an agent process exits (detected by try_wait) THEN AgentStopped SHALL be emitted
 
 ### 4.3 Resuming
 - WHEN ResumeAgent is executed THEN the session SHALL be spawned with `resume_session_id` set
 - WHEN resume succeeds THEN AgentResumed SHALL be emitted with the new PID
 - WHEN an agent is resumed THEN `started_at` SHALL be reset to now
-- WHEN resume fails THEN the error SHALL be logged and no events emitted
+- WHEN resume fails THEN the system SHALL emit an AgentSpawnFailed event with the agent configuration and error reason
 
 ### 4.4 Garbage Collection
-- WHEN an agent has been stopped for more than 24 hours AND is not a Lead THEN it SHALL be garbage-collected
-- WHEN an agent is garbage-collected THEN it SHALL be removed from all indexes (by_id, by_name, by_task, by_channel, by_thread)
+- WHEN the number of stopped agent records exceeds a threshold THEN the system SHALL garbage-collect the oldest stopped agents (non-Lead), retaining at least 24 hours of history
+- WHEN an agent is garbage-collected THEN it SHALL be marked as GC'd AND excluded from routing, dispatch, and active queries, but its record SHALL be preserved
 
 ### 4.5 Fork Sessions
 - WHEN a fork session spawns THEN it SHALL be bound to a thread via `bound_thread_id`
-- WHEN a fork session stops THEN its thread binding SHALL persist (NOT cleared)
-- WHEN a fork has `fork_from_session` THEN it SHALL inherit the parent session's context
+- WHEN a fork session stops THEN its thread binding SHALL persist AND any subsequent nudge to the thread SHALL resume the fork
+- WHEN a fork is spawned THEN it SHALL inherit the parent lead's session context by using the underlying Claude Code `--fork-session` feature
 - WHEN a session.fork request arrives AND a running fork exists for the thread THEN the existing fork ID SHALL be returned
 
 ---
@@ -120,21 +122,24 @@
 ## 5. Channel Management
 
 ### 5.1 Channel Leads
-- WHEN a non-archived channel exists AND has no running lead THEN the system SHALL spawn one
+- WHEN a user messages a channel AND no lead agent exists for that channel THEN the system SHALL spawn one
 - WHEN spawning a lead for the default channel THEN agent_type SHALL be `midtown-project-lead`
 - WHEN spawning a lead for a topic channel THEN agent_type SHALL be `midtown-channel-lead`
 - WHEN a channel has a `directory` setting THEN the lead's working_dir SHALL be set to that subdirectory
 
 ### 5.2 Channel Settings
 - WHEN `lead_driven` is set to true THEN automatic task dispatch SHALL be skipped for that channel
-- WHEN `directory` is set THEN the lead SHALL load AGENTS.md/CLAUDE.md from that subdirectory
 - WHEN a channel is archived THEN its directory SHALL be renamed with `.archived` suffix
 - WHEN a channel is unarchived THEN the `.archived` suffix SHALL be removed
 
 ### 5.3 Channel I/O
 - WHEN a message is posted THEN it SHALL be written to the channel's JSONL file
+- WHEN messages are read from a channel THEN thread replies SHALL be excluded UNLESS the read request specifies a thread_parent_id
+- WHEN messages are read with a thread_parent_id THEN only messages in that thread SHALL be returned
 - WHEN messages are read with a limit THEN the last N messages SHALL be returned
 - WHEN a system message is posted THEN sender SHALL be `midtown`
+- WHEN a channel's JSONL file exceeds 10MB THEN the system SHALL roll to a new file
+- WHEN reading or searching channel messages THEN the system SHALL operate across all message files for that channel
 
 ---
 
@@ -145,7 +150,7 @@
 - WHEN AgentStarted is applied THEN pid and session_id SHALL be set, agent added to running set, started_at set to now
 - WHEN AgentStopped is applied THEN agent removed from running set, stopped_at set, thread binding preserved
 - WHEN AgentResumed is applied THEN pid updated, started_at reset, stopped_at cleared, added back to running set
-- WHEN AgentGarbageCollected is applied THEN agent removed from all indexes
+- WHEN AgentGarbageCollected is applied THEN agent marked as GC'd, excluded from routing and active queries
 
 ### 6.2 WorkIndex
 - WHEN TaskCreated is applied THEN task added to tasks map and pending_tasks list
@@ -218,7 +223,6 @@
 | check_dead_workers | 30s |
 | check_idle_workers | 30s |
 | check_duplicate_workers | 30s |
-| ensure_channel_leads_alive | 30s |
 | poll_prs | 45s |
 | spawn_reviewers | 45s |
 | check_auth_errors | 30s |
@@ -255,7 +259,7 @@
 - `coworker.nudge` → NudgeAgent by name
 - `coworker.list` → agent.list
 - `coworkers.status` → agent.list (running only)
-- `lead.spawn` → ok (leads auto-spawned by scheduler)
+- `lead.spawn` → ok (leads demand-spawned via nudge system)
 
 ### 10.3 Stubbed Methods
 - `reminder.create`, `reminder.list`, `reminder.cancel`
@@ -290,17 +294,12 @@
 - `POST /api/channels/{channel}/archive` → archive channel
 - `POST /api/channels/{channel}/unarchive` → unarchive channel
 - `GET /api/search` → full-text search (params: q, limit)
-- `GET /api/read-state` → stub (empty object)
-- `PUT /api/read-state/{type}/{id}` → stub (204)
+- `GET /api/read-state` → read state markers
+- `PUT /api/read-state/{type}/{id}` → mark as read
 - `GET /api/usage` → auth profile usage data
-- `GET /api/questions` → stub (empty array)
 - `GET /api/auth/profiles` → current auth profile
 - `POST /api/auth/switch` → switch auth profile
 - `POST /api/auth/login` → login request
-- `GET /api/directories` → stub (empty array)
-- `GET /api/push/vapid-key` → VAPID public key
-- `POST /api/push/subscribe` → register push subscription
-- `POST /api/push/unsubscribe` → remove push subscription
 - `POST /api/upload` → file upload (sanitized filename)
 - `GET /api/uploads/{filename}` → serve uploaded file
 
@@ -325,6 +324,8 @@
 - WHEN a GitHub webhook reports a PR needs review THEN PrReviewRequested event SHALL be produced
 - WHEN a GitHub webhook reports a PR opened THEN PrOpened event SHALL be produced
 - WHEN pr_opened has author_coworker THEN it SHALL be used as author; otherwise `unknown`
+- WHEN a GitHub webhook reports a top-level PR comment THEN the system SHALL post it to the task's channel thread AND nudge the author agent, UNLESS the comment's frontmatter identifies the commenter as the author agent
+- WHEN a GitHub webhook reports an inline review comment THEN the system SHALL post it to the task's channel thread AND nudge the author agent, UNLESS the comment's frontmatter identifies the commenter as the author agent
 - WHEN a webhook has no recognized events THEN an empty event list SHALL be produced
 
 ---
@@ -374,4 +375,4 @@
 
 | Date | Change |
 |------|--------|
-| 2026-03-29 | Initial spec. Requirements under review — sections 1-3.1 approved. |
+| 2026-03-29 | Initial spec. All sections reviewed and approved. Key design decisions: demand-spawned leads (not polled), resume-on-nudge for all agent types, @all scoped by channel type, task parent-child hierarchy, PR comment routing to task threads. |

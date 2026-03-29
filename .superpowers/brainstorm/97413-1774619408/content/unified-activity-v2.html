@@ -1,0 +1,134 @@
+<h2>Unified Sidebar v2: Consistent channel tags</h2>
+<p class="subtitle">Channel tag always right-aligned across all item types</p>
+
+<div class="mockup">
+  <div class="mockup-header">Redesigned Sidebar</div>
+  <div class="mockup-body" style="font-family: system-ui; font-size: 13px; background: #1a1a2e; color: #ccc; padding: 0; min-height: 700px; display: flex; flex-direction: column;">
+
+    <!-- ═══ HEADER ═══ -->
+    <div style="padding: 12px 14px; border-bottom: 1px solid #2a2a4a; display: flex; align-items: center; gap: 8px;">
+      <div style="width: 20px; height: 20px; border-radius: 4px; background: linear-gradient(135deg, #6366f1, #8b5cf6); display: flex; align-items: center; justify-content: center; font-size: 10px; color: white; font-weight: 700;">M</div>
+      <span style="font-weight: 600; color: #e0e0e0; flex: 1;">my-project</span>
+      <span style="color: #555; font-size: 11px; background: #2a2a4a; padding: 2px 8px; border-radius: 4px;">⌘K</span>
+    </div>
+
+    <!-- ═══ ACTIVITY ═══ -->
+    <div style="padding: 10px 14px 4px;">
+      <div style="font-size: 10px; text-transform: uppercase; color: #666; letter-spacing: 0.5px; font-weight: 600;">Activity</div>
+    </div>
+
+    <div style="padding: 2px 10px;">
+
+      <!-- ATTENTION: Thread waiting on you -->
+      <div style="padding: 8px; border-radius: 6px; background: rgba(59,130,246,0.06); border: 1px solid rgba(59,130,246,0.12); margin-bottom: 3px; cursor: pointer;">
+        <div style="display: flex; align-items: center; gap: 7px; font-size: 12px;">
+          <span style="color: #3b82f6; font-size: 11px;">↩</span>
+          <span style="color: #e0e0e0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">token refresh logic</span>
+          <span style="color: #555; font-size: 10px; flex-shrink: 0;">#auth</span>
+          <span style="color: #444; font-size: 10px;">✕</span>
+        </div>
+        <div style="font-size: 11px; color: #777; margin-top: 3px; padding-left: 18px;">
+          <span style="color: #38bdf8;">neon-spark</span> replied 5m ago · waiting on you
+        </div>
+      </div>
+
+      <!-- ATTENTION: Task completed -->
+      <div style="padding: 8px; border-radius: 6px; background: rgba(74,222,128,0.06); border: 1px solid rgba(74,222,128,0.12); margin-bottom: 3px; cursor: pointer;">
+        <div style="display: flex; align-items: center; gap: 7px; font-size: 12px;">
+          <span style="color: #4ade80; font-size: 11px;">✓</span>
+          <span style="color: #e0e0e0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">add rate limiting</span>
+          <span style="color: #555; font-size: 10px; flex-shrink: 0;">#api</span>
+          <span style="color: #444; font-size: 10px;">✕</span>
+        </div>
+        <div style="font-size: 11px; color: #777; margin-top: 3px; padding-left: 18px;">
+          Task completed by <span style="color: #a78bfa;">ghost-town</span> · PR #142 ready
+        </div>
+      </div>
+
+      <!-- TASK: In progress -->
+      <div style="padding: 6px 8px; margin-bottom: 2px; cursor: pointer; border-radius: 5px;" onmouseover="this.style.background='rgba(255,255,255,0.03)'" onmouseout="this.style.background='none'">
+        <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 3px;">
+          <span style="color: #e0e0e0; flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">refactor auth middleware</span>
+          <span style="color: #555; font-size: 10px; flex-shrink: 0;">#auth</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <div style="flex: 1; height: 3px; background: #2a2a4a; border-radius: 2px; overflow: hidden;">
+            <div style="width: 45%; height: 100%; background: #f59e0b;"></div>
+          </div>
+          <span style="font-size: 9px; color: #2dd4bf; font-family: monospace;">45%</span>
+        </div>
+      </div>
+
+      <!-- TASK: In progress -->
+      <div style="padding: 6px 8px; margin-bottom: 2px; cursor: pointer; border-radius: 5px;" onmouseover="this.style.background='rgba(255,255,255,0.03)'" onmouseout="this.style.background='none'">
+        <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 3px;">
+          <span style="color: #e0e0e0; flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">fix mobile scroll perf</span>
+          <span style="color: #555; font-size: 10px; flex-shrink: 0;">#mobile</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <div style="flex: 1; height: 3px; background: #2a2a4a; border-radius: 2px; overflow: hidden;">
+            <div style="width: 22%; height: 100%; background: #38bdf8;"></div>
+          </div>
+          <span style="font-size: 9px; color: #2dd4bf; font-family: monospace;">22%</span>
+        </div>
+      </div>
+
+      <!-- THREAD: Recently active (< 15 min) -->
+      <div style="padding: 6px 8px; margin-bottom: 2px; cursor: pointer; border-radius: 5px; display: flex; align-items: center; gap: 6px;" onmouseover="this.style.background='rgba(255,255,255,0.03)'" onmouseout="this.style.background='none'">
+        <span style="color: #bbb; flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">pagination approach</span>
+        <span style="width: 6px; height: 6px; border-radius: 50%; background: #3b82f6; flex-shrink: 0;"></span>
+        <span style="color: #555; font-size: 10px; flex-shrink: 0;">#api</span>
+      </div>
+
+      <!-- THREAD: Recently active (< 15 min) -->
+      <div style="padding: 6px 8px; margin-bottom: 2px; cursor: pointer; border-radius: 5px; display: flex; align-items: center; gap: 6px;" onmouseover="this.style.background='rgba(255,255,255,0.03)'" onmouseout="this.style.background='none'">
+        <span style="color: #bbb; flex: 1; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">error response format</span>
+        <span style="color: #555; font-size: 10px; flex-shrink: 0;">#api</span>
+      </div>
+
+      <!-- COLLAPSED: Older threads -->
+      <div style="padding: 6px 8px; margin-top: 2px;">
+        <div style="font-size: 9px; color: #555; display: flex; align-items: center; gap: 8px; cursor: pointer;">
+          <div style="flex: 1; height: 1px; background: #2a2a4a;"></div>
+          <span>▸ 4 older threads</span>
+          <div style="flex: 1; height: 1px; background: #2a2a4a;"></div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ═══ CHANNELS ═══ -->
+    <div style="padding: 8px 14px 4px; border-top: 1px solid #2a2a4a; margin-top: 4px;">
+      <div style="font-size: 10px; text-transform: uppercase; color: #666; letter-spacing: 0.5px; font-weight: 600; display: flex; align-items: center; justify-content: space-between;">
+        Channels
+        <span style="font-size: 14px; color: #555; cursor: pointer; font-weight: normal;">+</span>
+      </div>
+    </div>
+    <div style="padding: 2px 10px; flex: 1;">
+      <div style="padding: 7px 8px; border-radius: 6px; background: #2a2a4a; color: #fff; margin-bottom: 1px;"># main</div>
+      <div style="padding: 7px 8px; color: #999; margin-bottom: 1px;"># auth-refactor</div>
+      <div style="padding: 7px 8px; color: #999; margin-bottom: 1px;"># api-redesign</div>
+      <div style="padding: 7px 8px; color: #999; margin-bottom: 1px;"># mobile-perf</div>
+      <div style="padding: 7px 8px; color: #999; margin-bottom: 1px;"># ci-fixes</div>
+      <div style="padding: 7px 8px; color: #999;"># docs-update</div>
+    </div>
+
+    <!-- ═══ DMs ═══ -->
+    <div style="padding: 8px 14px 4px; border-top: 1px solid #2a2a4a;">
+      <div style="font-size: 10px; text-transform: uppercase; color: #666; letter-spacing: 0.5px; display: flex; align-items: center;">
+        Direct Messages
+        <span style="margin-left: auto; color: #555; font-size: 10px; cursor: pointer;">▸</span>
+      </div>
+    </div>
+
+    <!-- ═══ FOOTER ═══ -->
+    <div style="margin-top: auto; padding: 10px 14px; border-top: 1px solid #2a2a4a; display: flex; align-items: center; gap: 12px;">
+      <span style="color: #666; font-size: 14px; cursor: pointer;">🔔</span>
+      <span style="color: #666; font-size: 14px; cursor: pointer;">☀</span>
+      <span style="margin-left: auto; width: 24px; height: 24px; border-radius: 50%; background: #4a4a6a; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #ccc;">BT</span>
+    </div>
+
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top: 16px;">Channel tag is now consistently right-aligned on line 1 for all item types. Context line (line 2 on attention items) no longer includes channel.</p>

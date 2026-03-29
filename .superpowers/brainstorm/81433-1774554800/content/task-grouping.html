@@ -1,0 +1,174 @@
+<h2>How should the Tasks section organize work?</h2>
+<p class="subtitle">Same 6 tasks shown 3 ways. Which gives you the best at-a-glance understanding?</p>
+
+<div class="options">
+
+  <div class="option" data-choice="by-status" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>By Status (mini kanban)</h3>
+      <p>Tasks grouped into status buckets</p>
+      <div style="font-family: system-ui; font-size: 12px; background: #1a1a2e; color: #ccc; padding: 12px; border-radius: 8px; margin-top: 10px;">
+
+        <div style="margin-bottom: 10px;">
+          <div style="font-size: 10px; text-transform: uppercase; color: #f59e0b; letter-spacing: 0.5px; margin-bottom: 6px; display: flex; align-items: center; gap: 5px;">
+            <span style="width: 6px; height: 6px; border-radius: 50%; background: #f59e0b; display: inline-block;"></span>
+            In Progress
+          </div>
+          <div style="padding: 5px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
+            <span style="color: #f59e0b;">●</span>
+            <span style="color: #e0e0e0; flex: 1;">refactor auth middleware</span>
+            <span style="color: #555; font-size: 10px;">#auth</span>
+          </div>
+          <div style="padding: 5px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
+            <span style="color: #f59e0b;">●</span>
+            <span style="color: #e0e0e0; flex: 1;">fix mobile scroll perf</span>
+            <span style="color: #555; font-size: 10px;">#mobile</span>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 10px;">
+          <div style="font-size: 10px; text-transform: uppercase; color: #a78bfa; letter-spacing: 0.5px; margin-bottom: 6px; display: flex; align-items: center; gap: 5px;">
+            <span style="width: 6px; height: 6px; border-radius: 50%; background: #a78bfa; display: inline-block;"></span>
+            In Review
+          </div>
+          <div style="padding: 5px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
+            <span style="color: #a78bfa;">●</span>
+            <span style="color: #e0e0e0; flex: 1;">add rate limiting</span>
+            <span style="color: #555; font-size: 10px;">#api</span>
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size: 10px; text-transform: uppercase; color: #4ade80; letter-spacing: 0.5px; margin-bottom: 6px; display: flex; align-items: center; gap: 5px;">
+            <span style="width: 6px; height: 6px; border-radius: 50%; background: #4ade80; display: inline-block;"></span>
+            Done
+            <span style="color: #555; font-size: 9px; font-weight: normal; text-transform: none;">(today)</span>
+          </div>
+          <div style="padding: 5px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 2px; opacity: 0.6;">
+            <span style="color: #4ade80;">✓</span>
+            <span style="color: #ccc; flex: 1;">update CI pipeline</span>
+            <span style="color: #555; font-size: 10px;">#ci</span>
+          </div>
+          <div style="padding: 5px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 2px; opacity: 0.6;">
+            <span style="color: #4ade80;">✓</span>
+            <span style="color: #ccc; flex: 1;">write onboarding docs</span>
+            <span style="color: #555; font-size: 10px;">#docs</span>
+          </div>
+          <div style="padding: 5px 8px; display: flex; align-items: center; gap: 6px; opacity: 0.6;">
+            <span style="color: #4ade80;">✓</span>
+            <span style="color: #ccc; flex: 1;">seed test data</span>
+            <span style="color: #555; font-size: 10px;">#api</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="by-channel" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>By Channel</h3>
+      <p>Grouped by channel — all visible without expanding</p>
+      <div style="font-family: system-ui; font-size: 12px; background: #1a1a2e; color: #ccc; padding: 12px; border-radius: 8px; margin-top: 10px;">
+
+        <div style="margin-bottom: 10px;">
+          <div style="font-size: 10px; color: #888; margin-bottom: 6px;">#auth-refactor</div>
+          <div style="padding: 5px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
+            <span style="color: #f59e0b;">●</span>
+            <span style="color: #e0e0e0;">refactor auth middleware</span>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 10px;">
+          <div style="font-size: 10px; color: #888; margin-bottom: 6px;">#api-redesign</div>
+          <div style="padding: 5px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
+            <span style="color: #a78bfa;">●</span>
+            <span style="color: #e0e0e0;">add rate limiting</span>
+          </div>
+          <div style="padding: 5px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 2px; opacity: 0.6;">
+            <span style="color: #4ade80;">✓</span>
+            <span style="color: #ccc;">seed test data</span>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 10px;">
+          <div style="font-size: 10px; color: #888; margin-bottom: 6px;">#mobile-perf</div>
+          <div style="padding: 5px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 2px;">
+            <span style="color: #f59e0b;">●</span>
+            <span style="color: #e0e0e0;">fix mobile scroll perf</span>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 10px;">
+          <div style="font-size: 10px; color: #888; margin-bottom: 6px;">#ci-fixes</div>
+          <div style="padding: 5px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 2px; opacity: 0.6;">
+            <span style="color: #4ade80;">✓</span>
+            <span style="color: #ccc;">update CI pipeline</span>
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size: 10px; color: #888; margin-bottom: 6px;">#docs-update</div>
+          <div style="padding: 5px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 2px; opacity: 0.6;">
+            <span style="color: #4ade80;">✓</span>
+            <span style="color: #ccc;">write onboarding docs</span>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="flat-smart" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Smart Flat List</h3>
+      <p>Single list, sorted by what needs you most — status icon + channel tag</p>
+      <div style="font-family: system-ui; font-size: 12px; background: #1a1a2e; color: #ccc; padding: 12px; border-radius: 8px; margin-top: 10px;">
+
+        <div style="padding: 6px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 3px; background: rgba(167,139,250,0.08); border-radius: 4px;">
+          <span style="color: #a78bfa;">●</span>
+          <span style="color: #e0e0e0; flex: 1;">add rate limiting</span>
+          <span style="font-size: 9px; color: #a78bfa; background: rgba(167,139,250,0.15); padding: 1px 5px; border-radius: 3px;">review</span>
+          <span style="color: #555; font-size: 10px;">#api</span>
+        </div>
+        <div style="padding: 6px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 3px;">
+          <span style="color: #f59e0b;">●</span>
+          <span style="color: #e0e0e0; flex: 1;">refactor auth middleware</span>
+          <span style="font-size: 9px; color: #f59e0b; background: rgba(245,158,11,0.15); padding: 1px 5px; border-radius: 3px;">active</span>
+          <span style="color: #555; font-size: 10px;">#auth</span>
+        </div>
+        <div style="padding: 6px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 3px;">
+          <span style="color: #f59e0b;">●</span>
+          <span style="color: #e0e0e0; flex: 1;">fix mobile scroll perf</span>
+          <span style="font-size: 9px; color: #f59e0b; background: rgba(245,158,11,0.15); padding: 1px 5px; border-radius: 3px;">active</span>
+          <span style="color: #555; font-size: 10px;">#mobile</span>
+        </div>
+        <div style="padding: 6px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 3px; opacity: 0.6;">
+          <span style="color: #4ade80;">✓</span>
+          <span style="color: #ccc; flex: 1;">update CI pipeline</span>
+          <span style="font-size: 9px; color: #4ade80; background: rgba(74,222,128,0.15); padding: 1px 5px; border-radius: 3px;">done</span>
+          <span style="color: #555; font-size: 10px;">#ci</span>
+        </div>
+        <div style="padding: 6px 8px; display: flex; align-items: center; gap: 6px; margin-bottom: 3px; opacity: 0.6;">
+          <span style="color: #4ade80;">✓</span>
+          <span style="color: #ccc; flex: 1;">write onboarding docs</span>
+          <span style="font-size: 9px; color: #4ade80; background: rgba(74,222,128,0.15); padding: 1px 5px; border-radius: 3px;">done</span>
+          <span style="color: #555; font-size: 10px;">#docs</span>
+        </div>
+        <div style="padding: 6px 8px; display: flex; align-items: center; gap: 6px; opacity: 0.6;">
+          <span style="color: #4ade80;">✓</span>
+          <span style="color: #ccc; flex: 1;">seed test data</span>
+          <span style="font-size: 9px; color: #4ade80; background: rgba(74,222,128,0.15); padding: 1px 5px; border-radius: 3px;">done</span>
+          <span style="color: #555; font-size: 10px;">#api</span>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top: 16px;">All three show the same 6 tasks. The question is: which grouping helps you fastest?</p>

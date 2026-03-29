@@ -1,0 +1,179 @@
+<h2>Full Sidebar Redesign</h2>
+<p class="subtitle">Approach 2 — Three-section layout with all decisions applied</p>
+
+<div class="mockup">
+  <div class="mockup-header">Redesigned Sidebar</div>
+  <div class="mockup-body" style="font-family: system-ui; font-size: 13px; background: #1a1a2e; color: #ccc; padding: 0; min-height: 700px; display: flex; flex-direction: column;">
+
+    <!-- ═══ HEADER ═══ -->
+    <div style="padding: 12px 14px; border-bottom: 1px solid #2a2a4a; display: flex; align-items: center; gap: 8px;">
+      <div style="width: 20px; height: 20px; border-radius: 4px; background: linear-gradient(135deg, #6366f1, #8b5cf6); display: flex; align-items: center; justify-content: center; font-size: 10px; color: white; font-weight: 700;">M</div>
+      <span style="font-weight: 600; color: #e0e0e0; flex: 1;">my-project</span>
+      <span style="color: #555; font-size: 11px; background: #2a2a4a; padding: 2px 8px; border-radius: 4px; cursor: pointer;">⌘K</span>
+    </div>
+
+    <!-- ═══ NEEDS ATTENTION ═══ -->
+    <div style="padding: 10px 14px 4px;">
+      <div style="font-size: 10px; text-transform: uppercase; color: #666; letter-spacing: 0.5px; display: flex; align-items: center; gap: 6px;">
+        Needs Attention
+        <span style="background: #f59e0b; color: #000; font-size: 9px; padding: 1px 5px; border-radius: 8px; font-weight: 600;">4</span>
+      </div>
+    </div>
+    <div style="padding: 2px 10px 6px;">
+      <!-- Completed task -->
+      <div style="padding: 7px 8px; border-radius: 6px; background: rgba(74,222,128,0.06); border: 1px solid rgba(74,222,128,0.12); margin-bottom: 3px; display: flex; align-items: center; gap: 7px; font-size: 12px; cursor: pointer;">
+        <span style="color: #4ade80; font-size: 11px;">✓</span>
+        <span style="color: #e0e0e0; flex: 1;">add rate limiting</span>
+        <span style="color: #555; font-size: 10px;">#api</span>
+        <span style="color: #444; font-size: 10px; cursor: pointer;">✕</span>
+      </div>
+      <!-- Thread waiting on you -->
+      <div style="padding: 7px 8px; border-radius: 6px; background: rgba(59,130,246,0.06); border: 1px solid rgba(59,130,246,0.12); margin-bottom: 3px; display: flex; align-items: center; gap: 7px; font-size: 12px; cursor: pointer;">
+        <span style="color: #3b82f6; font-size: 11px;">↩</span>
+        <span style="color: #e0e0e0; flex: 1;">token refresh logic</span>
+        <span style="color: #555; font-size: 10px;">#auth</span>
+        <span style="color: #444; font-size: 10px; cursor: pointer;">✕</span>
+      </div>
+      <!-- @mention -->
+      <div style="padding: 7px 8px; border-radius: 6px; background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.12); margin-bottom: 3px; display: flex; align-items: center; gap: 7px; font-size: 12px; cursor: pointer;">
+        <span style="color: #f59e0b; font-size: 11px;">@</span>
+        <span style="color: #e0e0e0; flex: 1;">mentioned in thread</span>
+        <span style="color: #555; font-size: 10px;">#api</span>
+        <span style="color: #444; font-size: 10px; cursor: pointer;">✕</span>
+      </div>
+      <!-- Stale task -->
+      <div style="padding: 7px 8px; border-radius: 6px; background: rgba(239,68,68,0.06); border: 1px solid rgba(239,68,68,0.12); margin-bottom: 3px; display: flex; align-items: center; gap: 7px; font-size: 12px; cursor: pointer;">
+        <span style="color: #ef4444; font-size: 11px;">⏱</span>
+        <span style="color: #e0e0e0; flex: 1;">fix mobile scroll perf</span>
+        <span style="color: #555; font-size: 10px;">stale 2h</span>
+        <span style="color: #444; font-size: 10px; cursor: pointer;">✕</span>
+      </div>
+    </div>
+
+    <!-- ═══ TASKS ═══ -->
+    <div style="padding: 8px 14px 4px; border-top: 1px solid #2a2a4a;">
+      <div style="font-size: 10px; text-transform: uppercase; color: #666; letter-spacing: 0.5px; display: flex; align-items: center; gap: 6px;">
+        Tasks
+        <span style="background: #333; color: #aaa; font-size: 9px; padding: 1px 5px; border-radius: 8px;">5</span>
+      </div>
+    </div>
+    <div style="padding: 2px 10px 6px;">
+      <!-- In review -->
+      <div style="padding: 5px 8px; cursor: pointer;">
+        <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 3px;">
+          <span style="color: #e0e0e0; flex: 1; font-size: 12px;">add rate limiting</span>
+          <span style="color: #555; font-size: 10px;">#api</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <div style="flex: 1; height: 3px; background: #2a2a4a; border-radius: 2px; overflow: hidden; display: flex;">
+            <div style="width: 70%; height: 100%; background: #a78bfa;"></div>
+            <div style="width: 15%; height: 100%; background: #f472b6;"></div>
+          </div>
+          <span style="font-size: 9px; color: #2dd4bf; font-family: monospace;">85%</span>
+        </div>
+      </div>
+      <!-- In progress -->
+      <div style="padding: 5px 8px; cursor: pointer;">
+        <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 3px;">
+          <span style="color: #e0e0e0; flex: 1; font-size: 12px;">refactor auth middleware</span>
+          <span style="color: #555; font-size: 10px;">#auth</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <div style="flex: 1; height: 3px; background: #2a2a4a; border-radius: 2px; overflow: hidden; display: flex;">
+            <div style="width: 45%; height: 100%; background: #f59e0b;"></div>
+          </div>
+          <span style="font-size: 9px; color: #2dd4bf; font-family: monospace;">45%</span>
+        </div>
+      </div>
+      <!-- In progress -->
+      <div style="padding: 5px 8px; cursor: pointer;">
+        <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 3px;">
+          <span style="color: #e0e0e0; flex: 1; font-size: 12px;">fix mobile scroll perf</span>
+          <span style="color: #555; font-size: 10px;">#mobile</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <div style="flex: 1; height: 3px; background: #2a2a4a; border-radius: 2px; overflow: hidden; display: flex;">
+            <div style="width: 22%; height: 100%; background: #38bdf8;"></div>
+          </div>
+          <span style="font-size: 9px; color: #2dd4bf; font-family: monospace;">22%</span>
+        </div>
+      </div>
+
+      <!-- Completed today -->
+      <div style="padding: 6px 8px 2px;">
+        <div style="font-size: 9px; color: #555; display: flex; align-items: center; gap: 8px;">
+          <span>Completed today</span>
+          <div style="flex: 1; height: 1px; background: #2a2a4a;"></div>
+          <span style="cursor: pointer;">▸</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ CHANNELS ═══ -->
+    <div style="padding: 8px 14px 4px; border-top: 1px solid #2a2a4a;">
+      <div style="font-size: 10px; text-transform: uppercase; color: #666; letter-spacing: 0.5px;">Channels</div>
+    </div>
+    <div style="padding: 2px 10px; flex: 1;">
+      <div style="padding: 7px 8px; border-radius: 6px; background: #2a2a4a; color: #fff; margin-bottom: 1px; cursor: grab;"># main</div>
+      <div style="padding: 7px 8px; color: #999; margin-bottom: 1px; cursor: grab;"># auth-refactor</div>
+      <div style="padding: 7px 8px; color: #999; margin-bottom: 1px; cursor: grab;"># api-redesign</div>
+      <div style="padding: 7px 8px; color: #bbb; margin-bottom: 1px; display: flex; align-items: center; gap: 6px;">
+        <span style="color: #444;">⌇</span>
+        pagination approach
+        <span style="margin-left: auto; color: #444; font-size: 10px; cursor: pointer;">✕</span>
+      </div>
+      <div style="padding: 7px 8px; color: #bbb; margin-bottom: 1px; display: flex; align-items: center; gap: 6px;">
+        <span style="color: #444;">⌇</span>
+        error response format
+        <span style="margin-left: auto; width: 6px; height: 6px; border-radius: 50%; background: #3b82f6;"></span>
+        <span style="color: #444; font-size: 10px; cursor: pointer;">✕</span>
+      </div>
+      <div style="padding: 7px 8px; color: #999; margin-bottom: 1px; cursor: grab;"># mobile-perf</div>
+      <div style="padding: 7px 8px; color: #999; margin-bottom: 1px; cursor: grab;"># ci-fixes</div>
+      <div style="padding: 7px 8px; color: #999; margin-bottom: 1px; cursor: grab;"># docs-update</div>
+
+      <!-- Add channel -->
+      <div style="padding: 7px 8px; color: #555; margin-bottom: 1px; cursor: pointer; font-size: 12px;">+ New channel</div>
+    </div>
+
+    <!-- ═══ DMs ═══ -->
+    <div style="padding: 8px 14px 4px; border-top: 1px solid #2a2a4a;">
+      <div style="font-size: 10px; text-transform: uppercase; color: #666; letter-spacing: 0.5px; display: flex; align-items: center;">
+        Direct Messages
+        <span style="margin-left: auto; color: #555; font-size: 10px; cursor: pointer;">▸</span>
+      </div>
+    </div>
+
+    <!-- ═══ FOOTER ═══ -->
+    <div style="margin-top: auto; padding: 10px 14px; border-top: 1px solid #2a2a4a; display: flex; align-items: center; gap: 12px;">
+      <span style="color: #666; font-size: 14px; cursor: pointer;">🔔</span>
+      <span style="color: #666; font-size: 14px; cursor: pointer;">☀</span>
+      <span style="margin-left: auto; width: 24px; height: 24px; border-radius: 50%; background: #4a4a6a; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #ccc; cursor: pointer;">BT</span>
+    </div>
+
+  </div>
+</div>
+
+<div style="margin-top: 20px;">
+  <h3>Design decisions reflected:</h3>
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; font-size: 12px;">
+    <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 10px;">
+      <div style="color: #f59e0b; font-weight: 600; margin-bottom: 3px;">Needs Attention (top)</div>
+      <div style="color: #999;">4 types: completed tasks ✓, threads waiting ↩, @mentions @, stale work ⏱. Each dismissible.</div>
+    </div>
+    <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 10px;">
+      <div style="color: #a78bfa; font-weight: 600; margin-bottom: 3px;">Tasks (unified)</div>
+      <div style="color: #999;">Flat list, progress bars, channel tags. Completed today collapsible. No status dots.</div>
+    </div>
+    <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 10px;">
+      <div style="color: #3b82f6; font-weight: 600; margin-bottom: 3px;">Channels (clean)</div>
+      <div style="color: #999;">No task pips. Threads inline at same font size. Closable ✕. Drag to reorder. Unread dots.</div>
+    </div>
+    <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 10px;">
+      <div style="color: #4ade80; font-weight: 600; margin-bottom: 3px;">Thread lifecycle</div>
+      <div style="color: #999;">Active → shows under channel. Needs you → moves to Attention. Idle → auto-closes. Manual close ✕.</div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top: 16px;">This is the full picture. How does it feel? Anything to adjust before we write the spec?</p>
