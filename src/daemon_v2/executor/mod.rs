@@ -21,7 +21,33 @@ pub async fn execute(
 ) -> Vec<DomainEvent> {
     match command {
         Command::SpawnAgent(config) => match spawn::spawn_agent(&config, paths).await {
-            Ok((session, events)) => {
+            Ok((mut session, events)) => {
+                // Detach stdout/stderr receivers and spawn a background drain task.
+                // Without this, the child's stdout pipe fills up and the process blocks.
+                if let Some((mut stdout_rx, mut stderr_rx)) = session.take_receivers() {
+                    let agent_name = config.name.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            tokio::select! {
+                                msg = stdout_rx.recv() => {
+                                    if msg.is_none() { break; }
+                                    // Drained — output is persisted by Claude Code itself
+                                }
+                                msg = stderr_rx.recv() => {
+                                    match msg {
+                                        Some(line) if !line.trim().is_empty() => {
+                                            tracing::debug!(agent = %agent_name, "stderr: {line}");
+                                        }
+                                        None => break,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        tracing::debug!(agent = %agent_name, "stdout/stderr drain ended");
+                    });
+                }
+
                 // The agent ID is in the first event (AgentCreated).
                 if let Some(DomainEvent::AgentCreated { id, .. }) = events.first() {
                     sessions.insert(id.clone(), session);
