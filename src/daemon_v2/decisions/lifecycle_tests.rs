@@ -189,3 +189,93 @@ fn agent_index_gc_removes_from_all_indexes() {
     );
     assert!(!idx.running.contains("w1"), "running should be empty");
 }
+
+// --- cleanup_completed_worktrees tests ---
+
+#[test]
+fn cleanup_worktrees_for_completed_tasks() {
+    use crate::daemon_v2::events::DomainEvent;
+
+    let mut proj = Projections::default();
+
+    // Create a task, assign it, complete it
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Fix bug".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "a1".into(),
+    });
+    proj.apply(&DomainEvent::TaskCompleted {
+        task_id: "t1".into(),
+    });
+
+    let commands = cleanup_completed_worktrees(&proj);
+
+    assert_eq!(
+        commands.len(),
+        1,
+        "expected 1 RemoveWorktree, got {:?}",
+        commands
+    );
+    assert!(
+        matches!(&commands[0], crate::daemon_v2::decisions::Command::RemoveWorktree { task_id } if task_id == "t1"),
+        "expected RemoveWorktree for t1, got {:?}",
+        commands[0]
+    );
+}
+
+#[test]
+fn no_cleanup_for_in_progress_tasks() {
+    use crate::daemon_v2::events::DomainEvent;
+
+    let mut proj = Projections::default();
+
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Working".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "a1".into(),
+    });
+
+    let commands = cleanup_completed_worktrees(&proj);
+    assert!(
+        commands.is_empty(),
+        "no cleanup for in-progress tasks, got {:?}",
+        commands
+    );
+}
+
+#[test]
+fn no_cleanup_for_pending_tasks() {
+    use crate::daemon_v2::events::DomainEvent;
+
+    let mut proj = Projections::default();
+
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Pending".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    });
+
+    let commands = cleanup_completed_worktrees(&proj);
+    assert!(
+        commands.is_empty(),
+        "no cleanup for pending tasks, got {:?}",
+        commands
+    );
+}
