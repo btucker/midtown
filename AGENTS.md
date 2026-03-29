@@ -76,7 +76,47 @@ This catches failures faster than waiting for GitHub Actions and keeps you produ
 
 **End-of-work cleanup**: run `cargo clean` after completing work to reclaim disk space from build artifacts.
 
-## Conventions
+## Daemon V2 Architecture
+
+The daemon is being rewritten from a mutable-state model (v1) to event sourcing (v2). Both coexist — v2 is launched with `MIDTOWN_DAEMON_V2=1 midtown start`. See [docs/v2-architecture.md](docs/v2-architecture.md) for the full architecture and [docs/v2-spec.md](docs/v2-spec.md) for the user-facing spec.
+
+### Core pipeline
+
+```
+Command  →  executor (I/O)  →  DomainEvent(s)  →  update projections
+   ↑                                                       |
+   +──── decision functions read projections (immutable) ──+
+```
+
+### Decision functions are pure
+
+Decision functions in `src/daemon_v2/decisions/` take `&Projections` and return `Vec<Command>`. No I/O, no mutation, no async. The executor in `src/daemon_v2/executor/` handles all side effects.
+
+### Projections replace tick fields
+
+V1 uses 50+ `tick_*` fields populated by `prepare_tick()`. V2 uses three auto-maintained projections:
+- `AgentIndex` — agents by id/name/task/channel/thread, running set
+- `WorkIndex` — tasks and PRs with pre-indexed views
+- `ChannelIndex` — channel metadata and settings
+- `CooldownTracker` — unified cooldown mechanism (replaces 10 ad-hoc ones)
+
+### Nudge routing
+
+All nudge routing goes through `chat::route_message()`. Rules:
+1. Thread-bound agent gets thread replies. No thread binding → channel lead gets them.
+2. Channel lead gets all top-level messages.
+3. @mentions and !N task refs nudge the named/assigned agent.
+4. **No running-state checks** — if the target is stopped, the executor resumes it.
+5. Self-nudges are suppressed.
+
+### Key conventions for v2
+
+- **Routing is by binding, not agent type.** Don't check `AgentKind` in decision functions unless you're looking up the channel lead (`AgentIndex::channel_lead()`).
+- **Cooldowns live on `Projections.cooldowns`**, checked in decisions (read-only), recorded by the daemon after command execution.
+- **`AgentIndex::channel_lead(channel)`** is the shared way to find a channel's lead — don't duplicate this query.
+- **`MAX_REVIEWER_RESTARTS`** is `pub(crate)` in `decisions/prs.rs` — import it in tests, don't redeclare.
+
+## V1 Conventions (legacy — still applies to `src/daemon/`)
 
 **Decision functions are pure**: Functions in `rules.rs` (and all functions called from `evaluate_tick()`) must not perform I/O, mutation, or async operations. Return `Vec<Effect>` instead. If data is needed for a decision, add it to `DaemonPersistentState` as a `tick_*` field and populate it in `prepare_tick()`. See [docs/architecture.md](docs/architecture.md) for the full pipeline.
 
@@ -118,7 +158,9 @@ Three session types, each bound to exactly one thing:
 - Fork channel routing reads `SessionRecord.channel` filtered by `is_fork_session()`.
 - `pending_forks: HashSet<String>` guards concurrent fork creation (replaces the old "pending" sentinel).
 
-**Dead forks stay dead.** When a fork session's process exits, its `SessionRecord.is_running` is set to `false`. There is no auto-respawn. Thread replies to dead forks fall through to the channel lead.
+**Dead forks stay dead (v1).** When a fork session's process exits, its `SessionRecord.is_running` is set to `false`. There is no auto-respawn. Thread replies to dead forks fall through to the channel lead.
+
+**V2 resumes dead forks.** In the v2 daemon, thread bindings persist through agent stop events. When a thread reply targets a stopped fork, `NudgeAgent` triggers the executor to resume it. The `AgentIndex.by_thread` index is only cleared on garbage collection, not on stop.
 
 ## Keeping docs/architecture.md Up-to-Date
 
