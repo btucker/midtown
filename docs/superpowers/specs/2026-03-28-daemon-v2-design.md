@@ -720,75 +720,69 @@ Build alongside the old daemon. Migrate one domain at a time.
 - 6 rpc_*.rs files -> 1 handlers.rs
 - No duplicate state maps
 
-## Implementation Status and Remaining Gaps
+## Implementation Status
 
-*Updated 2026-03-28 after Phases 1-6 implementation.*
+*Updated 2026-03-28. 147 unit tests, 11 E2E tests, all green. 60 commits, ~6,600 lines.*
 
-### What's Built (84 unit tests, 10 E2E tests, all green)
+### Fully Implemented
 
-- **Event store** with JSONL append, snapshots, crash-safe recovery
-- **Projections**: AgentIndex (by_id/name/task/channel/thread), WorkIndex (tasks+PRs combined), ChannelIndex (settings, directory, lead_driven), CooldownTracker
-- **Decisions**: dispatch_pending_tasks, stop_completed_agents, check_dead_workers, ensure_leads_alive, handle_merged_prs
-- **Executor**: real HeadlessSession spawning, process health polling via try_wait(), channel JSONL I/O, GitHub PR polling via `gh` CLI
-- **RPC**: status, agent.list, task.create, session.fork, channel.post/read/list/update, shutdown
-- **Scheduler**: per-decision intervals, timer wheel
-- **Lead-driven workflows**: channels with lead_driven flag skip auto-dispatch
-- **Channel directories**: channel.update with directory setting, passed as working_dir to leads
-- **Thread forks**: session.fork RPC, by_thread index, fork deduplication, MIDTOWN_BOUND_THREAD_ID env var
-- **CLI**: `midtown daemon-v2 --socket --workdir --channel`
-- **E2E tests**: startup, status, agent list, task create, agent spawn, lead-driven skip, channel post/read, PR polling, thread fork, shutdown
+**Core architecture:**
+- Event store with JSONL append, snapshots, crash-safe recovery
+- Projections: AgentIndex (by_id/name/task/channel/thread), WorkIndex (tasks+PRs), ChannelIndex (settings, directory, lead_driven), CooldownTracker
+- Scheduler with per-decision intervals
+- Startup reconciliation (PID check, mark dead agents, resume surviving ones)
 
-### Recently Fixed
+**Agent lifecycle:**
+- Real HeadlessSession spawning with sandbox isolation
+- Process health polling via try_wait()
+- Session resume on daemon restart (--resume with session_id)
+- NudgeAgent (send_message to running session)
+- Fork sessions with --fork-session for parent context inheritance
+- Creative worker names, Lucide icons, CSS colors
+- DM channel auto-creation for workers
+- Garbage collection of old stopped agents
+- Idle worker detection and shutdown
+- Duplicate worker detection
 
-- **Fork context**: Forks now use `--fork-session` with the parent lead's session_id. E2E verified. Agent.session_id is tracked via AgentStarted events.
-- **NudgeAgent**: Executor calls `session.send_message()` on the HeadlessSession.
-- **ResumeAgent**: Emits AgentResumed event. Full HeadlessConfig-based resume deferred.
-- **Sandboxing**: All spawned agents are sandboxed via `sandbox-exec` on macOS (inherited from HeadlessSession::spawn).
-- **`--agent` on forks**: Fork sessions get `--agent midtown-channel-lead` for agent definition loading.
+**Task dispatch:**
+- dispatch_pending_tasks with max_in_progress limit
+- stop_completed_agents
+- check_dead_workers (reset orphaned tasks)
+- Lead-driven channel skip
+- Real worktree management (WorktreeManager + WorktreeRegistry)
 
-### Remaining Gaps
+**PR monitoring:**
+- GitHub polling via `gh pr list` (open + merged)
+- PR state diffing against WorkIndex
+- Reviewer spawning for PRs needing review
+- Author suspension when PR opens
+- Merged PR → task completion
+- MergePr, PostPrComment, RerunCi commands via `gh` CLI
 
-#### Tier 1: Required for Functional Parity
+**Chat + channels:**
+- Channel post/read/list via existing Channel/Message types
+- @mention routing (@lead, @channel, @agent-name)
+- Channel directory setting for AGENTS.md loading
+- Lead-driven workflow flag
 
-**Startup reconciliation**: Recovered events can leave agents marked "running" with no live process. On daemon startup, must check PIDs and emit AgentStopped for dead agents. Without this, `ensure_leads_alive` thinks a lead exists when it doesn't, and forks can't find a valid session_id.
+**RPC (v2 + v1 compatibility):**
+- v2: status, agent.list, task.create, task.list, task.done, session.fork, channel.post/read/list/update, pr.list, prs.status, shutdown
+- v1 aliases: ping, version, snapshot, lead.spawn, coworker.spawn/break/nudge/list, coworkers.status
 
-**PR review lifecycle**: The core "work gets done" loop:
-- Auto-create review task when PR is opened/review-requested
-- Suspend author worker when PR opens (save session_id for later resume)
-- Nudge author with review feedback
-- Resume author with `--resume <session_id>` and review context as initial prompt
-- Merge confirmation flow
+**Web API:**
+- Axum HTTP routes: /api/health, /api/status, /api/channels, /api/channels/history, /api/channels/create
+- WebSocket event broadcast on /api/ws
+- Webhook event converter (WebhookEvent → DomainEvent)
 
-Requires: `CreateReviewTask` command, full `ResumeAgent` wiring (build HeadlessConfig for resume), review state tracking in WorkIndex.
+**Cutover:**
+- `MIDTOWN_DAEMON_V2=1 midtown start` launches v2
+- Same socket path as v1 for transparent CLI compatibility
 
-**Mention routing in channels**: MentionRouted event exists but chat monitor not wired. Need to detect @mentions in `channel.post` content and emit `NudgeAgent` commands targeting the mentioned agent. @lead should route to the channel lead, @ops to ops channel.
+### Not Ported (Low Priority)
 
-**Worktree management**: Workers need isolated git worktrees. CreateWorktree/RemoveWorktree commands exist but executor doesn't handle them. Reuse existing `src/worktree.rs`.
-
-**Session resume on daemon restart**: `resume_on_startup` flag not ported. Agents die when daemon restarts and don't come back.
-
-**Project lead vs channel lead**: The default channel needs a `midtown-project-lead` agent (broad/shallow), while topic channels get `midtown-channel-lead` agents. Currently all leads use `midtown-channel-lead`.
-
-#### Tier 2: Required for Web UI
-
-**Web API (Axum HTTP + WebSocket)**: HTTP routes proxying to RPC dispatch. The web UI needs this to talk to v2. Reuse route structure from `src/web.rs`.
-
-**WebSocket event broadcast**: DomainEvents broadcast to connected WebSocket clients for real-time UI updates.
-
-**GitHub webhooks**: Real-time PR events instead of 45s polling. Reuse `src/webhook.rs` for HMAC verification and event parsing. Wire webhook receiver into the event loop.
-
-#### Tier 3: Quality of Life
-
-**Worker communication**: Workers asking questions of lead/fork. DM channels (`dm-<name>`) with auto-creation. v1 uses `coworker.asking` RPC.
-
-**Creative worker names + icons**: Workers currently named `task-1`. Should use creative naming from word list and Lucide icon assignment for UI display. Add `icon` and `color` to SpawnConfig.
-
-**Auth profile pooling**: Multi-account support for rate limit rotation.
-
-**Reminders**: Cron-based and event-based triggers.
-
-**Garbage collection**: Periodic cleanup of long-dead agent records and stale worktrees.
-
-**Push notifications**: VAPID web push for mobile PWA alerts.
-
-**Lead/fork escalation to user**: @user mentions triggering push notifications or special UI treatment.
+- **Auth profile pooling** — multi-account rate limit rotation
+- **Reminders** — cron/event-based triggers
+- **Push notifications** — VAPID web push for mobile PWA
+- **CI issue detection** — stale check detection, auto-rerun
+- **Rate limit monitoring** — GitHub API quota tracking
+- **Full web UI route coverage** — only core routes ported; v1's 30+ routes need incremental porting
