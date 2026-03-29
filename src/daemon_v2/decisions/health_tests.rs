@@ -394,18 +394,26 @@ fn ensure_channel_leads_alive_uses_channel_directory() {
     let proj = make_projections(&events);
     let commands = ensure_channel_leads_alive(&proj, "main");
 
+    // Default channel "main" + "frontend" channel = 2 commands
     assert_eq!(
         commands.len(),
-        1,
-        "expected 1 SpawnAgent, got {:?}",
+        2,
+        "expected 2 SpawnAgent (main + frontend), got {:?}",
         commands
     );
+    // The frontend lead should have the directory as working_dir
+    let frontend_cmd = commands
+        .iter()
+        .find(
+            |c| matches!(c, Command::SpawnAgent(cfg) if cfg.channel.as_deref() == Some("frontend")),
+        )
+        .expect("should have SpawnAgent for frontend");
     assert!(
-        matches!(&commands[0], Command::SpawnAgent(cfg)
+        matches!(frontend_cmd, Command::SpawnAgent(cfg)
             if cfg.working_dir.as_deref() == Some("packages/web")
             && cfg.agent_type == "midtown-channel-lead"),
         "expected SpawnAgent with working_dir packages/web, got {:?}",
-        commands[0]
+        frontend_cmd
     );
 }
 
