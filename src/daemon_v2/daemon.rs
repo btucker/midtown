@@ -323,13 +323,36 @@ impl DaemonV2 {
         // Remove a stale socket file if it exists.
         let _ = std::fs::remove_file(&self.config.socket_path);
 
+        // Write and lock PID file so the shared webserver can discover this project.
+        // The exclusive lock is held for the daemon's lifetime — `is_pid_locked()` checks it.
+        let pid_file_path = self.paths.base_dir().join("daemon.pid");
+        if let Some(parent) = pid_file_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&pid_file_path, std::process::id().to_string());
+        let _pid_lock = {
+            use fs2::FileExt;
+            let f = std::fs::OpenOptions::new()
+                .read(true)
+                .open(&pid_file_path)
+                .expect("failed to open PID file for locking");
+            f.lock_exclusive().expect("failed to lock PID file");
+            f // Hold the lock for the daemon's lifetime
+        };
+
         let listener =
             UnixListener::bind(&self.config.socket_path).expect("failed to bind daemon socket");
 
         tracing::info!(socket = %self.config.socket_path.display(), "DaemonV2 listening");
 
-        // Start the web server if a port is configured.
-        if let Some(port) = self.config.web_port {
+        // Start the web server. The shared webserver (port 47022) proxies HTTP
+        // to this port, so it must be running for the web UI to work.
+        // Use explicit --web-port, or fall back to the project's webhook_port from config.
+        let web_port = self.config.web_port.or_else(|| {
+            crate::config::load_full_project_config(self.paths.dir_key())
+                .and_then(|c| c.daemon.webhook_port)
+        });
+        if let Some(port) = web_port {
             let web_state = std::sync::Arc::new(crate::daemon_v2::web::WebState {
                 projections: std::sync::Arc::new(tokio::sync::Mutex::new(self.projections.clone())),
                 channels_dir: self.config.channels_dir.clone(),
