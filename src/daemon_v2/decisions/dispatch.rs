@@ -63,8 +63,8 @@ pub fn dispatch_pending_tasks(proj: &Projections, max_in_progress: usize) -> Vec
     commands
 }
 
-/// Detect when two agents are assigned to the same task and stop the older one.
-/// Keeps the newest agent (by `started_at`), stops the rest.
+/// Detect when two agents are assigned to the same task and stop the newer one.
+/// Per spec 2.2: keeps the oldest agent (by `started_at`), stops the rest.
 pub fn check_duplicate_workers(proj: &Projections) -> Vec<Command> {
     let mut task_agents: HashMap<&str, Vec<&Agent>> = HashMap::new();
     for id in &proj.agents.running {
@@ -79,10 +79,10 @@ pub fn check_duplicate_workers(proj: &Projections) -> Vec<Command> {
     let mut commands = Vec::new();
     for agents in task_agents.values() {
         if agents.len() > 1 {
-            // Keep the newest, stop the rest
+            // Keep the oldest, stop the rest (spec: "stop the newer one")
             let mut sorted = agents.clone();
             sorted.sort_by_key(|a| a.started_at);
-            for agent in &sorted[..sorted.len() - 1] {
+            for agent in &sorted[1..] {
                 commands.push(Command::StopAgent {
                     id: agent.id.clone(),
                     reason: "duplicate worker for task".into(),

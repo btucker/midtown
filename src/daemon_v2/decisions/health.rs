@@ -13,7 +13,8 @@ use crate::daemon_v2::events::{AgentKind, Provider, TaskStatus};
 use crate::daemon_v2::projections::Projections;
 
 /// Find workers that are stopped but have in-progress tasks.
-/// Returns ResetTask commands so they can be re-dispatched.
+/// Per spec 2.2: resume the worker (not reset the task).
+/// If the worker has no session_id, spawn a replacement with the same config.
 pub fn check_dead_workers(proj: &Projections) -> Vec<Command> {
     let mut commands = Vec::new();
 
@@ -22,17 +23,37 @@ pub fn check_dead_workers(proj: &Projections) -> Vec<Command> {
             continue;
         }
 
-        // Find the agent assigned to this task
         let agent_id = match proj.agents.by_task.get(task_id) {
             Some(id) => id,
             None => continue,
         };
 
-        // Check if the agent is stopped (not in the running set)
-        if !proj.agents.running.contains(agent_id) {
-            commands.push(Command::ResetTask {
-                task_id: task_id.clone(),
-            });
+        if !proj.agents.running.contains(agent_id)
+            && let Some(agent) = proj.agents.by_id.get(agent_id)
+        {
+            if agent.session_id.is_some() {
+                // Has session_id — resume it
+                commands.push(Command::ResumeAgent {
+                    id: agent_id.clone(),
+                });
+            } else {
+                // No session_id — spawn replacement with same config
+                commands.push(Command::SpawnAgent(SpawnConfig {
+                    name: agent.name.clone(),
+                    kind: agent.kind.clone(),
+                    agent_type: agent.agent_type.clone(),
+                    provider: agent.provider.clone(),
+                    channel: agent.channel.clone(),
+                    task_id: agent.task_id.clone(),
+                    initial_prompt: None,
+                    working_dir: None,
+                    model: None,
+                    bound_thread_id: agent.bound_thread_id.clone(),
+                    fork_from_session: None,
+                    icon: agent.icon.clone(),
+                    color: agent.color.clone(),
+                }));
+            }
         }
     }
 

@@ -242,9 +242,9 @@ fn spawned_worker_has_unique_name_icon_and_color() {
 // ── Section 2.2: Task Lifecycle ───────────────────────────────────────────────
 
 /// Spec 2.2: WHEN a worker dies while its task is InProgress THEN the system SHALL
-/// reset the task to Pending
+/// resume the worker
 #[test]
-fn dead_worker_resets_task_to_pending() {
+fn dead_worker_resumed() {
     let mut proj = Projections::default();
     make_task(&mut proj, "t1", "main");
     make_worker(&mut proj, "a1", "ghost-town", "t1");
@@ -259,18 +259,18 @@ fn dead_worker_resets_task_to_pending() {
 
     let commands = check_dead_workers(&proj);
 
-    assert_eq!(commands.len(), 1);
+    assert_eq!(commands.len(), 1, "expected 1 command, got {:?}", commands);
     assert!(
-        matches!(&commands[0], Command::ResetTask { task_id } if task_id == "t1"),
-        "expected ResetTask for t1, got {:?}",
+        matches!(&commands[0], Command::ResumeAgent { id } if id == "a1"),
+        "expected ResumeAgent for a1, got {:?}",
         commands[0]
     );
 }
 
 /// Spec 2.2: WHEN two agents are assigned to the same task THEN the system SHALL
-/// stop the older one
+/// stop the newer one
 #[test]
-fn duplicate_workers_stops_older_agent() {
+fn duplicate_workers_stops_newer_agent() {
     use chrono::{Duration, Utc};
 
     let mut proj = Projections::default();
@@ -324,7 +324,7 @@ fn duplicate_workers_stops_older_agent() {
         matches!(
             &commands[0],
             Command::StopAgent { id, reason }
-                if id == "old-agent" && reason == "duplicate worker for task"
+                if id == "new-agent" && reason == "duplicate worker for task"
         ),
         "expected StopAgent for old-agent, got {:?}",
         commands[0]

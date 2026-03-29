@@ -277,8 +277,8 @@ fn check_duplicate_workers_stops_older_of_two() {
         commands
     );
     assert!(
-        matches!(&commands[0], Command::StopAgent { id, reason } if id == "a1" && reason == "duplicate worker for task"),
-        "expected StopAgent for older worker a1, got {:?}",
+        matches!(&commands[0], Command::StopAgent { id, reason } if id == "a2" && reason == "duplicate worker for task"),
+        "expected StopAgent for newer worker a2, got {:?}",
         commands[0]
     );
 }

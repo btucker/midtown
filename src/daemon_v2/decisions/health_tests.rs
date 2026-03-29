@@ -51,10 +51,11 @@ fn respawn_dead_agent_with_task() {
     let proj = make_projections(&events);
     let commands = check_dead_workers(&proj);
 
-    assert_eq!(commands.len(), 1);
+    // Per spec 2.2: dead worker with no session_id → spawn replacement
+    assert_eq!(commands.len(), 1, "expected 1 command, got {:?}", commands);
     assert!(
-        matches!(&commands[0], Command::ResetTask { task_id } if task_id == "task-1"),
-        "expected ResetTask for task-1, got {:?}",
+        matches!(&commands[0], Command::SpawnAgent(cfg) if cfg.task_id.as_deref() == Some("task-1")),
+        "expected SpawnAgent replacement for task-1, got {:?}",
         commands[0]
     );
 }
