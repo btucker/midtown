@@ -3,125 +3,371 @@
 **Status:** In progress
 **Last updated:** 2026-03-29
 
-## User Stories
+---
 
-### US-1: Daemon Startup
-As a developer, I want to start the v2 daemon with a single command, so that all agent coordination begins automatically.
+## 1. Message Routing
 
-**Acceptance Criteria:**
-- WHEN the user runs `MIDTOWN_DAEMON_V2=1 midtown start` THEN the system SHALL recover state from the event store (snapshot + replay)
-- WHEN the daemon starts AND agents were previously running THEN the system SHALL check PIDs AND resume agents with valid session IDs
-- WHEN the daemon starts THEN the system SHALL bind the same Unix socket as v1 so CLI and web UI work transparently
-- WHEN a web port is configured THEN the system SHALL start an HTTP server for the web UI
+### 1.1 Thread Routing
+- WHEN a message is posted to a thread AND an agent is bound to that thread THEN the system SHALL nudge that bound agent
+- WHEN a message is posted to a thread AND no agent is bound to that thread THEN the system SHALL nudge the channel lead
+- WHEN a top-level message is posted THEN the system SHALL nudge the channel lead
 
-### US-2: Agent Lifecycle
-As a developer, I want agents to be spawned, stopped, and resumed reliably, so that work continues without manual intervention.
-
-**Acceptance Criteria:**
-- WHEN a worker agent is spawned THEN the system SHALL create an isolated git worktree with a task-specific branch
-- WHEN a lead or fork agent is spawned THEN the system SHALL use the shared lead worktree
-- WHEN an agent process dies THEN the system SHALL detect it via process health polling AND emit an AgentStopped event
-- WHEN a stopped agent has a session ID AND receives a nudge THEN the system SHALL resume the session before delivering the message
-- WHEN an agent has been stopped for more than 24 hours AND is not a lead THEN the system SHALL garbage-collect its record
-
-### US-3: Task Dispatch
-As a developer, I want tasks to be automatically assigned to workers, so that pending work is picked up without manual coordination.
-
-**Acceptance Criteria:**
-- WHEN a task is pending AND unblocked AND fewer than max concurrent tasks are in progress THEN the system SHALL spawn a worker agent for it
-- WHEN a worker dies while its task is in progress THEN the system SHALL reset the task to pending for re-dispatch
-- WHEN two agents are assigned to the same task THEN the system SHALL stop the older one
-- WHEN a worker has no task for more than 5 minutes THEN the system SHALL stop it
-- WHEN a task declares `blocked_by` dependencies THEN the system SHALL NOT dispatch it until all blockers are completed
-
-### US-4: Message Routing
-As a developer, I want messages to reach the right agent automatically, so that communication flows without explicit addressing.
-
-**Acceptance Criteria:**
-- WHEN a message is posted to a channel THEN the system SHALL nudge the channel lead
-- WHEN a thread reply is posted AND an agent is bound to that thread THEN the system SHALL nudge the thread-bound agent instead of the channel lead
-- WHEN a thread reply is posted AND no agent is bound to that thread THEN the system SHALL nudge the channel lead
+### 1.2 @Mentions
 - WHEN a message contains `@agent-name` THEN the system SHALL nudge the named agent
 - WHEN a message contains `@all` THEN the system SHALL nudge every agent in the channel except the sender
 - WHEN a message contains `@lead` or `@channel-name` THEN the system SHALL nudge the channel lead
+- WHEN a @mention refers to an unknown agent THEN the system SHALL NOT emit a nudge
+- WHEN a @mention contains trailing punctuation THEN the system SHALL strip it before lookup
+
+### 1.3 Task References
 - WHEN a message contains `!N` THEN the system SHALL nudge the agent assigned to task N
+- WHEN a message contains `task !N` THEN the system SHALL extract the task ID and nudge the assigned agent
+- WHEN a task reference has no assigned agent THEN the system SHALL NOT emit a nudge
+
+### 1.4 Nudge Invariants
+- WHEN the sender is the same as the nudge target THEN the system SHALL suppress the nudge
+- WHEN multiple routing rules match the same agent THEN the system SHALL nudge it exactly once
 - WHEN the nudge target is stopped AND has a session ID THEN the system SHALL resume the agent before delivering the message
-- WHEN the sender is the same as the nudge target THEN the system SHALL NOT nudge (self-nudge suppression)
-- WHEN multiple routing rules match the same agent THEN the system SHALL nudge it exactly once (deduplication)
+- WHEN the nudge target is stopped AND has no session ID THEN the system SHALL drop the nudge
+- WHEN the nudge target is unknown THEN the system SHALL drop the nudge
 
-### US-5: PR Integration
-As a developer, I want PRs to be monitored and reviewed automatically, so that the review cycle doesn't stall.
+---
 
-**Acceptance Criteria:**
-- WHEN the system polls GitHub AND a new PR is open THEN the system SHALL emit a PrOpened event
-- WHEN a PR needs review AND no reviewer agent is running for it THEN the system SHALL spawn a reviewer agent
-- WHEN a reviewer agent dies without posting a review AND fewer than 3 attempts have been made THEN the system SHALL spawn a new reviewer
-- WHEN a reviewer agent has failed 3 times for a PR THEN the system SHALL post an escalation message to the ops channel AND SHALL NOT spawn another reviewer
-- WHEN a PR merges AND a task is linked to it THEN the system SHALL complete the task AND clean up the worktree
-- WHEN a PR merges THEN the system SHALL nudge workers with other open PRs to rebase (at most once per hour per agent)
-- WHEN a worker's task has an open PR awaiting review THEN the system SHALL stop the worker (it's waiting)
+## 2. Task Dispatch
 
-### US-6: Channel Leads
-As a developer, I want every active channel to have a lead agent, so that messages are always handled.
+### 2.1 Spawning Workers
+- WHEN pending unblocked tasks exist AND fewer than max_in_progress tasks are running THEN the system SHALL spawn a worker for each available slot
+- WHEN a task has no `agent_type` THEN the system SHALL use `midtown-code-author` as default
+- WHEN a task is in a `lead_driven` channel THEN the system SHALL NOT auto-dispatch it
+- WHEN spawning a worker THEN the system SHALL generate a unique name, random icon, and random color
 
-**Acceptance Criteria:**
-- WHEN a non-archived channel exists AND has no running lead THEN the system SHALL spawn a lead agent for it
-- WHEN the channel is the default channel THEN the system SHALL use `midtown-project-lead` as the agent type
-- WHEN the channel is a topic channel THEN the system SHALL use `midtown-channel-lead` as the agent type
-- WHEN a channel has a `directory` setting THEN the system SHALL pass it as the lead's working directory so AGENTS.md loads from that subdirectory
-- WHEN a channel has `lead_driven: true` THEN the system SHALL NOT auto-dispatch tasks for that channel
+### 2.2 Task Lifecycle
+- WHEN a worker dies while its task is InProgress THEN the system SHALL reset the task to Pending
+- WHEN two agents are assigned to the same task THEN the system SHALL stop the older one
+- WHEN a worker has no task for more than 5 minutes THEN the system SHALL stop it
+- WHEN a running worker's task is Completed THEN the system SHALL stop the worker
+- WHEN a task declares `blocked_by` dependencies THEN the system SHALL NOT dispatch it until all blockers are completed
 
-### US-7: Session Persistence
-As a developer, I want agent sessions to survive daemon restarts, so that work isn't lost.
+---
 
-**Acceptance Criteria:**
-- WHEN the daemon restarts AND an agent was previously running with a session ID THEN the system SHALL resume the agent session
-- WHEN an agent is resumed THEN the system SHALL reset its `started_at` timestamp so idle checks use the resume time
-- WHEN a fork agent stops THEN the system SHALL preserve its thread binding so it can be resumed on future thread activity
-- WHEN an agent is garbage-collected THEN the system SHALL remove its thread binding AND all index entries
+## 3. PR Integration
 
-### US-8: Web UI
-As a developer, I want a web interface for monitoring and interacting with the system.
+### 3.1 Polling
+- WHEN the system polls GitHub THEN it SHALL fetch both open and merged PR lists
+- WHEN a new open PR is detected THEN the system SHALL emit a PrOpened event
+- WHEN a PR's CI or review state changes THEN the system SHALL emit a PrUpdated event
+- WHEN a PR is merged THEN the system SHALL emit a PrMerged event
+- WHEN polling fails THEN the system SHALL log the error and return no events
 
-**Acceptance Criteria:**
-- WHEN a domain event occurs THEN the system SHALL broadcast it to all connected WebSocket clients
-- WHEN the web UI requests channel history THEN the system SHALL return messages with optional thread filtering
-- WHEN the web UI searches with `GET /api/search?q=...` THEN the system SHALL return matches across all channels
-- WHEN the web UI requests status THEN the system SHALL return agent counts, task list, and open PRs
+### 3.2 Reviewer Spawning
+- WHEN a PR needs review AND no reviewer is running for it THEN the system SHALL spawn a reviewer named `reviewer-{pr_num}`
+- WHEN a reviewer dies AND fewer than 3 attempts have been made THEN the system SHALL spawn a new reviewer
+- WHEN a reviewer has failed 3 times THEN the system SHALL post to the ops channel AND SHALL NOT spawn another
+- WHEN spawning a reviewer THEN the initial prompt SHALL be `Review PR #{pr_num}: {branch}`
 
-### US-9: Cooldowns
-As a developer, I want rate-limiting on repeated actions, so that the system doesn't spam agents or APIs.
+### 3.3 PR Lifecycle
+- WHEN a PR merges AND has a linked InProgress task THEN the system SHALL complete the task
+- WHEN a PR merges THEN the system SHALL nudge workers with other open PRs to rebase (1hr cooldown per agent)
+- WHEN a worker's task has an open PR awaiting review THEN the system SHALL stop the worker
 
-**Acceptance Criteria:**
-- WHEN a rebase nudge has been sent to an agent THEN the system SHALL NOT send another for 1 hour
-- WHEN a spawn fails THEN the system SHALL NOT retry for 2 minutes
-- WHEN an orphan spawn occurs THEN the system SHALL NOT spawn another for 1 minute
+### 3.4 CI Status Parsing
+- WHEN statusCheckRollup contains any FAILURE/TIMED_OUT/CANCELLED THEN CI status SHALL be Failed
+- WHEN statusCheckRollup contains PENDING/QUEUED/IN_PROGRESS THEN CI status SHALL be Running
+- WHEN statusCheckRollup is empty or all SUCCESS THEN CI status SHALL be Passed
+- WHEN a PR is draft THEN needs_review SHALL be false regardless of reviewDecision
 
-## Unchanged Behavior
+---
 
-These behaviors from v1 SHALL CONTINUE TO work identically:
+## 4. Agent Lifecycle
 
-- WHEN the user runs `midtown status` THEN the system SHALL CONTINUE TO return daemon status via the same RPC protocol
-- WHEN the user runs `midtown channel post` THEN the system SHALL CONTINUE TO write messages to channel JSONL files
-- WHEN the user runs `midtown task create` THEN the system SHALL CONTINUE TO accept the same parameters
-- WHEN v1 RPC methods (`coworker.spawn`, `coworker.break`, `ping`, `version`) are called THEN the system SHALL CONTINUE TO handle them via compatibility aliases
+### 4.1 Spawning
+- WHEN a worker is spawned THEN the system SHALL create an isolated git worktree with a task-specific branch
+- WHEN a lead or fork is spawned THEN the system SHALL use the shared lead worktree
+- WHEN a lead already has a working_dir override (channel directory) THEN the worktree manager SHALL NOT override it
+- WHEN a task already has a worktree from a previous dispatch THEN the system SHALL reuse it
+- WHEN a worker is spawned THEN the system SHALL auto-create a DM channel `dm-{agent_name}`
+- WHEN spawning succeeds THEN AgentCreated and AgentStarted events SHALL be emitted
+- WHEN spawning fails THEN the error SHALL be logged and no events emitted
+- WHEN a session is spawned THEN stdout/stderr SHALL be drained in a background task
 
-## Not Yet Implemented
+### 4.2 Stopping
+- WHEN StopAgent is executed THEN the session SHALL be killed and removed from the sessions map
+- WHEN the kill fails THEN the error SHALL be logged but AgentStopped SHALL still be emitted
+- WHEN an agent process exits (detected by try_wait) THEN AgentStopped SHALL be emitted
 
-The following v1 capabilities are not yet ported:
+### 4.3 Resuming
+- WHEN ResumeAgent is executed THEN the session SHALL be spawned with `resume_session_id` set
+- WHEN resume succeeds THEN AgentResumed SHALL be emitted with the new PID
+- WHEN an agent is resumed THEN `started_at` SHALL be reset to now
+- WHEN resume fails THEN the error SHALL be logged and no events emitted
 
+### 4.4 Garbage Collection
+- WHEN an agent has been stopped for more than 24 hours AND is not a Lead THEN it SHALL be garbage-collected
+- WHEN an agent is garbage-collected THEN it SHALL be removed from all indexes (by_id, by_name, by_task, by_channel, by_thread)
+
+### 4.5 Fork Sessions
+- WHEN a fork session spawns THEN it SHALL be bound to a thread via `bound_thread_id`
+- WHEN a fork session stops THEN its thread binding SHALL persist (NOT cleared)
+- WHEN a fork has `fork_from_session` THEN it SHALL inherit the parent session's context
+- WHEN a session.fork request arrives AND a running fork exists for the thread THEN the existing fork ID SHALL be returned
+
+---
+
+## 5. Channel Management
+
+### 5.1 Channel Leads
+- WHEN a non-archived channel exists AND has no running lead THEN the system SHALL spawn one
+- WHEN spawning a lead for the default channel THEN agent_type SHALL be `midtown-project-lead`
+- WHEN spawning a lead for a topic channel THEN agent_type SHALL be `midtown-channel-lead`
+- WHEN a channel has a `directory` setting THEN the lead's working_dir SHALL be set to that subdirectory
+
+### 5.2 Channel Settings
+- WHEN `lead_driven` is set to true THEN automatic task dispatch SHALL be skipped for that channel
+- WHEN `directory` is set THEN the lead SHALL load AGENTS.md/CLAUDE.md from that subdirectory
+- WHEN a channel is archived THEN its directory SHALL be renamed with `.archived` suffix
+- WHEN a channel is unarchived THEN the `.archived` suffix SHALL be removed
+
+### 5.3 Channel I/O
+- WHEN a message is posted THEN it SHALL be written to the channel's JSONL file
+- WHEN messages are read with a limit THEN the last N messages SHALL be returned
+- WHEN a system message is posted THEN sender SHALL be `midtown`
+
+---
+
+## 6. Projections
+
+### 6.1 AgentIndex
+- WHEN AgentCreated is applied THEN the agent SHALL be indexed by id, name, task, channel, and thread
+- WHEN AgentStarted is applied THEN pid and session_id SHALL be set, agent added to running set, started_at set to now
+- WHEN AgentStopped is applied THEN agent removed from running set, stopped_at set, thread binding preserved
+- WHEN AgentResumed is applied THEN pid updated, started_at reset, stopped_at cleared, added back to running set
+- WHEN AgentGarbageCollected is applied THEN agent removed from all indexes
+
+### 6.2 WorkIndex
+- WHEN TaskCreated is applied THEN task added to tasks map and pending_tasks list
+- WHEN TaskCreated has blocked_by THEN task added to blocked map
+- WHEN TaskAssigned is applied THEN status changes to InProgress, moved from pending to in_progress list
+- WHEN TaskCompleted is applied THEN status changes to Completed, removed from in_progress, completed_at set
+- WHEN TaskReset is applied THEN status reverts to Pending, moved back to pending list
+- WHEN TaskUnblocked is applied THEN task removed from blocked map
+- WHEN PrOpened is applied THEN PR added to prs map and open_prs list
+- WHEN PrUpdated is applied THEN ci_status and review_state updated
+- WHEN PrMerged is applied THEN is_merged/is_closed set, removed from open_prs and needing_review
+- WHEN PrClosed is applied THEN is_closed set, removed from open_prs and needing_review
+- WHEN PrReviewRequested is applied THEN needs_review set, added to needing_review list
+- WHEN PrLinkedToTask is applied THEN task's pr_number set
+
+### 6.3 ChannelIndex
+- WHEN MessagePosted is applied THEN channel ensured to exist, last_message_at updated
+- WHEN MessagePosted has thread_id THEN thread added to known_threads and thread_count incremented
+- WHEN ChannelLeadDrivenSet is applied THEN lead_driven setting updated
+- WHEN ChannelDirectorySet is applied THEN directory setting updated
+
+### 6.4 CooldownTracker
+- WHEN OrphanSpawn cooldown recorded THEN 60s cooldown active
+- WHEN AgentDispatch cooldown recorded THEN 30s cooldown active
+- WHEN SpawnFailure cooldown recorded THEN 120s cooldown active
+- WHEN MergeRebaseNudge cooldown recorded THEN 3600s cooldown active
+- WHEN RebaseRegression cooldown recorded THEN 3600s cooldown active
+- WHEN LeadWorktreeFreshness cooldown recorded THEN 300s cooldown active
+- WHEN TaskNudge cooldown recorded THEN 3600s cooldown active
+- WHEN NoteStaleness cooldown recorded THEN 3600s cooldown active
+- WHEN is_active checked for expired or unrecorded cooldown THEN false returned
+
+---
+
+## 7. Event Store
+
+- WHEN EventStore is created THEN `log-0000.jsonl` SHALL be created
+- WHEN an event is appended THEN it SHALL be serialized as a JSON line and the sequence counter incremented
+- WHEN recovery is performed THEN the latest snapshot SHALL be loaded and remaining events replayed
+- WHEN a snapshot is saved THEN all projections SHALL be serialized and the log file advanced
+- WHEN a log line is malformed during recovery THEN it SHALL be skipped
+
+---
+
+## 8. Daemon Startup
+
+- WHEN the daemon starts THEN it SHALL recover from the event store (snapshot + replay)
+- WHEN previously-running agents have dead PIDs THEN AgentStopped SHALL be emitted for each
+- WHEN a dead agent has a session_id THEN ResumeAgent SHALL be scheduled
+- WHEN the daemon starts THEN a PID file SHALL be written and exclusively locked
+- WHEN a web port is configured THEN an HTTP server SHALL be started
+- WHEN pending resumes exist THEN they SHALL be executed before entering the main loop
+
+---
+
+## 9. Scheduling
+
+- WHEN a decision's interval has elapsed THEN it SHALL be executed
+- WHEN multiple decisions are due THEN they SHALL run in order of shortest interval first
+- WHEN a decision produces commands THEN SpawnAgent commands SHALL have worktrees prepared before execution
+- WHEN command execution produces events THEN events SHALL be applied to the store and projections
+
+| Decision | Interval |
+|----------|----------|
+| dispatch_pending_tasks | 5s |
+| stop_completed_agents | 5s |
+| handle_merged_prs | 10s |
+| suspend_authors_with_prs | 10s |
+| poll_process_health | 10s |
+| check_dead_workers | 30s |
+| check_idle_workers | 30s |
+| check_duplicate_workers | 30s |
+| ensure_channel_leads_alive | 30s |
+| poll_prs | 45s |
+| spawn_reviewers | 45s |
+| check_auth_errors | 30s |
+| check_usage_limits | 60s |
+| garbage_collect | 3600s |
+
+---
+
+## 10. RPC Interface
+
+### 10.1 V2 Methods
+- `status` — agent/task/PR counts
+- `agent.list` — query agents with optional kind and running_only filter
+- `task.create` — emit TaskCreated (required: id, subject, channel)
+- `task.list` — return all tasks
+- `task.done` — emit TaskCompleted (accepts string or numeric id)
+- `task.update` — validate task exists
+- `channel.post` — post message, generate routing commands
+- `channel.read` — read messages with optional limit
+- `channel.list` — list channels
+- `channel.update` — update lead_driven, directory settings
+- `session.fork` — spawn or return existing fork for a thread
+- `pr.list` — return all PR data
+- `pr.action` — merge, comment, or rerun CI
+- `prs.status` — return PRs with needs_review flag
+- `shutdown` — graceful daemon shutdown
+
+### 10.2 V1 Compatibility Aliases
+- `ping` → "pong"
+- `version` → name, version, daemon: "v2"
+- `snapshot` → aliases to status
+- `coworker.spawn` → SpawnAgent with Worker kind
+- `coworker.break` → StopAgent by name
+- `coworker.nudge` → NudgeAgent by name
+- `coworker.list` → agent.list
+- `coworkers.status` → agent.list (running only)
+- `lead.spawn` → ok (leads auto-spawned by scheduler)
+
+### 10.3 Stubbed Methods
+- `reminder.create`, `reminder.list`, `reminder.cancel`
+- `workflow.set_state`, `workflow.list`
+- `coworker.report-state`
+- `session.detach`
+- `task.prompt`, `task.handoff`
+- `pr.review`, `pr.merge`, `pr.list-external`, `pr.allow`
+- `daemon.check-pending`
+
+### 10.4 Error Handling
+- WHEN required params are missing THEN error -32602 SHALL be returned
+- WHEN method is unknown THEN error -32601 SHALL be returned
+- WHEN a referenced resource (task, PR, agent) is not found THEN error -32000 or -32001 SHALL be returned
+
+---
+
+## 11. Web API
+
+### 11.1 REST Endpoints
+- `GET /api/health` → "ok"
+- `GET /api/status` → agent/task/PR dashboard data
+- `GET /api/channels` → channel list (with optional `include_archived`)
+- `GET /api/channels/history` → messages (params: channel, limit, thread_parent_id)
+- `POST /api/channels/create` → create channel
+- `GET /api/channels/{channel}/settings` → channel settings
+- `PUT /api/channels/{channel}/settings` → update settings
+- `GET /api/channels/{channel}/agents-md` → read AGENTS.md
+- `PUT /api/channels/{channel}/agents-md` → write AGENTS.md
+- `GET /api/channels/{channel}/directory` → channel directory
+- `PUT /api/channels/{channel}/directory` → set directory
+- `POST /api/channels/{channel}/archive` → archive channel
+- `POST /api/channels/{channel}/unarchive` → unarchive channel
+- `GET /api/search` → full-text search (params: q, limit)
+- `GET /api/read-state` → stub (empty object)
+- `PUT /api/read-state/{type}/{id}` → stub (204)
+- `GET /api/usage` → auth profile usage data
+- `GET /api/questions` → stub (empty array)
+- `GET /api/auth/profiles` → current auth profile
+- `POST /api/auth/switch` → switch auth profile
+- `POST /api/auth/login` → login request
+- `GET /api/directories` → stub (empty array)
+- `GET /api/push/vapid-key` → VAPID public key
+- `POST /api/push/subscribe` → register push subscription
+- `POST /api/push/unsubscribe` → remove push subscription
+- `POST /api/upload` → file upload (sanitized filename)
+- `GET /api/uploads/{filename}` → serve uploaded file
+
+### 11.2 WebSocket (`GET /api/ws`)
+- WHEN a domain event occurs THEN it SHALL be broadcast to all connected clients as JSON
+- WHEN client sends `send_message` THEN message SHALL be posted and confirmation returned
+- WHEN client sends `fork_thread` THEN thread_ownership response SHALL be returned
+- WHEN client sends `answer_question` THEN answer SHALL be posted to the coworker's DM channel
+- WHEN client sends `nudge` THEN message SHALL be posted to the target's DM channel
+- WHEN client sends Ping THEN Pong SHALL be returned
+- WHEN client disconnects THEN the WebSocket loop SHALL terminate
+
+### 11.3 Response Transformations
+- WHEN channel history contains a `message` field THEN it SHALL be renamed to `content` for web UI compatibility
+- WHEN search results contain a `message` field THEN it SHALL be renamed to `content`
+
+---
+
+## 12. Webhook Integration
+
+- WHEN a webhook contains `merged_pr` THEN PrMerged event SHALL be produced
+- WHEN a webhook contains `needs_review` THEN PrReviewRequested event SHALL be produced
+- WHEN a webhook contains `pr_opened` THEN PrOpened event SHALL be produced
+- WHEN `pr_opened` has `author_coworker` THEN it SHALL be used as author; otherwise `unknown`
+- WHEN a webhook has no recognized events THEN an empty event list SHALL be produced
+
+---
+
+## 13. Naming
+
+- WHEN generating an agent name THEN a random adjective-noun combination SHALL be used
+- WHEN the generated name already exists THEN generation SHALL retry (up to 100 times)
+- WHEN all retries are exhausted THEN fallback name `agent-{random 4-digit}` SHALL be used
+
+---
+
+## 14. Unchanged Behavior from V1
+
+- WHEN `midtown status` is called THEN the system SHALL CONTINUE TO return status via the same RPC protocol
+- WHEN `midtown channel post` is called THEN the system SHALL CONTINUE TO write to channel JSONL files
+- WHEN `midtown task create` is called THEN the system SHALL CONTINUE TO accept the same parameters
+- WHEN v1 RPC methods are called THEN the system SHALL CONTINUE TO handle them via compatibility aliases
+
+---
+
+## 15. Not Yet Implemented
+
+### Critical
 - Webhook forwarder watchdog (`gh webhook forward` process management)
-- Background chat monitor (tail loop on channel JSONL)
-- GitHub API rate limit monitoring
+- Background chat monitor (tail loop on channel JSONL for ambient mention routing)
+- GitHub API rate limit monitoring and adaptive throttling
 - Auth profile pooling (multi-account rotation)
-- Reminder system (cron + event-based triggers)
-- Workflow system (assignment, state machine)
+
+### Important
+- Reminder system (cron + all-work-merged triggers)
+- Workflow system (assignment, state machine, event emission)
 - Task prompt / handoff between agents
 - Session attach/detach (interactive takeover)
 - CI issue detection (stale checks, auto-rerun)
+
+### Nice to Have
+- Channel rename/merge
+- Oneshot execute
+- Daemon exec-restart / draining mode
+- Push notifications (VAPID web push delivery)
+- RPC response caching
+
+---
 
 ## Revision History
 
 | Date | Change |
 |------|--------|
-| 2026-03-29 | Initial spec covering US-1 through US-9. |
+| 2026-03-29 | Initial spec. ~200 requirements across 15 sections. |
