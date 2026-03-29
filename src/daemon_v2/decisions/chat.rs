@@ -6,7 +6,7 @@ use crate::daemon_v2::projections::Projections;
 #[cfg(test)]
 mod tests;
 
-/// Extract @mentions from message content and return NudgeAgent commands.
+/// Extract @mentions and !N task references from message content and return NudgeAgent commands.
 pub fn route_mentions(
     proj: &Projections,
     channel: &str,
@@ -14,6 +14,20 @@ pub fn route_mentions(
     content: &str,
 ) -> Vec<Command> {
     let mut commands = Vec::new();
+    let mut nudged_ids = std::collections::HashSet::new();
+
+    // Extract !N task references and route to assigned agent
+    for task_id in extract_task_refs(content) {
+        if let Some(agent_id) = proj.agents.by_task.get(&task_id)
+            && proj.agents.running.contains(agent_id)
+            && nudged_ids.insert(agent_id.clone())
+        {
+            commands.push(Command::NudgeAgent {
+                id: agent_id.clone(),
+                message: format!("!{task_id} reference from {sender}: {content}"),
+            });
+        }
+    }
 
     // Find @mentions (words starting with @)
     for word in content.split_whitespace() {
@@ -76,6 +90,33 @@ pub fn route_mentions(
     }
 
     commands
+}
+
+/// Extract task references like `!42` or `task !7` from content.
+fn extract_task_refs(content: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    let content_lower = content.to_lowercase();
+
+    // "task !N" pattern
+    if let Some(idx) = content_lower.find("task !") {
+        let after = &content[idx + 6..];
+        let num: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !num.is_empty() {
+            refs.push(num);
+            return refs;
+        }
+    }
+
+    // Standalone "!N" — after whitespace or at start
+    for word in content.split_whitespace() {
+        if let Some(after) = word.strip_prefix('!') {
+            let num: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !num.is_empty() {
+                refs.push(num);
+            }
+        }
+    }
+    refs
 }
 
 fn find_running_lead(proj: &Projections, channel: &str) -> Option<String> {

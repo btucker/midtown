@@ -90,16 +90,30 @@ pub async fn channel_history(
     Json(messages)
 }
 
-pub async fn channel_list(State(state): State<Arc<WebState>>) -> Json<Value> {
-    let proj = state.projections.lock().await;
-    let (response, _, _) = rpc::dispatch_request(
-        json!({"jsonrpc": "2.0", "method": "channel.list", "id": 1}),
-        &proj,
-        &state.channels_dir,
-    );
-    let channels = response.get("result").cloned().unwrap_or(json!([]));
-    // Web UI expects { channels: [...] }, not a bare array
-    Json(json!({ "channels": channels }))
+#[derive(Deserialize)]
+pub struct ChannelListParams {
+    #[serde(default)]
+    include_archived: Option<bool>,
+}
+
+pub async fn channel_list(
+    State(state): State<Arc<WebState>>,
+    Query(params): Query<ChannelListParams>,
+) -> Json<Value> {
+    let include_archived = params.include_archived.unwrap_or(false);
+    let channels = crate::channel::Channel::list(&state.channels_dir, include_archived, None)
+        .unwrap_or_default();
+    let list: Vec<Value> = channels
+        .iter()
+        .map(|c| {
+            json!({
+                "name": c.name,
+                "is_archived": c.is_archived,
+                "is_dm": c.is_dm,
+            })
+        })
+        .collect();
+    Json(json!({ "channels": list }))
 }
 
 #[derive(Deserialize)]
@@ -238,6 +252,39 @@ pub async fn channel_settings_get(
         })
         .unwrap_or_else(|| json!({"show_full_lead_output": false, "lead_driven": false}));
     Json(settings)
+}
+
+pub async fn channel_settings_put(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Path(channel): axum::extract::Path<String>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    // Apply settings via RPC channel.update
+    let mut params = json!({"channel": channel});
+    if let Some(v) = body.get("show_full_lead_output") {
+        params["show_full_lead_output"] = v.clone();
+    }
+    if let Some(v) = body.get("lead_driven") {
+        params["lead_driven"] = v.clone();
+    }
+    if let Some(v) = body.get("directory") {
+        params["directory"] = v.clone();
+    }
+    let proj = state.projections.lock().await;
+    let (_response, events, _) = rpc::dispatch_request(
+        json!({"jsonrpc": "2.0", "method": "channel.update", "params": params, "id": 1}),
+        &proj,
+        &state.channels_dir,
+    );
+    drop(proj);
+    // Apply the events (channel settings changes)
+    if !events.is_empty() {
+        let mut proj = state.projections.lock().await;
+        for event in &events {
+            proj.apply(event);
+        }
+    }
+    Json(json!({"ok": true}))
 }
 
 pub async fn channel_agents_md(

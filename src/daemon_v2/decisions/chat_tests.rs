@@ -263,6 +263,134 @@ fn at_ops_routes_to_ops_channel_lead() {
 }
 
 #[test]
+fn task_reference_routes_to_assigned_agent() {
+    let mut events = running_lead_events("main");
+    events.extend(vec![
+        DomainEvent::TaskCreated {
+            id: "42".into(),
+            subject: "Fix login bug".into(),
+            channel: "main".into(),
+            blocked_by: vec![],
+            agent_type: None,
+            icon: None,
+        },
+        DomainEvent::AgentCreated {
+            id: "worker-1".into(),
+            name: "ghost-town".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("42".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "worker-1".into(),
+            pid: 99,
+            session_id: None,
+        },
+        DomainEvent::TaskAssigned {
+            task_id: "42".into(),
+            agent_id: "worker-1".into(),
+        },
+    ]);
+
+    let proj = make_projections(&events);
+    // Message references task !42 — should route to the worker assigned to it
+    let commands = route_mentions(&proj, "main", "alice", "hey @lead check !42 progress");
+
+    // Should have 2 commands: nudge lead (from @lead) + nudge worker (from !42)
+    assert_eq!(commands.len(), 2, "expected 2 nudges, got {:?}", commands);
+    let nudge_ids: Vec<&str> = commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::NudgeAgent { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        nudge_ids.contains(&"worker-1"),
+        "expected nudge for worker-1 (task !42 owner)"
+    );
+}
+
+#[test]
+fn task_reference_standalone_routes_to_agent() {
+    let events = vec![
+        DomainEvent::TaskCreated {
+            id: "7".into(),
+            subject: "Add tests".into(),
+            channel: "main".into(),
+            blocked_by: vec![],
+            agent_type: None,
+            icon: None,
+        },
+        DomainEvent::AgentCreated {
+            id: "worker-1".into(),
+            name: "swift-river".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("7".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "worker-1".into(),
+            pid: 99,
+            session_id: None,
+        },
+        DomainEvent::TaskAssigned {
+            task_id: "7".into(),
+            agent_id: "worker-1".into(),
+        },
+    ];
+
+    let proj = make_projections(&events);
+    // Standalone !7 with no @mention — should still route to the task owner
+    let commands = route_mentions(&proj, "main", "alice", "!7 looks good, ship it");
+
+    assert_eq!(
+        commands.len(),
+        1,
+        "expected 1 nudge for task ref, got {:?}",
+        commands
+    );
+    assert!(
+        matches!(&commands[0], Command::NudgeAgent { id, message }
+            if id == "worker-1" && message.contains("!7")),
+        "expected NudgeAgent for worker-1, got {:?}",
+        commands[0]
+    );
+}
+
+#[test]
+fn task_reference_no_nudge_for_unassigned_task() {
+    let events = vec![DomainEvent::TaskCreated {
+        id: "42".into(),
+        subject: "Fix login".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    }];
+
+    let proj = make_projections(&events);
+    // Task exists but has no agent assigned — no nudge
+    let commands = route_mentions(&proj, "main", "alice", "what about !42?");
+
+    assert!(
+        commands.is_empty(),
+        "unassigned task ref should produce no commands, got {:?}",
+        commands
+    );
+}
+
+#[test]
 fn no_nudge_for_stopped_agent() {
     // Agent exists but is stopped
     let events = vec![
