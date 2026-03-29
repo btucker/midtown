@@ -1,0 +1,299 @@
+//! Behavioral tests for v2-spec.md Section 1: Message Routing
+//!
+//! Each test maps to a specific SHALL requirement from the spec.
+
+use crate::daemon_v2::decisions::Command;
+use crate::daemon_v2::decisions::chat::route_message;
+use crate::daemon_v2::events::*;
+use crate::daemon_v2::projections::Projections;
+
+fn make_lead(proj: &mut Projections, name: &str, channel: &str) -> String {
+    let id = format!("lead-{name}");
+    proj.apply(&DomainEvent::AgentCreated {
+        id: id.clone(),
+        name: name.into(),
+        kind: AgentKind::Lead,
+        agent_type: "midtown-project-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some(channel.into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: id.clone(),
+        pid: 1000,
+        session_id: Some("sess-1".into()),
+    });
+    id
+}
+
+fn make_worker(proj: &mut Projections, name: &str, channel: &str, task_id: &str) -> String {
+    let id = format!("worker-{name}");
+    proj.apply(&DomainEvent::AgentCreated {
+        id: id.clone(),
+        name: name.into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some(channel.into()),
+        task_id: Some(task_id.into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: id.clone(),
+        pid: 2000,
+        session_id: Some("sess-w".into()),
+    });
+    id
+}
+
+fn make_fork(proj: &mut Projections, name: &str, channel: &str, thread_id: &str) -> String {
+    let id = format!("fork-{name}");
+    proj.apply(&DomainEvent::AgentCreated {
+        id: id.clone(),
+        name: name.into(),
+        kind: AgentKind::Fork,
+        agent_type: "midtown-channel-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some(channel.into()),
+        task_id: None,
+        bound_thread_id: Some(thread_id.into()),
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: id.clone(),
+        pid: 3000,
+        session_id: Some("sess-f".into()),
+    });
+    id
+}
+
+fn nudge_targets(commands: &[Command]) -> Vec<String> {
+    commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::NudgeAgent { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+// ── Section 1.1: Thread Routing ──────────────────────────────────────────
+
+/// Spec 1.1: WHEN a message is posted to a thread AND an agent is bound to that
+/// thread THEN the system SHALL nudge that bound agent
+#[test]
+fn thread_reply_nudges_bound_agent() {
+    let mut proj = Projections::default();
+    let lead_id = make_lead(&mut proj, "main-lead", "main");
+    let fork_id = make_fork(&mut proj, "fork-1", "main", "thread-abc");
+
+    let cmds = route_message(&proj, "main", "user", "hello", Some("thread-abc"));
+    let targets = nudge_targets(&cmds);
+
+    assert!(targets.contains(&fork_id), "bound fork should be nudged");
+    assert!(
+        !targets.contains(&lead_id),
+        "lead should NOT be nudged when fork handles the thread"
+    );
+}
+
+/// Spec 1.1: WHEN a message is posted to a thread AND no agent is bound to that
+/// thread THEN the system SHALL nudge the channel lead
+#[test]
+fn thread_reply_without_fork_nudges_lead() {
+    let mut proj = Projections::default();
+    let lead_id = make_lead(&mut proj, "main-lead", "main");
+
+    let cmds = route_message(&proj, "main", "user", "hello", Some("thread-xyz"));
+    let targets = nudge_targets(&cmds);
+
+    assert!(
+        targets.contains(&lead_id),
+        "lead should be nudged when no fork for thread"
+    );
+}
+
+/// Spec 1.1: WHEN a top-level message is posted THEN the system SHALL nudge the
+/// channel lead
+#[test]
+fn top_level_message_nudges_lead() {
+    let mut proj = Projections::default();
+    let lead_id = make_lead(&mut proj, "main-lead", "main");
+
+    let cmds = route_message(&proj, "main", "user", "hello everyone", None);
+    let targets = nudge_targets(&cmds);
+
+    assert!(
+        targets.contains(&lead_id),
+        "lead should be nudged on top-level message"
+    );
+}
+
+// ── Section 1.2: @Mentions ───────────────────────────────────────────────
+
+/// Spec 1.2: WHEN a message contains @agent-name THEN the system SHALL nudge
+/// the named agent
+#[test]
+fn at_mention_nudges_named_agent() {
+    let mut proj = Projections::default();
+    let _lead_id = make_lead(&mut proj, "main-lead", "main");
+    let worker_id = make_worker(&mut proj, "park", "main", "t1");
+
+    let cmds = route_message(&proj, "main", "user", "hey @park can you check this?", None);
+    let targets = nudge_targets(&cmds);
+
+    assert!(
+        targets.contains(&worker_id),
+        "@park should nudge the worker"
+    );
+}
+
+/// Spec 1.2: WHEN a message contains @all THEN the system SHALL nudge every
+/// agent in the channel except the sender
+#[test]
+fn at_all_nudges_all_agents_except_sender() {
+    let mut proj = Projections::default();
+    let lead_id = make_lead(&mut proj, "main-lead", "main");
+    let worker_id = make_worker(&mut proj, "park", "main", "t1");
+
+    let cmds = route_message(&proj, "main", "user", "@all heads up!", None);
+    let targets = nudge_targets(&cmds);
+
+    assert!(targets.contains(&lead_id), "@all should nudge lead");
+    assert!(targets.contains(&worker_id), "@all should nudge worker");
+}
+
+/// Spec 1.2: WHEN a message contains @lead THEN the system SHALL nudge the
+/// channel lead
+#[test]
+fn at_lead_nudges_channel_lead() {
+    let mut proj = Projections::default();
+    let lead_id = make_lead(&mut proj, "main-lead", "main");
+
+    let cmds = route_message(&proj, "main", "user", "@lead what's the status?", None);
+    let targets = nudge_targets(&cmds);
+
+    assert!(targets.contains(&lead_id), "@lead should nudge lead");
+}
+
+/// Spec 1.2: WHEN a @mention refers to an unknown agent THEN the system SHALL
+/// NOT emit a nudge
+#[test]
+fn unknown_mention_no_nudge() {
+    let mut proj = Projections::default();
+    let _lead_id = make_lead(&mut proj, "main-lead", "main");
+
+    let cmds = route_message(&proj, "main", "user", "@nonexistent hello", None);
+    let targets = nudge_targets(&cmds);
+
+    // Only the lead should be nudged (top-level message rule), not @nonexistent
+    assert_eq!(targets.len(), 1, "only lead nudged, not unknown agent");
+}
+
+/// Spec 1.2: WHEN a @mention contains trailing punctuation THEN the system SHALL
+/// strip it before lookup
+#[test]
+fn mention_with_trailing_punctuation() {
+    let mut proj = Projections::default();
+    let _lead_id = make_lead(&mut proj, "main-lead", "main");
+    let worker_id = make_worker(&mut proj, "park", "main", "t1");
+
+    let cmds = route_message(&proj, "main", "user", "@park, can you look?", None);
+    let targets = nudge_targets(&cmds);
+
+    assert!(
+        targets.contains(&worker_id),
+        "@park, (with comma) should still nudge park"
+    );
+}
+
+// ── Section 1.3: Task References ─────────────────────────────────────────
+
+/// Spec 1.3: WHEN a message contains !N THEN the system SHALL nudge the agent
+/// assigned to task N
+#[test]
+fn task_ref_nudges_assigned_agent() {
+    let mut proj = Projections::default();
+    let _lead_id = make_lead(&mut proj, "main-lead", "main");
+    let worker_id = make_worker(&mut proj, "park", "main", "42");
+
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "42".into(),
+        subject: "Fix bug".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    });
+
+    let cmds = route_message(&proj, "main", "user", "check !42 please", None);
+    let targets = nudge_targets(&cmds);
+
+    assert!(
+        targets.contains(&worker_id),
+        "!42 should nudge assigned worker"
+    );
+}
+
+/// Spec 1.3: WHEN a task reference has no assigned agent THEN the system SHALL
+/// NOT emit a nudge
+#[test]
+fn task_ref_no_assigned_agent() {
+    let mut proj = Projections::default();
+    let lead_id = make_lead(&mut proj, "main-lead", "main");
+
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "99".into(),
+        subject: "Unassigned".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    });
+
+    let cmds = route_message(&proj, "main", "user", "what about !99?", None);
+    let targets = nudge_targets(&cmds);
+
+    // Only lead nudge (top-level), no task nudge
+    assert_eq!(targets, vec![lead_id], "only lead, not unassigned task");
+}
+
+// ── Section 1.4: Nudge Invariants ────────────────────────────────────────
+
+/// Spec 1.4: WHEN the sender is the same as the nudge target THEN the system
+/// SHALL suppress the nudge
+#[test]
+fn self_nudge_suppressed() {
+    let mut proj = Projections::default();
+    let _lead_id = make_lead(&mut proj, "main-lead", "main");
+
+    // Lead posts a message — should NOT nudge itself
+    let cmds = route_message(&proj, "main", "main-lead", "status update", None);
+    let targets = nudge_targets(&cmds);
+
+    assert!(targets.is_empty(), "lead should not nudge itself");
+}
+
+/// Spec 1.4: WHEN multiple routing rules match the same agent THEN the system
+/// SHALL nudge it exactly once
+#[test]
+fn dedup_multiple_matches() {
+    let mut proj = Projections::default();
+    let lead_id = make_lead(&mut proj, "main-lead", "main");
+
+    // Message that matches both top-level (→ lead) and @lead (→ lead)
+    let cmds = route_message(&proj, "main", "user", "@lead hello @main-lead", None);
+    let targets = nudge_targets(&cmds);
+
+    let lead_count = targets.iter().filter(|t| *t == &lead_id).count();
+    assert_eq!(
+        lead_count, 1,
+        "lead should be nudged exactly once, not {lead_count}"
+    );
+}

@@ -7,6 +7,10 @@ use crate::daemon_v2::projections::Projections;
 #[cfg(test)]
 mod tests;
 
+#[path = "chat_spec_tests.rs"]
+#[cfg(test)]
+mod spec_tests;
+
 /// Route a channel message to all agents that should be nudged.
 ///
 /// Three binding-based rules, applied in order with deduplication:
