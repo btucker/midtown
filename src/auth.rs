@@ -7,32 +7,15 @@
 //! ## Storage Structure
 //!
 //! ```text
-//! ~/.midtown/
-//! ├── config.toml                    # [providers.claude].auth_profile = "user@example.com"
-//! ├── auth/
-//! │   ├── <profile>/                 # Claude profile containers
-//! │   │   └── claude/                # CLAUDE_CONFIG_DIR (set per-session)
-//! │   │       ├── .claude.json       # Auth tokens (per-profile, never shared)
-//! │   │       ├── projects -> ~/.midtown/platforms/claude/projects  # symlink
-//! │   │       ├── tasks    -> ~/.midtown/platforms/claude/tasks     # symlink
-//! │   │       └── ...                # other profile-local entries (not symlinked)
-//! │   └── providers/
-//! │       ├── codex/
-//! │       │   └── profiles/
-//! │       │       └── <profile>/     # Codex profile directories (CODEX_HOME)
-//! │       └── zai/
-//! │           └── profiles/
-//! │               └── <profile>/     # z.ai profile directories
-//! │                   ├── api_key.txt      # API key (chmod 600)
-//! │                   └── base_url.txt     # Optional base URL override
-//! └── platforms/
-//!     └── claude/                    # Shared Claude state (explicit symlink targets only)
-//!         ├── plans/
-//!         ├── plugins/
-//!         ├── projects/
-//!         ├── settings.json
-//!         ├── tasks/
-//!         └── teams/
+//! ~/.midtown/platforms/
+//! ├── claude/
+//! │   ├── shared/          # settings, agents, plugins, projects, tasks, teams
+//! │   ├── <profile>/       # .claude.json (token) + symlinks to ../shared/
+//! │   └── current          # active profile name
+//! └── codex/
+//!     ├── shared/
+//!     ├── <profile>/
+//!     └── current
 //! ```
 //!
 //! ## Environment Variables
@@ -196,17 +179,19 @@ pub fn validate_profile_name(name: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Get the base auth directory.
+/// Get the legacy auth directory.
 ///
-/// Returns `~/.midtown/auth/`.
+/// Returns `~/.midtown/auth/`. Used only for legacy paths (Codex/z.ai profiles
+/// not yet migrated to the platforms/ layout) and migration code.
 pub fn auth_base_dir() -> PathBuf {
     midtown_base_dir().join("auth")
 }
 
-/// Root directory for provider-scoped auth data.
+/// Root directory for provider-scoped auth data (legacy).
 ///
-/// For Claude this returns the legacy root (`~/.midtown/auth`) to preserve the
-/// existing storage layout.
+/// For Claude this returns the legacy root (`~/.midtown/auth`).
+/// Codex/z.ai still use this path; Claude profiles have moved to
+/// `~/.midtown/platforms/claude/`.
 fn provider_root(provider: AuthProvider) -> PathBuf {
     match provider {
         AuthProvider::Claude => auth_base_dir(),
@@ -835,7 +820,7 @@ fn set_current_profile_in_config(name: &str) -> std::io::Result<()> {
 
 /// List all available profiles.
 ///
-/// Returns a list of profile names (directory names under `~/.midtown/auth/`).
+/// Returns a list of profile names (directory names under `~/.midtown/platforms/claude/`).
 pub fn list_profiles() -> std::io::Result<Vec<String>> {
     list_profiles_for(AuthProvider::Claude)
 }
