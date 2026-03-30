@@ -221,3 +221,57 @@ fn resumed_updates_pid_and_restores_running() {
     // session_id unchanged
     assert_eq!(agent.session_id, Some("sess-abc".into()));
 }
+
+#[test]
+fn channel_lead_returns_running_lead_not_stopped_one() {
+    let mut idx = AgentIndex::default();
+
+    // First lead created and stopped
+    idx.apply(&DomainEvent::AgentCreated {
+        id: "old-lead".into(),
+        name: "midtown".into(),
+        kind: AgentKind::Lead,
+        agent_type: "midtown-project-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("midtown".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    idx.apply(&DomainEvent::AgentStarted {
+        id: "old-lead".into(),
+        pid: 100,
+        session_id: None,
+    });
+    idx.apply(&DomainEvent::AgentStopped {
+        id: "old-lead".into(),
+        reason: "crashed".into(),
+    });
+
+    // Second lead created and running
+    idx.apply(&DomainEvent::AgentCreated {
+        id: "new-lead".into(),
+        name: "midtown".into(),
+        kind: AgentKind::Lead,
+        agent_type: "midtown-project-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("midtown".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    idx.apply(&DomainEvent::AgentStarted {
+        id: "new-lead".into(),
+        pid: 200,
+        session_id: None,
+    });
+
+    let lead = idx.channel_lead("midtown").unwrap();
+    assert_eq!(
+        lead.id, "new-lead",
+        "channel_lead should return the running lead, not the stopped one; got {}",
+        lead.id
+    );
+}

@@ -152,12 +152,25 @@ impl AgentIndex {
     }
 
     /// Find the lead agent for a channel (regardless of running state).
+    /// Find the lead agent for a channel. Prefers a running lead; falls back
+    /// to the most recently created stopped lead (for resume-on-nudge).
     pub fn channel_lead(&self, channel: &str) -> Option<&Agent> {
-        self.by_channel
-            .get(channel)?
+        let agents = self.by_channel.get(channel)?;
+        // Prefer a running lead
+        if let Some(agent) = agents
             .iter()
+            .filter(|id| self.running.contains(*id))
             .filter_map(|id| self.by_id.get(id))
-            .find(|a| a.kind == AgentKind::Lead)
+            .find(|a| a.kind == AgentKind::Lead && !a.gc)
+        {
+            return Some(agent);
+        }
+        // Fall back to the last (most recent) non-GC'd lead
+        agents
+            .iter()
+            .rev()
+            .filter_map(|id| self.by_id.get(id))
+            .find(|a| a.kind == AgentKind::Lead && !a.gc)
     }
 
     pub fn idle_workers(&self) -> Vec<AgentId> {
