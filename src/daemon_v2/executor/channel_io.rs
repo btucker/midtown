@@ -6,19 +6,22 @@ use crate::channel::{Channel, ChannelInfo};
 use crate::message::{Message, MessageType};
 
 /// Post a user message to a channel.
+/// Post a user message to a channel. Returns the message ID.
 pub fn post_message(
     channels_dir: &Path,
     channel: &str,
     sender: &str,
     content: &str,
     thread_id: Option<&str>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let ch = Channel::new(channels_dir, channel).map_err(|e| e.to_string())?;
     let mut msg = Message::for_channel(channel, sender, content, MessageType::Text);
     if let Some(tid) = thread_id {
         msg.thread_parent_id = Some(tid.to_string());
     }
-    ch.send(&msg).map_err(|e| e.to_string())
+    let id = msg.id.clone();
+    ch.send(&msg).map_err(|e| e.to_string())?;
+    Ok(id)
 }
 
 /// Post a system message to a channel.

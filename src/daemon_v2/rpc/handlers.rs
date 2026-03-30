@@ -429,14 +429,11 @@ pub fn handle_channel_post(
 
     let thread_id = params.get("thread_id").and_then(|v| v.as_str());
 
-    channel_io::post_message(channels_dir, channel, sender, content, thread_id).map_err(|e| {
-        RpcError {
+    let msg_id = channel_io::post_message(channels_dir, channel, sender, content, thread_id)
+        .map_err(|e| RpcError {
             code: -32000,
             message: e,
-        }
-    })?;
-
-    let msg_id = uuid::Uuid::new_v4().to_string();
+        })?;
     let events = vec![DomainEvent::MessagePosted {
         id: msg_id.clone(),
         channel: channel.to_string(),

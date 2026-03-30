@@ -401,6 +401,78 @@ fn test_daemon_v2_channel_post_and_read() {
     );
 }
 
+/// Spec 5.3: thread replies excluded from default read, included with thread_parent_id
+#[test]
+#[ignore]
+fn test_daemon_v2_thread_post_and_read() {
+    let harness = V2Harness::start();
+
+    // Post a top-level message
+    let resp = harness.rpc_call(
+        "channel.post",
+        Some(serde_json::json!({
+            "channel": "thread-test",
+            "sender": "alice",
+            "content": "top-level message",
+        })),
+    );
+    assert!(resp["error"].is_null(), "post error: {resp}");
+    let parent_id = resp["result"]["id"]
+        .as_str()
+        .expect("should have message id")
+        .to_string();
+
+    // Post a thread reply
+    let resp = harness.rpc_call(
+        "channel.post",
+        Some(serde_json::json!({
+            "channel": "thread-test",
+            "sender": "bob",
+            "content": "thread reply",
+            "thread_id": parent_id,
+        })),
+    );
+    assert!(resp["error"].is_null(), "thread post error: {resp}");
+
+    // Default read should exclude the thread reply
+    let resp = harness.rpc_call(
+        "channel.read",
+        Some(serde_json::json!({
+            "channel": "thread-test",
+        })),
+    );
+    assert!(resp["error"].is_null(), "read error: {resp}");
+    let messages = resp["result"].as_array().expect("should be array");
+    // All messages in default read should have no thread_parent_id
+    let has_thread_reply = messages
+        .iter()
+        .any(|m| m.get("thread_parent_id").is_some_and(|v| !v.is_null()));
+    assert!(
+        !has_thread_reply,
+        "default read should exclude thread replies, got {messages:?}"
+    );
+
+    // Thread-specific read should include parent + reply
+    let resp = harness.rpc_call(
+        "channel.read",
+        Some(serde_json::json!({
+            "channel": "thread-test",
+            "thread_parent_id": parent_id,
+        })),
+    );
+    assert!(resp["error"].is_null(), "thread read error: {resp}");
+    let thread_msgs = resp["result"].as_array().expect("should be array");
+    assert!(
+        thread_msgs.len() >= 2,
+        "thread read should include parent + reply (at least 2), got {thread_msgs:?}"
+    );
+    // Verify the reply is in there
+    assert!(
+        thread_msgs.iter().any(|m| m["message"] == "thread reply"),
+        "thread read should include the reply, got {thread_msgs:?}"
+    );
+}
+
 /// Spec 5.2: lead_driven channels skip auto-dispatch
 /// Spec 2.1: lead_driven tasks not auto-dispatched
 #[test]
