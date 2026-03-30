@@ -369,6 +369,8 @@ pub fn spawn_background_resume(
     agent_id: String,
     agent: crate::daemon_v2::projections::agents::Agent,
     paths: ProjectPaths,
+    channels_dir: std::path::PathBuf,
+    event_tx: tokio::sync::broadcast::Sender<DomainEvent>,
     result_tx: tokio::sync::mpsc::Sender<ExecutorResult>,
     lifecycle_key: Option<String>,
 ) {
@@ -395,8 +397,15 @@ pub fn spawn_background_resume(
         headless_config.resume_session_id = Some(session_id);
 
         match HeadlessSession::spawn(&headless_config).await {
-            Ok(session) => {
+            Ok(mut session) => {
                 let pid = session.pid().unwrap_or(0);
+                drain_session_output(
+                    &mut session,
+                    &agent.name,
+                    agent.channel.as_deref(),
+                    &channels_dir,
+                    &event_tx,
+                );
                 let _ = result_tx
                     .send(ExecutorResult::SessionReady {
                         id: agent_id.clone(),

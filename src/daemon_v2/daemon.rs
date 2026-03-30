@@ -508,8 +508,12 @@ impl DaemonV2 {
         let chat_monitor_enabled = std::env::var("MIDTOWN_CHAT_MONITOR")
             .map(|v| v != "0")
             .unwrap_or(true);
+        // Chat monitor shutdown sender — must live as long as the daemon event loop.
+        // Dropping it closes the watch channel, causing monitors to busy-spin.
+        let _chat_shutdown_tx;
         if chat_monitor_enabled {
-            let (_chat_shutdown_tx, chat_shutdown_rx) = tokio::sync::watch::channel(false);
+            let (tx, chat_shutdown_rx) = tokio::sync::watch::channel(false);
+            _chat_shutdown_tx = Some(tx);
             crate::daemon_v2::chat_monitor::start_monitors(
                 &self.config.channels_dir,
                 &self.config.default_channel,
@@ -519,6 +523,8 @@ impl DaemonV2 {
             )
             .await;
             tracing::info!("chat monitor started");
+        } else {
+            _chat_shutdown_tx = None;
         }
 
         // Queue pending resumes for processing during the first event loop iterations.
@@ -889,6 +895,8 @@ impl DaemonV2 {
                         id,
                         agent,
                         self.paths.clone(),
+                        self.config.channels_dir.clone(),
+                        self.event_tx.clone(),
                         self.result_tx.clone(),
                         None, // id matches — no alias needed
                     );
@@ -955,6 +963,8 @@ impl DaemonV2 {
                         id.to_string(),
                         agent,
                         self.paths.clone(),
+                        self.config.channels_dir.clone(),
+                        self.event_tx.clone(),
                         self.result_tx.clone(),
                         None, // id matches — no alias needed
                     );
