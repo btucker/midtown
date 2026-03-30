@@ -84,7 +84,7 @@ pub fn check_agent_definitions_outdated(agents_dir: &Path) -> Vec<&'static Agent
         .collect()
 }
 
-/// Return the shared Claude Code agents directory (`~/.midtown/platforms/claude/agents/`).
+/// Return the shared Claude Code agents directory (`~/.midtown/platforms/claude/shared/agents/`).
 ///
 /// Agent definitions are installed here once. Each auth profile symlinks its own
 /// `agents/` entry to this shared directory, so definitions are visible to all
@@ -95,6 +95,7 @@ pub fn claude_agents_dir() -> PathBuf {
         .join(".midtown")
         .join("platforms")
         .join("claude")
+        .join("shared")
         .join("agents")
 }
 
