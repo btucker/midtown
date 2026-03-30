@@ -1172,24 +1172,38 @@ export async function fetchAllAuthProfiles(): Promise<Record<string, AuthProfile
 // Start an OAuth login flow for a profile.
 // The backend spawns the CLI which opens the default browser for OAuth.
 // Returns { ok: true } on success, or { ok: false, error: string } on failure.
-export async function startAuthLogin(email: string, provider = "claude"): Promise<{ ok: boolean; error?: string }> {
+export async function startAuthLogin(
+	email: string,
+	provider = "claude",
+): Promise<{ ok: boolean; url?: string; error?: string }> {
 	try {
 		const res = await fetch(`${getApiBase()}/auth/login`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ email, provider }),
 		});
-		if (res.ok) return { ok: true };
-		let errorMsg = `Login failed (${res.status})`;
-		try {
-			const body = await res.json();
-			if (body.error) errorMsg = body.error;
-		} catch (_) {
-			/* response not JSON */
+		const body = await res.json();
+		if (body.ok && body.url) {
+			return { ok: true, url: body.url };
 		}
-		return { ok: false, error: errorMsg };
+		return { ok: false, error: body.error || `Login failed (${res.status})` };
 	} catch (err) {
 		console.error("Failed to start auth login:", err);
+		return { ok: false, error: "Network error" };
+	}
+}
+
+export async function submitAuthCode(code: string): Promise<{ ok: boolean; error?: string }> {
+	try {
+		const res = await fetch(`${getApiBase()}/auth/login/code`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ code }),
+		});
+		const body = await res.json();
+		return { ok: body.ok, error: body.error };
+	} catch (err) {
+		console.error("Failed to submit auth code:", err);
 		return { ok: false, error: "Network error" };
 	}
 }
