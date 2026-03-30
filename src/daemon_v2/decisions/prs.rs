@@ -9,6 +9,7 @@ mod spec_tests;
 use crate::daemon_v2::decisions::{Command, SpawnConfig};
 use crate::daemon_v2::events::{AgentKind, Provider, TaskStatus};
 use crate::daemon_v2::projections::Projections;
+use crate::daemon_v2::projections::cooldowns::CooldownCategory;
 
 /// For each merged PR that has a linked in-progress task, return a CompleteTask command.
 pub fn handle_merged_prs(proj: &Projections) -> Vec<Command> {
@@ -60,13 +61,19 @@ pub fn spawn_reviewers(proj: &Projections) -> Vec<Command> {
         let restart_count = count_stopped_reviewers(proj, *pr_num);
 
         if restart_count >= MAX_REVIEWER_RESTARTS {
-            // Escalate to ops — don't spawn another reviewer
-            commands.push(Command::PostSystem {
-                channel: "ops".into(),
-                content: format!(
-                    "Reviewer for PR #{pr_num} failed {restart_count} times. Manual review needed."
-                ),
-            });
+            // Escalate to ops — but only once per PR (cooldown prevents repeat spam)
+            let cooldown_key = format!("reviewer-escalation-{pr_num}");
+            if !proj
+                .cooldowns
+                .is_active(CooldownCategory::TaskNudge, &cooldown_key)
+            {
+                commands.push(Command::PostSystem {
+                    channel: "ops".into(),
+                    content: format!(
+                        "Reviewer for PR #{pr_num} failed {restart_count} times. Manual review needed."
+                    ),
+                });
+            }
             continue;
         }
 

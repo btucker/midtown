@@ -60,6 +60,7 @@ pub fn create_router(state: Arc<WebState>) -> Router {
         .route("/api/auth/login", post(routes::auth_login))
         .route("/api/upload", post(routes::upload))
         .route("/api/uploads/{filename}", get(routes::upload_get))
+        .route("/api/workflow", get(routes::workflow))
         .route("/api/push/vapid-key", get(routes::push_vapid_key))
         .route("/api/push/subscribe", post(routes::push_subscribe))
         .route("/api/push/unsubscribe", post(routes::push_unsubscribe))

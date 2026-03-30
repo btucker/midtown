@@ -258,6 +258,38 @@ fn spawn_reviewers_escalates_after_max_restarts() {
 }
 
 #[test]
+fn escalation_not_repeated_when_cooldown_active() {
+    use crate::daemon_v2::projections::cooldowns::CooldownCategory;
+
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::PrOpened {
+        number: 42,
+        branch: "fix".into(),
+        author: "dev".into(),
+    });
+    proj.apply(&DomainEvent::PrReviewRequested { number: 42 });
+
+    for i in 0..MAX_REVIEWER_RESTARTS {
+        add_reviewer_attempt(&mut proj, 42, i);
+    }
+
+    // Simulate that we already escalated — record the cooldown
+    proj.cooldowns
+        .record(CooldownCategory::TaskNudge, "reviewer-escalation-42".into());
+
+    let commands = spawn_reviewers(&proj);
+
+    // Should NOT post another escalation (cooldown active)
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, Command::PostSystem { .. })),
+        "escalation should not repeat when cooldown active, got {:?}",
+        commands
+    );
+}
+
+#[test]
 fn spawn_reviewers_respawns_within_limit() {
     let mut proj = Projections::default();
     proj.apply(&DomainEvent::PrOpened {

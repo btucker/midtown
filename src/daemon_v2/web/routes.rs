@@ -3,6 +3,7 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::WebState;
@@ -176,6 +177,17 @@ pub async fn usage() -> Json<Value> {
 
 pub async fn questions() -> Json<Value> {
     Json(json!([]))
+}
+
+pub async fn workflow(Query(params): Query<HashMap<String, String>>) -> Json<Value> {
+    let _channel = params.get("channel").cloned().unwrap_or_default();
+    // Workflow system is not yet ported to v2 — return empty state
+    Json(json!({
+        "assigned": false,
+        "workflow": null,
+        "lead_driven": false,
+        "state": {}
+    }))
 }
 
 pub async fn auth_profiles(Query(params): Query<AuthProfilesParams>) -> Json<Value> {
