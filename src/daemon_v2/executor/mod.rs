@@ -566,9 +566,9 @@ fn drain_session_output(
             use crate::headless::StreamEvent;
 
             let mut pending_events: Vec<StreamEvent> = Vec::new();
-            // Flush on turn completion (Result event) for low latency,
-            // with a 5-second fallback timer for long-running turns.
-            let mut flush_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            // Spec 4.1: flush on turn completion (Result event) for low latency,
+            // with a 2-second fallback timer for long-running turns.
+            let mut flush_interval = tokio::time::interval(std::time::Duration::from_secs(2));
             flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             loop {
