@@ -276,18 +276,23 @@ fn has_legacy_claude_profile(profile_name: &str) -> bool {
 
 /// Migrate a legacy Claude profile directory to the new structure.
 ///
-/// If a profile exists at legacy paths (`~/.midtown/auth/<profile>/` or
-/// `~/.midtown/auth/<profile>/claude/`), this migrates it to:
-/// `~/.midtown/auth/<profile>/claude/`.
+/// Detects profiles at old locations:
+/// - `~/.midtown/auth/<profile>/claude/` (intermediate layout)
+/// - `~/.midtown/auth/<profile>/` (oldest layout)
 ///
-/// Migration behavior:
-/// 1. Move `.claude.json` to `~/.midtown/auth/<profile>/claude/.claude.json`
-/// 2. Move shared symlink entries to `~/.midtown/platforms/claude/`
-/// 3. Keep all other entries profile-local in `~/.midtown/auth/<profile>/claude/`
+/// Moves real files to `~/.midtown/platforms/claude/<profile>/`.
+/// Symlinks are skipped (they pointed to the old shared location and will be
+/// recreated by `setup_claude_profile_symlinks()` with correct relative targets).
 ///
 /// Returns `true` if migration was performed, `false` if already migrated.
 fn migrate_legacy_claude_profile(profile_name: &str) -> std::io::Result<bool> {
     let new_profile_dir = profile_dir_for(AuthProvider::Claude, profile_name);
+
+    // If the new structure already exists, no migration needed
+    if new_profile_dir.exists() {
+        return Ok(false);
+    }
+
     let legacy_container = legacy_claude_profile_container(profile_name);
     let legacy_nested = legacy_container.join("claude");
 
@@ -297,20 +302,12 @@ fn migrate_legacy_claude_profile(profile_name: &str) -> std::io::Result<bool> {
         legacy_container.clone()
     };
 
-    // If the new structure already exists, no migration needed
-    if new_profile_dir.exists() {
-        return Ok(false);
-    }
-
     // If the old directory doesn't exist, nothing to migrate
     if !old_profile_dir.exists() {
         return Ok(false);
     }
 
-    let shared_dir = shared_provider_storage_dir(AuthProvider::Claude)
-        .expect("Claude provider should have shared storage");
-
-    // Create target directories
+    // Create new profile directory
     std::fs::create_dir_all(&new_profile_dir).map_err(|e| {
         std::io::Error::new(
             e.kind(),
@@ -321,18 +318,9 @@ fn migrate_legacy_claude_profile(profile_name: &str) -> std::io::Result<bool> {
             ),
         )
     })?;
-    std::fs::create_dir_all(&shared_dir).map_err(|e| {
-        std::io::Error::new(
-            e.kind(),
-            format!(
-                "Failed to create shared dir {}: {}",
-                shared_dir.display(),
-                e
-            ),
-        )
-    })?;
 
-    // Scan the old profile directory
+    // Move real files from old location to new; skip symlinks (they will be
+    // recreated by setup_claude_profile_symlinks with correct relative targets).
     for entry in std::fs::read_dir(&old_profile_dir).map_err(|e| {
         std::io::Error::new(
             e.kind(),
@@ -357,61 +345,34 @@ fn migrate_legacy_claude_profile(profile_name: &str) -> std::io::Result<bool> {
         }
 
         let old_path = entry.path();
+        let metadata = old_path.symlink_metadata()?;
 
-        let destination = if name_str == ".claude.json" {
-            new_profile_dir.join(&name)
-        } else if is_claude_shared_symlink_entry(name_str.as_ref()) {
-            // Explicitly-shared Claude entries go to provider shared storage.
-            shared_dir.join(&name)
-        } else {
-            // Everything else stays profile-local.
-            new_profile_dir.join(&name)
-        };
+        // Skip symlinks — they pointed to the old shared location and will be
+        // recreated correctly after migration.
+        if metadata.file_type().is_symlink() {
+            let _ = std::fs::remove_file(&old_path);
+            continue;
+        }
 
-        if name_str == ".claude.json" {
-            // Verify the new profile dir exists
-            let dir_meta = std::fs::metadata(&new_profile_dir);
-            if !new_profile_dir.exists() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!(
-                        "New profile dir doesn't exist: {} (metadata: {:?})",
-                        new_profile_dir.display(),
-                        dir_meta
-                    ),
-                ));
-            }
-            // Use copy + remove instead of rename since the destination dir already exists
-            std::fs::copy(&old_path, &destination).map_err(|e| {
-                std::io::Error::new(
-                    e.kind(),
-                    format!(
-                        "Failed to copy {} to {} (dir exists: {}): {}",
-                        old_path.display(),
-                        destination.display(),
-                        new_profile_dir.exists(),
-                        e
-                    ),
-                )
-            })?;
-            std::fs::remove_file(&old_path)?;
-        } else if !destination.exists() {
+        let destination = new_profile_dir.join(&name);
+
+        if !destination.exists() {
             if old_path.is_dir() {
-                // For directories, use recursive copy + remove since rename might cross filesystems
                 copy_dir_recursive(&old_path, &destination)?;
                 std::fs::remove_dir_all(&old_path)?;
             } else {
-                std::fs::rename(&old_path, &destination).map_err(|e| {
+                std::fs::copy(&old_path, &destination).map_err(|e| {
                     std::io::Error::new(
                         e.kind(),
                         format!(
-                            "Failed to rename {} to {}: {}",
+                            "Failed to copy {} to {}: {}",
                             old_path.display(),
                             destination.display(),
                             e
                         ),
                     )
                 })?;
+                std::fs::remove_file(&old_path)?;
             }
         } else {
             // Destination already exists — merge directories (missing entries

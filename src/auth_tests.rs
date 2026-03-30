@@ -514,3 +514,60 @@ fn symlinks_point_to_shared_sibling() {
         );
     });
 }
+
+#[test]
+fn migrates_legacy_auth_profile_to_platforms() {
+    with_isolated_midtown_base_dir(|| {
+        // Create legacy layout at ~/.midtown/auth/<profile>/claude/
+        let legacy_dir = midtown_base_dir()
+            .join("auth")
+            .join("user@example.com")
+            .join("claude");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(legacy_dir.join(".claude.json"), r#"{"token":"abc"}"#).unwrap();
+
+        // Run ensure (triggers migration)
+        ensure_profile_dir_for(AuthProvider::Claude, "user@example.com").unwrap();
+
+        // New location should exist with the token
+        let new_dir = profile_dir_for(AuthProvider::Claude, "user@example.com");
+        assert!(new_dir.exists(), "new profile dir should exist");
+        assert!(
+            new_dir.join(".claude.json").exists(),
+            ".claude.json should be migrated"
+        );
+
+        // Old location should be gone
+        assert!(
+            !legacy_dir.join(".claude.json").exists(),
+            "old .claude.json should be removed"
+        );
+    });
+}
+
+#[test]
+fn migrates_legacy_flat_auth_profile_to_platforms() {
+    with_isolated_midtown_base_dir(|| {
+        // Create legacy layout at ~/.midtown/auth/<profile>/ (oldest format, no claude/ subdir)
+        let legacy_dir = midtown_base_dir().join("auth").join("flat-user");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(legacy_dir.join(".claude.json"), r#"{"token":"flat"}"#).unwrap();
+
+        // Run ensure (triggers migration)
+        ensure_profile_dir_for(AuthProvider::Claude, "flat-user").unwrap();
+
+        // New location should exist with the token
+        let new_dir = profile_dir_for(AuthProvider::Claude, "flat-user");
+        assert!(new_dir.exists(), "new profile dir should exist");
+        assert!(
+            new_dir.join(".claude.json").exists(),
+            ".claude.json should be migrated"
+        );
+
+        // Old location should be gone
+        assert!(
+            !legacy_dir.join(".claude.json").exists(),
+            "old .claude.json should be removed"
+        );
+    });
+}
