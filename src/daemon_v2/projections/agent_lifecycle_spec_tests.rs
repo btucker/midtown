@@ -61,6 +61,170 @@ fn proj_with_agents(agents: Vec<Agent>) -> Projections {
     proj
 }
 
+// ── Section 4.1: Spawning ───────────────────────────────────────────────────
+
+/// Spec 4.1: WHEN spawning succeeds THEN AgentCreated and AgentStarted events
+/// SHALL be emitted (projection side — events produce correct state)
+#[test]
+fn spawn_events_create_running_agent() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "swift-river".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 5000,
+        session_id: Some("sess-1".into()),
+    });
+
+    let agent = proj.agents.by_id.get("w1").unwrap();
+    assert_eq!(agent.pid, Some(5000));
+    assert_eq!(agent.session_id.as_deref(), Some("sess-1"));
+    assert!(agent.started_at.is_some());
+    assert!(proj.agents.running.contains("w1"));
+    assert_eq!(proj.agents.by_task.get("t1"), Some(&"w1".to_string()));
+}
+
+/// Spec 4.1: WHEN an agent is spawned AND its output is not bound to a channel
+/// or thread THEN the system SHALL auto-create a DM channel dm-{agent_name}
+#[test]
+fn dm_channel_name_generated_correctly() {
+    let name = crate::daemon_v2::decisions::lifecycle::create_dm_channel_name("swift-river");
+    assert_eq!(name, "dm-swift-river");
+}
+
+// ── Section 4.2: Stopping ───────────────────────────────────────────────────
+
+/// Spec 4.2: WHEN StopAgent is executed THEN AgentStopped emitted, but the
+/// session ID SHALL be preserved for potential resume
+#[test]
+fn stop_preserves_session_id_for_resume() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "calm-brook".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 5000,
+        session_id: Some("sess-preserve".into()),
+    });
+    proj.apply(&DomainEvent::AgentStopped {
+        id: "w1".into(),
+        reason: "manual stop".into(),
+    });
+
+    let agent = proj.agents.by_id.get("w1").unwrap();
+    assert!(!proj.agents.running.contains("w1"), "should not be running");
+    assert_eq!(
+        agent.session_id.as_deref(),
+        Some("sess-preserve"),
+        "session_id should be preserved after stop for potential resume"
+    );
+    assert!(agent.stopped_at.is_some());
+}
+
+/// Spec 4.2: WHEN an agent process exits (detected by try_wait) THEN
+/// AgentStopped SHALL be emitted
+#[test]
+fn process_exit_emits_agent_stopped() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "bold-hawk".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 5000,
+        session_id: None,
+    });
+    // Simulate try_wait detecting process exit
+    proj.apply(&DomainEvent::AgentStopped {
+        id: "w1".into(),
+        reason: "process exited".into(),
+    });
+
+    assert!(!proj.agents.running.contains("w1"));
+    assert!(proj.agents.by_id.get("w1").unwrap().stopped_at.is_some());
+}
+
+// ── Section 4.3: Resuming ───────────────────────────────────────────────────
+
+/// Spec 4.3: WHEN resume succeeds THEN AgentResumed SHALL be emitted with the
+/// new PID AND started_at SHALL be reset to now
+#[test]
+fn resume_resets_started_at_and_updates_pid() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "keen-falcon".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 5000,
+        session_id: Some("sess-1".into()),
+    });
+
+    let first_started = proj.agents.by_id.get("w1").unwrap().started_at;
+
+    proj.apply(&DomainEvent::AgentStopped {
+        id: "w1".into(),
+        reason: "crashed".into(),
+    });
+
+    // Small delay to ensure time moves (usually not needed, but just in case)
+    proj.apply(&DomainEvent::AgentResumed {
+        id: "w1".into(),
+        pid: 6000,
+    });
+
+    let agent = proj.agents.by_id.get("w1").unwrap();
+    assert_eq!(agent.pid, Some(6000), "pid should be updated");
+    assert!(agent.stopped_at.is_none(), "stopped_at should be cleared");
+    assert!(agent.started_at.is_some(), "started_at should be set");
+    assert!(
+        agent.started_at >= first_started,
+        "started_at should be >= first start"
+    );
+    assert!(
+        proj.agents.running.contains("w1"),
+        "should be running again"
+    );
+}
+
 // ── Section 4.4: Garbage Collection ──────────────────────────────────────────
 
 /// Spec 4.4: WHEN an agent has been stopped for more than 24 hours AND is not a

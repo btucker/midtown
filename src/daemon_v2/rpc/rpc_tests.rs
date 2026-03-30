@@ -504,6 +504,89 @@ fn v1_task_done_completes_task() {
     }
 }
 
+/// Spec 10.1: task.done accepts numeric id
+#[test]
+fn task_done_accepts_numeric_id() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "task.done",
+        "id": 120,
+        "params": {"id": 42}
+    });
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        DomainEvent::TaskCompleted { task_id } => {
+            assert_eq!(task_id, "42", "numeric id should be converted to string");
+        }
+        other => panic!("expected TaskCompleted, got {:?}", other),
+    }
+}
+
+/// Spec 10.1: channel.post generates routing commands
+#[test]
+fn channel_post_generates_routing_commands() {
+    let mut proj = Projections::default();
+    // Create a lead so routing can nudge it
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "lead-1".into(),
+        name: "main-lead".into(),
+        kind: AgentKind::Lead,
+        agent_type: "midtown-project-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "lead-1".into(),
+        pid: 1000,
+        session_id: Some("sess-lead".into()),
+    });
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.post",
+        "id": 121,
+        "params": {
+            "channel": "main",
+            "sender": "user",
+            "content": "hello lead"
+        }
+    });
+    let (response, events, commands) = dispatch_request(request, &proj, dir.path());
+    assert!(response["error"].is_null());
+    // Should produce a MessagePosted event
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, DomainEvent::MessagePosted { .. })),
+        "channel.post should produce MessagePosted event, got {:?}",
+        events
+    );
+    // Should produce routing commands (nudge the lead)
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, crate::daemon_v2::decisions::Command::NudgeAgent { .. })),
+        "channel.post should generate NudgeAgent routing command, got {:?}",
+        commands
+    );
+}
+
+// Spec 10.2: ping → "pong" (tested in v1_ping_returns_pong)
+// Spec 10.2: version → name, version, daemon: "v2" (tested in v1_version_returns_info)
+// Spec 10.2: snapshot → aliases to status (tested in v1_snapshot_aliases_to_status)
+// Spec 10.4: unknown method → -32601 (tested in dispatch_unknown_method_returns_error)
+// Spec 10.4: missing params → -32602 (tested in task_create_missing_params_returns_error, etc.)
+// Spec 10.4: resource not found → -32000/-32001 (tested in task_update_returns_error_for_missing_task, etc.)
+
 #[test]
 fn v1_prs_status_returns_prs() {
     let proj = Projections::default();
