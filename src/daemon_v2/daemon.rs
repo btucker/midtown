@@ -488,28 +488,35 @@ impl DaemonV2 {
             tracing::info!("chat monitor started");
         }
 
-        // Resume agents that were running before the daemon restarted.
-        for cmd in std::mem::take(&mut self.pending_resumes) {
-            let events = {
-                let proj = self.projections.lock().await;
-                executor::execute(
-                    cmd,
-                    &mut self.sessions,
-                    &self.paths,
-                    &proj,
-                    &self.config.channels_dir,
-                    &self.event_tx,
-                )
-                .await
-            };
-            self.apply_events(&events).await;
-        }
+        // Queue pending resumes for processing during the first event loop iterations.
+        // Don't block startup — the daemon needs to accept RPC connections immediately.
+        let mut pending_resumes = std::mem::take(&mut self.pending_resumes);
 
         loop {
-            let deadline = self
-                .scheduler
-                .next_deadline(Instant::now())
-                .unwrap_or(Duration::from_secs(30));
+            // Process one pending resume per loop iteration (non-blocking startup)
+            if let Some(cmd) = pending_resumes.pop() {
+                let events = {
+                    let proj = self.projections.lock().await;
+                    executor::execute(
+                        cmd,
+                        &mut self.sessions,
+                        &self.paths,
+                        &proj,
+                        &self.config.channels_dir,
+                        &self.event_tx,
+                    )
+                    .await
+                };
+                self.apply_events(&events).await;
+            }
+            // Use zero deadline while processing pending resumes to avoid sleeping
+            let deadline = if !pending_resumes.is_empty() {
+                Duration::ZERO
+            } else {
+                self.scheduler
+                    .next_deadline(Instant::now())
+                    .unwrap_or(Duration::from_secs(30))
+            };
 
             let sleep = tokio::time::sleep(deadline);
             tokio::pin!(sleep);
