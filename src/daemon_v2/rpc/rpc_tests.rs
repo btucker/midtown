@@ -1462,3 +1462,32 @@ fn channel_rename_via_rpc() {
     assert!(!old_dir.exists(), "old channel dir should be gone");
     assert!(new_dir.exists(), "new channel dir should exist");
 }
+
+// ── oneshot.execute ─────────────────────────────────────────────────────
+
+/// Section 15: oneshot.execute spawns a one-off worker
+#[test]
+fn oneshot_execute_spawns_worker() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "oneshot.execute",
+        "id": 900,
+        "params": { "prompt": "echo hello" }
+    });
+    let (response, _, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null(), "oneshot error: {response}");
+    assert!(response["result"]["ok"] == true);
+    assert!(response["result"]["agent"].is_string());
+
+    assert_eq!(commands.len(), 1);
+    match &commands[0] {
+        crate::daemon_v2::decisions::Command::SpawnAgent(cfg) => {
+            assert_eq!(cfg.kind, AgentKind::Worker);
+            assert_eq!(cfg.initial_prompt.as_deref(), Some("echo hello"));
+            assert!(cfg.task_id.is_none(), "oneshot has no task");
+            assert!(cfg.channel.is_none(), "oneshot gets DM channel");
+        }
+        other => panic!("expected SpawnAgent, got {:?}", other),
+    }
+}

@@ -914,6 +914,54 @@ pub fn handle_channel_unarchive(
     Ok(json!({"ok": true}))
 }
 
+/// Handle `oneshot.execute` — spawn a one-off worker with a prompt.
+/// Returns the agent name so the caller can track it.
+pub fn handle_oneshot_execute(
+    params: Option<&Value>,
+    proj: &Projections,
+) -> Result<(Value, Vec<Command>), RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+
+    let prompt = params
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: prompt"))?;
+
+    let agent_type = params
+        .get("agent_type")
+        .or_else(|| params.get("agent"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("midtown-code-author")
+        .to_string();
+
+    let model = params
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let existing_names: std::collections::HashSet<String> =
+        proj.agents.by_name.keys().cloned().collect();
+    let name = crate::daemon_v2::naming::generate_name(&existing_names);
+
+    let command = Command::SpawnAgent(crate::daemon_v2::decisions::SpawnConfig {
+        name: name.clone(),
+        kind: crate::daemon_v2::events::AgentKind::Worker,
+        agent_type,
+        provider: crate::daemon_v2::events::Provider::ClaudeCode,
+        channel: None, // oneshot agents get a DM channel
+        task_id: None,
+        initial_prompt: Some(prompt.to_string()),
+        working_dir: None,
+        model,
+        bound_thread_id: None,
+        fork_from_session: None,
+        icon: None,
+        color: None,
+    });
+
+    Ok((json!({"ok": true, "agent": name}), vec![command]))
+}
+
 /// Handle `channel.rename` — rename a channel directory.
 pub fn handle_channel_rename(
     params: Option<&Value>,

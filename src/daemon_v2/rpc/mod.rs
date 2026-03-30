@@ -146,6 +146,14 @@ pub fn dispatch_request(
             }
             Err(err) => (err.to_json(&id), vec![], vec![]),
         },
+        // oneshot.execute — spawn a one-off agent with a prompt
+        "oneshot.execute" => match handlers::handle_oneshot_execute(params, proj) {
+            Ok((value, commands)) => {
+                let response = json!({ "jsonrpc": "2.0", "result": value, "id": id });
+                (response, vec![], commands)
+            }
+            Err(err) => (err.to_json(&id), vec![], vec![]),
+        },
         "task.prompt" => match handlers::handle_task_prompt(params, proj) {
             Ok(commands) => {
                 let response = json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id });
