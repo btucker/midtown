@@ -320,6 +320,39 @@ fn at_channel_name_nudges_that_channels_lead() {
     );
 }
 
+/// Spec 1.2: WHEN a message contains @channel-name AND the channel exists in
+/// ChannelIndex but has no agents yet THEN the system SHALL demand-spawn a lead
+#[test]
+fn at_channel_name_spawns_lead_for_known_channel_without_agents() {
+    let mut proj = Projections::default();
+    let _main_lead = make_lead(&mut proj, "main-lead", "main");
+
+    // Register "docs" in ChannelIndex without any agents
+    proj.apply(&DomainEvent::MessagePosted {
+        id: "m1".into(),
+        channel: "docs".into(),
+        sender: "system".into(),
+        content: "channel created".into(),
+        thread_id: None,
+    });
+
+    // @docs should trigger a lead spawn (channel exists but has no agents)
+    let cmds = route_message(&proj, "main", "user", "hey @docs check this", None);
+
+    let spawn_leads: Vec<_> = cmds
+        .iter()
+        .filter(|c| {
+            matches!(c, Command::SpawnAgent(cfg) if cfg.kind == AgentKind::Lead && cfg.channel.as_deref() == Some("docs"))
+        })
+        .collect();
+    assert_eq!(
+        spawn_leads.len(),
+        1,
+        "@docs should spawn a lead for docs channel, got {:?}",
+        cmds
+    );
+}
+
 /// Spec 5.1: WHEN a user messages a channel AND no lead exists THEN the
 /// system SHALL spawn one
 #[test]

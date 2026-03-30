@@ -198,7 +198,10 @@ fn route_refs(
                 nudged,
                 commands,
             );
-        } else if target == channel || proj.agents.by_channel.contains_key(target) {
+        } else if target == channel
+            || proj.agents.by_channel.contains_key(target)
+            || proj.channels.channels.contains_key(target)
+        {
             // @channel-name → nudge THAT channel's lead (may be cross-channel)
             let target_channel = target;
             nudge_channel_lead(
