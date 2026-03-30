@@ -169,6 +169,8 @@ impl Drop for V2Harness {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+/// Spec 8: daemon starts, recovers from event store, responds to status
+/// Spec 10.1: status returns agent/task/PR counts
 #[test]
 #[ignore]
 fn test_daemon_v2_starts_and_responds_to_status() {
@@ -193,6 +195,7 @@ fn test_daemon_v2_starts_and_responds_to_status() {
     );
 }
 
+/// Spec 10.1: agent.list returns agents with id and name
 #[test]
 #[ignore]
 fn test_daemon_v2_agent_list_empty() {
@@ -213,6 +216,7 @@ fn test_daemon_v2_agent_list_empty() {
     }
 }
 
+/// Spec 10.4: unknown method returns error -32601
 #[test]
 #[ignore]
 fn test_daemon_v2_unknown_method_returns_error() {
@@ -231,6 +235,7 @@ fn test_daemon_v2_unknown_method_returns_error() {
     );
 }
 
+/// Spec 10.1: shutdown gracefully stops the daemon
 #[test]
 #[ignore]
 fn test_daemon_v2_shutdown() {
@@ -262,6 +267,8 @@ fn test_daemon_v2_shutdown() {
     assert!(exited, "daemon process should exit after shutdown RPC");
 }
 
+/// Spec 10.1: task.create emits TaskCreated, task appears in status
+/// Spec 14: midtown task create accepts the same parameters
 #[test]
 #[ignore]
 fn test_daemon_v2_task_create_shows_in_status() {
@@ -289,6 +296,8 @@ fn test_daemon_v2_task_create_shows_in_status() {
     assert!(!tasks.is_empty(), "task should exist in status: {status}");
 }
 
+/// Spec 2.1: pending tasks spawn workers
+/// Spec 4.1: spawning succeeds → AgentCreated + AgentStarted emitted
 #[test]
 #[ignore]
 fn test_daemon_v2_spawns_agent_for_task() {
@@ -324,6 +333,7 @@ fn test_daemon_v2_spawns_agent_for_task() {
     );
 }
 
+/// Spec 3.1: polling fails → log error and return no events (non-crash)
 #[test]
 #[ignore]
 fn test_daemon_v2_pr_polling_runs_without_crash() {
@@ -346,6 +356,8 @@ fn test_daemon_v2_pr_polling_runs_without_crash() {
     eprintln!("PR poll test complete. Open PRs detected: {open_prs}");
 }
 
+/// Spec 5.3: channel.post writes to JSONL, channel.read returns messages
+/// Spec 14: midtown channel post writes to channel JSONL files
 #[test]
 #[ignore]
 fn test_daemon_v2_channel_post_and_read() {
@@ -389,6 +401,8 @@ fn test_daemon_v2_channel_post_and_read() {
     );
 }
 
+/// Spec 5.2: lead_driven channels skip auto-dispatch
+/// Spec 2.1: lead_driven tasks not auto-dispatched
 #[test]
 #[ignore]
 fn test_daemon_v2_lead_driven_skips_auto_dispatch() {
@@ -431,6 +445,8 @@ fn test_daemon_v2_lead_driven_skips_auto_dispatch() {
     );
 }
 
+/// Spec 4.5: session.fork spawns a fork bound to a thread
+/// Spec 10.1: session.fork returns spawn command or existing fork
 #[test]
 #[ignore]
 fn test_daemon_v2_session_fork_spawns_agent() {
@@ -517,6 +533,8 @@ fn test_daemon_v2_session_fork_spawns_agent() {
     );
 }
 
+/// Spec 14: v1 RPC methods handled via compatibility aliases
+/// Spec 10.2: ping → pong, version → info, snapshot → status
 #[test]
 #[ignore]
 fn test_daemon_v2_v1_rpc_compatibility() {
@@ -580,6 +598,8 @@ fn test_daemon_v2_v1_rpc_compatibility() {
     assert_eq!(resp["result"]["ok"], true);
 }
 
+/// Spec 1.4: nudge running agent delivers message
+/// Spec 10.2: coworker.nudge sends NudgeAgent command
 #[test]
 #[ignore]
 fn test_daemon_v2_nudge_running_agent() {
@@ -629,6 +649,8 @@ fn test_daemon_v2_nudge_running_agent() {
     eprintln!("DM channel {dm_channel} read result: {resp}");
 }
 
+/// Spec 1.4: nudge stopped agent with session_id → resume before deliver
+/// Spec 4.3: ResumeAgent spawns with resume_session_id
 #[test]
 #[ignore]
 fn test_daemon_v2_nudge_stopped_agent_triggers_resume() {
