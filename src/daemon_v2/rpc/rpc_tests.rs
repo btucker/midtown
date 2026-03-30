@@ -84,6 +84,8 @@ fn agent_list_filters_running_only() {
     assert_eq!(agents[0]["name"], "ghost-town");
 }
 
+/// Spec 14: WHEN midtown status is called THEN the system SHALL return status
+/// via the same RPC protocol
 #[test]
 fn dispatch_routes_status() {
     let proj = projections_with_agents();
@@ -113,6 +115,8 @@ fn dispatch_unknown_method_returns_error() {
     assert!(events.is_empty());
 }
 
+/// Spec 14: WHEN midtown task create is called THEN the system SHALL accept
+/// the same parameters
 #[test]
 fn task_create_returns_events() {
     let proj = Projections::default();
@@ -378,8 +382,10 @@ fn session_fork_missing_params_returns_error() {
     assert!(commands.is_empty());
 }
 
-// ── v1 compatibility alias tests ─────────────────────────────────────────
+// ── Spec 14: v1 compatibility alias tests ───────────────────────────────
 
+/// Spec 14: WHEN v1 RPC methods are called THEN the system SHALL handle them
+/// via compatibility aliases
 #[test]
 fn v1_ping_returns_pong() {
     let proj = Projections::default();
@@ -390,6 +396,7 @@ fn v1_ping_returns_pong() {
     assert!(events.is_empty());
 }
 
+/// Spec 14: v1 version alias
 #[test]
 fn v1_version_returns_info() {
     let proj = Projections::default();
