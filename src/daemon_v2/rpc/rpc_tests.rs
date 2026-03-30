@@ -1234,6 +1234,105 @@ fn channel_read_with_limit() {
     assert_eq!(messages[1]["message"], "msg 5");
 }
 
+// ── task.prompt / task.handoff ───────────────────────────────────────────
+
+/// Section 15: task.prompt sends a nudge to the task's assigned agent
+#[test]
+fn task_prompt_nudges_assigned_agent() {
+    let proj = projections_with_agents();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "task.prompt",
+        "id": 700,
+        "params": { "id": "task-1", "message": "please check the tests" }
+    });
+    let (response, _, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(commands.len(), 1);
+    assert!(
+        matches!(
+            &commands[0],
+            crate::daemon_v2::decisions::Command::NudgeAgent { id, message }
+            if id == "a1" && message.contains("please check the tests")
+        ),
+        "should nudge assigned agent, got {:?}",
+        commands[0]
+    );
+}
+
+/// Section 15: task.prompt returns error when no agent assigned
+#[test]
+fn task_prompt_no_agent_returns_error() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "orphan".into(),
+        subject: "No agent".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "task.prompt",
+        "id": 701,
+        "params": { "id": "orphan", "message": "hello?" }
+    });
+    let (response, _, _) = dispatch_request(request, &proj, test_channels_dir());
+    assert_eq!(response["error"]["code"], -32000);
+}
+
+/// Section 15: task.handoff stops current agent and spawns replacement
+#[test]
+fn task_handoff_stops_and_respawns() {
+    let mut proj = projections_with_agents();
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "task-1".into(),
+        subject: "Fix the thing".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "task.handoff",
+        "id": 710,
+        "params": { "id": "task-1", "message": "continue this work" }
+    });
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(
+        response["error"].is_null(),
+        "task.handoff error: {response}"
+    );
+
+    // Should reset the task
+    assert!(events.iter().any(|e| matches!(
+        e,
+        DomainEvent::TaskReset { task_id, .. } if task_id == "task-1"
+    )));
+
+    // Should stop the old agent and spawn a new one
+    assert!(
+        commands.iter().any(
+            |c| matches!(c, crate::daemon_v2::decisions::Command::StopAgent { id, .. } if id == "a1")
+        ),
+        "should stop old agent"
+    );
+    assert!(
+        commands.iter().any(
+            |c| matches!(c, crate::daemon_v2::decisions::Command::SpawnAgent(cfg) if cfg.task_id.as_deref() == Some("task-1"))
+        ),
+        "should spawn new agent for same task"
+    );
+}
+
 // ── channel.create / channel.archive / channel.unarchive ────────────────
 
 /// Spec 5.2 + 10.1: channel.create creates a new channel via RPC

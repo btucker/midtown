@@ -913,3 +913,107 @@ pub fn handle_channel_unarchive(
 
     Ok(json!({"ok": true}))
 }
+
+/// Handle `task.prompt` — send a message to the agent working on a task.
+pub fn handle_task_prompt(
+    params: Option<&Value>,
+    proj: &Projections,
+) -> Result<Vec<Command>, RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+
+    let task_id = params
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: id"))?;
+
+    let message = params
+        .get("message")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: message"))?;
+
+    let agent_id = proj.agents.by_task.get(task_id).ok_or_else(|| RpcError {
+        code: -32000,
+        message: format!("no agent assigned to task {task_id}"),
+    })?;
+
+    let from = params
+        .get("from")
+        .and_then(|v| v.as_str())
+        .unwrap_or("user");
+
+    Ok(vec![Command::NudgeAgent {
+        id: agent_id.clone(),
+        message: format!("[from {from}] {message}"),
+    }])
+}
+
+/// Handle `task.handoff` — reassign a task from one agent to another.
+pub fn handle_task_handoff(
+    params: Option<&Value>,
+    proj: &Projections,
+) -> Result<(Vec<DomainEvent>, Vec<Command>), RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+
+    let task_id = params
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: id"))?;
+
+    let task = proj.work.tasks.get(task_id).ok_or_else(|| RpcError {
+        code: -32000,
+        message: format!("task not found: {task_id}"),
+    })?;
+
+    let mut commands = Vec::new();
+
+    if let Some(agent_id) = proj.agents.by_task.get(task_id) {
+        commands.push(Command::StopAgent {
+            id: agent_id.clone(),
+            reason: "task handoff".into(),
+        });
+    }
+
+    let agent_type = params
+        .get("agent_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or(task.agent_type.as_deref().unwrap_or("midtown-code-author"))
+        .to_string();
+
+    let prompt = params
+        .get("message")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| task.subject.clone());
+
+    let existing_names: std::collections::HashSet<String> =
+        proj.agents.by_name.keys().cloned().collect();
+    let name = crate::daemon_v2::naming::generate_name(&existing_names);
+
+    commands.push(Command::SpawnAgent(
+        crate::daemon_v2::decisions::SpawnConfig {
+            name,
+            kind: crate::daemon_v2::events::AgentKind::Worker,
+            agent_type,
+            provider: crate::daemon_v2::events::Provider::ClaudeCode,
+            channel: Some(task.channel.clone()),
+            task_id: Some(task_id.to_string()),
+            initial_prompt: Some(prompt),
+            working_dir: None,
+            model: params
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            bound_thread_id: None,
+            fork_from_session: None,
+            icon: task.icon.clone(),
+            color: task.color.clone(),
+        },
+    ));
+
+    let events = vec![DomainEvent::TaskReset {
+        task_id: task_id.to_string(),
+        reason: "task handoff".into(),
+    }];
+
+    Ok((events, commands))
+}
