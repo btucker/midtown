@@ -154,14 +154,50 @@ async fn handle_client_message(text: &str, state: &WebState, socket: &mut WebSoc
                 .get("channel")
                 .and_then(|v| v.as_str())
                 .unwrap_or("midtown");
+            let fork_message = msg.get("message").and_then(|v| v.as_str());
             tracing::info!(%thread_parent_id, %channel, "fork_thread via WS");
-            // Send back thread_ownership event
+
+            // Dispatch through session.fork RPC to spawn or find existing fork
+            let rpc_request = json!({
+                "jsonrpc": "2.0",
+                "method": "session.fork",
+                "params": {
+                    "thread_parent_id": thread_parent_id,
+                    "channel": channel,
+                    "message": fork_message,
+                },
+                "id": 1,
+            });
+
+            let (response, _events, commands) = {
+                let proj = state.projections.lock().await;
+                crate::daemon_v2::rpc::dispatch_request(rpc_request, &proj, &state.channels_dir)
+            };
+
+            // Send spawn commands to daemon
+            for cmd in commands {
+                if let Err(e) = state.command_tx.send(cmd).await {
+                    tracing::warn!(%e, "failed to send fork command");
+                }
+            }
+
+            let has_fork = response
+                .get("result")
+                .and_then(|r| r.get("existing"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+                || response
+                    .get("result")
+                    .and_then(|r| r.get("forking"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
             let ownership = json!({
                 "type": "thread_ownership",
                 "data": {
                     "thread_parent_id": thread_parent_id,
                     "channel": channel,
-                    "has_dedicated_session": false,
+                    "has_dedicated_session": has_fork,
                 }
             });
             let _ = socket
@@ -210,15 +246,39 @@ async fn handle_client_message(text: &str, state: &WebState, socket: &mut WebSoc
                 .and_then(|v| v.as_str())
                 .unwrap_or("midtown");
             tracing::info!(%channel, "cancel_lead via WS");
-            // TODO: find and stop the lead for this channel
+            // Find and stop the lead for this channel
+            let proj = state.projections.lock().await;
+            if let Some(lead) = proj.agents.channel_lead(channel) {
+                let stop_cmd = crate::daemon_v2::decisions::Command::StopAgent {
+                    id: lead.id.clone(),
+                    reason: "user cancelled via web UI".into(),
+                };
+                drop(proj);
+                if let Err(e) = state.command_tx.send(stop_cmd).await {
+                    tracing::warn!(%e, %channel, "failed to send cancel_lead command");
+                }
+            }
         }
         "nudge" => {
             let target = msg.get("target").and_then(|v| v.as_str()).unwrap_or("");
             let message = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
             tracing::info!(%target, "nudge via WS");
             if !target.is_empty() && !message.is_empty() {
+                // Post to DM channel
                 let dm = format!("dm-{target}");
                 let _ = channel_io::post_message(&state.channels_dir, &dm, "user", message, None);
+                // Also send NudgeAgent command to actually deliver the message
+                let proj = state.projections.lock().await;
+                if let Some(agent_id) = proj.agents.by_name.get(target) {
+                    let cmd = crate::daemon_v2::decisions::Command::NudgeAgent {
+                        id: agent_id.clone(),
+                        message: message.to_string(),
+                    };
+                    drop(proj);
+                    if let Err(e) = state.command_tx.send(cmd).await {
+                        tracing::warn!(%e, %target, "failed to send nudge command");
+                    }
+                }
             }
         }
         _ => {
