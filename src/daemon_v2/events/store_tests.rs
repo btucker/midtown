@@ -31,6 +31,7 @@ fn sample_task_created() -> DomainEvent {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     }
 }
 

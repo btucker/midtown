@@ -84,8 +84,9 @@ fn route_refs(
     nudged: &mut HashSet<String>,
     commands: &mut Vec<Command>,
 ) {
-    // !N task references → nudge the assigned agent
+    // !N task references → nudge the assigned agent AND all descendant task agents
     for task_id in extract_task_refs(content) {
+        // Nudge the directly referenced task's agent
         if let Some(agent_id) = proj.agents.by_task.get(&task_id)
             && let Some(agent) = proj.agents.by_id.get(agent_id)
         {
@@ -96,6 +97,20 @@ fn route_refs(
                 nudged,
                 commands,
             );
+        }
+        // Spec 1.3: also nudge agents assigned to all descendant tasks
+        for descendant_id in proj.work.descendants_of(&task_id) {
+            if let Some(agent_id) = proj.agents.by_task.get(&descendant_id)
+                && let Some(agent) = proj.agents.by_id.get(agent_id)
+            {
+                nudge(
+                    agent,
+                    sender,
+                    &format!("!{task_id} reference from {sender}: {content}"),
+                    nudged,
+                    commands,
+                );
+            }
         }
     }
 

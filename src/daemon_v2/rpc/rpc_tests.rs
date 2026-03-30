@@ -552,6 +552,7 @@ fn projections_with_tasks_and_prs() -> Projections {
         blocked_by: vec![],
         agent_type: Some("midtown-code-author".into()),
         icon: None,
+        parent: None,
     });
     proj.apply(&DomainEvent::PrOpened {
         number: 42,

@@ -37,6 +37,7 @@ fn respawn_dead_agent_with_task() {
             blocked_by: vec![],
             agent_type: None,
             icon: None,
+            parent: None,
         },
         DomainEvent::TaskAssigned {
             task_id: "task-1".into(),
@@ -88,6 +89,7 @@ fn no_respawn_for_completed_task() {
             blocked_by: vec![],
             agent_type: None,
             icon: None,
+            parent: None,
         },
         DomainEvent::TaskAssigned {
             task_id: "task-1".into(),
@@ -216,6 +218,7 @@ fn check_idle_workers_ignores_worker_with_task() {
             blocked_by: vec![],
             agent_type: None,
             icon: None,
+            parent: None,
         },
         DomainEvent::TaskAssigned {
             task_id: "task-42".into(),

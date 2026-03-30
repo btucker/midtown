@@ -74,8 +74,10 @@ fn stopped_agent_with_session_resolves_to_resume() {
     );
 }
 
+/// Spec 1.4: WHEN nudge target is stopped AND has no session ID THEN the system
+/// SHALL spawn a new agent with the same configuration and deliver the nudge
 #[test]
-fn stopped_agent_without_session_resolves_to_drop() {
+fn stopped_agent_without_session_resolves_to_respawn() {
     let events = vec![
         DomainEvent::AgentCreated {
             id: "a1".into(),
@@ -84,7 +86,7 @@ fn stopped_agent_without_session_resolves_to_drop() {
             agent_type: "midtown-code-author".into(),
             provider: Provider::ClaudeCode,
             channel: Some("main".into()),
-            task_id: None,
+            task_id: Some("t1".into()),
             bound_thread_id: None,
             icon: None,
             color: None,
@@ -103,8 +105,8 @@ fn stopped_agent_without_session_resolves_to_drop() {
 
     let action = resolve_nudge_action("a1", &proj);
     assert!(
-        matches!(action, NudgeAction::Drop),
-        "stopped agent without session_id should resolve to Drop, got {:?}",
+        matches!(action, NudgeAction::RespawnAndDeliver { .. }),
+        "stopped agent without session_id should resolve to RespawnAndDeliver, got {:?}",
         action
     );
 }

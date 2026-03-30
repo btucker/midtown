@@ -28,6 +28,7 @@ fn make_stopped_worker(id: &str, name: &str, hours_ago: i64) -> Agent {
         stopped_at: Some(Utc::now() - Duration::hours(hours_ago)),
         icon: None,
         color: None,
+        gc: false,
     }
 }
 
@@ -47,6 +48,7 @@ fn make_stopped_lead(id: &str, name: &str, hours_ago: i64) -> Agent {
         stopped_at: Some(Utc::now() - Duration::hours(hours_ago)),
         icon: None,
         color: None,
+        gc: false,
     }
 }
 
@@ -105,8 +107,8 @@ fn gc_does_not_collect_leads() {
     );
 }
 
-/// Spec 4.4: WHEN an agent is garbage-collected THEN it SHALL be removed from all
-/// indexes (by_id, by_name, by_task, by_channel, by_thread)
+/// Spec 4.4: WHEN an agent is garbage-collected THEN it SHALL be marked as GC'd,
+/// excluded from routing indexes, but record preserved in by_id
 #[test]
 fn gc_event_removes_agent_from_all_indexes() {
     let mut idx = AgentIndex::default();
@@ -148,7 +150,14 @@ fn gc_event_removes_agent_from_all_indexes() {
     // Apply GC event
     idx.apply(&DomainEvent::AgentGarbageCollected { id: "w1".into() });
 
-    assert!(!idx.by_id.contains_key("w1"), "by_id should not contain w1");
+    // Record preserved but marked as GC'd (spec 6.1)
+    assert!(
+        idx.by_id.contains_key("w1"),
+        "by_id should preserve GC'd record"
+    );
+    assert!(idx.by_id.get("w1").unwrap().gc, "gc flag should be true");
+
+    // Excluded from all routing indexes
     assert!(
         !idx.by_name.contains_key("storm-peak"),
         "by_name should not contain storm-peak"

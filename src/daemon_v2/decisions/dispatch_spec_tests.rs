@@ -38,6 +38,7 @@ fn make_task(proj: &mut Projections, id: &str, channel: &str) {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
 }
 
@@ -69,6 +70,7 @@ fn spawns_workers_for_available_slots() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t-running".into(),
@@ -125,6 +127,7 @@ fn uses_default_agent_type_when_none_specified() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
 
     let commands = dispatch_pending_tasks(&proj, 3);
@@ -151,6 +154,7 @@ fn uses_specified_agent_type() {
         blocked_by: vec![],
         agent_type: Some("midtown-code-reviewer".into()),
         icon: None,
+        parent: None,
     });
 
     let commands = dispatch_pending_tasks(&proj, 3);
@@ -182,6 +186,7 @@ fn does_not_dispatch_lead_driven_channel_tasks() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
 
     let commands = dispatch_pending_tasks(&proj, 5);
@@ -451,6 +456,7 @@ fn blocked_task_not_dispatched_until_blockers_complete() {
         blocked_by: vec!["t1".into()],
         agent_type: None,
         icon: None,
+        parent: None,
     });
 
     let commands = dispatch_pending_tasks(&proj, 5);
@@ -486,6 +492,7 @@ fn task_dispatched_after_blocker_unblocked() {
         blocked_by: vec!["t1".into()],
         agent_type: None,
         icon: None,
+        parent: None,
     });
 
     // Complete t1 and unblock t2

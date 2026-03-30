@@ -50,6 +50,57 @@ fn list_channels_shows_created_channels() {
     assert!(names.contains(&"beta"), "missing beta: {names:?}");
 }
 
+/// Spec 5.3: WHEN a channel's JSONL file exceeds 10MB THEN the system SHALL
+/// roll to a new file, and reading SHALL operate across all files
+#[test]
+fn jsonl_rolling_at_10mb() {
+    let dir = tempfile::TempDir::new().unwrap();
+
+    // Write enough data to exceed 10MB
+    // Each message is ~100 bytes of JSON, so we need ~100K messages
+    // For speed, create one large message to exceed the threshold
+    let big_content = "x".repeat(5 * 1024 * 1024); // 5MB per message
+
+    // First message — under threshold
+    post_message(dir.path(), "big-chan", "alice", &big_content, None).unwrap();
+
+    // Check that current.jsonl exists
+    let history_dir = dir.path().join("channels").join("big-chan").join("history");
+    assert!(
+        history_dir.join("current.jsonl").exists(),
+        "current.jsonl should exist after first write"
+    );
+
+    // Second message — pushes past 10MB, triggers roll
+    post_message(dir.path(), "big-chan", "bob", &big_content, None).unwrap();
+
+    // Third message — written to new current.jsonl
+    post_message(dir.path(), "big-chan", "carol", "small msg", None).unwrap();
+
+    // Read should return ALL messages across all files
+    let msgs = read_messages(dir.path(), "big-chan", None).unwrap();
+    assert_eq!(
+        msgs.len(),
+        3,
+        "all 3 messages should be readable across rolled files, got {}",
+        msgs.len()
+    );
+
+    // Verify we have an archive file
+    let archive_files: Vec<_> = std::fs::read_dir(&history_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            name.ends_with(".jsonl") && name != "current.jsonl"
+        })
+        .collect();
+    assert!(
+        !archive_files.is_empty(),
+        "should have at least one archive file after rolling"
+    );
+}
+
 /// Spec 5.3: WHEN messages are read from a channel THEN thread replies SHALL be
 /// excluded UNLESS the read request specifies a thread_parent_id
 #[test]

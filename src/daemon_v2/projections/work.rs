@@ -18,6 +18,7 @@ pub struct Task {
     pub blocked_by: Vec<TaskId>,
     pub agent_type: Option<String>,
     pub icon: Option<String>,
+    pub parent: Option<TaskId>,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
 }
@@ -43,6 +44,8 @@ pub struct WorkIndex {
     pub open_prs: Vec<u64>,
     pub needing_review: Vec<u64>,
     pub blocked: HashMap<TaskId, Vec<TaskId>>,
+    /// Parent → children mapping for task hierarchy (spec 1.3)
+    pub children: HashMap<TaskId, Vec<TaskId>>,
 }
 
 impl WorkIndex {
@@ -55,6 +58,7 @@ impl WorkIndex {
                 blocked_by,
                 agent_type,
                 icon,
+                parent,
             } => {
                 let task = Task {
                     id: id.clone(),
@@ -65,6 +69,7 @@ impl WorkIndex {
                     blocked_by: blocked_by.clone(),
                     agent_type: agent_type.clone(),
                     icon: icon.clone(),
+                    parent: parent.clone(),
                     created_at: Utc::now(),
                     completed_at: None,
                 };
@@ -72,6 +77,12 @@ impl WorkIndex {
                 self.pending_tasks.push(id.clone());
                 if !blocked_by.is_empty() {
                     self.blocked.insert(id.clone(), blocked_by.clone());
+                }
+                if let Some(parent_id) = parent {
+                    self.children
+                        .entry(parent_id.clone())
+                        .or_default()
+                        .push(id.clone());
                 }
             }
             DomainEvent::TaskAssigned { task_id, .. } => {
@@ -168,6 +179,21 @@ impl WorkIndex {
 
     pub fn task_for_pr(&self, pr: u64) -> Option<(&TaskId, &Task)> {
         self.tasks.iter().find(|(_, t)| t.pr_number == Some(pr))
+    }
+
+    /// Return all descendant task IDs (children, grandchildren, etc.) of a given task.
+    pub fn descendants_of(&self, task_id: &str) -> Vec<TaskId> {
+        let mut result = Vec::new();
+        let mut stack: Vec<&str> = vec![task_id];
+        while let Some(id) = stack.pop() {
+            if let Some(kids) = self.children.get(id) {
+                for kid in kids {
+                    result.push(kid.clone());
+                    stack.push(kid);
+                }
+            }
+        }
+        result
     }
 
     pub fn pending_unblocked(&self) -> Vec<&TaskId> {

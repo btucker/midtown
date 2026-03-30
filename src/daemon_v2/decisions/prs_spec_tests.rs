@@ -4,7 +4,8 @@
 
 use crate::daemon_v2::decisions::Command;
 use crate::daemon_v2::decisions::prs::{
-    handle_merged_prs, nudge_rebase_after_merge, spawn_reviewers, suspend_authors_with_prs,
+    handle_merged_prs, nudge_rebase_after_merge, resume_dead_reviewers, spawn_reviewers,
+    suspend_authors_with_prs,
 };
 use crate::daemon_v2::events::*;
 use crate::daemon_v2::projections::Projections;
@@ -17,6 +18,7 @@ fn make_worker_with_task(proj: &mut Projections, agent_id: &str, task_id: &str) 
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: agent_id.into(),
@@ -192,6 +194,7 @@ fn merged_pr_completes_linked_in_progress_task() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -233,6 +236,7 @@ fn merged_pr_does_not_re_complete_already_completed_task() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -330,6 +334,7 @@ fn merged_pr_nudges_other_workers_to_rebase() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t2".into(),
@@ -436,6 +441,82 @@ fn worker_not_stopped_for_closed_pr() {
     assert!(
         commands.is_empty(),
         "expected no stop for closed PR, got {:?}",
+        commands
+    );
+}
+
+// ── Section 3.2: Dead Reviewer Resume ──────────────────────────────────────
+
+/// Spec 3.2: WHEN a reviewer dies AND has a session ID THEN the system SHALL
+/// resume it
+#[test]
+fn dead_reviewer_with_session_id_is_resumed() {
+    let mut proj = Projections::default();
+
+    // Create a reviewer agent that has been stopped but has a session_id
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "rev-1".into(),
+        name: "alice-reviewer".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-reviewer".into(),
+        provider: Provider::ClaudeCode,
+        channel: None,
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "rev-1".into(),
+        pid: 5000,
+        session_id: Some("sess-rev".into()),
+    });
+    proj.apply(&DomainEvent::AgentStopped {
+        id: "rev-1".into(),
+        reason: "process exited".into(),
+    });
+
+    let commands = resume_dead_reviewers(&proj);
+    assert_eq!(commands.len(), 1);
+    assert!(
+        matches!(&commands[0], Command::ResumeAgent { id } if id == "rev-1"),
+        "dead reviewer with session_id should be resumed, got {:?}",
+        commands
+    );
+}
+
+/// Spec 3.2: WHEN a reviewer dies AND has no session ID THEN spawn_reviewers
+/// handles replacement (not resume_dead_reviewers)
+#[test]
+fn dead_reviewer_without_session_not_resumed() {
+    let mut proj = Projections::default();
+
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "rev-2".into(),
+        name: "bob-reviewer".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-reviewer".into(),
+        provider: Provider::ClaudeCode,
+        channel: None,
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "rev-2".into(),
+        pid: 5001,
+        session_id: None, // No session_id
+    });
+    proj.apply(&DomainEvent::AgentStopped {
+        id: "rev-2".into(),
+        reason: "process exited".into(),
+    });
+
+    let commands = resume_dead_reviewers(&proj);
+    assert!(
+        commands.is_empty(),
+        "reviewer without session_id should NOT be resumed, got {:?}",
         commands
     );
 }

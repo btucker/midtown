@@ -205,6 +205,11 @@ pub fn handle_task_create(params: Option<&Value>) -> Result<Vec<DomainEvent>, Rp
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    let parent = params
+        .get("parent")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
     Ok(vec![DomainEvent::TaskCreated {
         id,
         subject,
@@ -212,6 +217,7 @@ pub fn handle_task_create(params: Option<&Value>) -> Result<Vec<DomainEvent>, Rp
         blocked_by,
         agent_type,
         icon,
+        parent,
     }])
 }
 

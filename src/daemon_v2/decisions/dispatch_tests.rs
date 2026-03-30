@@ -18,6 +18,7 @@ fn dispatches_pending_task_when_no_agents() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     }];
 
     let proj = make_projections(&events);
@@ -49,6 +50,7 @@ fn respects_max_in_progress_limit() {
             blocked_by: vec![],
             agent_type: None,
             icon: None,
+            parent: None,
         },
         DomainEvent::TaskCreated {
             id: "task-2".into(),
@@ -57,6 +59,7 @@ fn respects_max_in_progress_limit() {
             blocked_by: vec![],
             agent_type: None,
             icon: None,
+            parent: None,
         },
         DomainEvent::TaskCreated {
             id: "task-3".into(),
@@ -65,6 +68,7 @@ fn respects_max_in_progress_limit() {
             blocked_by: vec![],
             agent_type: None,
             icon: None,
+            parent: None,
         },
         DomainEvent::TaskCreated {
             id: "task-4".into(),
@@ -73,6 +77,7 @@ fn respects_max_in_progress_limit() {
             blocked_by: vec![],
             agent_type: None,
             icon: None,
+            parent: None,
         },
         DomainEvent::TaskAssigned {
             task_id: "task-1".into(),
@@ -109,6 +114,7 @@ fn skips_blocked_tasks() {
             blocked_by: vec![],
             agent_type: None,
             icon: None,
+            parent: None,
         },
         DomainEvent::TaskCreated {
             id: "task-2".into(),
@@ -117,6 +123,7 @@ fn skips_blocked_tasks() {
             blocked_by: vec!["task-1".into()],
             agent_type: None,
             icon: None,
+            parent: None,
         },
     ];
 
@@ -166,6 +173,7 @@ fn stops_agents_for_completed_tasks() {
             blocked_by: vec![],
             agent_type: None,
             icon: None,
+            parent: None,
         },
         DomainEvent::TaskAssigned {
             task_id: "task-1".into(),
@@ -205,6 +213,7 @@ fn skips_lead_driven_channel_tasks() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
 
     let commands = dispatch_pending_tasks(&proj, 5);
@@ -223,6 +232,7 @@ fn check_duplicate_workers_stops_older_of_two() {
             blocked_by: vec![],
             agent_type: None,
             icon: None,
+            parent: None,
         },
         // First (older) worker
         DomainEvent::AgentCreated {
@@ -293,6 +303,7 @@ fn check_duplicate_workers_no_op_when_no_duplicates() {
             blocked_by: vec![],
             agent_type: None,
             icon: None,
+            parent: None,
         },
         DomainEvent::AgentCreated {
             id: "a1".into(),

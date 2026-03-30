@@ -85,6 +85,15 @@ pub enum DomainEvent {
     AgentGarbageCollected {
         id: AgentId,
     },
+    AgentSpawnFailed {
+        name: String,
+        agent_type: String,
+        reason: String,
+    },
+    AgentStopFailed {
+        id: AgentId,
+        reason: String,
+    },
 
     // Tasks
     TaskCreated {
@@ -94,6 +103,7 @@ pub enum DomainEvent {
         blocked_by: Vec<TaskId>,
         agent_type: Option<String>,
         icon: Option<String>,
+        parent: Option<TaskId>,
     },
     TaskAssigned {
         task_id: TaskId,

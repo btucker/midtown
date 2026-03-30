@@ -26,6 +26,7 @@ fn make_agent(
         stopped_at,
         icon: None,
         color: None,
+        gc: false,
     }
 }
 
@@ -173,8 +174,11 @@ fn agent_index_gc_removes_from_all_indexes() {
     // Apply GC event
     idx.apply(&DomainEvent::AgentGarbageCollected { id: "w1".into() });
 
-    // Verify it's removed from all indexes
-    assert!(!idx.by_id.contains_key("w1"), "by_id should be empty");
+    // Spec 6.1: record preserved in by_id but marked gc=true
+    assert!(idx.by_id.contains_key("w1"), "by_id should preserve record");
+    assert!(idx.by_id.get("w1").unwrap().gc, "gc flag should be true");
+
+    // Removed from all routing indexes
     assert!(
         !idx.by_name.contains_key("ghost-town"),
         "by_name should be empty"

@@ -38,6 +38,7 @@ fn sample_task_event() -> DomainEvent {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     }
 }
 
@@ -93,6 +94,7 @@ fn each_append_increments_sequence_by_one() {
                 blocked_by: vec![],
                 agent_type: None,
                 icon: None,
+                parent: None,
             })
             .unwrap();
         assert_eq!(

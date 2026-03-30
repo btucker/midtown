@@ -305,6 +305,7 @@ fn at_all_nudges_leads_and_in_progress_task_agents() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     events.push(DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -317,6 +318,7 @@ fn at_all_nudges_leads_and_in_progress_task_agents() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     events.push(DomainEvent::TaskAssigned {
         task_id: "t2".into(),
@@ -349,6 +351,7 @@ fn at_all_excludes_sender() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     events.push(DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -434,6 +437,7 @@ fn task_ref_nudges_assigned_agent() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     events.extend(worker_events("w1", "ghost-town", "main", Some("42")));
     events.push(DomainEvent::TaskAssigned {
@@ -467,6 +471,7 @@ fn task_ref_no_nudge_for_unassigned() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
 
     let proj = make_projections(&events);

@@ -29,6 +29,7 @@ fn make_projections_with_merged_pr(
             blocked_by: vec![],
             agent_type: None,
             icon: None,
+            parent: None,
         });
 
         if task_status == Some(TaskStatus::InProgress) {
@@ -191,10 +192,17 @@ fn no_reviewer_for_pr_not_needing_review() {
 use super::MAX_REVIEWER_RESTARTS;
 
 fn add_reviewer_attempt(proj: &mut Projections, pr_num: u64, attempt: usize) {
-    let id = format!("reviewer-{pr_num}-attempt-{attempt}");
+    // Look up the PR author for correct reviewer naming
+    let author = proj
+        .work
+        .prs
+        .get(&pr_num)
+        .map(|pr| pr.author.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let id = format!("{author}-reviewer-attempt-{attempt}");
     proj.apply(&DomainEvent::AgentCreated {
         id: id.clone(),
-        name: format!("reviewer-{pr_num}"),
+        name: format!("{author}-reviewer"),
         kind: AgentKind::Worker,
         agent_type: "midtown-code-reviewer".into(),
         provider: Provider::ClaudeCode,
@@ -286,6 +294,7 @@ fn suspends_author_with_open_pr() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: "a1".into(),
@@ -329,6 +338,7 @@ fn no_suspend_for_merged_pr() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: "a1".into(),
@@ -375,6 +385,7 @@ fn no_suspend_for_closed_pr() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: "a1".into(),
@@ -463,6 +474,7 @@ fn nudge_rebase_after_merge_nudges_open_pr_workers() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 2,
@@ -549,6 +561,7 @@ fn rebase_nudge_includes_stopped_workers() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 2,
@@ -621,6 +634,7 @@ fn no_rebase_nudge_when_cooldown_active() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 2,

@@ -24,6 +24,9 @@ pub struct Agent {
     pub stopped_at: Option<DateTime<Utc>>,
     pub icon: Option<String>,
     pub color: Option<String>,
+    /// True when the agent has been garbage-collected (excluded from routing/dispatch)
+    #[serde(default)]
+    pub gc: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -66,6 +69,7 @@ impl AgentIndex {
                     stopped_at: None,
                     icon: icon.clone(),
                     color: color.clone(),
+                    gc: false,
                 };
                 self.by_name.insert(name.clone(), id.clone());
                 if let Some(task_id) = task_id {
@@ -113,22 +117,27 @@ impl AgentIndex {
                 }
             }
             DomainEvent::AgentGarbageCollected { id } => {
-                if let Some(agent) = self.by_id.remove(id) {
+                // Mark as GC'd but preserve the record (spec 6.1)
+                if let Some(agent) = self.by_id.get_mut(id) {
+                    agent.gc = true;
+                    // Remove from routing indexes
                     self.by_name.remove(&agent.name);
                     self.running.remove(id);
                     if let Some(task_id) = &agent.task_id {
                         self.by_task.remove(task_id);
                     }
-                    if let Some(channel) = &agent.channel
-                        && let Some(list) = self.by_channel.get_mut(channel)
+                    let channel = agent.channel.clone();
+                    let thread_id = agent.bound_thread_id.clone();
+                    if let Some(ch) = channel
+                        && let Some(list) = self.by_channel.get_mut(ch.as_str())
                     {
                         list.retain(|aid| aid != id);
                         if list.is_empty() {
-                            self.by_channel.remove(channel);
+                            self.by_channel.remove(&ch);
                         }
                     }
-                    if let Some(thread_id) = &agent.bound_thread_id {
-                        self.by_thread.remove(thread_id);
+                    if let Some(tid) = thread_id {
+                        self.by_thread.remove(&tid);
                     }
                 }
             }

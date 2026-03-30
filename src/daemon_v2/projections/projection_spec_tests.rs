@@ -231,6 +231,57 @@ fn agent_resumed_updates_pid_clears_stopped_at_restores_running() {
     );
 }
 
+/// Spec 6.1: WHEN AgentGarbageCollected is applied THEN agent marked as GC'd,
+/// excluded from routing indexes, but record preserved in by_id
+#[test]
+fn agent_gc_preserves_record_but_excludes_from_routing() {
+    let mut idx = AgentIndex::default();
+    idx.apply(&DomainEvent::AgentCreated {
+        id: "gc1".into(),
+        name: "old-worker".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("backend".into()),
+        task_id: Some("t99".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    idx.apply(&DomainEvent::AgentStarted {
+        id: "gc1".into(),
+        pid: 999,
+        session_id: None,
+    });
+    idx.apply(&DomainEvent::AgentStopped {
+        id: "gc1".into(),
+        reason: "done".into(),
+    });
+    idx.apply(&DomainEvent::AgentGarbageCollected { id: "gc1".into() });
+
+    // Record preserved
+    assert!(
+        idx.by_id.contains_key("gc1"),
+        "GC'd agent should still be in by_id"
+    );
+    let agent = idx.by_id.get("gc1").unwrap();
+    assert!(agent.gc, "agent should be marked as gc=true");
+
+    // Excluded from routing
+    assert!(
+        !idx.by_name.contains_key("old-worker"),
+        "GC'd agent should be removed from by_name"
+    );
+    assert!(
+        !idx.by_task.contains_key("t99"),
+        "GC'd agent should be removed from by_task"
+    );
+    assert!(
+        !idx.running.contains("gc1"),
+        "GC'd agent should be removed from running"
+    );
+}
+
 // ── Section 6.2: WorkIndex ────────────────────────────────────────────────────
 
 /// Spec 6.2: WHEN TaskCreated is applied THEN task added to tasks map and
@@ -245,6 +296,7 @@ fn task_created_added_to_tasks_and_pending() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
 
     assert!(idx.tasks.contains_key("t1"), "task should be in tasks map");
@@ -270,6 +322,7 @@ fn task_created_with_blocked_by_added_to_blocked_map() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     idx.apply(&DomainEvent::TaskCreated {
         id: "t2".into(),
@@ -278,6 +331,7 @@ fn task_created_with_blocked_by_added_to_blocked_map() {
         blocked_by: vec!["t1".into()],
         agent_type: None,
         icon: None,
+        parent: None,
     });
 
     assert!(
@@ -302,6 +356,7 @@ fn task_assigned_moves_to_in_progress() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     idx.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -335,6 +390,7 @@ fn task_completed_removes_from_in_progress_and_sets_completed_at() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     idx.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -371,6 +427,7 @@ fn pr_linked_to_task_sets_pr_number_on_task() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     idx.apply(&DomainEvent::PrOpened {
         number: 88,
@@ -401,6 +458,7 @@ fn pr_linked_to_task_enables_reverse_lookup() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     idx.apply(&DomainEvent::PrOpened {
         number: 88,
@@ -427,6 +485,7 @@ fn pending_unblocked_excludes_blocked_tasks() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     idx.apply(&DomainEvent::TaskCreated {
         id: "t2".into(),
@@ -435,6 +494,7 @@ fn pending_unblocked_excludes_blocked_tasks() {
         blocked_by: vec!["t1".into()],
         agent_type: None,
         icon: None,
+        parent: None,
     });
 
     let unblocked = idx.pending_unblocked();

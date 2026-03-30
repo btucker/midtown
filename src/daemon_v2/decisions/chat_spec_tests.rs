@@ -183,6 +183,7 @@ fn at_all_in_main_channel_nudges_all_leads_and_task_agents() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -223,6 +224,7 @@ fn at_all_in_topic_channel_nudges_local_lead_and_task_agents() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -373,6 +375,7 @@ fn task_ref_nudges_assigned_agent() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
 
     let cmds = route_message(&proj, "main", "user", "check !42 please", None);
@@ -398,6 +401,7 @@ fn task_ref_no_assigned_agent() {
         blocked_by: vec![],
         agent_type: None,
         icon: None,
+        parent: None,
     });
 
     let cmds = route_message(&proj, "main", "user", "what about !99?", None);
@@ -405,6 +409,94 @@ fn task_ref_no_assigned_agent() {
 
     // Only lead nudge (top-level), no task nudge
     assert_eq!(targets, vec![lead_id], "only lead, not unassigned task");
+}
+
+/// Spec 1.3: WHEN a message contains !N THEN the system SHALL nudge agents
+/// assigned to all descendant tasks of N
+#[test]
+fn task_ref_nudges_descendant_agents() {
+    let mut proj = Projections::default();
+    let _lead_id = make_lead(&mut proj, "main-lead", "main");
+
+    // Create parent task 10 with child task 11
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "10".into(),
+        subject: "Parent".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+        parent: None,
+    });
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "11".into(),
+        subject: "Child".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+        parent: Some("10".into()),
+    });
+
+    let parent_worker = make_worker(&mut proj, "alpha", "main", "10");
+    let child_worker = make_worker(&mut proj, "beta", "main", "11");
+
+    let cmds = route_message(&proj, "main", "user", "check !10 please", None);
+    let targets = nudge_targets(&cmds);
+
+    assert!(
+        targets.contains(&parent_worker),
+        "!10 should nudge parent worker"
+    );
+    assert!(
+        targets.contains(&child_worker),
+        "!10 should also nudge child worker (descendant)"
+    );
+}
+
+/// Spec 1.3: WHEN a task is created with a parent field THEN the system SHALL
+/// record the parent-child relationship
+#[test]
+fn task_parent_child_recorded() {
+    let mut proj = Projections::default();
+
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "100".into(),
+        subject: "Parent".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+        parent: None,
+    });
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "101".into(),
+        subject: "Child A".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+        parent: Some("100".into()),
+    });
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "102".into(),
+        subject: "Child B".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+        parent: Some("100".into()),
+    });
+
+    let descendants = proj.work.descendants_of("100");
+    assert_eq!(
+        descendants.len(),
+        2,
+        "task 100 should have 2 descendants, got {:?}",
+        descendants
+    );
+    assert!(descendants.contains(&"101".to_string()));
+    assert!(descendants.contains(&"102".to_string()));
 }
 
 // ── Section 1.4: Nudge Invariants ────────────────────────────────────────

@@ -90,9 +90,13 @@ pub fn spawn_reviewers(proj: &Projections) -> Vec<Command> {
     commands
 }
 
-/// Count how many times a reviewer for a given PR has been created and stopped.
+/// Count how many times a reviewer for a given PR author has been created and stopped.
 fn count_stopped_reviewers(proj: &Projections, pr_num: u64) -> usize {
-    let reviewer_name = format!("reviewer-{pr_num}");
+    let pr = match proj.work.prs.get(&pr_num) {
+        Some(pr) => pr,
+        None => return 0,
+    };
+    let reviewer_name = format!("{}-reviewer", pr.author);
     proj.agents
         .by_id
         .values()
@@ -102,6 +106,22 @@ fn count_stopped_reviewers(proj: &Projections, pr_num: u64) -> usize {
                 && a.stopped_at.is_some()
         })
         .count()
+}
+
+/// Spec 3.2: Resume dead reviewer agents. If they can't be resumed, spawn_reviewers
+/// handles the replacement (with retry limit).
+pub fn resume_dead_reviewers(proj: &Projections) -> Vec<Command> {
+    proj.agents
+        .by_id
+        .values()
+        .filter(|a| {
+            a.agent_type == "midtown-code-reviewer"
+                && !proj.agents.running.contains(&a.id)
+                && a.stopped_at.is_some()
+                && a.session_id.is_some()
+        })
+        .map(|a| Command::ResumeAgent { id: a.id.clone() })
+        .collect()
 }
 
 /// After a PR merges, nudge workers with open PRs to rebase.
