@@ -182,7 +182,11 @@ pub async fn start_monitors(
     if let Ok(entries) = std::fs::read_dir(&channels_root) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name == default_channel || name.ends_with(".archived") || name.starts_with('.') {
+            if name == default_channel
+                || name.ends_with(".archived")
+                || name.starts_with('.')
+                || name.starts_with("dm-")
+            {
                 continue;
             }
 
