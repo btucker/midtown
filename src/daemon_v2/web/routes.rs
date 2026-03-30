@@ -20,7 +20,12 @@ pub async fn status(State(state): State<Arc<WebState>>) -> Json<Value> {
         &proj,
         &state.channels_dir,
     );
-    Json(response.get("result").cloned().unwrap_or(json!(null)))
+    let mut result = response.get("result").cloned().unwrap_or(json!(null));
+    if let Some(obj) = result.as_object_mut() {
+        obj.insert("repo_name".to_string(), json!(state.repo_name));
+        obj.insert("repo_full_name".to_string(), json!(state.repo_full_name));
+    }
+    Json(result)
 }
 
 #[derive(Deserialize)]

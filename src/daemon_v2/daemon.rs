@@ -436,12 +436,34 @@ impl DaemonV2 {
             tokio::sync::mpsc::channel::<crate::daemon_v2::decisions::Command>(64);
 
         if let Some(port) = web_port {
+            // Resolve repo full name (owner/repo) once at startup for PR link generation.
+            let repo_full_name = tokio::task::spawn_blocking(|| {
+                std::process::Command::new("gh")
+                    .args([
+                        "repo",
+                        "view",
+                        "--json",
+                        "nameWithOwner",
+                        "--jq",
+                        ".nameWithOwner",
+                    ])
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default()
+            })
+            .await
+            .unwrap_or_default();
+
             let web_state = std::sync::Arc::new(crate::daemon_v2::web::WebState {
                 projections: self.projections.clone(),
                 channels_dir: self.config.channels_dir.clone(),
                 event_tx: self.event_tx.clone(),
                 command_tx: web_cmd_tx.clone(),
                 pending_auth_login: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+                repo_name: self.config.dir_key.clone(),
+                repo_full_name,
             });
             let router = crate::daemon_v2::web::create_router(web_state);
             let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));

@@ -575,6 +575,8 @@ fn drain_session_output(
 }
 
 /// Extract assistant text from accumulated stream events and post to channel.
+/// Also extracts `★ Insight` blocks and posts them as standalone messages
+/// so they remain visible regardless of the "Show full lead output" setting.
 fn flush_auto_output(
     agent_name: &str,
     channel: &Option<String>,
@@ -594,6 +596,25 @@ fn flush_auto_output(
         return;
     }
     if let Some(ch) = channel {
+        // Extract and post insights as standalone (non-auto-output) messages
+        for insight in crate::daemon::stream::extract_insights(&text) {
+            let insight_content = format!("💡 {insight}");
+            match channel_io::post_message(channels_dir, ch, agent_name, &insight_content, None) {
+                Ok(id) => {
+                    let _ = event_tx.send(DomainEvent::MessagePosted {
+                        id,
+                        channel: ch.clone(),
+                        sender: agent_name.to_string(),
+                        content: insight_content,
+                        thread_id: None,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(agent = %agent_name, %ch, %e, "failed to post insight");
+                }
+            }
+        }
+
         let msg_id = match channel_io::post_message(channels_dir, ch, agent_name, &text, None) {
             Ok(id) => id,
             Err(e) => {
