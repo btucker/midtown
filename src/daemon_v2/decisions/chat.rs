@@ -258,13 +258,14 @@ fn nudge_channel_lead(
     if let Some(agent) = proj.agents.channel_lead(channel) {
         nudge(agent, sender, message, nudged, commands);
     } else {
-        // Spec 5.1: demand-spawn a lead when a user messages a leadless channel
-        let is_main = proj
+        // Spec 5.1: demand-spawn a lead when a user messages a leadless channel.
+        // If a project-lead already exists (or existed before GC), this is a topic channel.
+        let has_project_lead = proj
             .agents
             .by_id
             .values()
-            .any(|a| a.agent_type == "midtown-project-lead");
-        let agent_type = if !is_main {
+            .any(|a| a.agent_type == "midtown-project-lead" && !a.gc);
+        let agent_type = if !has_project_lead {
             "midtown-project-lead"
         } else {
             "midtown-channel-lead"

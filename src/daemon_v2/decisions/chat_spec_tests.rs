@@ -437,6 +437,75 @@ fn message_to_channel_with_lead_does_not_spawn() {
     );
 }
 
+/// Spec 5.1: topic channel demand-spawn should use midtown-channel-lead
+/// even when a project-lead has been GC'd
+#[test]
+fn demand_spawn_topic_channel_uses_channel_lead_type() {
+    let mut proj = Projections::default();
+
+    // Create and GC a project-lead (simulates the main lead being GC'd)
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "old-main-lead".into(),
+        name: "main".into(),
+        kind: AgentKind::Lead,
+        agent_type: "midtown-project-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "old-main-lead".into(),
+        pid: 1000,
+        session_id: Some("sess-main".into()),
+    });
+
+    // Now message a topic channel that has no lead
+    let cmds = route_message(&proj, "backend", "user", "hello backend", None);
+
+    let spawn_cfgs: Vec<_> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Command::SpawnAgent(cfg) if cfg.kind == AgentKind::Lead => Some(cfg),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(spawn_cfgs.len(), 1);
+    assert_eq!(
+        spawn_cfgs[0].agent_type, "midtown-channel-lead",
+        "topic channel should spawn midtown-channel-lead, got {}",
+        spawn_cfgs[0].agent_type
+    );
+}
+
+/// Spec 5.1: WHEN no project-lead exists at all THEN demand-spawn the first
+/// channel as midtown-project-lead
+#[test]
+fn demand_spawn_first_channel_uses_project_lead_type() {
+    let proj = Projections::default();
+
+    // No agents at all — first channel message should spawn project-lead
+    let cmds = route_message(&proj, "main", "user", "hello", None);
+
+    let spawn_cfgs: Vec<_> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Command::SpawnAgent(cfg) if cfg.kind == AgentKind::Lead => Some(cfg),
+            _ => None,
+        })
+        .collect();
+
+    assert_eq!(spawn_cfgs.len(), 1);
+    assert_eq!(
+        spawn_cfgs[0].agent_type, "midtown-project-lead",
+        "first channel should spawn midtown-project-lead, got {}",
+        spawn_cfgs[0].agent_type
+    );
+}
+
 // ── Section 1.3: Task References ─────────────────────────────────────────
 
 /// Spec 1.3: WHEN a message contains !N THEN the system SHALL nudge the agent
