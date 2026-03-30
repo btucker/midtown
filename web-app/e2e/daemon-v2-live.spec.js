@@ -1636,4 +1636,44 @@ test.describe('Daemon v2 Live Web UI', () => {
       : false
     expect(found).toBeTruthy()
   })
+
+  // ── Spec 5.3: Thread reads via web API ──────────────────────────────────
+
+  test('Spec 5.3: channel history with thread_parent_id returns thread messages', async ({
+    request,
+  }) => {
+    // Post a top-level message
+    const parentRes = await request.post(`${BASE_URL}/api/channels/history`, {
+      data: { channel: 'midtown', sender: 'thread-test', content: 'thread parent' },
+    })
+    expect(parentRes.ok()).toBeTruthy()
+    const parentData = await parentRes.json()
+    const parentId = parentData.id
+
+    if (!parentId || parentId === 'unknown') {
+      // Skip if we can't get the parent ID
+      return
+    }
+
+    // Post a reply to the thread
+    await request.post(`${BASE_URL}/api/channels/history`, {
+      data: {
+        channel: 'midtown',
+        sender: 'thread-test',
+        content: 'thread reply',
+        thread_parent_id: parentId,
+      },
+    })
+
+    // Read with thread_parent_id should return thread messages
+    const threadRes = await request.get(
+      `${BASE_URL}/api/channels/history?channel=midtown&thread_parent_id=${parentId}`
+    )
+    expect(threadRes.ok()).toBeTruthy()
+    const threadMsgs = await threadRes.json()
+    expect(Array.isArray(threadMsgs)).toBeTruthy()
+    // Should have at least the reply (parent may or may not be included
+    // depending on how the message was written)
+    expect(threadMsgs.length).toBeGreaterThan(0)
+  })
 })

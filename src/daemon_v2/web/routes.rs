@@ -42,35 +42,24 @@ pub async fn channel_history(
     let channel = params.channel.as_deref().unwrap_or("midtown");
     let limit = params.limit.or(params.last).or(Some(100)); // Default to last 100 messages
     let proj = state.projections.lock().await;
+
+    // Build RPC params — include thread_parent_id if specified
+    let mut rpc_params = json!({"channel": channel, "limit": limit});
+    if let Some(ref parent_id) = params.thread_parent_id {
+        rpc_params["thread_parent_id"] = json!(parent_id);
+    }
+
     let (response, _, _) = rpc::dispatch_request(
         json!({
             "jsonrpc": "2.0",
             "method": "channel.read",
-            "params": {"channel": channel, "limit": limit},
+            "params": rpc_params,
             "id": 1
         }),
         &proj,
         &state.channels_dir,
     );
     let messages = response.get("result").cloned().unwrap_or(json!([]));
-
-    // Filter by thread_parent_id if provided
-    let messages = if let Some(ref parent_id) = params.thread_parent_id {
-        match messages {
-            Value::Array(arr) => Value::Array(
-                arr.into_iter()
-                    .filter(|msg| {
-                        msg.get("thread_parent_id")
-                            .and_then(|v| v.as_str())
-                            .is_some_and(|id| id == parent_id)
-                    })
-                    .collect(),
-            ),
-            other => other,
-        }
-    } else {
-        messages
-    };
 
     // Transform "message" field to "content" for web UI compatibility
     let messages = match messages {
