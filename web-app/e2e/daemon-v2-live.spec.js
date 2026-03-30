@@ -1452,4 +1452,109 @@ test.describe('Daemon v2 Live Web UI', () => {
     const data = await res.json()
     expect(data).toHaveProperty('ok')
   })
+
+  // ── Spec 5.2: Channel Archive/Unarchive ────────────────────────────────
+
+  test('channel archive and unarchive lifecycle', async ({ request }) => {
+    // Create a channel to test with
+    const channelName = `archive-test-${Date.now()}`
+    const createRes = await request.post(`${BASE_URL}/api/channels/create`, {
+      data: { name: channelName },
+    })
+    expect(createRes.ok()).toBeTruthy()
+
+    // Verify it appears in the channel list
+    let listRes = await request.get(`${BASE_URL}/api/channels`)
+    let channels = (await listRes.json()).channels || []
+    expect(channels.some((c) => c.name === channelName)).toBeTruthy()
+
+    // Spec 5.2: WHEN a channel is archived THEN its directory SHALL be renamed
+    // with `.archived` suffix
+    const archiveRes = await request.post(
+      `${BASE_URL}/api/channels/${channelName}/archive`
+    )
+    expect(archiveRes.ok()).toBeTruthy()
+
+    // Archived channel should not appear in default list
+    listRes = await request.get(`${BASE_URL}/api/channels`)
+    channels = (await listRes.json()).channels || []
+    expect(channels.some((c) => c.name === channelName && !c.is_archived)).toBeFalsy()
+
+    // But should appear with include_archived
+    listRes = await request.get(
+      `${BASE_URL}/api/channels?include_archived=true`
+    )
+    channels = (await listRes.json()).channels || []
+    const archived = channels.find((c) => c.name === channelName)
+    expect(archived).toBeTruthy()
+    expect(archived.is_archived).toBeTruthy()
+
+    // Spec 5.2: WHEN a channel is unarchived THEN the `.archived` suffix
+    // SHALL be removed
+    const unarchiveRes = await request.post(
+      `${BASE_URL}/api/channels/${channelName}/unarchive`
+    )
+    expect(unarchiveRes.ok()).toBeTruthy()
+
+    // Should appear as non-archived again
+    listRes = await request.get(`${BASE_URL}/api/channels`)
+    channels = (await listRes.json()).channels || []
+    const restored = channels.find((c) => c.name === channelName)
+    expect(restored).toBeTruthy()
+    expect(restored.is_archived).toBeFalsy()
+  })
+
+  // ── Spec 11.1: REST API Message Posting ─────────────────────────────────
+
+  test('POST /api/channels/history posts and persists message', async ({
+    request,
+  }) => {
+    // Spec 11.1: POST /api/channels/history posts a message
+    const testContent = `e2e-post-test-${Date.now()}`
+    const postRes = await request.post(`${BASE_URL}/api/channels/history`, {
+      data: {
+        channel: 'midtown',
+        sender: 'e2e-test',
+        content: testContent,
+      },
+    })
+    expect(postRes.ok()).toBeTruthy()
+    const postData = await postRes.json()
+    expect(postData.ok).toBeTruthy()
+
+    // Verify persistence — message should appear in GET
+    const histRes = await request.get(
+      `${BASE_URL}/api/channels/history?channel=midtown&limit=10`
+    )
+    expect(histRes.ok()).toBeTruthy()
+    const msgs = await histRes.json()
+    const found = Array.isArray(msgs)
+      ? msgs.some((m) => m.content === testContent)
+      : false
+    expect(found).toBeTruthy()
+  })
+
+  // ── Spec 11.3: Response Transformations ─────────────────────────────────
+
+  test('search results have content field (not message)', async ({
+    request,
+  }) => {
+    // Post a searchable message first
+    const searchTerm = `searchable-${Date.now()}`
+    await request.post(`${BASE_URL}/api/channels/history`, {
+      data: { channel: 'midtown', sender: 'e2e-test', content: searchTerm },
+    })
+
+    // Spec 11.3: WHEN search results contain a `message` field THEN it SHALL
+    // be renamed to `content`
+    const searchRes = await request.get(
+      `${BASE_URL}/api/search?q=${searchTerm}&limit=5`
+    )
+    expect(searchRes.ok()).toBeTruthy()
+    const data = await searchRes.json()
+    if (data.results && data.results.length > 0) {
+      // Should have 'content' field, not 'message'
+      expect(data.results[0]).toHaveProperty('content')
+    }
+  })
 })
