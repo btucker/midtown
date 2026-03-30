@@ -394,9 +394,51 @@
 
 ---
 
+## 16. Authentication
+
+### 16.1 Profile Storage
+- WHEN a profile is created THEN its directory SHALL be `~/.midtown/auth/<name>/claude/` for Claude providers
+- WHEN a Claude profile is created THEN shared state (projects, tasks, settings, agents, plugins) SHALL be symlinked from `~/.midtown/platforms/claude/`
+- WHEN a Claude profile is created THEN `.claude.json` SHALL be profile-local (never symlinked) — this file holds the OAuth token
+- WHEN checking if a profile has valid credentials THEN the system SHALL check for `.claude.json` in the profile directory
+
+### 16.2 CLAUDE_CONFIG_DIR
+- WHEN an agent session is spawned THEN `CLAUDE_CONFIG_DIR` SHALL be set to the active profile's directory
+- WHEN resolving the active profile THEN the system SHALL check project config first (`auth_profiles.claude`), then global config (`providers.claude.auth_profile`), then fall back to "default"
+- WHEN `CLAUDE_CONFIG_DIR` is set THEN the Claude CLI reads and writes auth tokens from that directory
+- WHEN the profile directory does not exist THEN the system SHALL create it and set up symlinks before spawning
+
+### 16.3 Auth Login
+- WHEN `midtown auth login <email>` is run THEN the system SHALL create the profile directory with symlinks
+- WHEN logging in for Claude THEN the system SHALL spawn `claude auth login --email <email>` with `CLAUDE_CONFIG_DIR` pointing to the profile directory
+- WHEN the login is the first profile THEN the system SHALL automatically set it as the current profile
+- WHEN login completes THEN the system SHALL re-run symlink setup to pick up any new shared files
+- WHEN the web UI initiates login THEN `CLAUDE_CONFIG_DIR` SHALL point to the same profile directory that agents use
+
+### 16.4 Auth Switch
+- WHEN `auth.switch` RPC is received THEN the system SHALL validate the profile exists and has credentials
+- WHEN switching globally THEN the system SHALL update `providers.claude.auth_profile` in `~/.midtown/config.toml`
+- WHEN switching globally THEN the system SHALL clear all per-project auth profile overrides
+- WHEN auth is switched THEN all running agents for that provider SHALL be stopped and relaunched with the new profile
+- WHEN relaunching agents after auth switch THEN session resume SHALL be used if the platform is compatible (Claude↔Claude or Codex↔Codex)
+- WHEN the lead matches the switched provider THEN it SHALL be relaunched with the new profile
+
+### 16.5 Auth Error Detection
+- WHEN an agent session receives a result event with auth error patterns (OAuth expired, 401, invalid credentials) THEN the system SHALL mark the agent with `has_auth_error`
+- WHEN an auth error is detected THEN the system SHALL post a notification so the user can initiate `auth.switch`
+- WHEN an agent successfully completes a turn after an error THEN the error flags SHALL be cleared
+
+### 16.6 Profile Pool
+- WHEN multiple auth profiles are configured THEN the system SHALL rotate them across coworker spawns using LRU selection
+- WHEN a profile hits a usage limit THEN it SHALL be excluded from selection until the limit resets
+- WHEN selecting a profile THEN the system SHALL prefer never-used profiles, then the one with the oldest `last_used_at`
+
+---
+
 ## Revision History
 
 | Date | Change |
 |------|--------|
 | 2026-03-29 | Initial spec. All sections reviewed and approved. Key design decisions: demand-spawned leads (not polled), resume-on-nudge for all agent types, @all scoped by channel type, task parent-child hierarchy, PR comment routing to task threads. |
 | 2026-03-30 | Added: auto-output (4.1) — agent stdout must be posted to channels; channel lead resolution (5.1) — must prefer running agents over stopped ones; concurrency (8.1) — web handlers must not be blocked by executor; v1 field name compatibility (10.5). Found via live testing: lead not responding was caused by discarded stdout + wrong lead resolution + field name mismatch. |
+| 2026-03-30 | Added: section 16 (Authentication) — profile storage, CLAUDE_CONFIG_DIR resolution, auth login, auth switch with agent relaunch, auth error detection, profile pool rotation. Based on v1 auth system analysis. |
