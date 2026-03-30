@@ -24,7 +24,10 @@ pub fn create_router(state: Arc<WebState>) -> Router {
         .route("/api/health", get(routes::health))
         .route("/api/status", get(routes::status))
         .route("/api/channels", get(routes::channel_list))
-        .route("/api/channels/history", get(routes::channel_history))
+        .route(
+            "/api/channels/history",
+            get(routes::channel_history).post(routes::channel_post),
+        )
         .route("/api/channels/create", post(routes::channel_create))
         .route("/api/read-state", get(routes::read_state))
         .route(

@@ -91,6 +91,77 @@ pub async fn channel_history(
     Json(messages)
 }
 
+/// POST /api/channels/history — post a message to a channel.
+/// Routes through channel.post RPC to get message routing (nudges, etc.).
+pub async fn channel_post(
+    State(state): State<Arc<WebState>>,
+    Json(body): Json<Value>,
+) -> (StatusCode, Json<Value>) {
+    let channel = body
+        .get("channel")
+        .and_then(|v| v.as_str())
+        .unwrap_or("midtown");
+    let sender = body
+        .get("sender")
+        .or_else(|| body.get("from"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("user");
+    let content = body
+        .get("content")
+        .or_else(|| body.get("message"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let thread_id = body.get("thread_parent_id").and_then(|v| v.as_str());
+
+    if content.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "content is required"})),
+        );
+    }
+
+    let rpc_request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.post",
+        "params": {
+            "channel": channel,
+            "sender": sender,
+            "content": content,
+            "thread_id": thread_id,
+        },
+        "id": 1,
+    });
+
+    let (response, events, commands) = {
+        let proj = state.projections.lock().await;
+        rpc::dispatch_request(rpc_request, &proj, &state.channels_dir)
+    };
+
+    // Apply events (MessagePosted)
+    if !events.is_empty() {
+        let mut proj = state.projections.lock().await;
+        for event in &events {
+            proj.apply(event);
+            let _ = state.event_tx.send(event.clone());
+        }
+    }
+
+    // Send routing commands to daemon for execution
+    for cmd in commands {
+        if let Err(e) = state.command_tx.send(cmd).await {
+            tracing::warn!(%e, "failed to send channel.post command");
+        }
+    }
+
+    let msg_id = response
+        .get("result")
+        .and_then(|r| r.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    (StatusCode::OK, Json(json!({"ok": true, "id": msg_id})))
+}
+
 #[derive(Deserialize)]
 pub struct ChannelListParams {
     #[serde(default)]
