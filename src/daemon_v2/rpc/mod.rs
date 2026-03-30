@@ -146,6 +146,38 @@ pub fn dispatch_request(
             }
             Err(err) => (err.to_json(&id), vec![], vec![]),
         },
+        // reminder CRUD
+        "reminder.create" => {
+            let result = handlers::handle_reminder_create(params);
+            match result {
+                Ok(events) => {
+                    let id = events
+                        .first()
+                        .and_then(|e| {
+                            if let DomainEvent::ReminderCreated { id, .. } = e {
+                                Some(id.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default();
+                    let response =
+                        json!({ "jsonrpc": "2.0", "result": { "ok": true, "id": id }, "id": id });
+                    (response, events, vec![])
+                }
+                Err(err) => (err.to_json(&id), vec![], vec![]),
+            }
+        }
+        "reminder.cancel" => {
+            let result = handlers::handle_reminder_cancel(params);
+            match result {
+                Ok(events) => {
+                    let response = json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id });
+                    (response, events, vec![])
+                }
+                Err(err) => (err.to_json(&id), vec![], vec![]),
+            }
+        }
         // oneshot.execute — spawn a one-off agent with a prompt
         "oneshot.execute" => match handlers::handle_oneshot_execute(params, proj) {
             Ok((value, commands)) => {
@@ -188,13 +220,13 @@ pub fn dispatch_request(
                 "prs.status" => handlers::handle_prs_status(proj),
                 "channel.list" => handlers::handle_channel_list(channels_dir),
                 "channel.read" => handlers::handle_channel_read(params, channels_dir),
+                "reminder.list" => handlers::handle_reminder_list(proj),
                 "channel.create" => handlers::handle_channel_create(params, channels_dir),
                 "channel.archive" => handlers::handle_channel_archive(params, channels_dir),
                 "channel.unarchive" => handlers::handle_channel_unarchive(params, channels_dir),
                 "channel.rename" => handlers::handle_channel_rename(params, channels_dir),
                 // Stubs for CLI methods that don't have full v2 implementations yet
-                "reminder.list" | "reminder.create" | "reminder.cancel" | "workflow.set_state"
-                | "workflow.list" | "pr.list-external" | "pr.allow" => {
+                "workflow.set_state" | "workflow.list" | "pr.list-external" | "pr.allow" => {
                     Ok(json!({"ok": true, "stub": true}))
                 }
                 // daemon.set-draining and daemon.check-pending return info

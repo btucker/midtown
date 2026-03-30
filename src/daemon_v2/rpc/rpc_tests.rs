@@ -1515,3 +1515,80 @@ fn pr_merge_shortcut() {
         "should produce MergePr command"
     );
 }
+
+// ── reminder CRUD ───────────────────────────────────────────────────────
+
+/// Section 15: reminder.create creates a reminder and returns its ID
+#[test]
+fn reminder_create_and_list() {
+    let mut proj = Projections::default();
+    let dir = tempfile::TempDir::new().unwrap();
+
+    // Create a reminder
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "reminder.create",
+        "id": 1000,
+        "params": {
+            "trigger": "all-work-merged",
+            "message": "All PRs merged, time to release!"
+        }
+    });
+    let (response, events, _) = dispatch_request(request, &proj, dir.path());
+    assert!(response["error"].is_null(), "create error: {response}");
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], DomainEvent::ReminderCreated { .. }));
+
+    // Apply the event
+    for event in &events {
+        proj.apply(event);
+    }
+
+    // List should show it
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "reminder.list",
+        "id": 1001
+    });
+    let (response, _, _) = dispatch_request(request, &proj, dir.path());
+    assert!(response["error"].is_null());
+    let reminders = response["result"].as_array().unwrap();
+    assert_eq!(reminders.len(), 1);
+    assert_eq!(reminders[0]["trigger"], "all-work-merged");
+    assert_eq!(reminders[0]["message"], "All PRs merged, time to release!");
+}
+
+/// Section 15: reminder.cancel removes a reminder
+#[test]
+fn reminder_cancel_removes() {
+    let mut proj = Projections::default();
+    let dir = tempfile::TempDir::new().unwrap();
+
+    // Create
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "reminder.create",
+        "id": 1010,
+        "params": { "trigger": "cron", "message": "Check status", "cron_expr": "0 * * * *" }
+    });
+    let (_, events, _) = dispatch_request(request, &proj, dir.path());
+    for event in &events {
+        proj.apply(event);
+    }
+    assert_eq!(proj.reminders.len(), 1);
+    let reminder_id = proj.reminders[0].id.clone();
+
+    // Cancel
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "reminder.cancel",
+        "id": 1011,
+        "params": { "id": reminder_id }
+    });
+    let (response, events, _) = dispatch_request(request, &proj, dir.path());
+    assert!(response["error"].is_null());
+    for event in &events {
+        proj.apply(event);
+    }
+    assert!(proj.reminders.is_empty(), "reminder should be cancelled");
+}

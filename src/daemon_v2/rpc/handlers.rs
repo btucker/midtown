@@ -1104,3 +1104,62 @@ pub fn handle_task_handoff(
 
     Ok((events, commands))
 }
+
+// ── Reminder handlers ───────────────────────────────────────────────────
+
+/// Handle `reminder.create` — create a new reminder.
+pub fn handle_reminder_create(params: Option<&Value>) -> Result<Vec<DomainEvent>, RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+
+    let trigger = params
+        .get("trigger")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: trigger"))?;
+
+    let message = params
+        .get("message")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: message"))?;
+
+    let cron_expr = params
+        .get("cron_expr")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let id = format!("{:08x}", fastrand::u32(..));
+
+    Ok(vec![DomainEvent::ReminderCreated {
+        id,
+        trigger: trigger.to_string(),
+        message: message.to_string(),
+        cron_expr,
+    }])
+}
+
+/// Handle `reminder.list` — list all active reminders.
+pub fn handle_reminder_list(proj: &Projections) -> Result<Value, RpcError> {
+    let reminders: Vec<Value> = proj
+        .reminders
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.id,
+                "trigger": r.trigger,
+                "message": r.message,
+                "cron_expr": r.cron_expr,
+            })
+        })
+        .collect();
+    Ok(json!(reminders))
+}
+
+/// Handle `reminder.cancel` — cancel a reminder by ID.
+pub fn handle_reminder_cancel(params: Option<&Value>) -> Result<Vec<DomainEvent>, RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+    let id = params
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: id"))?;
+
+    Ok(vec![DomainEvent::ReminderCancelled { id: id.to_string() }])
+}

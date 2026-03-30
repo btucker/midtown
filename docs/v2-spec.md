@@ -356,7 +356,7 @@
 - Auth profile pooling (multi-account rotation)
 
 ### Important
-- Reminder system (cron + all-work-merged triggers)
+- ~~Reminder system (cron + all-work-merged triggers)~~ — **Implemented** (reminder.create/list/cancel RPC + event sourced)
 - Workflow system (assignment, state machine, event emission)
 - ~~Task prompt / handoff between agents~~ — **Implemented** (task.prompt nudges assigned agent, task.handoff stops + respawns)
 - ~~Session attach/detach (interactive takeover)~~ — **Partially Implemented** (session.detach stops agent, attach not yet)

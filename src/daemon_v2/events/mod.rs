@@ -188,6 +188,17 @@ pub enum DomainEvent {
         id: WorktreeId,
     },
 
+    // Reminders
+    ReminderCreated {
+        id: String,
+        trigger: String,
+        message: String,
+        cron_expr: Option<String>,
+    },
+    ReminderCancelled {
+        id: String,
+    },
+
     // Channel settings
     ChannelLeadDrivenSet {
         channel: String,
