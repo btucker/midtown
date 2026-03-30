@@ -113,6 +113,16 @@ fn nudge_stale_workers_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
     health::nudge_stale_workers(proj)
 }
 
+/// Wrapper: resume dead reviewer agents that have session_ids.
+fn resume_dead_reviewers_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
+    decisions::prs::resume_dead_reviewers(proj)
+}
+
+/// Wrapper: nudge workers with open PRs to rebase after a merge.
+fn nudge_rebase_after_merge_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
+    decisions::prs::nudge_rebase_after_merge(proj)
+}
+
 /// Wrapper: detect auth errors from session stderr (stub).
 fn check_auth_errors_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
     health::check_auth_errors(proj)
@@ -258,6 +268,16 @@ impl DaemonV2 {
             "spawn_reviewers",
             Duration::from_secs(45),
             spawn_reviewers_fn,
+        );
+        scheduler.register(
+            "resume_dead_reviewers",
+            Duration::from_secs(30),
+            resume_dead_reviewers_fn,
+        );
+        scheduler.register(
+            "nudge_rebase_after_merge",
+            Duration::from_secs(30),
+            nudge_rebase_after_merge_fn,
         );
         scheduler.register(
             "suspend_authors_with_prs",

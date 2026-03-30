@@ -663,6 +663,61 @@ pub async fn webhook_handler(
                 _ => {}
             }
         }
+        // Spec 12: handle PR comments — both top-level (issue_comment on PR)
+        // and inline review comments (pull_request_review_comment)
+        "issue_comment" | "pull_request_review_comment" => {
+            let action = payload.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            if action == "created" {
+                let pr_number = if event_type == "issue_comment" {
+                    // issue_comment: PR number is in issue.number (only if issue.pull_request exists)
+                    payload
+                        .get("issue")
+                        .filter(|issue| issue.get("pull_request").is_some())
+                        .and_then(|issue| issue.get("number"))
+                        .and_then(|n| n.as_u64())
+                } else {
+                    // pull_request_review_comment: PR number is in pull_request.number
+                    payload
+                        .get("pull_request")
+                        .and_then(|pr| pr.get("number"))
+                        .and_then(|n| n.as_u64())
+                };
+
+                if let Some(pr_num) = pr_number {
+                    let commenter = payload
+                        .get("comment")
+                        .and_then(|c| c.get("user"))
+                        .and_then(|u| u.get("login"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let body = payload
+                        .get("comment")
+                        .and_then(|c| c.get("body"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    // Route the comment through the decision function
+                    let proj = state.projections.lock().await;
+                    let commands = crate::daemon_v2::decisions::prs::route_pr_comment(
+                        &proj, pr_num, commenter, body,
+                    );
+                    drop(proj);
+
+                    for cmd in commands {
+                        if let Err(e) = state.command_tx.send(cmd).await {
+                            tracing::warn!(%e, "failed to send PR comment command");
+                        }
+                    }
+                }
+            }
+        }
+        // Spec 3.1: handle check_run events for CI status changes
+        "check_run" | "check_suite" => {
+            // CI status changes are picked up by the polling backstop (diff_pr_state).
+            // Webhook events here could be used for faster updates, but the polling
+            // path already handles PrUpdated events. Log for observability.
+            tracing::debug!(%event_type, "CI webhook received (handled by polling backstop)");
+        }
         _ => {
             tracing::debug!(%event_type, "unhandled webhook event type");
         }
