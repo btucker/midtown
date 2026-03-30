@@ -526,15 +526,16 @@ impl DaemonV2 {
                 accept_result = listener.accept() => {
                     match accept_result {
                         Ok((stream, _addr)) => {
-                            let (outcome, events, mut commands) = {
-                                let proj = self.projections.lock().await;
+                            // Spec 8.1: don't hold projections lock across socket I/O.
+                            // handle_rpc_connection reads the request, dispatches
+                            // (briefly locking projections), and writes the response.
+                            let (outcome, events, mut commands) =
                                 handle_rpc_connection(
                                     stream,
-                                    &proj,
+                                    &self.projections,
                                     &self.config.channels_dir,
                                     &mut self.rpc_cache,
-                                ).await
-                            };
+                                ).await;
 
                             // Check for daemon.set-draining (managed at daemon level)
                             if outcome == RpcOutcome::SetDraining(true) {
@@ -552,17 +553,18 @@ impl DaemonV2 {
                                 }
                             }
                             for command in commands {
-                                let cmd_events = {
+                                let proj_snapshot = {
                                     let proj = self.projections.lock().await;
-                                    executor::execute(
-                                        command,
-                                        &mut self.sessions,
-                                        &self.paths,
-                                        &proj,
-                                        &self.config.channels_dir,
-                                    )
-                                    .await
+                                    proj.clone()
                                 };
+                                let cmd_events = executor::execute(
+                                    command,
+                                    &mut self.sessions,
+                                    &self.paths,
+                                    &proj_snapshot,
+                                    &self.config.channels_dir,
+                                )
+                                .await;
                                 self.handle_worktree_cleanup(&cmd_events);
                                 self.apply_events(&cmd_events).await;
                                 // Auto-assign tasks when a worker spawns with a task_id
@@ -607,17 +609,18 @@ impl DaemonV2 {
 
                 // Commands from the web layer (e.g., nudge after user message)
                 Some(cmd) = web_cmd_rx.recv() => {
-                    let events = {
+                    let proj_snapshot = {
                         let proj = self.projections.lock().await;
-                        executor::execute(
-                            cmd,
-                            &mut self.sessions,
-                            &self.paths,
-                            &proj,
-                            &self.config.channels_dir,
-                        )
-                        .await
+                        proj.clone()
                     };
+                    let events = executor::execute(
+                        cmd,
+                        &mut self.sessions,
+                        &self.paths,
+                        &proj_snapshot,
+                        &self.config.channels_dir,
+                    )
+                    .await;
                     self.apply_events(&events).await;
                     // Auto-assign tasks when a worker spawns with a task_id
                     let mut assign_events = Vec::new();
@@ -684,17 +687,21 @@ impl DaemonV2 {
             }
 
             for command in commands {
-                let events = {
+                // Spec 8.1: snapshot projections then release lock before execute.
+                // Execute can spawn processes, do gh CLI calls, etc — holding the
+                // lock across those would block the web API.
+                let proj_snapshot = {
                     let proj = self.projections.lock().await;
-                    executor::execute(
-                        command,
-                        &mut self.sessions,
-                        &self.paths,
-                        &proj,
-                        &self.config.channels_dir,
-                    )
-                    .await
+                    proj.clone()
                 };
+                let events = executor::execute(
+                    command,
+                    &mut self.sessions,
+                    &self.paths,
+                    &proj_snapshot,
+                    &self.config.channels_dir,
+                )
+                .await;
                 // Clean up worktrees for completed tasks.
                 self.handle_worktree_cleanup(&events);
                 self.apply_events(&events).await;
@@ -840,7 +847,7 @@ enum RpcOutcome {
 /// commands to execute (e.g., `session.fork` spawning a new agent).
 async fn handle_rpc_connection(
     mut stream: UnixStream,
-    proj: &Projections,
+    projections: &Arc<Mutex<Projections>>,
     channels_dir: &Path,
     rpc_cache: &mut crate::daemon_v2::rpc_cache::RpcCache,
 ) -> (
@@ -931,7 +938,11 @@ async fn handle_rpc_connection(
         return (RpcOutcome::Continue, vec![], vec![]);
     }
 
-    let (response, events, commands) = rpc::dispatch_request(request, proj, channels_dir);
+    // Spec 8.1: lock projections only for the dispatch call, not across I/O
+    let (response, events, commands) = {
+        let proj = projections.lock().await;
+        rpc::dispatch_request(request, &proj, channels_dir)
+    };
 
     // Cache read-only responses
     if crate::daemon_v2::rpc_cache::RpcCache::is_cacheable(&method)
