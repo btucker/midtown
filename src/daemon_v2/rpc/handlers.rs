@@ -427,7 +427,10 @@ pub fn handle_channel_post(
             message: "Missing required field: content (or message)".into(),
         })?;
 
-    let thread_id = params.get("thread_id").and_then(|v| v.as_str());
+    let thread_id = params
+        .get("thread_id")
+        .or_else(|| params.get("thread_parent_id"))
+        .and_then(|v| v.as_str());
 
     let msg_id = channel_io::post_message(channels_dir, channel, sender, content, thread_id)
         .map_err(|e| RpcError {
