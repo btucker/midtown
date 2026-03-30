@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use crate::daemon_v2::decisions::Command;
+use crate::daemon_v2::events::{AgentKind, TaskStatus};
 use crate::daemon_v2::projections::Projections;
 
 #[path = "chat_tests.rs"]
@@ -111,9 +112,33 @@ fn route_refs(
         }
 
         if target == "all" {
-            if let Some(agents) = proj.agents.by_channel.get(channel) {
-                for agent_id in agents {
-                    if let Some(agent) = proj.agents.by_id.get(agent_id) {
+            // Determine if this is the main channel (has a project-lead)
+            let is_main = proj
+                .agents
+                .by_channel
+                .get(channel)
+                .map(|ids| {
+                    ids.iter().any(|id| {
+                        proj.agents
+                            .by_id
+                            .get(id)
+                            .is_some_and(|a| a.agent_type == "midtown-project-lead")
+                    })
+                })
+                .unwrap_or(false);
+
+            if is_main {
+                // Main channel @all: nudge ALL leads + ALL in-progress task agents
+                // across ALL channels
+                for agent in proj.agents.by_id.values() {
+                    let is_lead = agent.kind == AgentKind::Lead;
+                    let has_in_progress_task = agent.task_id.as_ref().is_some_and(|tid| {
+                        proj.work
+                            .tasks
+                            .get(tid)
+                            .is_some_and(|t| t.status == TaskStatus::InProgress)
+                    });
+                    if is_lead || has_in_progress_task {
                         nudge(
                             agent,
                             sender,
@@ -121,6 +146,31 @@ fn route_refs(
                             nudged,
                             commands,
                         );
+                    }
+                }
+            } else {
+                // Topic channel @all: nudge channel lead + in-progress task agents
+                // in THIS channel only
+                if let Some(agents) = proj.agents.by_channel.get(channel) {
+                    for agent_id in agents {
+                        if let Some(agent) = proj.agents.by_id.get(agent_id) {
+                            let is_lead = agent.kind == AgentKind::Lead;
+                            let has_in_progress_task = agent.task_id.as_ref().is_some_and(|tid| {
+                                proj.work
+                                    .tasks
+                                    .get(tid)
+                                    .is_some_and(|t| t.status == TaskStatus::InProgress)
+                            });
+                            if is_lead || has_in_progress_task {
+                                nudge(
+                                    agent,
+                                    sender,
+                                    &format!("@all from {sender}: {content}"),
+                                    nudged,
+                                    commands,
+                                );
+                            }
+                        }
                     }
                 }
             }

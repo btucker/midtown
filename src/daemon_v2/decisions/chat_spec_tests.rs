@@ -8,12 +8,25 @@ use crate::daemon_v2::events::*;
 use crate::daemon_v2::projections::Projections;
 
 fn make_lead(proj: &mut Projections, name: &str, channel: &str) -> String {
+    make_lead_with_type(proj, name, channel, "midtown-project-lead")
+}
+
+fn make_channel_lead(proj: &mut Projections, name: &str, channel: &str) -> String {
+    make_lead_with_type(proj, name, channel, "midtown-channel-lead")
+}
+
+fn make_lead_with_type(
+    proj: &mut Projections,
+    name: &str,
+    channel: &str,
+    agent_type: &str,
+) -> String {
     let id = format!("lead-{name}");
     proj.apply(&DomainEvent::AgentCreated {
         id: id.clone(),
         name: name.into(),
         kind: AgentKind::Lead,
-        agent_type: "midtown-project-lead".into(),
+        agent_type: agent_type.into(),
         provider: Provider::ClaudeCode,
         channel: Some(channel.into()),
         task_id: None,
@@ -154,19 +167,89 @@ fn at_mention_nudges_named_agent() {
     );
 }
 
-/// Spec 1.2: WHEN a message contains @all THEN the system SHALL nudge every
-/// agent in the channel except the sender
+/// Spec 1.2: WHEN @all in main channel THEN nudge ALL channel leads AND ALL
+/// agents bound to in-progress tasks across ALL channels, excluding sender
 #[test]
-fn at_all_nudges_all_agents_except_sender() {
+fn at_all_in_main_channel_nudges_all_leads_and_task_agents() {
     let mut proj = Projections::default();
-    let lead_id = make_lead(&mut proj, "main-lead", "main");
-    let worker_id = make_worker(&mut proj, "park", "main", "t1");
+    let main_lead_id = make_lead(&mut proj, "main-lead", "main");
+    let web_lead_id = make_channel_lead(&mut proj, "web-lead", "web");
+    let worker_id = make_worker(&mut proj, "park", "web", "t1");
+    // Worker needs an in-progress task
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Fix bug".into(),
+        channel: "web".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: worker_id.clone(),
+    });
 
+    // @all from main channel should reach ALL leads + ALL in-progress task agents
     let cmds = route_message(&proj, "main", "user", "@all heads up!", None);
     let targets = nudge_targets(&cmds);
 
-    assert!(targets.contains(&lead_id), "@all should nudge lead");
-    assert!(targets.contains(&worker_id), "@all should nudge worker");
+    assert!(
+        targets.contains(&main_lead_id),
+        "@all should nudge main lead"
+    );
+    assert!(
+        targets.contains(&web_lead_id),
+        "@all in main should nudge OTHER channel leads too"
+    );
+    assert!(
+        targets.contains(&worker_id),
+        "@all in main should nudge task-bound workers across channels"
+    );
+}
+
+/// Spec 1.2: WHEN @all in topic channel THEN nudge channel lead AND agents
+/// in that channel bound to in-progress tasks, excluding sender
+#[test]
+fn at_all_in_topic_channel_nudges_local_lead_and_task_agents() {
+    let mut proj = Projections::default();
+    let _main_lead_id = make_lead(&mut proj, "main-lead", "main");
+    let web_lead_id = make_channel_lead(&mut proj, "web-lead", "web");
+    let web_worker_id = make_worker(&mut proj, "park", "web", "t1");
+    let _other_worker_id = make_worker(&mut proj, "amsterdam", "ops", "t2");
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Fix bug".into(),
+        channel: "web".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: web_worker_id.clone(),
+    });
+
+    // @all from #web should only reach web's lead + web's task workers
+    let cmds = route_message(&proj, "web", "user", "@all update please", None);
+    let targets = nudge_targets(&cmds);
+
+    assert!(
+        targets.contains(&web_lead_id),
+        "@all in topic should nudge topic lead"
+    );
+    assert!(
+        targets.contains(&web_worker_id),
+        "@all in topic should nudge local task-bound worker"
+    );
+    // Should NOT nudge main lead or ops worker
+    assert!(
+        !targets.iter().any(|t| t.contains("main-lead")),
+        "@all in topic should NOT nudge other channel leads"
+    );
+    assert!(
+        !targets.iter().any(|t| t.contains("amsterdam")),
+        "@all in topic should NOT nudge workers from other channels"
+    );
 }
 
 /// Spec 1.2: WHEN a message contains @lead THEN the system SHALL nudge the

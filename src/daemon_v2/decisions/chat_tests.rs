@@ -293,10 +293,35 @@ fn at_mention_nudges_stopped_agent() {
 }
 
 #[test]
-fn at_all_nudges_all_channel_agents() {
+fn at_all_nudges_leads_and_in_progress_task_agents() {
     let mut events = running_lead_events("main");
     events.extend(worker_events("w1", "ghost-town", "main", Some("t1")));
     events.extend(worker_events("w2", "swift-river", "main", Some("t2")));
+    // Tasks must be created and assigned for workers to count as "in-progress"
+    events.push(DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Task 1".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    });
+    events.push(DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "w1".into(),
+    });
+    events.push(DomainEvent::TaskCreated {
+        id: "t2".into(),
+        subject: "Task 2".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    });
+    events.push(DomainEvent::TaskAssigned {
+        task_id: "t2".into(),
+        agent_id: "w2".into(),
+    });
 
     let proj = make_projections(&events);
     let commands = route_message(&proj, "main", "alice", "@all please rebase", None);
@@ -317,6 +342,18 @@ fn at_all_nudges_all_channel_agents() {
 fn at_all_excludes_sender() {
     let mut events = running_lead_events("main");
     events.extend(worker_events("w1", "ghost-town", "main", Some("t1")));
+    events.push(DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Task 1".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    });
+    events.push(DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "w1".into(),
+    });
 
     let proj = make_projections(&events);
     // Sender is "main" — same as lead's name
