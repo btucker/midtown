@@ -24,6 +24,12 @@ pub struct Agent {
     pub stopped_at: Option<DateTime<Utc>>,
     pub icon: Option<String>,
     pub color: Option<String>,
+    /// Last reported state (e.g. "idle", "working")
+    #[serde(default)]
+    pub reported_state: Option<String>,
+    /// When the last state report was received
+    #[serde(default)]
+    pub state_reported_at: Option<DateTime<Utc>>,
     /// True when the agent has been garbage-collected (excluded from routing/dispatch)
     #[serde(default)]
     pub gc: bool,
@@ -69,6 +75,8 @@ impl AgentIndex {
                     stopped_at: None,
                     icon: icon.clone(),
                     color: color.clone(),
+                    reported_state: None,
+                    state_reported_at: None,
                     gc: false,
                 };
                 self.by_name.insert(name.clone(), id.clone());
@@ -106,6 +114,12 @@ impl AgentIndex {
                     agent.pid = None;
                     agent.stopped_at = Some(Utc::now());
                     self.running.remove(id);
+                }
+            }
+            DomainEvent::AgentStateReported { id, state } => {
+                if let Some(agent) = self.by_id.get_mut(id) {
+                    agent.reported_state = Some(state.clone());
+                    agent.state_reported_at = Some(Utc::now());
                 }
             }
             DomainEvent::AgentResumed { id, pid } => {

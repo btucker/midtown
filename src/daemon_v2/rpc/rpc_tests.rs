@@ -1057,3 +1057,40 @@ fn channel_read_excludes_thread_replies() {
         results
     );
 }
+
+/// Spec 2.2: coworker.report-state emits AgentStateReported event
+#[test]
+fn report_state_emits_event() {
+    let proj = projections_with_agents();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "coworker.report-state",
+        "id": 400,
+        "params": {"name": "ghost-town", "state": "idle"}
+    });
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        DomainEvent::AgentStateReported { id, state } => {
+            assert_eq!(id, "a1");
+            assert_eq!(state, "idle");
+        }
+        other => panic!("expected AgentStateReported, got {:?}", other),
+    }
+}
+
+/// Spec 2.2: coworker.report-state with unknown agent returns error
+#[test]
+fn report_state_unknown_agent_returns_error() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "coworker.report-state",
+        "id": 401,
+        "params": {"name": "nonexistent", "state": "idle"}
+    });
+    let (response, events, _) = dispatch_request(request, &proj, test_channels_dir());
+    assert_eq!(response["error"]["code"], -32001);
+    assert!(events.is_empty());
+}

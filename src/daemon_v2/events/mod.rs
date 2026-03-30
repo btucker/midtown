@@ -85,6 +85,10 @@ pub enum DomainEvent {
     AgentGarbageCollected {
         id: AgentId,
     },
+    AgentStateReported {
+        id: AgentId,
+        state: String,
+    },
     AgentSpawnFailed {
         name: String,
         agent_type: String,

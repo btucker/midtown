@@ -101,6 +101,25 @@ pub fn nudge_stale_workers(proj: &Projections) -> Vec<Command> {
         .collect()
 }
 
+/// Spec 2.2: stop workers that reported "idle" more than 2 minutes ago.
+pub fn stop_idle_reported_workers(proj: &Projections) -> Vec<Command> {
+    let cutoff = Utc::now() - chrono::Duration::minutes(2);
+    proj.agents
+        .running
+        .iter()
+        .filter_map(|id| proj.agents.by_id.get(id))
+        .filter(|a| a.kind == AgentKind::Worker)
+        .filter(|a| {
+            a.reported_state.as_deref() == Some("idle")
+                && a.state_reported_at.is_some_and(|t| t < cutoff)
+        })
+        .map(|a| Command::StopAgent {
+            id: a.id.clone(),
+            reason: "idle for more than 2 minutes".into(),
+        })
+        .collect()
+}
+
 /// Detect auth errors from session stderr (stub — requires stderr plumbing).
 /// Auth errors will cause session death, which `check_dead_workers` handles.
 pub fn check_auth_errors(_proj: &Projections) -> Vec<Command> {

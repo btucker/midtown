@@ -485,6 +485,40 @@ pub fn handle_channel_update(params: Option<&Value>) -> Result<Vec<DomainEvent>,
     Ok(events)
 }
 
+/// Handle `coworker.report-state` — records an agent's self-reported state.
+/// Spec 2.2: agents call this via `midtown state` to report idle/working status.
+pub fn handle_report_state(
+    params: Option<&Value>,
+    proj: &Projections,
+) -> Result<Vec<DomainEvent>, RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+
+    let name = params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: name"))?;
+
+    let state = params
+        .get("state")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: state"))?;
+
+    let agent_id = proj
+        .agents
+        .by_name
+        .get(name)
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: format!("agent not found: {name}"),
+        })?
+        .clone();
+
+    Ok(vec![DomainEvent::AgentStateReported {
+        id: agent_id,
+        state: state.to_string(),
+    }])
+}
+
 // ── v1 compatibility handlers ───────────────────────────────────────────
 
 /// Handle `task.done` (v1 alias) — marks a task as completed.

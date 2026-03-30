@@ -28,6 +28,8 @@ fn make_stopped_worker(id: &str, name: &str, hours_ago: i64) -> Agent {
         stopped_at: Some(Utc::now() - Duration::hours(hours_ago)),
         icon: None,
         color: None,
+        reported_state: None,
+        state_reported_at: None,
         gc: false,
     }
 }
@@ -48,6 +50,8 @@ fn make_stopped_lead(id: &str, name: &str, hours_ago: i64) -> Agent {
         stopped_at: Some(Utc::now() - Duration::hours(hours_ago)),
         icon: None,
         color: None,
+        reported_state: None,
+        state_reported_at: None,
         gc: false,
     }
 }

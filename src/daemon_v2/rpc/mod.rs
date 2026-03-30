@@ -119,6 +119,17 @@ pub fn dispatch_request(
             }
             Err(err) => (err.to_json(&id), vec![], vec![]),
         },
+        // coworker.report-state — record the agent's self-reported state
+        "coworker.report-state" => {
+            let result = handlers::handle_report_state(params, proj);
+            match result {
+                Ok(events) => {
+                    let response = json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id });
+                    (response, events, vec![])
+                }
+                Err(err) => (err.to_json(&id), vec![], vec![]),
+            }
+        }
         // v1 alias: coworker.nudge — nudge an agent by name
         "coworker.nudge" => match handlers::handle_agent_nudge(params, proj) {
             Ok(commands) => {
@@ -156,7 +167,6 @@ pub fn dispatch_request(
                 | "reminder.cancel"
                 | "workflow.set_state"
                 | "workflow.list"
-                | "coworker.report-state"
                 | "session.detach"
                 | "task.update"
                 | "task.prompt"

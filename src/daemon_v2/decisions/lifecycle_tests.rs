@@ -26,6 +26,8 @@ fn make_agent(
         stopped_at,
         icon: None,
         color: None,
+        reported_state: None,
+        state_reported_at: None,
         gc: false,
     }
 }

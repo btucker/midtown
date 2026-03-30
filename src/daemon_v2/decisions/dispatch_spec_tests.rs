@@ -565,6 +565,150 @@ fn task_dispatched_after_blocker_unblocked() {
     );
 }
 
+// ── Idle State Reporting ────────────────────────────────────────────────────
+
+/// Spec 2.2: WHEN a worker reports its state as idle via midtown state THEN the
+/// system SHALL stop it after 2 minutes if it remains idle
+#[test]
+fn idle_reported_worker_stopped_after_2_minutes() {
+    use crate::daemon_v2::decisions::health::stop_idle_reported_workers;
+    use chrono::{Duration, Utc};
+
+    let mut proj = Projections::default();
+
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Idle task".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "idle-hawk".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 1234,
+        session_id: Some("sess-idle".into()),
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "w1".into(),
+    });
+
+    // Report idle state
+    proj.apply(&DomainEvent::AgentStateReported {
+        id: "w1".into(),
+        state: "idle".into(),
+    });
+
+    // Backdate the state report to 3 minutes ago
+    proj.agents.by_id.get_mut("w1").unwrap().state_reported_at =
+        Some(Utc::now() - Duration::minutes(3));
+
+    let commands = stop_idle_reported_workers(&proj);
+    assert_eq!(
+        commands.len(),
+        1,
+        "idle worker should be stopped after 2 minutes"
+    );
+    assert!(matches!(&commands[0], Command::StopAgent { id, .. } if id == "w1"));
+}
+
+/// Spec 2.2: worker that just reported idle should NOT be stopped yet
+#[test]
+fn recently_idle_worker_not_stopped() {
+    use crate::daemon_v2::decisions::health::stop_idle_reported_workers;
+
+    let mut proj = Projections::default();
+
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "fresh-idle".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 1234,
+        session_id: Some("sess-fresh-idle".into()),
+    });
+
+    // Report idle just now
+    proj.apply(&DomainEvent::AgentStateReported {
+        id: "w1".into(),
+        state: "idle".into(),
+    });
+
+    let commands = stop_idle_reported_workers(&proj);
+    assert!(
+        commands.is_empty(),
+        "recently idle worker should NOT be stopped yet"
+    );
+}
+
+/// Spec 2.2: worker reporting "working" should NOT be stopped
+#[test]
+fn working_reported_worker_not_stopped() {
+    use crate::daemon_v2::decisions::health::stop_idle_reported_workers;
+    use chrono::{Duration, Utc};
+
+    let mut proj = Projections::default();
+
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "working-hawk".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 1234,
+        session_id: Some("sess-working".into()),
+    });
+
+    // Report working state (not idle)
+    proj.apply(&DomainEvent::AgentStateReported {
+        id: "w1".into(),
+        state: "working".into(),
+    });
+
+    // Backdate to 5 minutes ago
+    proj.agents.by_id.get_mut("w1").unwrap().state_reported_at =
+        Some(Utc::now() - Duration::minutes(5));
+
+    let commands = stop_idle_reported_workers(&proj);
+    assert!(
+        commands.is_empty(),
+        "worker reporting 'working' should NOT be stopped"
+    );
+}
+
 // ── Stale Worker Nudging ───────────────────────────────────────────────────
 
 /// Spec 2.2: WHEN a worker has not reported a state change for 5 minutes
