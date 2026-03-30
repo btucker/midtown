@@ -353,7 +353,7 @@
 - ~~Webhook forwarder watchdog (`gh webhook forward` process management)~~ — **Implemented**
 - ~~Background chat monitor (tail loop on channel JSONL for ambient mention routing)~~ — **Implemented**
 - ~~GitHub API rate limit monitoring and adaptive throttling~~ — **Implemented** (checks `gh api rate_limit`, skips polling when <10% remaining)
-- Auth profile pooling (multi-account rotation)
+- ~~Auth profile pooling (multi-account rotation)~~ — **Partially Implemented** (auth.profiles lists real profiles, auth.switch changes active; auto-rotation not yet)
 
 ### Important
 - ~~Reminder system (cron + all-work-merged triggers)~~ — **Implemented** (reminder.create/list/cancel RPC + event sourced)
@@ -366,7 +366,7 @@
 - ~~Channel rename/merge~~ — **Implemented** (channel.rename RPC, merge not yet)
 - ~~Oneshot execute~~ — **Implemented** (oneshot.execute spawns a one-off worker with prompt)
 - ~~Daemon exec-restart / draining mode~~ — **Partially Implemented** (daemon.set-draining stops new dispatch, exec-restart not yet)
-- Push notifications (VAPID web push delivery)
+- ~~Push notifications (VAPID web push delivery)~~ — **Implemented** (vapid-key, subscribe, unsubscribe routes using PushManager)
 - ~~RPC response caching~~ — **Implemented** (2s TTL cache for read-only methods, invalidated on mutations)
 
 ---

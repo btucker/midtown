@@ -251,14 +251,37 @@ pub async fn workflow(Query(params): Query<HashMap<String, String>>) -> Json<Val
 }
 
 pub async fn auth_profiles(Query(params): Query<AuthProfilesParams>) -> Json<Value> {
-    // Return current auth profile so AccountPanel renders
-    let provider = params.provider.as_deref().unwrap_or("claude");
-    Json(json!([{
-        "name": "default",
-        "is_current": true,
-        "has_credentials": true,
-        "provider": provider,
-    }]))
+    let provider_str = params.provider.as_deref().unwrap_or("claude");
+    let auth_provider = match provider_str {
+        "codex" => crate::auth::AuthProvider::Codex,
+        _ => crate::auth::AuthProvider::Claude,
+    };
+
+    let current = crate::auth::current_profile_for(auth_provider);
+    let profiles = crate::auth::list_profiles_for(auth_provider).unwrap_or_default();
+
+    let result: Vec<Value> = if profiles.is_empty() {
+        vec![json!({
+            "name": "default",
+            "is_current": true,
+            "has_credentials": true,
+            "provider": provider_str,
+        })]
+    } else {
+        profiles
+            .iter()
+            .map(|name| {
+                json!({
+                    "name": name,
+                    "is_current": name == &current,
+                    "has_credentials": true,
+                    "provider": provider_str,
+                })
+            })
+            .collect()
+    };
+
+    Json(json!(result))
 }
 
 #[derive(Deserialize)]
@@ -640,12 +663,19 @@ pub async fn auth_switch(Json(body): Json<Value>) -> Json<Value> {
         .get("profile")
         .and_then(|v| v.as_str())
         .unwrap_or("default");
-    let provider = body
+    let provider_str = body
         .get("provider")
         .and_then(|v| v.as_str())
         .unwrap_or("claude");
-    tracing::info!(%profile, %provider, "auth switch requested");
-    Json(json!({"ok": true, "profile": profile, "provider": provider}))
+    let auth_provider = match provider_str {
+        "codex" => crate::auth::AuthProvider::Codex,
+        _ => crate::auth::AuthProvider::Claude,
+    };
+    tracing::info!(%profile, %provider_str, "auth switch requested");
+    match crate::auth::set_current_profile_for(auth_provider, profile) {
+        Ok(()) => Json(json!({"ok": true, "profile": profile, "provider": provider_str})),
+        Err(e) => Json(json!({"ok": false, "error": format!("{e}")})),
+    }
 }
 
 pub async fn auth_login(Json(body): Json<Value>) -> Json<Value> {
