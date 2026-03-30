@@ -551,7 +551,16 @@ impl DaemonV2 {
                 None => Box::pin(std::future::pending()),
             };
 
+            // Spec 8.1: biased select prioritizes RPC/web commands over the
+            // scheduler tick, ensuring user messages are dispatched within 5s.
             tokio::select! {
+                biased;
+
+                // Commands from the web layer — highest priority (user-initiated)
+                Some(cmd) = web_cmd_rx.recv() => {
+                    self.dispatch_command(cmd).await;
+                }
+
                 accept_result = listener.accept() => {
                     match accept_result {
                         Ok((stream, _addr)) => {
@@ -603,11 +612,6 @@ impl DaemonV2 {
                             self.webhook_rx = None;
                         }
                     }
-                }
-
-                // Commands from the web layer (e.g., nudge after user message)
-                Some(cmd) = web_cmd_rx.recv() => {
-                    self.dispatch_command(cmd).await;
                 }
 
                 // Results from background executor tasks (spawns, stops, PR polls, etc.)
