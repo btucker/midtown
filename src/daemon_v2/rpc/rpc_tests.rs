@@ -898,3 +898,55 @@ fn channel_post_defaults_channel_when_missing() {
         response
     );
 }
+
+/// Spec 4.5: WHEN a fork is spawned THEN it SHALL inherit the parent lead's
+/// session context by using fork_from_session
+#[test]
+fn session_fork_inherits_parent_lead_session() {
+    let mut proj = Projections::default();
+    // Create a running lead with a session_id
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "lead-1".into(),
+        name: "web-lead".into(),
+        kind: AgentKind::Lead,
+        agent_type: "midtown-channel-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("web".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "lead-1".into(),
+        pid: 9000,
+        session_id: Some("parent-sess-abc".into()),
+    });
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "session.fork",
+        "id": 40,
+        "params": {
+            "thread_parent_id": "thread-fork-test",
+            "channel": "web",
+            "message": "investigate this"
+        }
+    });
+    let (_response, _events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert_eq!(commands.len(), 1);
+
+    match &commands[0] {
+        crate::daemon_v2::decisions::Command::SpawnAgent(cfg) => {
+            assert_eq!(
+                cfg.fork_from_session.as_deref(),
+                Some("parent-sess-abc"),
+                "fork should inherit parent lead's session_id via fork_from_session"
+            );
+        }
+        other => panic!("expected SpawnAgent, got {:?}", other),
+    }
+}
+
+// Spec 4.5: fork returns existing fork (tested in session_fork_returns_existing_running_fork)
+// Spec 11.3: message→content transformation (tested in daemon-v2-live.spec.js E2E)
