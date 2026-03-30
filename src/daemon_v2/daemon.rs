@@ -452,6 +452,23 @@ impl DaemonV2 {
             }
         }
 
+        // Start the background chat monitor for @mention routing.
+        let chat_monitor_enabled = std::env::var("MIDTOWN_CHAT_MONITOR")
+            .map(|v| v != "0")
+            .unwrap_or(true);
+        if chat_monitor_enabled {
+            let (_chat_shutdown_tx, chat_shutdown_rx) = tokio::sync::watch::channel(false);
+            crate::daemon_v2::chat_monitor::start_monitors(
+                &self.config.channels_dir,
+                &self.config.default_channel,
+                self.projections.clone(),
+                web_cmd_tx.clone(),
+                chat_shutdown_rx,
+            )
+            .await;
+            tracing::info!("chat monitor started");
+        }
+
         // Resume agents that were running before the daemon restarted.
         for cmd in std::mem::take(&mut self.pending_resumes) {
             let events = {
