@@ -1119,3 +1119,79 @@ fn report_state_unknown_agent_returns_error() {
     assert_eq!(response["error"]["code"], -32001);
     assert!(events.is_empty());
 }
+
+// ── Integration: channel.post → channel.read roundtrip ──────────────────
+
+/// Spec 5.3 + 10.1: message posted via channel.post is readable via channel.read
+#[test]
+fn channel_post_then_read_roundtrip() {
+    let proj = Projections::default();
+    let dir = tempfile::TempDir::new().unwrap();
+
+    // Post a message
+    let post_request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.post",
+        "id": 500,
+        "params": {
+            "channel": "roundtrip",
+            "sender": "alice",
+            "content": "hello roundtrip",
+        }
+    });
+    let (post_response, events, _) = dispatch_request(post_request, &proj, dir.path());
+    assert!(post_response["error"].is_null(), "post should succeed");
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], DomainEvent::MessagePosted { .. }));
+
+    // Read it back
+    let read_request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.read",
+        "id": 501,
+        "params": { "channel": "roundtrip" }
+    });
+    let (read_response, _, _) = dispatch_request(read_request, &proj, dir.path());
+    assert!(read_response["error"].is_null(), "read should succeed");
+    let messages = read_response["result"].as_array().unwrap();
+    assert_eq!(messages.len(), 1, "should have 1 message");
+    assert_eq!(messages[0]["from"], "alice");
+    assert_eq!(messages[0]["message"], "hello roundtrip");
+}
+
+/// Spec 5.3: channel.read with limit returns last N messages
+#[test]
+fn channel_read_with_limit() {
+    let proj = Projections::default();
+    let dir = tempfile::TempDir::new().unwrap();
+
+    // Post 5 messages
+    for i in 1..=5 {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "channel.post",
+            "id": i,
+            "params": {
+                "channel": "limit-test",
+                "sender": "user",
+                "content": format!("msg {i}"),
+            }
+        });
+        let (response, _, _) = dispatch_request(request, &proj, dir.path());
+        assert!(response["error"].is_null());
+    }
+
+    // Read with limit 2 — should get last 2
+    let read_request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.read",
+        "id": 100,
+        "params": { "channel": "limit-test", "limit": 2 }
+    });
+    let (response, _, _) = dispatch_request(read_request, &proj, dir.path());
+    assert!(response["error"].is_null());
+    let messages = response["result"].as_array().unwrap();
+    assert_eq!(messages.len(), 2, "should return last 2 messages");
+    assert_eq!(messages[0]["message"], "msg 4");
+    assert_eq!(messages[1]["message"], "msg 5");
+}
