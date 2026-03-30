@@ -1,6 +1,6 @@
 <script lang="ts">
 import { onMount } from "svelte";
-import { fetchAllAuthProfiles, pollAuthLoginStatus, startAuthLogin, switchAuthProfile } from "./api.ts";
+import { fetchAllAuthProfiles, startAuthLogin, submitAuthCode, switchAuthProfile } from "./api";
 import { authProfilesByProvider, authSwitching, usageData } from "./store.ts";
 import { estimateTimeToFull, formatResetTime, usageColor } from "./usage-utils.ts";
 
@@ -11,7 +11,9 @@ let switchingKey = $state(null);
 let error = $state(null);
 let showAddHint = $state(false);
 let loginKey = $state(null);
-let loginPending = $state(false);
+let showCodeInput = $state(false);
+let authCode = $state("");
+let submittingCode = $state(false);
 
 async function handleLogin(profileName, provider, event) {
 	event.stopPropagation();
@@ -19,12 +21,9 @@ async function handleLogin(profileName, provider, event) {
 	error = null;
 	const result = await startAuthLogin(profileName, provider);
 	if (result.ok && result.url) {
-		// Open OAuth URL in new window
 		window.open(result.url, "_blank");
+		showCodeInput = true;
 		loginKey = null;
-		loginPending = true;
-		// Poll for completion
-		pollForCompletion();
 	} else {
 		loginKey = null;
 		error = result.error || "Failed to start login";
@@ -34,29 +33,22 @@ async function handleLogin(profileName, provider, event) {
 	}
 }
 
-async function pollForCompletion() {
-	for (let i = 0; i < 60; i++) {
-		await new Promise((r) => setTimeout(r, 5000));
-		const status = await pollAuthLoginStatus();
-		if (status.status === "complete") {
-			loginPending = false;
-			fetchAllAuthProfiles();
-			return;
-		}
-		if (status.status === "failed") {
-			loginPending = false;
-			error = "Login failed";
-			setTimeout(() => {
-				error = null;
-			}, 5000);
-			return;
-		}
+async function handleCodeSubmit() {
+	if (!authCode.trim()) return;
+	submittingCode = true;
+	error = null;
+	const result = await submitAuthCode(authCode.trim());
+	submittingCode = false;
+	showCodeInput = false;
+	authCode = "";
+	if (result.ok) {
+		setTimeout(() => fetchAllAuthProfiles(), 1000);
+	} else {
+		error = result.error || "Code submission failed";
+		setTimeout(() => {
+			error = null;
+		}, 5000);
 	}
-	loginPending = false;
-	error = "Login timed out";
-	setTimeout(() => {
-		error = null;
-	}, 5000);
 }
 
 onMount(() => {
@@ -270,8 +262,30 @@ async function handleRowClick(profile) {
   </div>
 {/if}
 
-{#if loginPending}
-  <div class="fixed bottom-16 left-4 z-50 bg-popover border border-border rounded-lg px-3 py-2 shadow-lg text-xs text-muted-foreground flex items-center gap-2">
-    <span class="animate-spin">⟳</span> Waiting for login to complete in browser...
+{#if showCodeInput}
+  <div class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onclick={() => { showCodeInput = false; authCode = ""; }}>
+    <div class="bg-popover border border-border rounded-lg p-4 w-full max-w-sm shadow-lg" onclick={(e) => e.stopPropagation()}>
+      <h3 class="text-sm font-medium mb-2">Paste Authorization Code</h3>
+      <p class="text-xs text-muted-foreground mb-3">Complete sign-in in the browser window, copy the code from the page, and paste it here.</p>
+      <input
+        type="text"
+        bind:value={authCode}
+        placeholder="Paste code here..."
+        class="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+        onkeydown={(e) => { if (e.key === "Enter") handleCodeSubmit(); }}
+        autofocus
+      />
+      <div class="flex gap-2 mt-3 justify-end">
+        <button
+          class="px-3 py-1 text-xs rounded border border-border hover:bg-muted"
+          onclick={() => { showCodeInput = false; authCode = ""; }}
+        >Cancel</button>
+        <button
+          class="px-3 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+          disabled={submittingCode || !authCode.trim()}
+          onclick={handleCodeSubmit}
+        >{submittingCode ? "Submitting..." : "Submit"}</button>
+      </div>
+    </div>
   </div>
 {/if}

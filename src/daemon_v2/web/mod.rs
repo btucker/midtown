@@ -17,8 +17,8 @@ pub struct WebState {
     /// Channel for sending commands from the web layer to the daemon event loop.
     /// Used when WS messages need to trigger agent nudges (e.g., user posts a message).
     pub command_tx: tokio::sync::mpsc::Sender<crate::daemon_v2::decisions::Command>,
-    /// Pending OAuth login result (set when `claude auth login` background process completes).
-    pub pending_auth_login: Arc<Mutex<Option<routes::AuthLoginResult>>>,
+    /// Pending OAuth login process (holds child stdin for code submission).
+    pub pending_auth_login: Arc<Mutex<Option<routes::AuthLoginProcess>>>,
 }
 
 pub fn create_router(state: Arc<WebState>) -> Router {
@@ -63,7 +63,7 @@ pub fn create_router(state: Arc<WebState>) -> Router {
         .route("/api/auth/profiles", get(routes::auth_profiles))
         .route("/api/auth/switch", post(routes::auth_switch))
         .route("/api/auth/login", post(routes::auth_login))
-        .route("/api/auth/login/status", get(routes::auth_login_status))
+        .route("/api/auth/login/code", post(routes::auth_login_code))
         .route("/api/upload", post(routes::upload))
         .route("/api/uploads/{filename}", get(routes::upload_get))
         .route("/api/workflow", get(routes::workflow))

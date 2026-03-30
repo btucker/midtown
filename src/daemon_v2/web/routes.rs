@@ -680,10 +680,8 @@ pub async fn auth_switch(Json(body): Json<Value>) -> Json<Value> {
 
 /// Start OAuth login flow. Spawns `BROWSER=false claude auth login`, captures
 /// the OAuth URL from stdout, and holds the process for code submission.
-/// Start OAuth login flow. Spawns `BROWSER=false claude auth login`, captures
-/// the OAuth URL, and runs the process in the background. The CLI polls the
-/// auth server — when the user completes OAuth in the browser, the process
-/// exits and credentials are saved automatically.
+/// Start OAuth login flow. Uses a Python helper to allocate a PTY (the CLI
+/// requires a TTY to read the authorization code from stdin).
 pub async fn auth_login(
     State(state): State<Arc<WebState>>,
     Json(body): Json<Value>,
@@ -694,12 +692,19 @@ pub async fn auth_login(
         .unwrap_or("claude");
     tracing::info!(%provider, "auth login requested — starting OAuth flow");
 
-    // Spawn claude auth login with BROWSER=false — it outputs the OAuth URL
-    // then polls the auth server until the user completes the flow in the browser
-    let mut child = match tokio::process::Command::new("claude")
-        .args(["auth", "login"])
-        .env("BROWSER", "false")
-        .stdin(std::process::Stdio::null())
+    // Spawn claude auth login with piped stdin/stdout.
+    // Use `script` to allocate a PTY so the CLI reads from stdin.
+    let mut child = match tokio::process::Command::new("script")
+        .args([
+            "-q",
+            "/dev/null",
+            "env",
+            "BROWSER=false",
+            "claude",
+            "auth",
+            "login",
+        ])
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -710,7 +715,7 @@ pub async fn auth_login(
         }
     };
 
-    // Read stdout+stderr to find the OAuth URL (with timeout)
+    // Read stdout to find the OAuth URL
     let mut output = String::new();
     if let Some(mut stdout) = child.stdout.take() {
         use tokio::io::AsyncReadExt;
@@ -745,51 +750,60 @@ pub async fn auth_login(
         );
     };
 
-    // Run the process in background — it polls until OAuth completes
-    let pending = state.pending_auth_login.clone();
-    tokio::spawn(async move {
-        match tokio::time::timeout(std::time::Duration::from_secs(300), child.wait()).await {
-            Ok(Ok(status)) => {
-                tracing::info!(%status, "auth login completed");
-                let mut p = pending.lock().await;
-                *p = Some(AuthLoginResult {
-                    success: status.success(),
-                });
-            }
-            Ok(Err(e)) => {
-                tracing::warn!(%e, "auth login error");
-                let mut p = pending.lock().await;
-                *p = Some(AuthLoginResult { success: false });
-            }
-            Err(_) => {
-                tracing::warn!("auth login timed out (5min)");
-                let _ = child.kill().await;
-                let mut p = pending.lock().await;
-                *p = Some(AuthLoginResult { success: false });
-            }
-        }
-    });
+    // Hold the child process (with stdin) for code submission
+    let stdin = child.stdin.take();
+    {
+        let mut pending = state.pending_auth_login.lock().await;
+        *pending = Some(AuthLoginProcess { child, stdin });
+    }
 
     Json(json!({"ok": true, "url": url}))
 }
 
-/// Poll whether a pending auth login has completed.
-/// Returns {"status": "pending"} while waiting, {"status": "complete"} on success,
-/// or {"status": "failed"} on error.
-pub async fn auth_login_status(State(state): State<Arc<WebState>>) -> Json<Value> {
+/// Submit the OAuth code to the waiting `claude auth login` process.
+pub async fn auth_login_code(
+    State(state): State<Arc<WebState>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let code = match body.get("code").and_then(|v| v.as_str()) {
+        Some(c) if !c.trim().is_empty() => c.trim().to_string(),
+        _ => return Json(json!({"ok": false, "error": "Missing code"})),
+    };
+
     let mut pending = state.pending_auth_login.lock().await;
-    match pending.as_ref() {
-        Some(result) => {
-            let status = if result.success { "complete" } else { "failed" };
-            let result = pending.take();
-            Json(json!({"status": status, "ok": result.map(|r| r.success).unwrap_or(false)}))
+    let Some(mut process) = pending.take() else {
+        return Json(json!({"ok": false, "error": "No pending auth login"}));
+    };
+
+    // Write code to stdin
+    if let Some(ref mut stdin) = process.stdin {
+        use tokio::io::AsyncWriteExt;
+        if let Err(e) = stdin.write_all(format!("{code}\n").as_bytes()).await {
+            return Json(json!({"ok": false, "error": format!("Failed to send code: {e}")}));
         }
-        None => Json(json!({"status": "pending"})),
+        let _ = stdin.flush().await;
+    }
+
+    // Wait for process to complete (up to 30s)
+    match tokio::time::timeout(std::time::Duration::from_secs(30), process.child.wait()).await {
+        Ok(Ok(status)) if status.success() => {
+            tracing::info!("auth login completed successfully");
+            Json(json!({"ok": true}))
+        }
+        Ok(Ok(status)) => {
+            Json(json!({"ok": false, "error": format!("auth login exited with {status}")}))
+        }
+        Ok(Err(e)) => Json(json!({"ok": false, "error": format!("auth login error: {e}")})),
+        Err(_) => {
+            let _ = process.child.kill().await;
+            Json(json!({"ok": false, "error": "auth login timed out"}))
+        }
     }
 }
 
-pub struct AuthLoginResult {
-    pub success: bool,
+pub struct AuthLoginProcess {
+    pub child: tokio::process::Child,
+    pub stdin: Option<tokio::process::ChildStdin>,
 }
 
 pub async fn webhook_handler(
