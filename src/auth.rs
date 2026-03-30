@@ -500,10 +500,13 @@ fn merge_dir_recursive_missing(
 /// Set up a Claude profile directory with symlinks to shared storage.
 ///
 /// This ensures:
-/// 1. The profile directory exists at `~/.midtown/auth/<profile>/claude/`
+/// 1. The profile directory exists at `~/.midtown/platforms/claude/<profile>/`
 /// 2. `.claude.json` in that directory is a real file (never symlinked)
-/// 3. Only explicit shared entries are symlinked to `~/.midtown/platforms/claude/`
-/// 4. The shared storage directory exists
+/// 3. Only explicit shared entries are symlinked to `../shared/<entry>` (relative)
+/// 4. The shared storage directory exists at `~/.midtown/platforms/claude/shared/`
+///
+/// Symlinks use relative targets (`../shared/<entry>`) so they remain valid even
+/// if the base directory is relocated (e.g., in tests or alternate installs).
 ///
 /// This is called both at profile creation and at launch time to pick up new
 /// shared files that may have appeared.
@@ -540,11 +543,13 @@ fn setup_claude_profile_symlinks(profile_name: &str) -> std::io::Result<()> {
         }
 
         let shared_path = shared_dir.join(&name);
+        let relative_target = PathBuf::from("../shared").join(name_str.as_ref());
 
         if metadata.file_type().is_symlink() {
-            // Keep valid symlinks; stale/wrong symlinks will be recreated below.
+            // Keep valid relative symlinks; remove stale/wrong/absolute symlinks
+            // so they get recreated below.
             if let Ok(existing_target) = std::fs::read_link(&profile_path)
-                && existing_target == shared_path
+                && existing_target == relative_target
                 && shared_path.exists()
             {
                 continue;
@@ -553,6 +558,7 @@ fn setup_claude_profile_symlinks(profile_name: &str) -> std::io::Result<()> {
             continue;
         }
 
+        // Real file/directory in profile for a shared entry — promote to shared storage.
         if !shared_path.exists() {
             if std::fs::rename(&profile_path, &shared_path).is_err() {
                 if profile_path.is_dir() {
@@ -578,12 +584,14 @@ fn setup_claude_profile_symlinks(profile_name: &str) -> std::io::Result<()> {
         }
     }
 
-    // Second pass: ensure the explicit shared entry list is symlinked.
-    for name_str in CLAUDE_SHARED_SYMLINK_ENTRIES {
-        let link_path = profile_dir.join(name_str);
-        let target = shared_dir.join(name_str);
+    // Second pass: ensure the explicit shared entry list is symlinked using
+    // relative targets (../shared/<entry>).
+    for entry_name in CLAUDE_SHARED_SYMLINK_ENTRIES {
+        let link_path = profile_dir.join(entry_name);
+        let shared_path = shared_dir.join(entry_name);
+        let relative_target = PathBuf::from("../shared").join(entry_name);
 
-        if !target.exists() {
+        if !shared_path.exists() {
             // Remove stale symlinks for allowlisted entries if target is absent.
             if link_path
                 .symlink_metadata()
@@ -594,10 +602,10 @@ fn setup_claude_profile_symlinks(profile_name: &str) -> std::io::Result<()> {
             continue;
         }
 
-        // If the link already exists and points to the right place, skip it.
+        // If the link already exists and points to the right relative target, skip it.
         if (link_path.exists() || link_path.symlink_metadata().is_ok())
             && let Ok(existing_target) = std::fs::read_link(&link_path)
-            && existing_target == target
+            && existing_target == relative_target
         {
             continue;
         }
@@ -619,7 +627,7 @@ fn setup_claude_profile_symlinks(profile_name: &str) -> std::io::Result<()> {
                     let _ = std::fs::remove_file(&link_path);
                 }
             }
-            std::os::unix::fs::symlink(&target, &link_path)?;
+            std::os::unix::fs::symlink(&relative_target, &link_path)?;
         }
 
         #[cfg(not(unix))]

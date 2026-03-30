@@ -263,14 +263,17 @@ fn test_setup_claude_profile_symlinks() {
             "settings.json symlink should exist"
         );
 
-        // Verify symlinks point to shared storage
+        // Verify symlinks use relative ../shared/ targets
         #[cfg(unix)]
         {
             let tasks_target = std::fs::read_link(&tasks_link).unwrap();
-            assert_eq!(tasks_target, shared.join("tasks"));
+            assert_eq!(tasks_target, std::path::PathBuf::from("../shared/tasks"));
 
             let settings_target = std::fs::read_link(&settings_link).unwrap();
-            assert_eq!(settings_target, shared.join("settings.json"));
+            assert_eq!(
+                settings_target,
+                std::path::PathBuf::from("../shared/settings.json")
+            );
         }
 
         // Clean up profile dir only — don't remove shared storage
@@ -322,7 +325,7 @@ fn test_setup_claude_profile_symlinks_only_uses_allowlist() {
             );
             assert_eq!(
                 std::fs::read_link(dir_link).unwrap(),
-                shared.join("plugins")
+                std::path::PathBuf::from("../shared/plugins")
             );
         }
 
@@ -470,5 +473,44 @@ fn test_directory_replaced_with_symlink() {
         // Clean up
         let _ = std::fs::remove_dir_all(profile_dir.parent().unwrap());
         let _ = std::fs::remove_dir_all(shared.join("tasks"));
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinks_point_to_shared_sibling() {
+    with_isolated_midtown_base_dir(|| {
+        // Create shared dir with test entries
+        let shared = shared_provider_storage_dir(AuthProvider::Claude).unwrap();
+        std::fs::create_dir_all(shared.join("agents")).unwrap();
+        std::fs::write(shared.join("settings.json"), "{}").unwrap();
+
+        // Run setup
+        ensure_profile_dir_for(AuthProvider::Claude, "test-profile").unwrap();
+
+        let profile = profile_dir_for(AuthProvider::Claude, "test-profile");
+        assert!(profile.exists(), "profile dir should exist");
+
+        // Check symlinks point to ../shared/
+        let agents_link = profile.join("agents");
+        assert!(agents_link.is_symlink(), "agents should be a symlink");
+        let target = std::fs::read_link(&agents_link).unwrap();
+        assert_eq!(
+            target,
+            std::path::PathBuf::from("../shared/agents"),
+            "symlink should use relative ../shared/ target"
+        );
+
+        let settings_link = profile.join("settings.json");
+        assert!(
+            settings_link.is_symlink(),
+            "settings.json should be a symlink"
+        );
+        let settings_target = std::fs::read_link(&settings_link).unwrap();
+        assert_eq!(
+            settings_target,
+            std::path::PathBuf::from("../shared/settings.json"),
+            "symlink should use relative ../shared/ target"
+        );
     });
 }
