@@ -198,12 +198,29 @@ pub fn dispatch_request(
                 | "reminder.cancel"
                 | "workflow.set_state"
                 | "workflow.list"
-                | "task.update"
-                | "pr.review"
-                | "pr.merge"
                 | "pr.list-external"
                 | "pr.allow"
                 | "daemon.check-pending" => Ok(json!({"ok": true, "stub": true})),
+                // pr.merge and pr.review are shortcuts for pr.action
+                "pr.merge" => {
+                    // Transform into pr.action merge
+                    let number = params
+                        .and_then(|p| p.get("number"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let merged = json!({"action": "merge", "number": number});
+                    match handlers::handle_pr_action(Some(&merged), proj) {
+                        Ok(commands) => {
+                            return (
+                                json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id }),
+                                vec![],
+                                commands,
+                            );
+                        }
+                        Err(err) => return (err.to_json(&id), vec![], vec![]),
+                    }
+                }
+                "pr.review" => Ok(json!({"ok": true, "stub": true})),
                 _ => Err(RpcError::method_not_found()),
             };
             let response = match result {

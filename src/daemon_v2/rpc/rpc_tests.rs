@@ -1491,3 +1491,27 @@ fn oneshot_execute_spawns_worker() {
         other => panic!("expected SpawnAgent, got {:?}", other),
     }
 }
+
+// ── pr.merge shortcut ───────────────────────────────────────────────────
+
+/// pr.merge is a shortcut for pr.action with action=merge
+#[test]
+fn pr_merge_shortcut() {
+    let proj = projections_with_tasks_and_prs();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "pr.merge",
+        "id": 950,
+        "params": { "number": 42 }
+    });
+    let (response, _, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null(), "pr.merge error: {response}");
+    assert_eq!(commands.len(), 1);
+    assert!(
+        matches!(
+            &commands[0],
+            crate::daemon_v2::decisions::Command::MergePr { number } if *number == 42
+        ),
+        "should produce MergePr command"
+    );
+}
