@@ -352,7 +352,7 @@
 ### Critical
 - ~~Webhook forwarder watchdog (`gh webhook forward` process management)~~ — **Implemented**
 - ~~Background chat monitor (tail loop on channel JSONL for ambient mention routing)~~ — **Implemented**
-- GitHub API rate limit monitoring and adaptive throttling
+- ~~GitHub API rate limit monitoring and adaptive throttling~~ — **Implemented** (checks `gh api rate_limit`, skips polling when <10% remaining)
 - Auth profile pooling (multi-account rotation)
 
 ### Important

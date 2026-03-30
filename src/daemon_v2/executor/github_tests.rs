@@ -383,3 +383,64 @@ fn diff_detects_ci_status_change() {
         }
     ));
 }
+
+// ── Section 15 Critical: Rate Limit Monitoring ──────────────────────────
+
+/// parse_rate_limit extracts remaining/limit/reset from GitHub API response
+#[test]
+fn parse_rate_limit_extracts_fields() {
+    let json = json!({
+        "resources": {
+            "core": {
+                "limit": 5000,
+                "remaining": 4999,
+                "reset": 1999999999u64,
+                "used": 1
+            }
+        }
+    });
+    let status = parse_rate_limit(&json).expect("should parse");
+    assert_eq!(status.limit, 5000);
+    assert_eq!(status.remaining, 4999);
+}
+
+/// should_throttle returns true when remaining < 10% of limit
+#[test]
+fn throttle_when_remaining_below_10_percent() {
+    let status = RateLimitStatus {
+        remaining: 400,
+        limit: 5000,
+        reset_in_secs: 3600,
+    };
+    // 10% of 5000 = 500, remaining 400 < 500 → should throttle
+    assert!(
+        should_throttle(&status),
+        "400/5000 is below 10% threshold (500)"
+    );
+}
+
+#[test]
+fn no_throttle_when_remaining_above_threshold() {
+    let status = RateLimitStatus {
+        remaining: 4000,
+        limit: 5000,
+        reset_in_secs: 3600,
+    };
+    assert!(
+        !should_throttle(&status),
+        "4000/5000 is well above 10% threshold"
+    );
+}
+
+#[test]
+fn throttle_when_nearly_exhausted() {
+    let status = RateLimitStatus {
+        remaining: 10,
+        limit: 5000,
+        reset_in_secs: 300,
+    };
+    assert!(
+        should_throttle(&status),
+        "10/5000 is well below 10% threshold"
+    );
+}

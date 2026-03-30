@@ -247,3 +247,72 @@ pub async fn fetch_merged_prs() -> Result<Vec<ParsedMergedPr>, String> {
 
     Ok(parse_merged_prs(&json))
 }
+
+/// Rate limit status from GitHub API.
+#[derive(Debug, Clone)]
+pub struct RateLimitStatus {
+    /// Remaining requests in the current window.
+    pub remaining: u32,
+    /// Total limit for the current window.
+    pub limit: u32,
+    /// Seconds until the rate limit resets.
+    pub reset_in_secs: u64,
+}
+
+/// Check the GitHub API rate limit.
+/// Returns None if the check fails (gh not available, etc.).
+pub async fn check_rate_limit() -> Option<RateLimitStatus> {
+    let output = tokio::process::Command::new("gh")
+        .args(["api", "rate_limit"])
+        .output()
+        .await
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let json: Value = serde_json::from_slice(&output.stdout).ok()?;
+    let core = json.get("resources")?.get("core")?;
+
+    let remaining = core.get("remaining")?.as_u64()? as u32;
+    let limit = core.get("limit")?.as_u64()? as u32;
+    let reset = core.get("reset")?.as_u64()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let reset_in_secs = reset.saturating_sub(now);
+
+    Some(RateLimitStatus {
+        remaining,
+        limit,
+        reset_in_secs,
+    })
+}
+
+/// Parse rate limit JSON (for testing).
+pub fn parse_rate_limit(json: &Value) -> Option<RateLimitStatus> {
+    let core = json.get("resources")?.get("core")?;
+    let remaining = core.get("remaining")?.as_u64()? as u32;
+    let limit = core.get("limit")?.as_u64()? as u32;
+    let reset = core.get("reset")?.as_u64()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let reset_in_secs = reset.saturating_sub(now);
+
+    Some(RateLimitStatus {
+        remaining,
+        limit,
+        reset_in_secs,
+    })
+}
+
+/// Returns true if polling should be skipped due to rate limiting.
+/// Threshold: skip when remaining < 10% of limit.
+pub fn should_throttle(status: &RateLimitStatus) -> bool {
+    let threshold = status.limit / 10; // 10% of limit
+    status.remaining < threshold
+}

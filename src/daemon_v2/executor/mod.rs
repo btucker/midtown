@@ -123,6 +123,19 @@ pub async fn execute(
             }]
         }
         Command::PollPrs => {
+            // Check rate limit before polling (Section 15 Critical)
+            if let Some(status) = github::check_rate_limit().await
+                && github::should_throttle(&status)
+            {
+                tracing::warn!(
+                    remaining = status.remaining,
+                    limit = status.limit,
+                    reset_in = status.reset_in_secs,
+                    "PR polling skipped — GitHub API rate limit low"
+                );
+                return vec![];
+            }
+
             match (
                 github::fetch_open_prs().await,
                 github::fetch_merged_prs().await,
