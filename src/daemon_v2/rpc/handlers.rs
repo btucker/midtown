@@ -389,28 +389,28 @@ pub fn handle_channel_post(
         message: "Missing params".into(),
     })?;
 
+    // Accept both v2 ("channel"/"sender"/"content") and v1 ("channel"/"from"/"message") field names
     let channel = params
         .get("channel")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| RpcError {
-            code: -32602,
-            message: "Missing required field: channel".into(),
-        })?;
+        .unwrap_or("midtown");
 
     let sender = params
         .get("sender")
+        .or_else(|| params.get("from"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| RpcError {
             code: -32602,
-            message: "Missing required field: sender".into(),
+            message: "Missing required field: sender (or from)".into(),
         })?;
 
     let content = params
         .get("content")
+        .or_else(|| params.get("message"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| RpcError {
             code: -32602,
-            message: "Missing required field: content".into(),
+            message: "Missing required field: content (or message)".into(),
         })?;
 
     let thread_id = params.get("thread_id").and_then(|v| v.as_str());

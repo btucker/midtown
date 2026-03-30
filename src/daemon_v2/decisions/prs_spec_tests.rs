@@ -4,8 +4,8 @@
 
 use crate::daemon_v2::decisions::Command;
 use crate::daemon_v2::decisions::prs::{
-    handle_merged_prs, nudge_rebase_after_merge, resume_dead_reviewers, spawn_reviewers,
-    suspend_authors_with_prs,
+    handle_merged_prs, nudge_rebase_after_merge, resume_dead_reviewers, route_pr_comment,
+    spawn_reviewers, suspend_authors_with_prs,
 };
 use crate::daemon_v2::events::*;
 use crate::daemon_v2::projections::Projections;
@@ -517,6 +517,97 @@ fn dead_reviewer_without_session_not_resumed() {
     assert!(
         commands.is_empty(),
         "reviewer without session_id should NOT be resumed, got {:?}",
+        commands
+    );
+}
+
+// ── Section 3.3: PR Comment Routing ────────────────────────────────────────
+
+/// Spec 3.3: WHEN a new comment is posted on a PR THEN the system SHALL post it
+/// to the task's channel AND nudge the author agent
+#[test]
+fn pr_comment_posts_to_channel_and_nudges_author() {
+    let mut proj = Projections::default();
+    make_worker_with_task(&mut proj, "w1", "t1");
+
+    // Link task to PR
+    proj.apply(&DomainEvent::PrOpened {
+        number: 50,
+        branch: "feat/x".into(),
+        author: "worker-w1".into(),
+    });
+    proj.apply(&DomainEvent::PrLinkedToTask {
+        number: 50,
+        task_id: "t1".into(),
+    });
+
+    let commands = route_pr_comment(&proj, 50, "reviewer-bob", "LGTM");
+
+    // Should post to channel
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::Post { channel, .. } if channel == "main")),
+        "should post comment to task channel, got {:?}",
+        commands
+    );
+
+    // Should nudge the author agent
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "w1")),
+        "should nudge author agent, got {:?}",
+        commands
+    );
+}
+
+/// Spec 3.3: UNLESS the comment's frontmatter identifies the commenter as the author agent
+#[test]
+fn pr_comment_skips_nudge_when_commenter_is_author() {
+    let mut proj = Projections::default();
+    make_worker_with_task(&mut proj, "w1", "t1");
+
+    proj.apply(&DomainEvent::PrOpened {
+        number: 50,
+        branch: "feat/x".into(),
+        author: "worker-w1".into(),
+    });
+    proj.apply(&DomainEvent::PrLinkedToTask {
+        number: 50,
+        task_id: "t1".into(),
+    });
+
+    // Comment from the author agent itself (name matches)
+    let commands = route_pr_comment(&proj, 50, "worker-w1", "Updated the code");
+
+    // Should still post to channel
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::Post { .. })),
+        "should still post comment to channel"
+    );
+
+    // Should NOT nudge (self-comment)
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { .. })),
+        "should NOT nudge author for their own comment, got {:?}",
+        commands
+    );
+}
+
+/// Spec 3.3: WHEN PR has no linked task THEN no routing
+#[test]
+fn pr_comment_no_linked_task_no_routing() {
+    let proj = Projections::default();
+
+    let commands = route_pr_comment(&proj, 999, "reviewer", "comment");
+    assert!(
+        commands.is_empty(),
+        "no linked task should produce no commands, got {:?}",
         commands
     );
 }

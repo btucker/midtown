@@ -764,3 +764,54 @@ fn session_fork_missing_channel_returns_error() {
     assert!(events.is_empty());
     assert!(commands.is_empty());
 }
+
+#[test]
+fn channel_post_accepts_v1_params() {
+    // v1 CLI sends "from" and "message", v2 expects "sender" and "content"
+    let proj = Projections::default();
+    let dir = tempfile::tempdir().unwrap();
+    let channels_dir = dir.path();
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.post",
+        "id": 99,
+        "params": {
+            "from": "user",
+            "message": "hello from v1 CLI",
+            "channel": "main"
+        }
+    });
+
+    let (response, events, _commands) = dispatch_request(request, &proj, channels_dir);
+    assert!(
+        response.get("error").is_none(),
+        "v1-style params should not produce an error, got: {:?}",
+        response
+    );
+    assert_eq!(events.len(), 1, "should produce MessagePosted event");
+}
+
+#[test]
+fn channel_post_defaults_channel_when_missing() {
+    let proj = Projections::default();
+    let dir = tempfile::tempdir().unwrap();
+    let channels_dir = dir.path();
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.post",
+        "id": 100,
+        "params": {
+            "from": "user",
+            "message": "hello"
+        }
+    });
+
+    let (response, _events, _commands) = dispatch_request(request, &proj, channels_dir);
+    assert!(
+        response.get("error").is_none(),
+        "missing channel should use default, not error, got: {:?}",
+        response
+    );
+}

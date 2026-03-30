@@ -51,8 +51,9 @@ pub fn parse_open_prs(json: &Value) -> Vec<ParsedPr> {
                 .get("reviewDecision")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let is_approved = review_decision == "APPROVED";
-            let needs_review = review_decision == "REVIEW_REQUIRED";
+            let is_approved = !is_draft && review_decision == "APPROVED";
+            // Spec 3.4: draft PRs never need review regardless of reviewDecision
+            let needs_review = !is_draft && review_decision == "REVIEW_REQUIRED";
 
             Some(ParsedPr {
                 number,
@@ -69,10 +70,12 @@ pub fn parse_open_prs(json: &Value) -> Vec<ParsedPr> {
 
 fn parse_ci_status(pr: &Value) -> CiStatus {
     let Some(checks) = pr.get("statusCheckRollup").and_then(|v| v.as_array()) else {
-        return CiStatus::Pending;
+        // Spec 3.4: no statusCheckRollup → Passed
+        return CiStatus::Passed;
     };
     if checks.is_empty() {
-        return CiStatus::Pending;
+        // Spec 3.4: empty statusCheckRollup → Passed
+        return CiStatus::Passed;
     }
 
     let mut has_pending = false;

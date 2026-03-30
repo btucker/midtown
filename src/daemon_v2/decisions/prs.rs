@@ -167,6 +167,53 @@ pub fn nudge_rebase_after_merge(proj: &Projections) -> Vec<Command> {
         .collect()
 }
 
+/// Spec 3.3/12: Route a PR comment to the task's channel thread and nudge the author agent.
+/// Returns Post + NudgeAgent commands unless the commenter is the author agent itself.
+pub fn route_pr_comment(
+    proj: &Projections,
+    pr_number: u64,
+    commenter: &str,
+    comment_body: &str,
+) -> Vec<Command> {
+    let mut commands = Vec::new();
+
+    // Find the task linked to this PR
+    let Some((task_id, task)) = proj.work.task_for_pr(pr_number) else {
+        return commands;
+    };
+
+    // Find the agent assigned to this task
+    let author_agent = proj.agents.by_task.get(task_id);
+
+    // Check if the commenter IS the author agent (skip self-nudge)
+    let is_self = author_agent.is_some_and(|aid| {
+        proj.agents
+            .by_id
+            .get(aid)
+            .is_some_and(|a| a.name == commenter)
+    });
+
+    // Post the comment to the task's channel thread
+    commands.push(Command::Post {
+        channel: task.channel.clone(),
+        sender: commenter.to_string(),
+        content: format!("[PR #{pr_number} comment] {comment_body}"),
+        thread_id: None, // TODO: map to task thread when thread tracking is available
+    });
+
+    // Nudge the author agent unless commenter is the author
+    if !is_self
+        && let Some(agent_id) = author_agent
+    {
+        commands.push(Command::NudgeAgent {
+            id: agent_id.clone(),
+            message: format!("New comment on PR #{pr_number} from {commenter}: {comment_body}"),
+        });
+    }
+
+    commands
+}
+
 /// Stop worker agents whose tasks have open PRs (they're waiting for review).
 pub fn suspend_authors_with_prs(proj: &Projections) -> Vec<Command> {
     proj.agents

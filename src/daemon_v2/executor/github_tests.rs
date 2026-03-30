@@ -4,6 +4,105 @@ use super::*;
 use crate::daemon_v2::events::{CiStatus, DomainEvent, ReviewState};
 use crate::daemon_v2::projections::work::{PrState, WorkIndex};
 
+// ── Section 3.4: CI Status Parsing ──────────────────────────────────────────
+
+/// Spec 3.4: WHEN statusCheckRollup contains any FAILURE/TIMED_OUT/CANCELLED
+/// THEN CI status SHALL be Failed
+#[test]
+fn ci_status_failure_on_failure_state() {
+    let pr = json!({
+        "statusCheckRollup": [
+            { "state": "SUCCESS" },
+            { "state": "FAILURE" }
+        ]
+    });
+    assert_eq!(parse_ci_status(&pr), CiStatus::Failed);
+}
+
+#[test]
+fn ci_status_failure_on_timed_out_conclusion() {
+    let pr = json!({
+        "statusCheckRollup": [
+            { "state": "COMPLETED", "conclusion": "TIMED_OUT" }
+        ]
+    });
+    assert_eq!(parse_ci_status(&pr), CiStatus::Failed);
+}
+
+#[test]
+fn ci_status_failure_on_cancelled_conclusion() {
+    let pr = json!({
+        "statusCheckRollup": [
+            { "state": "COMPLETED", "conclusion": "CANCELLED" }
+        ]
+    });
+    assert_eq!(parse_ci_status(&pr), CiStatus::Failed);
+}
+
+/// Spec 3.4: WHEN statusCheckRollup contains PENDING/QUEUED/IN_PROGRESS
+/// THEN CI status SHALL be Running
+#[test]
+fn ci_status_running_on_pending() {
+    let pr = json!({
+        "statusCheckRollup": [
+            { "state": "SUCCESS" },
+            { "state": "PENDING" }
+        ]
+    });
+    assert_eq!(parse_ci_status(&pr), CiStatus::Running);
+}
+
+#[test]
+fn ci_status_running_on_in_progress() {
+    let pr = json!({
+        "statusCheckRollup": [
+            { "state": "IN_PROGRESS" }
+        ]
+    });
+    assert_eq!(parse_ci_status(&pr), CiStatus::Running);
+}
+
+/// Spec 3.4: WHEN statusCheckRollup is empty or all SUCCESS THEN CI status
+/// SHALL be Passed
+#[test]
+fn ci_status_passed_when_empty() {
+    let pr = json!({
+        "statusCheckRollup": []
+    });
+    assert_eq!(parse_ci_status(&pr), CiStatus::Passed);
+}
+
+#[test]
+fn ci_status_passed_when_all_success() {
+    let pr = json!({
+        "statusCheckRollup": [
+            { "state": "SUCCESS" },
+            { "state": "SUCCESS" }
+        ]
+    });
+    assert_eq!(parse_ci_status(&pr), CiStatus::Passed);
+}
+
+/// Spec 3.4: WHEN a PR is draft THEN needs_review SHALL be false regardless
+/// of reviewDecision
+#[test]
+fn draft_pr_needs_review_false() {
+    let json = json!([{
+        "number": 99,
+        "headRefName": "feat/wip",
+        "isDraft": true,
+        "reviewDecision": "REVIEW_REQUIRED",
+        "statusCheckRollup": [{ "state": "SUCCESS" }],
+        "author": { "login": "dev" }
+    }]);
+    let prs = parse_open_prs(&json);
+    assert_eq!(prs.len(), 1);
+    assert!(
+        !prs[0].needs_review,
+        "draft PR should have needs_review=false, got true"
+    );
+}
+
 #[test]
 fn parse_open_prs_extracts_fields() {
     let json = json!([
@@ -42,9 +141,11 @@ fn parse_open_prs_extracts_fields() {
 
     assert_eq!(prs[1].number, 43);
     assert!(prs[1].is_draft);
-    assert!(!prs[1].ci_passed);
+    // Spec 3.4: empty statusCheckRollup → Passed
+    assert!(prs[1].ci_passed);
+    // Spec 3.4: draft PRs → needs_review false, is_approved false
     assert!(!prs[1].is_approved);
-    assert!(prs[1].needs_review);
+    assert!(!prs[1].needs_review);
 }
 
 #[test]
