@@ -314,6 +314,48 @@ fn at_channel_name_nudges_that_channels_lead() {
     );
 }
 
+/// Spec 5.1: WHEN a user messages a channel AND no lead exists THEN the
+/// system SHALL spawn one
+#[test]
+fn message_to_leadless_channel_spawns_lead() {
+    let mut proj = Projections::default();
+    // No lead for "web" channel — just a worker
+    let _worker = make_worker(&mut proj, "park", "web", "t1");
+
+    let cmds = route_message(&proj, "web", "user", "hello web channel", None);
+
+    // Should include a SpawnAgent for a lead
+    let spawn_leads: Vec<_> = cmds
+        .iter()
+        .filter(|c| matches!(c, Command::SpawnAgent(cfg) if cfg.kind == AgentKind::Lead))
+        .collect();
+    assert_eq!(
+        spawn_leads.len(),
+        1,
+        "should spawn a lead for leadless channel, got {:?}",
+        cmds
+    );
+}
+
+/// Spec 5.1: WHEN a user messages a channel AND a lead already exists THEN
+/// no additional lead SHALL be spawned
+#[test]
+fn message_to_channel_with_lead_does_not_spawn() {
+    let mut proj = Projections::default();
+    let _lead = make_channel_lead(&mut proj, "web-lead", "web");
+
+    let cmds = route_message(&proj, "web", "user", "hello", None);
+
+    let spawn_leads: Vec<_> = cmds
+        .iter()
+        .filter(|c| matches!(c, Command::SpawnAgent(cfg) if cfg.kind == AgentKind::Lead))
+        .collect();
+    assert!(
+        spawn_leads.is_empty(),
+        "should NOT spawn lead when one exists"
+    );
+}
+
 // ── Section 1.3: Task References ─────────────────────────────────────────
 
 /// Spec 1.3: WHEN a message contains !N THEN the system SHALL nudge the agent

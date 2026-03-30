@@ -228,7 +228,7 @@ fn nudge(
     });
 }
 
-/// Find the channel lead and nudge it.
+/// Find the channel lead and nudge it. If no lead exists, spawn one (spec 5.1).
 fn nudge_channel_lead(
     proj: &Projections,
     channel: &str,
@@ -239,6 +239,35 @@ fn nudge_channel_lead(
 ) {
     if let Some(agent) = proj.agents.channel_lead(channel) {
         nudge(agent, sender, message, nudged, commands);
+    } else {
+        // Spec 5.1: demand-spawn a lead when a user messages a leadless channel
+        let is_main = proj
+            .agents
+            .by_id
+            .values()
+            .any(|a| a.agent_type == "midtown-project-lead");
+        let agent_type = if !is_main {
+            "midtown-project-lead"
+        } else {
+            "midtown-channel-lead"
+        };
+        commands.push(Command::SpawnAgent(
+            crate::daemon_v2::decisions::SpawnConfig {
+                name: channel.to_string(),
+                kind: AgentKind::Lead,
+                agent_type: agent_type.to_string(),
+                provider: crate::daemon_v2::events::Provider::ClaudeCode,
+                channel: Some(channel.to_string()),
+                task_id: None,
+                initial_prompt: Some(message.to_string()),
+                working_dir: None,
+                model: None,
+                bound_thread_id: None,
+                fork_from_session: None,
+                icon: None,
+                color: None,
+            },
+        ));
     }
 }
 

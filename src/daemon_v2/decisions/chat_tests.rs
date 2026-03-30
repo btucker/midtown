@@ -457,20 +457,29 @@ fn task_ref_nudges_assigned_agent() {
 
 #[test]
 fn task_ref_no_nudge_for_unassigned() {
-    let events = vec![DomainEvent::TaskCreated {
+    // With demand-spawned leads, a leadless channel gets a SpawnAgent.
+    // But there should be no NudgeAgent for the unassigned task.
+    let mut events = running_lead_events("main");
+    events.push(DomainEvent::TaskCreated {
         id: "42".into(),
         subject: "Fix".into(),
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
         icon: None,
-    }];
+    });
 
     let proj = make_projections(&events);
     let commands = route_message(&proj, "main", "alice", "what about !42?", None);
 
+    // Should have a nudge for the lead (top-level message) but NOT a separate
+    // nudge specifically for the task reference (since the task has no assigned agent)
+    let task_specific_nudges: Vec<_> = commands
+        .iter()
+        .filter(|c| matches!(c, Command::NudgeAgent { message, .. } if message.contains("!42 reference")))
+        .collect();
     assert!(
-        commands.is_empty(),
+        task_specific_nudges.is_empty(),
         "unassigned task + no lead = no nudges, got {:?}",
         commands
     );
