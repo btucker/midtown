@@ -452,6 +452,47 @@ fn merge_dir_recursive_missing(
 /// 4. The shared storage directory exists at `~/.midtown/platforms/claude/shared/`
 ///
 /// Symlinks use relative targets (`../shared/<entry>`) so they remain valid even
+/// Migrate shared entries from the top-level platform dir to the `shared/` subdirectory.
+/// This is a one-time migration: if `~/.midtown/platforms/claude/agents` exists as a real
+/// directory (not a symlink), move it to `~/.midtown/platforms/claude/shared/agents`.
+fn migrate_shared_to_subdirectory() -> std::io::Result<()> {
+    let platform_dir = crate::paths::midtown_base_dir()
+        .join("platforms")
+        .join("claude");
+    let shared_dir = platform_dir.join("shared");
+
+    // Check if migration is needed: shared/ doesn't exist but top-level entries do
+    if shared_dir.exists() {
+        return Ok(()); // Already migrated
+    }
+
+    let mut needs_migration = false;
+    for entry_name in CLAUDE_SHARED_SYMLINK_ENTRIES {
+        let top_level = platform_dir.join(entry_name);
+        if top_level.exists() && !top_level.is_symlink() {
+            needs_migration = true;
+            break;
+        }
+    }
+
+    if !needs_migration {
+        return Ok(());
+    }
+
+    tracing::info!("migrating shared state to platforms/claude/shared/");
+    std::fs::create_dir_all(&shared_dir)?;
+
+    for entry_name in CLAUDE_SHARED_SYMLINK_ENTRIES {
+        let top_level = platform_dir.join(entry_name);
+        let dest = shared_dir.join(entry_name);
+        if top_level.exists() && !top_level.is_symlink() && !dest.exists() {
+            std::fs::rename(&top_level, &dest)?;
+        }
+    }
+
+    Ok(())
+}
+
 /// if the base directory is relocated (e.g., in tests or alternate installs).
 ///
 /// This is called both at profile creation and at launch time to pick up new
@@ -917,6 +958,9 @@ pub fn ensure_profile_dir_for(provider: AuthProvider, name: &str) -> std::io::Re
     if provider == AuthProvider::Claude {
         // Migrate legacy structure if needed
         migrate_legacy_claude_profile(name)?;
+
+        // Migrate shared entries from top-level to shared/ subdirectory
+        migrate_shared_to_subdirectory()?;
 
         // Set up symlinks to shared storage
         setup_claude_profile_symlinks(name)?;
