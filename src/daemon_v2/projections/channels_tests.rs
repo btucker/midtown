@@ -14,6 +14,7 @@ fn message_creates_channel_if_missing() {
         sender: "ghost-town".into(),
         content: "hello".into(),
         thread_id: None,
+        tool_data: None,
     });
     assert!(idx.channels.contains_key("main"));
     assert!(idx.channels.get("main").unwrap().last_message_at.is_some());
@@ -30,6 +31,7 @@ fn thread_message_increments_thread_count() {
         sender: "user".into(),
         content: "parent".into(),
         thread_id: None,
+        tool_data: None,
     });
     idx.apply(&DomainEvent::MessagePosted {
         id: "m2".into(),
@@ -37,6 +39,7 @@ fn thread_message_increments_thread_count() {
         sender: "bot".into(),
         content: "reply".into(),
         thread_id: Some("m1".into()),
+        tool_data: None,
     });
     assert_eq!(idx.channels.get("main").unwrap().thread_count, 1);
 }
@@ -50,6 +53,7 @@ fn multiple_replies_same_thread_no_double_count() {
         sender: "user".into(),
         content: "parent".into(),
         thread_id: None,
+        tool_data: None,
     });
     idx.apply(&DomainEvent::MessagePosted {
         id: "m2".into(),
@@ -57,6 +61,7 @@ fn multiple_replies_same_thread_no_double_count() {
         sender: "bot".into(),
         content: "reply 1".into(),
         thread_id: Some("m1".into()),
+        tool_data: None,
     });
     idx.apply(&DomainEvent::MessagePosted {
         id: "m3".into(),
@@ -64,6 +69,7 @@ fn multiple_replies_same_thread_no_double_count() {
         sender: "bot".into(),
         content: "reply 2".into(),
         thread_id: Some("m1".into()),
+        tool_data: None,
     });
     assert_eq!(idx.channels.get("main").unwrap().thread_count, 1);
 }

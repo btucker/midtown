@@ -239,6 +239,7 @@ pub fn execute_inline(
                 sender,
                 content,
                 thread_id,
+                tool_data: None,
             }]
         }
         Command::PostSystem { channel, content } => {
@@ -252,6 +253,7 @@ pub fn execute_inline(
                 sender: "midtown".into(),
                 content,
                 thread_id: None,
+                tool_data: None,
             }]
         }
         other => {
@@ -653,6 +655,7 @@ fn flush_auto_output(
                         sender: agent_name.to_string(),
                         content: insight_content,
                         thread_id: None,
+                        tool_data: None,
                     });
                 }
                 Err(e) => {
@@ -677,11 +680,13 @@ fn flush_auto_output(
                 sender: agent_name.to_string(),
                 content: text,
                 thread_id: None,
+                tool_data: None,
             });
         }
 
         // Post tool data as a separate auto-output message (matching v1 behavior)
         if !tool_blocks.is_empty() {
+            let tool_data_clone = tool_blocks.clone();
             match channel_io::post_auto_output(channels_dir, ch, agent_name, "", Some(tool_blocks))
             {
                 Ok(msg_id) => {
@@ -691,6 +696,7 @@ fn flush_auto_output(
                         sender: agent_name.to_string(),
                         content: String::new(),
                         thread_id: None,
+                        tool_data: Some(tool_data_clone),
                     });
                 }
                 Err(e) => {

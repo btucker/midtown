@@ -38,6 +38,7 @@ fn non_archived_channel_without_lead_spawns_one() {
         sender: "alice".into(),
         content: "hello".into(),
         thread_id: None,
+        tool_data: None,
     }];
 
     let proj = make_projections(&events);
@@ -91,6 +92,7 @@ fn topic_channel_lead_uses_channel_lead_agent_type() {
         sender: "bob".into(),
         content: "hi".into(),
         thread_id: None,
+        tool_data: None,
     }];
 
     let proj = make_projections(&events);
@@ -119,6 +121,7 @@ fn channel_with_directory_sets_lead_working_dir() {
             sender: "alice".into(),
             content: "hi".into(),
             thread_id: None,
+            tool_data: None,
         },
         DomainEvent::ChannelDirectorySet {
             channel: "auth".into(),
@@ -151,6 +154,7 @@ fn archived_channel_does_not_spawn_lead() {
         sender: "alice".into(),
         content: "old".into(),
         thread_id: None,
+        tool_data: None,
     }];
 
     let mut proj = make_projections(&events);

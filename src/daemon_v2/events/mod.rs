@@ -159,6 +159,8 @@ pub enum DomainEvent {
         sender: String,
         content: String,
         thread_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_data: Option<Vec<crate::message::ToolBlock>>,
     },
     MentionRouted {
         message_id: MessageId,

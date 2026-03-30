@@ -748,6 +748,8 @@ export function handleUpdate(update: Record<string, unknown>): void {
 					timestamp: new Date().toISOString(),
 					msg_type: "text",
 					thread_parent_id: d.thread_id || null,
+					tool_data: d.tool_data || undefined,
+					auto_output: d.tool_data ? true : undefined,
 				},
 			};
 		} else {

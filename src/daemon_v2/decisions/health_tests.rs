@@ -257,6 +257,7 @@ fn ensure_channel_leads_alive_spawns_for_all_active_channels() {
             sender: "alice".into(),
             content: "hello".into(),
             thread_id: None,
+            tool_data: None,
         },
         DomainEvent::MessagePosted {
             id: "msg-2".into(),
@@ -264,6 +265,7 @@ fn ensure_channel_leads_alive_spawns_for_all_active_channels() {
             sender: "bob".into(),
             content: "hello".into(),
             thread_id: None,
+            tool_data: None,
         },
     ];
 
@@ -300,6 +302,7 @@ fn ensure_channel_leads_alive_skips_archived() {
             sender: "alice".into(),
             content: "hi".into(),
             thread_id: None,
+            tool_data: None,
         },
         DomainEvent::MessagePosted {
             id: "msg-2".into(),
@@ -307,6 +310,7 @@ fn ensure_channel_leads_alive_skips_archived() {
             sender: "alice".into(),
             content: "hi".into(),
             thread_id: None,
+            tool_data: None,
         },
     ];
 
@@ -340,6 +344,7 @@ fn ensure_channel_leads_alive_skips_channels_with_running_lead() {
             sender: "alice".into(),
             content: "hi".into(),
             thread_id: None,
+            tool_data: None,
         },
         DomainEvent::MessagePosted {
             id: "msg-2".into(),
@@ -347,6 +352,7 @@ fn ensure_channel_leads_alive_skips_channels_with_running_lead() {
             sender: "bob".into(),
             content: "hi".into(),
             thread_id: None,
+            tool_data: None,
         },
         DomainEvent::AgentCreated {
             id: "lead-main".into(),
@@ -394,6 +400,7 @@ fn ensure_channel_leads_alive_uses_channel_directory() {
             sender: "alice".into(),
             content: "hi".into(),
             thread_id: None,
+            tool_data: None,
         },
         DomainEvent::ChannelDirectorySet {
             channel: "frontend".into(),
@@ -436,6 +443,7 @@ fn ensure_channel_leads_alive_uses_project_lead_for_default() {
         sender: "alice".into(),
         content: "hi".into(),
         thread_id: None,
+        tool_data: None,
     }];
 
     let proj = make_projections(&events);
@@ -460,6 +468,7 @@ fn ensure_channel_leads_resumes_stopped_lead_not_spawns_new() {
             sender: "alice".into(),
             content: "hi".into(),
             thread_id: None,
+            tool_data: None,
         },
         DomainEvent::AgentCreated {
             id: "lead-old".into(),
