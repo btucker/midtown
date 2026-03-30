@@ -73,6 +73,9 @@ function trackThread(
 	content: string | null | undefined,
 	opts?: { replyCount?: number; replyContent?: string | null },
 ): void {
+	// Don't track threads from DM channels — they're private agent conversations
+	if (channelName.startsWith("dm-")) return;
+
 	const newSubject = extractThreadSubject(content);
 	// Use reply content for fullText when available, otherwise fall back to parent content
 	const newFullText = extractPlainText(opts?.replyContent ?? content);

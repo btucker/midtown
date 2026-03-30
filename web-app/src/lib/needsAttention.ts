@@ -71,6 +71,9 @@ export function computeThreadAttentionItems(opts: {
 	const items: NeedsAttentionItem[] = [];
 
 	for (const [threadId, tracked] of Object.entries(opts.trackedThreads)) {
+		// Skip threads from DM channels — they're private agent conversations
+		if (tracked.channelName.startsWith("dm-")) continue;
+
 		const lastMsg = opts.lastMessages[threadId];
 		if (!lastMsg) continue;
 
