@@ -39,7 +39,12 @@ pub fn spawn_reviewers(proj: &Projections) -> Vec<Command> {
     let mut commands = Vec::new();
 
     for pr_num in &proj.work.needing_review {
-        let reviewer_name = format!("reviewer-{pr_num}");
+        let pr = match proj.work.prs.get(pr_num) {
+            Some(pr) => pr,
+            None => continue,
+        };
+        // Spec 3.2: reviewer named {author_name}-reviewer
+        let reviewer_name = format!("{}-reviewer", pr.author);
 
         // Skip if reviewer is already running
         if proj
@@ -50,11 +55,6 @@ pub fn spawn_reviewers(proj: &Projections) -> Vec<Command> {
         {
             continue;
         }
-
-        let pr = match proj.work.prs.get(pr_num) {
-            Some(pr) => pr,
-            None => continue,
-        };
 
         // Count stopped reviewer agents for this PR
         let restart_count = count_stopped_reviewers(proj, *pr_num);

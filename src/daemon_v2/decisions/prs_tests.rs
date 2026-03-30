@@ -99,7 +99,7 @@ fn spawns_reviewer_for_pr_needing_review() {
     let commands = spawn_reviewers(&proj);
     assert_eq!(commands.len(), 1);
     assert!(
-        matches!(&commands[0], Command::SpawnAgent(c) if c.agent_type == "midtown-code-reviewer" && c.name == "reviewer-42")
+        matches!(&commands[0], Command::SpawnAgent(c) if c.agent_type == "midtown-code-reviewer" && c.name == "dev-reviewer")
     );
 }
 
@@ -115,7 +115,7 @@ fn no_duplicate_reviewer_when_already_running() {
     // Reviewer already exists and is running
     proj.apply(&DomainEvent::AgentCreated {
         id: "r1".into(),
-        name: "reviewer-42".into(),
+        name: "dev-reviewer".into(),
         kind: AgentKind::Worker,
         agent_type: "midtown-code-reviewer".into(),
         provider: Provider::ClaudeCode,
@@ -147,7 +147,7 @@ fn respawns_reviewer_when_stopped() {
     // Reviewer existed but stopped
     proj.apply(&DomainEvent::AgentCreated {
         id: "r1".into(),
-        name: "reviewer-42".into(),
+        name: "dev-reviewer".into(),
         kind: AgentKind::Worker,
         agent_type: "midtown-code-reviewer".into(),
         provider: Provider::ClaudeCode,
@@ -169,7 +169,7 @@ fn respawns_reviewer_when_stopped() {
 
     let commands = spawn_reviewers(&proj);
     assert_eq!(commands.len(), 1);
-    assert!(matches!(&commands[0], Command::SpawnAgent(c) if c.name == "reviewer-42"));
+    assert!(matches!(&commands[0], Command::SpawnAgent(c) if c.name == "dev-reviewer"));
 }
 
 #[test]
@@ -268,8 +268,8 @@ fn spawn_reviewers_respawns_within_limit() {
     assert!(
         commands
             .iter()
-            .any(|c| matches!(c, Command::SpawnAgent(cfg) if cfg.name == "reviewer-42")),
-        "expected SpawnAgent for reviewer-42, got {:?}",
+            .any(|c| matches!(c, Command::SpawnAgent(cfg) if cfg.name == "dev-reviewer")),
+        "expected SpawnAgent for dev-reviewer, got {:?}",
         commands
     );
 }

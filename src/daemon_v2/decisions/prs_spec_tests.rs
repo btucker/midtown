@@ -44,14 +44,14 @@ fn make_worker_with_task(proj: &mut Projections, agent_id: &str, task_id: &str) 
 // ── Section 3.2: Reviewer Spawning ───────────────────────────────────────────
 
 /// Spec 3.2: WHEN a PR needs review AND no reviewer is running for it THEN the
-/// system SHALL spawn a reviewer named reviewer-{pr_num}
+/// system SHALL spawn a reviewer named {author_name}-reviewer
 #[test]
-fn spawns_reviewer_when_pr_needs_review() {
+fn spawns_reviewer_named_after_author() {
     let mut proj = Projections::default();
     proj.apply(&DomainEvent::PrOpened {
         number: 101,
         branch: "feature/login".into(),
-        author: "dev".into(),
+        author: "park".into(),
     });
     proj.apply(&DomainEvent::PrReviewRequested { number: 101 });
 
@@ -61,9 +61,9 @@ fn spawns_reviewer_when_pr_needs_review() {
     assert!(
         matches!(
             &commands[0],
-            Command::SpawnAgent(cfg) if cfg.name == "reviewer-101"
+            Command::SpawnAgent(cfg) if cfg.name == "park-reviewer"
         ),
-        "expected SpawnAgent named reviewer-101, got {:?}",
+        "expected SpawnAgent named park-reviewer, got {:?}",
         commands[0]
     );
 }
@@ -81,7 +81,7 @@ fn no_duplicate_reviewer_when_already_running() {
     proj.apply(&DomainEvent::PrReviewRequested { number: 101 });
     proj.apply(&DomainEvent::AgentCreated {
         id: "rev-1".into(),
-        name: "reviewer-101".into(),
+        name: "dev-reviewer".into(),
         kind: AgentKind::Worker,
         agent_type: "midtown-code-reviewer".into(),
         provider: Provider::ClaudeCode,

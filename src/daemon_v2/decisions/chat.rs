@@ -174,10 +174,21 @@ fn route_refs(
                     }
                 }
             }
-        } else if target == "lead" || target == channel {
+        } else if target == "lead" {
             nudge_channel_lead(
                 proj,
                 channel,
+                sender,
+                &format!("@lead mention from {sender}: {content}"),
+                nudged,
+                commands,
+            );
+        } else if target == channel || proj.agents.by_channel.contains_key(target) {
+            // @channel-name → nudge THAT channel's lead (may be cross-channel)
+            let target_channel = target;
+            nudge_channel_lead(
+                proj,
+                target_channel,
                 sender,
                 &format!("@{target} mention from {sender}: {content}"),
                 nudged,

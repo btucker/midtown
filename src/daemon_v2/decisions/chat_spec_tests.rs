@@ -296,6 +296,24 @@ fn mention_with_trailing_punctuation() {
     );
 }
 
+/// Spec 1.2: WHEN a message contains @channel-name THEN the system SHALL
+/// nudge that channel's lead (cross-channel)
+#[test]
+fn at_channel_name_nudges_that_channels_lead() {
+    let mut proj = Projections::default();
+    let _main_lead = make_lead(&mut proj, "main-lead", "main");
+    let web_lead_id = make_channel_lead(&mut proj, "web-lead", "web");
+
+    // Message in #main mentions @web → should nudge web's lead
+    let cmds = route_message(&proj, "main", "user", "hey @web can you check this?", None);
+    let targets = nudge_targets(&cmds);
+
+    assert!(
+        targets.contains(&web_lead_id),
+        "@web should nudge web channel's lead"
+    );
+}
+
 // ── Section 1.3: Task References ─────────────────────────────────────────
 
 /// Spec 1.3: WHEN a message contains !N THEN the system SHALL nudge the agent
