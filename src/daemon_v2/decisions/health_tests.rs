@@ -449,3 +449,81 @@ fn ensure_channel_leads_alive_uses_project_lead_for_default() {
         commands[0]
     );
 }
+
+#[test]
+fn ensure_channel_leads_resumes_stopped_lead_not_spawns_new() {
+    // A stopped lead exists for "main" — should resume it, not spawn a new one
+    let events = vec![
+        DomainEvent::MessagePosted {
+            id: "msg-1".into(),
+            channel: "main".into(),
+            sender: "alice".into(),
+            content: "hi".into(),
+            thread_id: None,
+        },
+        DomainEvent::AgentCreated {
+            id: "lead-old".into(),
+            name: "main".into(),
+            kind: AgentKind::Lead,
+            agent_type: "midtown-project-lead".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: None,
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "lead-old".into(),
+            pid: 100,
+            session_id: Some("sess-old".into()),
+        },
+        DomainEvent::AgentStopped {
+            id: "lead-old".into(),
+            reason: "crashed".into(),
+        },
+    ];
+
+    let proj = make_projections(&events);
+    let commands = ensure_channel_leads_alive(&proj, "main");
+
+    // Should resume the existing lead, NOT spawn a new one
+    assert_eq!(commands.len(), 1, "expected 1 command, got {:?}", commands);
+    assert!(
+        matches!(&commands[0], Command::ResumeAgent { id } if id == "lead-old"),
+        "should ResumeAgent for existing stopped lead, not SpawnAgent; got {:?}",
+        commands[0]
+    );
+}
+
+#[test]
+fn ensure_channel_leads_no_action_when_running() {
+    // A running lead exists — should do nothing
+    let events = vec![
+        DomainEvent::AgentCreated {
+            id: "lead-1".into(),
+            name: "main".into(),
+            kind: AgentKind::Lead,
+            agent_type: "midtown-project-lead".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: None,
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "lead-1".into(),
+            pid: 42,
+            session_id: None,
+        },
+    ];
+
+    let proj = make_projections(&events);
+    let commands = ensure_channel_leads_alive(&proj, "main");
+    assert!(
+        commands.is_empty(),
+        "running lead should need no action, got {:?}",
+        commands
+    );
+}

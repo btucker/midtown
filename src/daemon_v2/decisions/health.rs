@@ -138,32 +138,13 @@ pub fn check_usage_limits(_proj: &Projections) -> Vec<Command> {
 }
 
 /// Ensure a lead is running for every active (non-archived) channel.
-/// Uses "midtown-project-lead" for the default channel and "midtown-channel-lead" for others.
+/// If a stopped lead exists, resume it. Only spawn a new one if no lead exists at all.
 pub fn ensure_channel_leads_alive(proj: &Projections, default_channel: &str) -> Vec<Command> {
     let mut commands = Vec::new();
 
-    // Always ensure the default channel has a lead, even if it's not in the projection yet.
-    // On fresh start, the projection has no channels — this guarantees the project lead spawns.
-    if !has_running_lead(proj, default_channel) {
-        let working_dir = proj
-            .channels
-            .channel_directory(default_channel)
-            .map(|d| d.to_string());
-        commands.push(Command::SpawnAgent(SpawnConfig {
-            name: default_channel.to_string(),
-            kind: AgentKind::Lead,
-            agent_type: "midtown-project-lead".to_string(),
-            provider: Provider::ClaudeCode,
-            channel: Some(default_channel.to_string()),
-            task_id: None,
-            initial_prompt: None,
-            working_dir,
-            model: None,
-            bound_thread_id: None,
-            fork_from_session: None,
-            icon: None,
-            color: None,
-        }));
+    // Always ensure the default channel has a lead
+    if let Some(cmd) = ensure_lead_for_channel(proj, default_channel, "midtown-project-lead") {
+        commands.push(cmd);
     }
 
     // Also check any channels that exist in the projection
@@ -171,39 +152,47 @@ pub fn ensure_channel_leads_alive(proj: &Projections, default_channel: &str) -> 
         if meta.archived || name == default_channel {
             continue;
         }
-        if has_running_lead(proj, name) {
-            continue;
+        if let Some(cmd) = ensure_lead_for_channel(proj, name, "midtown-channel-lead") {
+            commands.push(cmd);
         }
-        let working_dir = proj.channels.channel_directory(name).map(|d| d.to_string());
-        commands.push(Command::SpawnAgent(SpawnConfig {
-            name: name.clone(),
-            kind: AgentKind::Lead,
-            agent_type: "midtown-channel-lead".to_string(),
-            provider: Provider::ClaudeCode,
-            channel: Some(name.clone()),
-            task_id: None,
-            initial_prompt: None,
-            working_dir,
-            model: None,
-            bound_thread_id: None,
-            fork_from_session: None,
-            icon: None,
-            color: None,
-        }));
     }
 
     commands
 }
 
-fn has_running_lead(proj: &Projections, channel: &str) -> bool {
-    proj.agents.by_channel.get(channel).is_some_and(|ids| {
-        ids.iter().any(|id| {
-            proj.agents.running.contains(id)
-                && proj
-                    .agents
-                    .by_id
-                    .get(id)
-                    .is_some_and(|a| a.kind == AgentKind::Lead)
-        })
-    })
+/// Ensure a single channel has a lead. Returns None if a lead is already running.
+/// Resumes a stopped lead if one exists. Only spawns new if no lead exists at all.
+fn ensure_lead_for_channel(proj: &Projections, channel: &str, agent_type: &str) -> Option<Command> {
+    let lead = proj.agents.channel_lead(channel);
+
+    match lead {
+        // Running lead — nothing to do
+        Some(agent) if proj.agents.running.contains(&agent.id) => None,
+        // Stopped lead — resume it
+        Some(agent) => Some(Command::ResumeAgent {
+            id: agent.id.clone(),
+        }),
+        // No lead at all — spawn one
+        None => {
+            let working_dir = proj
+                .channels
+                .channel_directory(channel)
+                .map(|d| d.to_string());
+            Some(Command::SpawnAgent(SpawnConfig {
+                name: channel.to_string(),
+                kind: AgentKind::Lead,
+                agent_type: agent_type.to_string(),
+                provider: Provider::ClaudeCode,
+                channel: Some(channel.to_string()),
+                task_id: None,
+                initial_prompt: None,
+                working_dir,
+                model: None,
+                bound_thread_id: None,
+                fork_from_session: None,
+                icon: None,
+                color: None,
+            }))
+        }
+    }
 }
