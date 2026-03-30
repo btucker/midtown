@@ -324,9 +324,14 @@ impl LaunchConfig {
             crate::config::ExecutionRole::Coworker => "sonnet",
             _ => "opus",
         };
-        let model = crate::config::get_model_for_role(dir_key, execution_role)
+        let raw_model = crate::config::get_model_for_role(dir_key, execution_role)
             .map(|s| s.as_model_str().to_string())
             .unwrap_or_else(|| default_model.to_string());
+        let model = crate::daemon::helpers::normalize_model_for_provider_role(
+            &raw_model,
+            auth_provider,
+            &agent_type_str,
+        );
 
         LaunchConfig {
             name: name.into(),
@@ -971,11 +976,8 @@ mod tests {
         assert!(headless.resume_session_id.is_none());
         assert!(headless.allow_tools);
         assert!(!headless.system_prompt.is_empty());
-        let expected =
-            crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Coworker)
-                .map(|s| s.as_model_str().to_string())
-                .unwrap_or_else(|| "sonnet".to_string());
-        assert_eq!(headless.model, expected);
+        // Model should be normalized (e.g., "large" → "opus" for Claude)
+        assert_eq!(headless.model, config.model);
     }
 
     #[test]
@@ -994,12 +996,8 @@ mod tests {
     fn test_to_headless_config_reviewer_model() {
         let config = LaunchConfig::reviewer("york", "myrepo", 42, 0, AuthProvider::Claude);
         let headless = config.to_headless_config(&test_paths());
-
-        let expected =
-            crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Reviewer)
-                .map(|s| s.as_model_str().to_string())
-                .unwrap_or_else(|| "opus".to_string());
-        assert_eq!(headless.model, expected);
+        // Model should be normalized (e.g., "large" → "opus" for Claude)
+        assert_eq!(headless.model, config.model);
     }
 
     #[test]
@@ -1049,11 +1047,12 @@ mod tests {
         assert_eq!(config.agent_type, "midtown-code-author");
         assert_eq!(config.initial_prompt, Some("Do the thing".to_string()));
         assert!(config.pr_number.is_none());
-        let expected =
-            crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Coworker)
-                .map(|s| s.as_model_str().to_string())
-                .unwrap_or_else(|| "sonnet".to_string());
-        assert_eq!(config.model, expected);
+        // Model should be normalized — not a raw size alias
+        assert!(
+            !["small", "medium", "large"].contains(&config.model.as_str()),
+            "model should be normalized, got: {}",
+            config.model
+        );
     }
 
     #[test]
@@ -1063,11 +1062,12 @@ mod tests {
         assert_eq!(config.name, "york");
         assert_eq!(config.pr_number, Some(42));
         assert_eq!(config.agent_type, "midtown-code-reviewer");
-        let expected =
-            crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Reviewer)
-                .map(|s| s.as_model_str().to_string())
-                .unwrap_or_else(|| "opus".to_string());
-        assert_eq!(config.model, expected);
+        // Model should be normalized — not a raw size alias
+        assert!(
+            !["small", "medium", "large"].contains(&config.model.as_str()),
+            "model should be normalized, got: {}",
+            config.model
+        );
     }
 
     #[test]
@@ -1395,10 +1395,14 @@ mod tests {
             "Lead should have an initial prompt for session_id init"
         );
         assert!(config.pr_number.is_none());
-        let expected =
-            crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Lead)
-                .map(|s| s.as_model_str().to_string())
-                .unwrap_or_else(|| "opus".to_string());
+        let raw = crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Lead)
+            .map(|s| s.as_model_str().to_string())
+            .unwrap_or_else(|| "opus".to_string());
+        let expected = crate::daemon::helpers::normalize_model_for_provider_role(
+            &raw,
+            config.auth_provider,
+            &config.agent_type,
+        );
         assert_eq!(config.model, expected, "Lead model should respect config");
     }
 
