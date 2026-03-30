@@ -687,15 +687,20 @@ pub fn handle_prs_status(proj: &Projections) -> Result<Value, RpcError> {
 /// Accepts v1 params: `prompt`, `agent` (agent_type), `channel`, `task_id`.
 pub fn handle_coworker_spawn(
     params: Option<&Value>,
-    _proj: &Projections,
+    proj: &Projections,
 ) -> Result<(Value, Vec<Command>), RpcError> {
     let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
 
+    // Spec 13: use adjective-noun naming when no name is provided
     let name = params
         .get("name")
         .and_then(|v| v.as_str())
         .map(String::from)
-        .unwrap_or_else(|| format!("worker-{}", &uuid::Uuid::new_v4().to_string()[..8]));
+        .unwrap_or_else(|| {
+            let existing: std::collections::HashSet<String> =
+                proj.agents.by_name.keys().cloned().collect();
+            crate::daemon_v2::naming::generate_name(&existing)
+        });
 
     let agent_type = params
         .get("agent")

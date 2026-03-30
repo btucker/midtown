@@ -629,6 +629,37 @@ fn v1_prs_status_returns_prs() {
     assert!(events.is_empty());
 }
 
+/// Spec 13: coworker.spawn without name generates adjective-noun name
+#[test]
+fn coworker_spawn_generates_adjective_noun_name() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "coworker.spawn",
+        "id": 112,
+        "params": { "channel": "main" }
+    });
+    let (response, _, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(commands.len(), 1);
+    match &commands[0] {
+        crate::daemon_v2::decisions::Command::SpawnAgent(cfg) => {
+            assert!(
+                cfg.name.contains('-'),
+                "generated name should be adjective-noun: {}",
+                cfg.name
+            );
+            // Should not start with "worker-" (old UUID format)
+            assert!(
+                !cfg.name.starts_with("worker-"),
+                "name should use adjective-noun, not UUID: {}",
+                cfg.name
+            );
+        }
+        other => panic!("expected SpawnAgent, got {:?}", other),
+    }
+}
+
 #[test]
 fn v1_coworker_spawn_returns_spawn_command() {
     let proj = Projections::default();
