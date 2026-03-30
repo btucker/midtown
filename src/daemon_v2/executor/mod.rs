@@ -74,9 +74,12 @@ pub async fn execute(
     paths: &ProjectPaths,
     projections: &Projections,
     channels_dir: &Path,
+    event_tx: &tokio::sync::broadcast::Sender<DomainEvent>,
 ) -> Vec<DomainEvent> {
     match command {
-        Command::SpawnAgent(config) => execute_spawn(&config, sessions, paths, channels_dir).await,
+        Command::SpawnAgent(config) => {
+            execute_spawn(&config, sessions, paths, channels_dir, event_tx).await
+        }
         Command::StopAgent { id, reason } => {
             if let Some(mut session) = sessions.remove(&id)
                 && let Err(e) = spawn::stop_agent(&mut session).await
@@ -185,7 +188,16 @@ pub async fn execute(
             }]
         }
         Command::NudgeAgent { id, message } => {
-            execute_nudge(&id, &message, projections, sessions, paths, channels_dir).await
+            execute_nudge(
+                &id,
+                &message,
+                projections,
+                sessions,
+                paths,
+                channels_dir,
+                event_tx,
+            )
+            .await
         }
         Command::ResumeAgent { id } => execute_resume(&id, projections, sessions, paths).await,
         Command::AssignTask { task_id, agent_id } => {
@@ -274,6 +286,7 @@ async fn execute_spawn(
     sessions: &mut HashMap<String, HeadlessSession>,
     paths: &ProjectPaths,
     channels_dir: &Path,
+    event_tx: &tokio::sync::broadcast::Sender<DomainEvent>,
 ) -> Vec<DomainEvent> {
     match spawn::spawn_agent(config, paths).await {
         Ok((mut session, events)) => {
@@ -282,6 +295,7 @@ async fn execute_spawn(
                 &config.name,
                 config.channel.as_deref(),
                 channels_dir,
+                event_tx,
             );
             if let Some(DomainEvent::AgentCreated { id, .. }) = events.first() {
                 sessions.insert(id.clone(), session);
@@ -369,6 +383,7 @@ async fn execute_nudge(
     sessions: &mut HashMap<String, HeadlessSession>,
     paths: &ProjectPaths,
     channels_dir: &Path,
+    event_tx: &tokio::sync::broadcast::Sender<DomainEvent>,
 ) -> Vec<DomainEvent> {
     let action = resolve_nudge_action(id, projections);
     let (events, target_id) = match action {
@@ -380,7 +395,7 @@ async fn execute_nudge(
         }
         NudgeAction::RespawnAndDeliver { config } => {
             tracing::info!(%id, name = %config.name, "respawning agent for nudge");
-            let events = execute_spawn(&config, sessions, paths, channels_dir).await;
+            let events = execute_spawn(&config, sessions, paths, channels_dir, event_tx).await;
             // The new agent has a new ID from AgentCreated
             let new_id = events
                 .iter()
@@ -426,11 +441,13 @@ fn drain_session_output(
     agent_name: &str,
     channel: Option<&str>,
     channels_dir: &Path,
+    event_tx: &tokio::sync::broadcast::Sender<DomainEvent>,
 ) {
     if let Some((mut stdout_rx, mut stderr_rx)) = session.take_receivers() {
         let name = agent_name.to_string();
         let channel = channel.map(|s| s.to_string());
         let channels_dir = channels_dir.to_path_buf();
+        let event_tx = event_tx.clone();
         tokio::spawn(async move {
             use crate::headless::StreamEvent;
 
@@ -448,7 +465,7 @@ fn drain_session_output(
                             }
                             None => {
                                 // Stream ended — flush remaining
-                                flush_auto_output(&name, &channel, &channels_dir, &mut pending_events);
+                                flush_auto_output(&name, &channel, &channels_dir, &mut pending_events, &event_tx);
                                 break;
                             }
                         }
@@ -463,7 +480,7 @@ fn drain_session_output(
                         }
                     }
                     _ = flush_interval.tick() => {
-                        flush_auto_output(&name, &channel, &channels_dir, &mut pending_events);
+                        flush_auto_output(&name, &channel, &channels_dir, &mut pending_events, &event_tx);
                     }
                 }
             }
@@ -478,6 +495,7 @@ fn flush_auto_output(
     channel: &Option<String>,
     channels_dir: &std::path::Path,
     events: &mut Vec<crate::headless::StreamEvent>,
+    event_tx: &tokio::sync::broadcast::Sender<DomainEvent>,
 ) {
     if events.is_empty() {
         return;
@@ -490,9 +508,21 @@ fn flush_auto_output(
     if text.is_empty() {
         return;
     }
-    if let Some(ch) = channel
-        && let Err(e) = channel_io::post_message(channels_dir, ch, agent_name, &text, None)
-    {
-        tracing::warn!(agent = %agent_name, %ch, %e, "failed to auto-post output");
+    if let Some(ch) = channel {
+        let msg_id = match channel_io::post_message(channels_dir, ch, agent_name, &text, None) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(agent = %agent_name, %ch, %e, "failed to auto-post output");
+                return;
+            }
+        };
+        // Broadcast to WebSocket clients so the web UI updates in real-time
+        let _ = event_tx.send(DomainEvent::MessagePosted {
+            id: msg_id,
+            channel: ch.clone(),
+            sender: agent_name.to_string(),
+            content: text,
+            thread_id: None,
+        });
     }
 }

@@ -498,6 +498,7 @@ impl DaemonV2 {
                     &self.paths,
                     &proj,
                     &self.config.channels_dir,
+                    &self.event_tx,
                 )
                 .await
             };
@@ -563,6 +564,7 @@ impl DaemonV2 {
                                     &self.paths,
                                     &proj_snapshot,
                                     &self.config.channels_dir,
+                                    &self.event_tx,
                                 )
                                 .await;
                                 self.handle_worktree_cleanup(&cmd_events);
@@ -619,6 +621,7 @@ impl DaemonV2 {
                         &self.paths,
                         &proj_snapshot,
                         &self.config.channels_dir,
+                        &self.event_tx,
                     )
                     .await;
                     self.apply_events(&events).await;
@@ -726,6 +729,7 @@ impl DaemonV2 {
                     &self.paths,
                     &proj_snapshot,
                     &self.config.channels_dir,
+                    &self.event_tx,
                 )
                 .await;
                 // Clean up worktrees for completed tasks.
