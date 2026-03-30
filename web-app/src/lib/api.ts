@@ -1193,18 +1193,15 @@ export async function startAuthLogin(
 	}
 }
 
-export async function submitAuthCode(code: string): Promise<{ ok: boolean; error?: string }> {
+export async function pollAuthLoginStatus(): Promise<{
+	status: string;
+	ok?: boolean;
+}> {
 	try {
-		const res = await fetch(`${getApiBase()}/auth/login/code`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ code }),
-		});
-		const body = await res.json();
-		return { ok: body.ok, error: body.error };
-	} catch (err) {
-		console.error("Failed to submit auth code:", err);
-		return { ok: false, error: "Network error" };
+		const res = await fetch(`${getApiBase()}/auth/login/status`);
+		return await res.json();
+	} catch {
+		return { status: "pending" };
 	}
 }
 
