@@ -206,6 +206,256 @@ pub fn execute_inline(
     }
 }
 
+// ── Background spawn functions ──────────────────────────────────────
+
+/// Spawn PollPrs in a background task. Results sent via result_tx.
+pub fn spawn_background_poll_prs(
+    work: crate::daemon_v2::projections::work::WorkIndex,
+    result_tx: tokio::sync::mpsc::Sender<ExecutorResult>,
+) {
+    tokio::spawn(async move {
+        if let Some(status) = github::check_rate_limit().await
+            && github::should_throttle(&status)
+        {
+            tracing::warn!(
+                remaining = status.remaining,
+                "PR polling skipped — rate limit low"
+            );
+            return;
+        }
+        let events = match (
+            github::fetch_open_prs().await,
+            github::fetch_merged_prs().await,
+        ) {
+            (Ok(open), Ok(merged)) => github::diff_pr_state(&work, &open, &merged),
+            (Err(e), _) | (_, Err(e)) => {
+                tracing::warn!(%e, "PR polling failed");
+                vec![]
+            }
+        };
+        if !events.is_empty() {
+            let _ = result_tx.send(ExecutorResult::Events(events)).await;
+        }
+    });
+}
+
+/// Spawn agent in a background task. Session + events sent via result_tx.
+pub fn spawn_background_agent(
+    config: SpawnConfig,
+    paths: ProjectPaths,
+    channels_dir: std::path::PathBuf,
+    event_tx: tokio::sync::broadcast::Sender<DomainEvent>,
+    result_tx: tokio::sync::mpsc::Sender<ExecutorResult>,
+) {
+    tokio::spawn(async move {
+        match spawn::spawn_agent(&config, &paths).await {
+            Ok((mut session, events)) => {
+                drain_session_output(
+                    &mut session,
+                    &config.name,
+                    config.channel.as_deref(),
+                    &channels_dir,
+                    &event_tx,
+                );
+                let id = events
+                    .iter()
+                    .find_map(|e| match e {
+                        DomainEvent::AgentCreated { id, .. } => Some(id.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+
+                // Auto-create DM channel for agents not bound to a channel/thread
+                if config.channel.is_none() && config.bound_thread_id.is_none() {
+                    let dm = crate::daemon_v2::decisions::lifecycle::create_dm_channel_name(
+                        &config.name,
+                    );
+                    let _ = channel_io::post_system_message(
+                        &channels_dir,
+                        &dm,
+                        &format!("DM channel for {}", config.name),
+                    );
+                }
+
+                let _ = result_tx
+                    .send(ExecutorResult::SessionReady {
+                        id,
+                        session: Box::new(session),
+                        events,
+                    })
+                    .await;
+            }
+            Err(e) => {
+                tracing::error!(%e, name = %config.name, "failed to spawn agent");
+                let _ = result_tx
+                    .send(ExecutorResult::Events(vec![
+                        DomainEvent::AgentSpawnFailed {
+                            name: config.name.clone(),
+                            agent_type: config.agent_type.clone(),
+                            reason: e.to_string(),
+                        },
+                    ]))
+                    .await;
+            }
+        }
+    });
+}
+
+/// Resume agent in a background task.
+pub fn spawn_background_resume(
+    agent_id: String,
+    agent: crate::daemon_v2::projections::agents::Agent,
+    paths: ProjectPaths,
+    result_tx: tokio::sync::mpsc::Sender<ExecutorResult>,
+) {
+    tokio::spawn(async move {
+        let config = spawn_config_from_agent(&agent);
+        let session_id = match &agent.session_id {
+            Some(sid) => sid.clone(),
+            None => {
+                let _ = result_tx
+                    .send(ExecutorResult::Events(vec![
+                        DomainEvent::AgentSpawnFailed {
+                            name: agent.name.clone(),
+                            agent_type: agent.agent_type.clone(),
+                            reason: "no session_id for resume".into(),
+                        },
+                    ]))
+                    .await;
+                return;
+            }
+        };
+        let launch_config = spawn::build_launch_config(&config, paths.dir_key());
+        let mut headless_config = launch_config.to_headless_config(&paths);
+        headless_config.resume_session_id = Some(session_id);
+
+        match HeadlessSession::spawn(&headless_config).await {
+            Ok(session) => {
+                let pid = session.pid().unwrap_or(0);
+                let _ = result_tx
+                    .send(ExecutorResult::SessionReady {
+                        id: agent_id.clone(),
+                        session: Box::new(session),
+                        events: vec![DomainEvent::AgentResumed { id: agent_id, pid }],
+                    })
+                    .await;
+            }
+            Err(e) => {
+                let _ = result_tx
+                    .send(ExecutorResult::Events(vec![
+                        DomainEvent::AgentSpawnFailed {
+                            name: agent.name.clone(),
+                            agent_type: agent.agent_type.clone(),
+                            reason: format!("resume failed: {e}"),
+                        },
+                    ]))
+                    .await;
+            }
+        }
+    });
+}
+
+/// Background stop: kill the session process.
+pub fn spawn_background_stop(
+    id: String,
+    reason: String,
+    mut session: HeadlessSession,
+    result_tx: tokio::sync::mpsc::Sender<ExecutorResult>,
+) {
+    tokio::spawn(async move {
+        if let Err(e) = spawn::stop_agent(&mut session).await {
+            tracing::warn!(%id, %e, "error stopping agent");
+            let _ = result_tx
+                .send(ExecutorResult::LifecycleComplete {
+                    id: id.clone(),
+                    events: vec![DomainEvent::AgentStopFailed {
+                        id,
+                        reason: e.to_string(),
+                    }],
+                })
+                .await;
+            return;
+        }
+        let _ = result_tx
+            .send(ExecutorResult::LifecycleComplete {
+                id: id.clone(),
+                events: vec![DomainEvent::AgentStopped { id, reason }],
+            })
+            .await;
+    });
+}
+
+/// Background gh CLI command (merge, comment, rerun).
+pub fn spawn_background_gh_command(
+    command: Command,
+    result_tx: tokio::sync::mpsc::Sender<ExecutorResult>,
+) {
+    tokio::spawn(async move {
+        let events = match command {
+            Command::MergePr { number } => {
+                tracing::info!(%number, "merging PR");
+                match tokio::process::Command::new("gh")
+                    .args(["pr", "merge", &number.to_string(), "--squash", "--auto"])
+                    .output()
+                    .await
+                {
+                    Ok(output) if output.status.success() => {
+                        vec![DomainEvent::PrMerged {
+                            number,
+                            branch: String::new(),
+                        }]
+                    }
+                    Ok(output) => {
+                        let err = String::from_utf8_lossy(&output.stderr);
+                        tracing::error!(%number, %err, "gh pr merge failed");
+                        vec![]
+                    }
+                    Err(e) => {
+                        tracing::error!(%number, %e, "gh pr merge failed");
+                        vec![]
+                    }
+                }
+            }
+            Command::PostPrComment { number, body } => {
+                tracing::info!(%number, "posting PR comment");
+                match tokio::process::Command::new("gh")
+                    .args(["pr", "comment", &number.to_string(), "--body", &body])
+                    .output()
+                    .await
+                {
+                    Ok(output) if !output.status.success() => {
+                        let err = String::from_utf8_lossy(&output.stderr);
+                        tracing::warn!(%number, %err, "gh pr comment failed");
+                    }
+                    Err(e) => tracing::warn!(%number, %e, "gh pr comment failed"),
+                    _ => {}
+                }
+                vec![]
+            }
+            Command::RerunCi { run_id } => {
+                tracing::info!(%run_id, "rerunning CI");
+                match tokio::process::Command::new("gh")
+                    .args(["run", "rerun", &run_id.to_string()])
+                    .output()
+                    .await
+                {
+                    Ok(output) if !output.status.success() => {
+                        let err = String::from_utf8_lossy(&output.stderr);
+                        tracing::warn!(%run_id, %err, "gh run rerun failed");
+                    }
+                    Err(e) => tracing::warn!(%run_id, %e, "gh run rerun failed"),
+                    _ => {}
+                }
+                vec![]
+            }
+            _ => vec![],
+        };
+        if !events.is_empty() {
+            let _ = result_tx.send(ExecutorResult::Events(events)).await;
+        }
+    });
+}
+
 /// Build a SpawnConfig that recreates an agent with the same configuration.
 fn spawn_config_from_agent(agent: &crate::daemon_v2::projections::agents::Agent) -> SpawnConfig {
     SpawnConfig {

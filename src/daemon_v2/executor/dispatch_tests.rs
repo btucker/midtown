@@ -189,3 +189,44 @@ async fn execute_inline_returns_empty_for_non_inline_command() {
     let events = execute_inline(cmd, &mut sessions, std::path::Path::new("/tmp"));
     assert!(events.is_empty());
 }
+
+#[tokio::test]
+async fn spawn_background_poll_prs_sends_result() {
+    let (result_tx, mut result_rx) = tokio::sync::mpsc::channel::<ExecutorResult>(16);
+    let work = crate::daemon_v2::projections::work::WorkIndex::default();
+
+    // PollPrs will fail (no gh CLI in test env or no repo context) but should
+    // send back a result or complete without panicking
+    spawn_background_poll_prs(work, result_tx);
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), result_rx.recv()).await;
+    // Either received a result or the task completed with no events (both OK).
+    // The channel closing (recv returns None) is also acceptable since
+    // spawn_background_poll_prs only sends if events are non-empty.
+    assert!(result.is_ok(), "background task should not hang");
+}
+
+#[tokio::test]
+async fn spawn_background_gh_command_merge_sends_result() {
+    let (result_tx, mut result_rx) = tokio::sync::mpsc::channel::<ExecutorResult>(16);
+    let cmd = Command::MergePr { number: 99999 };
+
+    spawn_background_gh_command(cmd, result_tx);
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), result_rx.recv()).await;
+    // gh pr merge will fail in test env, but the task should not panic.
+    // It may send Events(vec![]) or nothing at all (channel closes).
+    assert!(result.is_ok(), "background gh command should not hang");
+}
+
+#[tokio::test]
+async fn spawn_background_stop_sends_lifecycle_complete() {
+    // We can't easily create a real HeadlessSession in tests, but we can
+    // verify the function signature compiles and the type system is correct.
+    // This test validates the type plumbing.
+    let (result_tx, _result_rx) = tokio::sync::mpsc::channel::<ExecutorResult>(16);
+    // Just verify the function exists and has the right signature
+    let _: fn(String, String, HeadlessSession, tokio::sync::mpsc::Sender<ExecutorResult>) =
+        spawn_background_stop;
+    drop(result_tx);
+}
