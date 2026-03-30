@@ -80,9 +80,9 @@ impl ModelSize {
     /// Return the size alias string that `normalize_size_alias_for_provider()` accepts.
     pub fn as_model_str(&self) -> &'static str {
         match self {
-            ModelSize::Small => "small",
-            ModelSize::Medium => "medium",
-            ModelSize::Large => "large",
+            ModelSize::Small => "haiku",
+            ModelSize::Medium => "sonnet",
+            ModelSize::Large => "opus",
         }
     }
 }
