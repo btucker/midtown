@@ -571,3 +571,15 @@ fn migrates_legacy_flat_auth_profile_to_platforms() {
         );
     });
 }
+
+#[test]
+fn current_profile_file_under_platforms() {
+    with_isolated_midtown_base_dir(|| {
+        let file = current_profile_file_for(AuthProvider::Claude);
+        assert!(
+            file.to_string_lossy().contains("platforms/claude/current"),
+            "current file should be at platforms/claude/current, got: {}",
+            file.display()
+        );
+    });
+}

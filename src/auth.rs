@@ -604,8 +604,24 @@ fn setup_claude_profile_symlinks(profile_name: &str) -> std::io::Result<()> {
 }
 
 /// Get the path to the current profile marker file for a provider.
+///
+/// For Claude, this is `~/.midtown/platforms/claude/current`.
+/// For other providers, this is under their provider root.
 fn current_profile_file_for(provider: AuthProvider) -> PathBuf {
-    provider_root(provider).join("current")
+    match provider {
+        AuthProvider::Claude => midtown_base_dir()
+            .join("platforms")
+            .join("claude")
+            .join("current"),
+        AuthProvider::Codex | AuthProvider::Zai => provider_root(provider).join("current"),
+    }
+}
+
+/// Legacy location for the Claude current-profile marker file.
+///
+/// Returns `~/.midtown/auth/current` (the old location before the platform layout migration).
+fn legacy_current_profile_file() -> PathBuf {
+    auth_base_dir().join("current")
 }
 
 /// Get the currently active profile name.
@@ -637,16 +653,20 @@ pub fn current_profile_for(provider: AuthProvider) -> String {
                 return profile.clone();
             }
 
-            // Migration: check legacy file, migrate if found
-            let legacy_file = current_profile_file_for(provider);
-            if let Ok(contents) = std::fs::read_to_string(&legacy_file) {
-                let trimmed = contents.trim().to_string();
-                if !trimmed.is_empty() {
-                    // Migrate to global config and clean up old file
-                    if set_current_profile_in_config(&trimmed).is_ok() {
-                        let _ = std::fs::remove_file(&legacy_file);
+            // Migration: check new location first, then legacy file
+            for file in [
+                current_profile_file_for(provider),
+                legacy_current_profile_file(),
+            ] {
+                if let Ok(contents) = std::fs::read_to_string(&file) {
+                    let trimmed = contents.trim().to_string();
+                    if !trimmed.is_empty() {
+                        // Migrate to global config and clean up old file
+                        if set_current_profile_in_config(&trimmed).is_ok() {
+                            let _ = std::fs::remove_file(&file);
+                        }
+                        return trimmed;
                     }
-                    return trimmed;
                 }
             }
 
@@ -782,10 +802,14 @@ pub fn set_current_profile_for(provider: AuthProvider, name: &str) -> std::io::R
         AuthProvider::Claude => {
             set_current_profile_in_config(name)?;
 
-            // Clean up legacy file if it exists
-            let legacy_file = current_profile_file_for(provider);
-            if legacy_file.exists() {
-                let _ = std::fs::remove_file(&legacy_file);
+            // Clean up file-based markers if they exist (both new and legacy locations)
+            for file in [
+                current_profile_file_for(provider),
+                legacy_current_profile_file(),
+            ] {
+                if file.exists() {
+                    let _ = std::fs::remove_file(&file);
+                }
             }
 
             Ok(())
