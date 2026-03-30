@@ -583,9 +583,7 @@ fn pr_comment_skips_nudge_when_commenter_is_author() {
 
     // Should still post to channel
     assert!(
-        commands
-            .iter()
-            .any(|c| matches!(c, Command::Post { .. })),
+        commands.iter().any(|c| matches!(c, Command::Post { .. })),
         "should still post comment to channel"
     );
 

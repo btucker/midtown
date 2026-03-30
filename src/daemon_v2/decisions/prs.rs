@@ -202,9 +202,7 @@ pub fn route_pr_comment(
     });
 
     // Nudge the author agent unless commenter is the author
-    if !is_self
-        && let Some(agent_id) = author_agent
-    {
+    if !is_self && let Some(agent_id) = author_agent {
         commands.push(Command::NudgeAgent {
             id: agent_id.clone(),
             message: format!("New comment on PR #{pr_number} from {commenter}: {comment_body}"),

@@ -46,12 +46,16 @@ mod tests {
         WebhookEvent::github("test")
     }
 
+    /// Spec 12: WHEN a webhook has no recognized events THEN an empty event list
+    /// SHALL be produced
     #[test]
     fn empty_webhook_produces_no_events() {
         let we = noop_event();
         assert!(webhook_to_events(&we).is_empty());
     }
 
+    /// Spec 12: WHEN a GitHub webhook reports a PR merged THEN PrMerged event
+    /// SHALL be produced
     #[test]
     fn merged_pr_webhook_produces_pr_merged_event() {
         let we = WebhookEvent {
@@ -70,6 +74,8 @@ mod tests {
         ));
     }
 
+    /// Spec 12: WHEN a GitHub webhook reports a PR needs review THEN
+    /// PrReviewRequested event SHALL be produced
     #[test]
     fn needs_review_webhook_produces_pr_review_requested_event() {
         let we = WebhookEvent {
@@ -84,6 +90,8 @@ mod tests {
         ));
     }
 
+    /// Spec 12: WHEN a GitHub webhook reports a PR opened THEN PrOpened event
+    /// SHALL be produced
     #[test]
     fn pr_opened_webhook_produces_pr_opened_event() {
         let we = WebhookEvent {
