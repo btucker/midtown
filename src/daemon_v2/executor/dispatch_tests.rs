@@ -76,3 +76,116 @@ fn merge_pr_is_background() {
     let cmd = Command::MergePr { number: 42 };
     assert!(matches!(classify_command(&cmd), CommandClass::Background));
 }
+
+#[tokio::test]
+async fn execute_inline_handles_assign_task() {
+    let mut sessions = HashMap::new();
+    let cmd = Command::AssignTask {
+        task_id: "t1".into(),
+        agent_id: "a1".into(),
+    };
+    let events = execute_inline(cmd, &mut sessions, std::path::Path::new("/tmp"));
+    assert_eq!(events.len(), 1);
+    assert!(
+        matches!(&events[0], DomainEvent::TaskAssigned { task_id, agent_id }
+            if task_id == "t1" && agent_id == "a1")
+    );
+}
+
+#[tokio::test]
+async fn execute_inline_handles_complete_task() {
+    let mut sessions = HashMap::new();
+    let cmd = Command::CompleteTask {
+        task_id: "t1".into(),
+    };
+    let events = execute_inline(cmd, &mut sessions, std::path::Path::new("/tmp"));
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], DomainEvent::TaskCompleted { task_id } if task_id == "t1"));
+}
+
+#[tokio::test]
+async fn execute_inline_handles_reset_task() {
+    let mut sessions = HashMap::new();
+    let cmd = Command::ResetTask {
+        task_id: "t1".into(),
+    };
+    let events = execute_inline(cmd, &mut sessions, std::path::Path::new("/tmp"));
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], DomainEvent::TaskReset { task_id, .. } if task_id == "t1"));
+}
+
+#[tokio::test]
+async fn execute_inline_handles_garbage_collect() {
+    let mut sessions = HashMap::new();
+    let cmd = Command::GarbageCollect {
+        agent_id: "a1".into(),
+    };
+    let events = execute_inline(cmd, &mut sessions, std::path::Path::new("/tmp"));
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], DomainEvent::AgentGarbageCollected { id } if id == "a1"));
+}
+
+#[tokio::test]
+async fn execute_inline_handles_create_worktree() {
+    let mut sessions = HashMap::new();
+    let cmd = Command::CreateWorktree {
+        task_id: "t1".into(),
+        branch: "feat/test".into(),
+    };
+    let events = execute_inline(cmd, &mut sessions, std::path::Path::new("/tmp"));
+    assert!(events.is_empty());
+}
+
+#[tokio::test]
+async fn execute_inline_handles_remove_worktree() {
+    let mut sessions = HashMap::new();
+    let cmd = Command::RemoveWorktree {
+        task_id: "t1".into(),
+    };
+    let events = execute_inline(cmd, &mut sessions, std::path::Path::new("/tmp"));
+    assert!(events.is_empty());
+}
+
+#[tokio::test]
+async fn execute_inline_post_writes_to_channel() {
+    let tmp = tempfile::tempdir().unwrap();
+    let channels_dir = tmp.path();
+    let mut sessions = HashMap::new();
+    let cmd = Command::Post {
+        channel: "test-ch".into(),
+        sender: "alice".into(),
+        content: "hello world".into(),
+        thread_id: None,
+    };
+    let events = execute_inline(cmd, &mut sessions, channels_dir);
+    assert_eq!(events.len(), 1);
+    assert!(
+        matches!(&events[0], DomainEvent::MessagePosted { channel, sender, content, .. }
+        if channel == "test-ch" && sender == "alice" && content == "hello world")
+    );
+}
+
+#[tokio::test]
+async fn execute_inline_post_system_writes_to_channel() {
+    let tmp = tempfile::tempdir().unwrap();
+    let channels_dir = tmp.path();
+    let mut sessions = HashMap::new();
+    let cmd = Command::PostSystem {
+        channel: "test-ch".into(),
+        content: "system msg".into(),
+    };
+    let events = execute_inline(cmd, &mut sessions, channels_dir);
+    assert_eq!(events.len(), 1);
+    assert!(
+        matches!(&events[0], DomainEvent::MessagePosted { sender, content, .. }
+        if sender == "midtown" && content == "system msg")
+    );
+}
+
+#[tokio::test]
+async fn execute_inline_returns_empty_for_non_inline_command() {
+    let mut sessions = HashMap::new();
+    let cmd = Command::PollPrs;
+    let events = execute_inline(cmd, &mut sessions, std::path::Path::new("/tmp"));
+    assert!(events.is_empty());
+}
