@@ -693,17 +693,9 @@ pub async fn auth_login(
     tracing::info!(%provider, "auth login requested — starting OAuth flow");
 
     // Spawn claude auth login with piped stdin/stdout.
-    // Use `script` to allocate a PTY so the CLI reads from stdin.
-    let mut child = match tokio::process::Command::new("script")
-        .args([
-            "-q",
-            "/dev/null",
-            "env",
-            "BROWSER=false",
-            "claude",
-            "auth",
-            "login",
-        ])
+    let mut child = match tokio::process::Command::new("claude")
+        .args(["auth", "login"])
+        .env("BROWSER", "false")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -775,17 +767,31 @@ pub async fn auth_login_code(
         return Json(json!({"ok": false, "error": "No pending auth login"}));
     };
 
-    // Write code to stdin
-    if let Some(ref mut stdin) = process.stdin {
+    // Write code to stdin and close it
+    if let Some(mut stdin) = process.stdin.take() {
         use tokio::io::AsyncWriteExt;
-        if let Err(e) = stdin.write_all(format!("{code}\n").as_bytes()).await {
-            return Json(json!({"ok": false, "error": format!("Failed to send code: {e}")}));
+        let write_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            stdin.write_all(format!("{code}\n").as_bytes()).await?;
+            stdin.flush().await?;
+            drop(stdin); // Close stdin to signal EOF
+            Ok::<(), std::io::Error>(())
+        })
+        .await;
+
+        match write_result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                return Json(json!({"ok": false, "error": format!("Failed to send code: {e}")}));
+            }
+            Err(_) => {
+                return Json(json!({"ok": false, "error": "Timed out writing code to stdin"}));
+            }
         }
-        let _ = stdin.flush().await;
     }
 
-    // Wait for process to complete (up to 30s)
-    match tokio::time::timeout(std::time::Duration::from_secs(30), process.child.wait()).await {
+    // Wait briefly for process to complete, then let it finish in background
+    let mut child = process.child;
+    match tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await {
         Ok(Ok(status)) if status.success() => {
             tracing::info!("auth login completed successfully");
             Json(json!({"ok": true}))
@@ -795,8 +801,17 @@ pub async fn auth_login_code(
         }
         Ok(Err(e)) => Json(json!({"ok": false, "error": format!("auth login error: {e}")})),
         Err(_) => {
-            let _ = process.child.kill().await;
-            Json(json!({"ok": false, "error": "auth login timed out"}))
+            // Process still running — let it finish in background
+            tokio::spawn(async move {
+                match tokio::time::timeout(std::time::Duration::from_secs(60), child.wait()).await {
+                    Ok(Ok(status)) => tracing::info!(%status, "auth login completed in background"),
+                    _ => {
+                        let _ = child.kill().await;
+                    }
+                }
+            });
+            // Return success — the code was written, process is working
+            Json(json!({"ok": true, "note": "auth login still processing"}))
         }
     }
 }
