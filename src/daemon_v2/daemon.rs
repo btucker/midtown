@@ -872,6 +872,19 @@ impl DaemonV2 {
     async fn dispatch_background(&mut self, command: Command) {
         match command {
             Command::SpawnAgent(mut config) => {
+                // If a spawn for this agent name is already in-flight, stash
+                // the initial prompt as a nudge instead of spawning a duplicate.
+                if self.lifecycle_guard.is_pending(&config.name) {
+                    if let Some(prompt) = &config.initial_prompt {
+                        tracing::info!(
+                            name = %config.name,
+                            "spawn already in-flight — stashing message as nudge"
+                        );
+                        self.lifecycle_guard
+                            .stash_nudge(&config.name, prompt.clone());
+                    }
+                    return;
+                }
                 self.prepare_worktree_for_spawn(&mut config);
                 let key = config.name.clone();
                 self.lifecycle_guard.mark_pending(key.clone());
@@ -935,8 +948,20 @@ impl DaemonV2 {
     /// Resolve and dispatch a nudge: deliver to running agents, resume stopped
     /// agents, or stash if a lifecycle operation is in-flight.
     async fn dispatch_nudge(&mut self, id: &str, message: &str) {
+        // Check by ID first, then by agent name (spawns key by name, not ID)
         if self.lifecycle_guard.is_pending(id) {
             self.lifecycle_guard.stash_nudge(id, message.to_string());
+            return;
+        }
+        let agent_name = {
+            let proj = self.projections.lock().await;
+            proj.agents.by_id.get(id).map(|a| a.name.clone())
+        };
+        if let Some(ref name) = agent_name
+            && self.lifecycle_guard.is_pending(name)
+        {
+            tracing::info!(%id, %name, "nudge stashed — agent spawn in-flight (keyed by name)");
+            self.lifecycle_guard.stash_nudge(name, message.to_string());
             return;
         }
         let action = {
