@@ -634,7 +634,9 @@ fn projections_with_tasks_and_prs() -> Projections {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: Some("midtown-code-author".into()),
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::PrOpened {

@@ -17,7 +17,9 @@ fn dispatches_pending_task_when_no_agents() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     }];
 
@@ -49,7 +51,9 @@ fn respects_max_in_progress_limit() {
             channel: "main".into(),
             blocked_by: vec![],
             agent_type: None,
+            agent_name: None,
             icon: None,
+            color: None,
             parent: None,
         },
         DomainEvent::TaskCreated {
@@ -58,7 +62,9 @@ fn respects_max_in_progress_limit() {
             channel: "main".into(),
             blocked_by: vec![],
             agent_type: None,
+            agent_name: None,
             icon: None,
+            color: None,
             parent: None,
         },
         DomainEvent::TaskCreated {
@@ -67,7 +73,9 @@ fn respects_max_in_progress_limit() {
             channel: "main".into(),
             blocked_by: vec![],
             agent_type: None,
+            agent_name: None,
             icon: None,
+            color: None,
             parent: None,
         },
         DomainEvent::TaskCreated {
@@ -76,7 +84,9 @@ fn respects_max_in_progress_limit() {
             channel: "main".into(),
             blocked_by: vec![],
             agent_type: None,
+            agent_name: None,
             icon: None,
+            color: None,
             parent: None,
         },
         DomainEvent::TaskAssigned {
@@ -113,7 +123,9 @@ fn skips_blocked_tasks() {
             channel: "main".into(),
             blocked_by: vec![],
             agent_type: None,
+            agent_name: None,
             icon: None,
+            color: None,
             parent: None,
         },
         DomainEvent::TaskCreated {
@@ -122,7 +134,9 @@ fn skips_blocked_tasks() {
             channel: "main".into(),
             blocked_by: vec!["task-1".into()],
             agent_type: None,
+            agent_name: None,
             icon: None,
+            color: None,
             parent: None,
         },
     ];
@@ -172,7 +186,9 @@ fn stops_agents_for_completed_tasks() {
             channel: "main".into(),
             blocked_by: vec![],
             agent_type: None,
+            agent_name: None,
             icon: None,
+            color: None,
             parent: None,
         },
         DomainEvent::TaskAssigned {
@@ -212,7 +228,9 @@ fn skips_lead_driven_channel_tasks() {
         channel: "manual".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
 
@@ -231,7 +249,9 @@ fn check_duplicate_workers_stops_older_of_two() {
             channel: "main".into(),
             blocked_by: vec![],
             agent_type: None,
+            agent_name: None,
             icon: None,
+            color: None,
             parent: None,
         },
         // First (older) worker
@@ -302,7 +322,9 @@ fn check_duplicate_workers_no_op_when_no_duplicates() {
             channel: "main".into(),
             blocked_by: vec![],
             agent_type: None,
+            agent_name: None,
             icon: None,
+            color: None,
             parent: None,
         },
         DomainEvent::AgentCreated {

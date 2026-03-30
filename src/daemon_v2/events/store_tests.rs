@@ -30,7 +30,9 @@ fn sample_task_created() -> DomainEvent {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     }
 }

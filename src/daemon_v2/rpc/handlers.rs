@@ -200,8 +200,18 @@ pub fn handle_task_create(params: Option<&Value>) -> Result<Vec<DomainEvent>, Rp
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    let agent_name = params
+        .get("agent_name")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
     let icon = params
         .get("icon")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let color = params
+        .get("color")
         .and_then(|v| v.as_str())
         .map(String::from);
 
@@ -216,7 +226,9 @@ pub fn handle_task_create(params: Option<&Value>) -> Result<Vec<DomainEvent>, Rp
         channel,
         blocked_by,
         agent_type,
+        agent_name,
         icon,
+        color,
         parent,
     }])
 }

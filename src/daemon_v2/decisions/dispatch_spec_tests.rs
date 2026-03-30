@@ -37,7 +37,9 @@ fn make_task(proj: &mut Projections, id: &str, channel: &str) {
         channel: channel.into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
 }
@@ -69,7 +71,9 @@ fn spawns_workers_for_available_slots() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
@@ -126,7 +130,9 @@ fn uses_default_agent_type_when_none_specified() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
 
@@ -153,7 +159,9 @@ fn uses_specified_agent_type() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: Some("midtown-code-reviewer".into()),
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
 
@@ -185,7 +193,9 @@ fn does_not_dispatch_lead_driven_channel_tasks() {
         channel: "manual".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
 
@@ -196,6 +206,40 @@ fn does_not_dispatch_lead_driven_channel_tasks() {
         "expected no spawns for lead_driven channel, got {:?}",
         commands
     );
+}
+
+/// Spec 2.1: WHEN spawning a worker THEN the system SHALL use name/icon/color
+/// from the task if set
+#[test]
+fn spawned_worker_uses_task_name_icon_color() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Custom task".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: Some("custom-hawk".into()),
+        icon: Some("rocket".into()),
+        color: Some("#FF0000".into()),
+        parent: None,
+    });
+
+    let commands = dispatch_pending_tasks(&proj, 3);
+    assert_eq!(commands.len(), 1);
+
+    match &commands[0] {
+        Command::SpawnAgent(cfg) => {
+            assert_eq!(cfg.name, "custom-hawk", "should use task agent_name");
+            assert_eq!(cfg.icon.as_deref(), Some("rocket"), "should use task icon");
+            assert_eq!(
+                cfg.color.as_deref(),
+                Some("#FF0000"),
+                "should use task color"
+            );
+        }
+        other => panic!("expected SpawnAgent, got {:?}", other),
+    }
 }
 
 /// Spec 2.1: WHEN spawning a worker THEN the system SHALL generate a unique name,
@@ -455,7 +499,9 @@ fn blocked_task_not_dispatched_until_blockers_complete() {
         channel: "main".into(),
         blocked_by: vec!["t1".into()],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
 
@@ -491,7 +537,9 @@ fn task_dispatched_after_blocker_unblocked() {
         channel: "main".into(),
         blocked_by: vec!["t1".into()],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
 
@@ -535,7 +583,9 @@ fn stale_worker_nudged_after_5_minutes() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
@@ -589,7 +639,9 @@ fn fresh_worker_not_nudged() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::AgentCreated {

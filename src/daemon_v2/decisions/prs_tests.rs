@@ -28,7 +28,9 @@ fn make_projections_with_merged_pr(
             channel: "general".into(),
             blocked_by: vec![],
             agent_type: None,
+            agent_name: None,
             icon: None,
+            color: None,
             parent: None,
         });
 
@@ -325,7 +327,9 @@ fn suspends_author_with_open_pr() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
@@ -369,7 +373,9 @@ fn no_suspend_for_merged_pr() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
@@ -416,7 +422,9 @@ fn no_suspend_for_closed_pr() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
@@ -505,7 +513,9 @@ fn nudge_rebase_after_merge_nudges_open_pr_workers() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
@@ -592,7 +602,9 @@ fn rebase_nudge_includes_stopped_workers() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
@@ -665,7 +677,9 @@ fn no_rebase_nudge_when_cooldown_active() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::PrLinkedToTask {

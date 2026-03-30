@@ -182,7 +182,9 @@ fn at_all_in_main_channel_nudges_all_leads_and_task_agents() {
         channel: "web".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
@@ -223,7 +225,9 @@ fn at_all_in_topic_channel_nudges_local_lead_and_task_agents() {
         channel: "web".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
@@ -374,7 +378,9 @@ fn task_ref_nudges_assigned_agent() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
 
@@ -400,7 +406,9 @@ fn task_ref_no_assigned_agent() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
 
@@ -425,7 +433,9 @@ fn task_ref_nudges_descendant_agents() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::TaskCreated {
@@ -434,7 +444,9 @@ fn task_ref_nudges_descendant_agents() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: Some("10".into()),
     });
 
@@ -466,7 +478,9 @@ fn task_parent_child_recorded() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::TaskCreated {
@@ -475,7 +489,9 @@ fn task_parent_child_recorded() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: Some("100".into()),
     });
     proj.apply(&DomainEvent::TaskCreated {
@@ -484,7 +500,9 @@ fn task_parent_child_recorded() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: Some("100".into()),
     });
 

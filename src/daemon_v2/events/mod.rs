@@ -102,7 +102,9 @@ pub enum DomainEvent {
         channel: String,
         blocked_by: Vec<TaskId>,
         agent_type: Option<String>,
+        agent_name: Option<String>,
         icon: Option<String>,
+        color: Option<String>,
         parent: Option<TaskId>,
     },
     TaskAssigned {

@@ -23,7 +23,9 @@ fn full_lifecycle_through_store_and_projections() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     };
     store.append(&e1).unwrap();

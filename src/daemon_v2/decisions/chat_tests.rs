@@ -304,7 +304,9 @@ fn at_all_nudges_leads_and_in_progress_task_agents() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     events.push(DomainEvent::TaskAssigned {
@@ -317,7 +319,9 @@ fn at_all_nudges_leads_and_in_progress_task_agents() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     events.push(DomainEvent::TaskAssigned {
@@ -350,7 +354,9 @@ fn at_all_excludes_sender() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     events.push(DomainEvent::TaskAssigned {
@@ -436,7 +442,9 @@ fn task_ref_nudges_assigned_agent() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     events.extend(worker_events("w1", "ghost-town", "main", Some("42")));
@@ -470,7 +478,9 @@ fn task_ref_no_nudge_for_unassigned() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
 

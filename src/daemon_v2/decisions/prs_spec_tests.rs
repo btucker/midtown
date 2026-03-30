@@ -17,7 +17,9 @@ fn make_worker_with_task(proj: &mut Projections, agent_id: &str, task_id: &str) 
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
@@ -193,7 +195,9 @@ fn merged_pr_completes_linked_in_progress_task() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
@@ -235,7 +239,9 @@ fn merged_pr_does_not_re_complete_already_completed_task() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
@@ -333,7 +339,9 @@ fn merged_pr_nudges_other_workers_to_rebase() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {

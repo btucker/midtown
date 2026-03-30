@@ -10,7 +10,9 @@ fn create_task_adds_to_pending() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     assert_eq!(idx.pending_tasks.len(), 1);
@@ -26,7 +28,9 @@ fn task_assigned_moves_to_in_progress() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     idx.apply(&DomainEvent::TaskAssigned {
@@ -47,7 +51,9 @@ fn task_completed_removes_from_in_progress() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     idx.apply(&DomainEvent::TaskAssigned {
@@ -70,7 +76,9 @@ fn task_reset_returns_to_pending() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     idx.apply(&DomainEvent::TaskAssigned {
@@ -94,7 +102,9 @@ fn blocked_tasks_tracked() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     idx.apply(&DomainEvent::TaskCreated {
@@ -103,7 +113,9 @@ fn blocked_tasks_tracked() {
         channel: "main".into(),
         blocked_by: vec!["t1".into()],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     assert!(idx.blocked.contains_key("t2"));
@@ -121,7 +133,9 @@ fn unblock_removes_from_blocked() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     idx.apply(&DomainEvent::TaskCreated {
@@ -130,7 +144,9 @@ fn unblock_removes_from_blocked() {
         channel: "main".into(),
         blocked_by: vec!["t1".into()],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     idx.apply(&DomainEvent::TaskUnblocked {
@@ -149,7 +165,9 @@ fn pr_linked_to_task() {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     });
     idx.apply(&DomainEvent::PrOpened {

@@ -36,7 +36,9 @@ fn respawn_dead_agent_with_task() {
             channel: "main".into(),
             blocked_by: vec![],
             agent_type: None,
+            agent_name: None,
             icon: None,
+            color: None,
             parent: None,
         },
         DomainEvent::TaskAssigned {
@@ -88,7 +90,9 @@ fn no_respawn_for_completed_task() {
             channel: "main".into(),
             blocked_by: vec![],
             agent_type: None,
+            agent_name: None,
             icon: None,
+            color: None,
             parent: None,
         },
         DomainEvent::TaskAssigned {
@@ -217,7 +221,9 @@ fn check_idle_workers_ignores_worker_with_task() {
             channel: "main".into(),
             blocked_by: vec![],
             agent_type: None,
+            agent_name: None,
             icon: None,
+            color: None,
             parent: None,
         },
         DomainEvent::TaskAssigned {

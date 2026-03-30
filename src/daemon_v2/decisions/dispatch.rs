@@ -39,10 +39,14 @@ pub fn dispatch_pending_tasks(proj: &Projections, max_in_progress: usize) -> Vec
             .agent_type
             .clone()
             .unwrap_or_else(|| DEFAULT_AGENT_TYPE.to_string());
-        let name = naming::generate_name(&existing_names);
+        // Spec 2.1: use name/icon/color from the task if set, otherwise generate
+        let name = task
+            .agent_name
+            .clone()
+            .unwrap_or_else(|| naming::generate_name(&existing_names));
         existing_names.insert(name.clone());
-        let icon = Some(naming::random_icon());
-        let color = Some(naming::random_color());
+        let icon = Some(task.icon.clone().unwrap_or_else(naming::random_icon));
+        let color = Some(task.color.clone().unwrap_or_else(naming::random_color));
         commands.push(Command::SpawnAgent(SpawnConfig {
             name,
             kind: AgentKind::Worker,

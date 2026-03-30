@@ -37,7 +37,9 @@ fn sample_task_event() -> DomainEvent {
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
+        agent_name: None,
         icon: None,
+        color: None,
         parent: None,
     }
 }
@@ -93,7 +95,9 @@ fn each_append_increments_sequence_by_one() {
                 channel: "main".into(),
                 blocked_by: vec![],
                 agent_type: None,
+                agent_name: None,
                 icon: None,
+                color: None,
                 parent: None,
             })
             .unwrap();
