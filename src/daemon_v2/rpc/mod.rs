@@ -168,6 +168,16 @@ pub fn dispatch_request(
                 Err(err) => (err.to_json(&id), vec![], vec![]),
             }
         }
+        "workflow.set_state" => {
+            let result = handlers::handle_workflow_set_state(params);
+            match result {
+                Ok(events) => {
+                    let response = json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id });
+                    (response, events, vec![])
+                }
+                Err(err) => (err.to_json(&id), vec![], vec![]),
+            }
+        }
         "reminder.cancel" => {
             let result = handlers::handle_reminder_cancel(params);
             match result {
@@ -226,9 +236,8 @@ pub fn dispatch_request(
                 "channel.unarchive" => handlers::handle_channel_unarchive(params, channels_dir),
                 "channel.rename" => handlers::handle_channel_rename(params, channels_dir),
                 // Stubs for CLI methods that don't have full v2 implementations yet
-                "workflow.set_state" | "workflow.list" | "pr.list-external" | "pr.allow" => {
-                    Ok(json!({"ok": true, "stub": true}))
-                }
+                "workflow.list" => handlers::handle_workflow_list(proj),
+                "pr.list-external" | "pr.allow" => Ok(json!({"ok": true, "stub": true})),
                 // daemon.set-draining and daemon.check-pending return info
                 // about draining state (actual flag managed by the daemon loop)
                 "daemon.set-draining" | "daemon.check-pending" => {

@@ -23,6 +23,14 @@ pub use channels::ChannelIndex;
 pub use cooldowns::CooldownTracker;
 pub use work::WorkIndex;
 
+/// A workflow state entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowState {
+    pub channel: String,
+    pub key: String,
+    pub state: String,
+}
+
 /// A stored reminder.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reminder {
@@ -41,6 +49,9 @@ pub struct Projections {
     pub cooldowns: CooldownTracker,
     #[serde(default)]
     pub reminders: Vec<Reminder>,
+    /// Workflow states: (channel, key) → state value
+    #[serde(default)]
+    pub workflow_states: Vec<WorkflowState>,
 }
 
 impl Projections {
@@ -62,6 +73,26 @@ impl Projections {
                     message: message.clone(),
                     cron_expr: cron_expr.clone(),
                 });
+            }
+            DomainEvent::WorkflowStateSet {
+                channel,
+                key,
+                state,
+            } => {
+                // Upsert: replace existing or add new
+                if let Some(existing) = self
+                    .workflow_states
+                    .iter_mut()
+                    .find(|w| w.channel == *channel && w.key == *key)
+                {
+                    existing.state = state.clone();
+                } else {
+                    self.workflow_states.push(WorkflowState {
+                        channel: channel.clone(),
+                        key: key.clone(),
+                        state: state.clone(),
+                    });
+                }
             }
             DomainEvent::ReminderCancelled { id } => {
                 self.reminders.retain(|r| r.id != *id);

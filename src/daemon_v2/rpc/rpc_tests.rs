@@ -1592,3 +1592,43 @@ fn reminder_cancel_removes() {
     }
     assert!(proj.reminders.is_empty(), "reminder should be cancelled");
 }
+
+// ── workflow CRUD ───────────────────────────────────────────────────────
+
+/// Section 15: workflow.set_state sets a key-value state on a channel
+#[test]
+fn workflow_set_state_and_list() {
+    let mut proj = Projections::default();
+
+    // Set workflow state
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "workflow.set_state",
+        "id": 1100,
+        "params": { "channel": "backend", "key": "phase", "state": "developing" }
+    });
+    let (response, events, _) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(
+        response["error"].is_null(),
+        "workflow.set_state error: {response}"
+    );
+    for event in &events {
+        proj.apply(event);
+    }
+
+    // List should show it
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "workflow.list",
+        "id": 1101
+    });
+    let (response, _, _) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    let workflows = response["result"].as_array().unwrap();
+    assert!(
+        workflows.iter().any(|w| w["channel"] == "backend"
+            && w["key"] == "phase"
+            && w["state"] == "developing"),
+        "workflow state should appear in list: {workflows:?}"
+    );
+}

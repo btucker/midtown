@@ -357,7 +357,7 @@
 
 ### Important
 - ~~Reminder system (cron + all-work-merged triggers)~~ — **Implemented** (reminder.create/list/cancel RPC + event sourced)
-- Workflow system (assignment, state machine, event emission)
+- ~~Workflow system (assignment, state machine, event emission)~~ — **Implemented** (workflow.set_state/list RPC + event sourced)
 - ~~Task prompt / handoff between agents~~ — **Implemented** (task.prompt nudges assigned agent, task.handoff stops + respawns)
 - ~~Session attach/detach (interactive takeover)~~ — **Partially Implemented** (session.detach stops agent, attach not yet)
 - ~~CI issue detection (stale checks, auto-rerun)~~ — **Implemented** (detect_stale_ci nudges authors on CI failure)

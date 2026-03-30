@@ -1163,3 +1163,38 @@ pub fn handle_reminder_cancel(params: Option<&Value>) -> Result<Vec<DomainEvent>
 
     Ok(vec![DomainEvent::ReminderCancelled { id: id.to_string() }])
 }
+
+// ── Workflow handlers ───────────────────────────────────────────────────
+
+/// Handle `workflow.set_state` — set a workflow state key on a channel.
+pub fn handle_workflow_set_state(params: Option<&Value>) -> Result<Vec<DomainEvent>, RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+    let channel = params
+        .get("channel")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: channel"))?;
+    let key = params
+        .get("key")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: key"))?;
+    let state = params
+        .get("state")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: state"))?;
+
+    Ok(vec![DomainEvent::WorkflowStateSet {
+        channel: channel.to_string(),
+        key: key.to_string(),
+        state: state.to_string(),
+    }])
+}
+
+/// Handle `workflow.list` — list all workflow states.
+pub fn handle_workflow_list(proj: &Projections) -> Result<Value, RpcError> {
+    let states: Vec<Value> = proj
+        .workflow_states
+        .iter()
+        .map(|w| json!({"channel": w.channel, "key": w.key, "state": w.state}))
+        .collect();
+    Ok(json!(states))
+}

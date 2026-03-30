@@ -199,6 +199,13 @@ pub enum DomainEvent {
         id: String,
     },
 
+    // Workflows
+    WorkflowStateSet {
+        channel: String,
+        key: String,
+        state: String,
+    },
+
     // Channel settings
     ChannelLeadDrivenSet {
         channel: String,
