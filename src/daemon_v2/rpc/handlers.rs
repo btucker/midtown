@@ -914,6 +914,45 @@ pub fn handle_channel_unarchive(
     Ok(json!({"ok": true}))
 }
 
+/// Handle `channel.rename` — rename a channel directory.
+pub fn handle_channel_rename(
+    params: Option<&Value>,
+    channels_dir: &Path,
+) -> Result<Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+    let old_name = params
+        .get("old")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: old"))?;
+    let new_name = params
+        .get("new")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: new"))?;
+
+    let old_dir = channels_dir.join("channels").join(old_name);
+    let new_dir = channels_dir.join("channels").join(new_name);
+
+    if !old_dir.exists() {
+        return Err(RpcError {
+            code: -32000,
+            message: format!("channel not found: {old_name}"),
+        });
+    }
+    if new_dir.exists() {
+        return Err(RpcError {
+            code: -32000,
+            message: format!("channel already exists: {new_name}"),
+        });
+    }
+
+    std::fs::rename(&old_dir, &new_dir).map_err(|e| RpcError {
+        code: -32000,
+        message: format!("failed to rename: {e}"),
+    })?;
+
+    Ok(json!({"ok": true}))
+}
+
 /// Handle `task.prompt` — send a message to the agent working on a task.
 pub fn handle_task_prompt(
     params: Option<&Value>,

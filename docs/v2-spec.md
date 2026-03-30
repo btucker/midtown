@@ -363,7 +363,7 @@
 - ~~CI issue detection (stale checks, auto-rerun)~~ — **Implemented** (detect_stale_ci nudges authors on CI failure)
 
 ### Nice to Have
-- Channel rename/merge
+- ~~Channel rename/merge~~ — **Implemented** (channel.rename RPC, merge not yet)
 - Oneshot execute
 - Daemon exec-restart / draining mode
 - Push notifications (VAPID web push delivery)

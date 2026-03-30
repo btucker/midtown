@@ -175,6 +175,7 @@ pub fn dispatch_request(
                 "channel.create" => handlers::handle_channel_create(params, channels_dir),
                 "channel.archive" => handlers::handle_channel_archive(params, channels_dir),
                 "channel.unarchive" => handlers::handle_channel_unarchive(params, channels_dir),
+                "channel.rename" => handlers::handle_channel_rename(params, channels_dir),
                 // Stubs for CLI methods that don't have full v2 implementations yet
                 "reminder.list"
                 | "reminder.create"

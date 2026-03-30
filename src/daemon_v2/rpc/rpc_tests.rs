@@ -1403,3 +1403,41 @@ fn channel_archive_and_unarchive_via_rpc() {
     assert!(ch_dir.exists(), "restored dir should exist");
     assert!(!archived_dir.exists(), "archived dir should be gone");
 }
+
+// ── channel.rename ──────────────────────────────────────────────────────
+
+/// Section 15: channel.rename renames a channel directory
+#[test]
+fn channel_rename_via_rpc() {
+    let proj = Projections::default();
+    let dir = tempfile::TempDir::new().unwrap();
+
+    // Create the source channel
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.create",
+        "id": 700,
+        "params": { "name": "old-name" }
+    });
+    let (response, _, _) = dispatch_request(request, &proj, dir.path());
+    assert!(response["error"].is_null());
+
+    // Rename it
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.rename",
+        "id": 701,
+        "params": { "old": "old-name", "new": "new-name" }
+    });
+    let (response, _, _) = dispatch_request(request, &proj, dir.path());
+    assert!(
+        response["error"].is_null(),
+        "channel.rename error: {response}"
+    );
+
+    // Old should be gone, new should exist
+    let old_dir = dir.path().join("channels").join("old-name");
+    let new_dir = dir.path().join("channels").join("new-name");
+    assert!(!old_dir.exists(), "old channel dir should be gone");
+    assert!(new_dir.exists(), "new channel dir should exist");
+}
