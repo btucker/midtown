@@ -193,6 +193,8 @@ fn parse_merged_prs_handles_empty() {
     assert!(parse_merged_prs(&json).is_empty());
 }
 
+/// Spec 3.1: WHEN polling detects a new open PR not already tracked THEN the
+/// system SHALL emit a PrOpened event as a backstop
 #[test]
 fn diff_detects_new_open_pr() {
     let work = WorkIndex::default();
@@ -219,6 +221,8 @@ fn diff_detects_new_open_pr() {
     ));
 }
 
+/// Spec 3.1: WHEN polling detects a merged PR not already tracked THEN the
+/// system SHALL emit a PrMerged event as a backstop
 #[test]
 fn diff_detects_merged_pr() {
     let work = WorkIndex::default();
@@ -293,6 +297,8 @@ fn diff_skips_already_merged_pr() {
     assert!(events.is_empty());
 }
 
+/// Spec 3.1: WHEN polling detects a CI or review state change not already
+/// reflected THEN the system SHALL emit a PrUpdated/PrReviewRequested event
 #[test]
 fn diff_detects_review_requested() {
     let mut work = WorkIndex::default();
@@ -337,6 +343,8 @@ fn diff_detects_review_requested() {
     )));
 }
 
+/// Spec 3.1: WHEN polling detects a CI state change THEN the system SHALL
+/// emit a PrUpdated event as a backstop
 #[test]
 fn diff_detects_ci_status_change() {
     let mut work = WorkIndex::default();

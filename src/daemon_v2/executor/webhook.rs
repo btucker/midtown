@@ -126,6 +126,8 @@ mod tests {
         assert_eq!(events.len(), 2);
     }
 
+    /// Spec 12: WHEN pr_opened has author_coworker THEN it SHALL be used as
+    /// author; otherwise `unknown`
     #[test]
     fn pr_opened_without_author_coworker_uses_unknown() {
         let we = WebhookEvent {
