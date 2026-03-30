@@ -77,6 +77,30 @@ pub fn check_idle_workers(proj: &Projections) -> Vec<Command> {
         .collect()
 }
 
+/// Spec 2.2: nudge workers that have been running with an in-progress task
+/// for more than 5 minutes without a state change.
+/// Uses TaskNudge cooldown to avoid repeated nudging (1hr).
+pub fn nudge_stale_workers(proj: &Projections) -> Vec<Command> {
+    use crate::daemon_v2::projections::cooldowns::CooldownCategory;
+
+    let cutoff = Utc::now() - chrono::Duration::minutes(5);
+    proj.agents
+        .running
+        .iter()
+        .filter_map(|id| proj.agents.by_id.get(id))
+        .filter(|a| a.kind == AgentKind::Worker)
+        .filter(|a| a.task_id.is_some())
+        .filter(|a| a.started_at.is_some_and(|t| t < cutoff))
+        .filter(|a| !proj.cooldowns.is_active(CooldownCategory::TaskNudge, &a.id))
+        .map(|a| Command::NudgeAgent {
+            id: a.id.clone(),
+            message:
+                "You've been running for more than 5 minutes. Please report your current status."
+                    .into(),
+        })
+        .collect()
+}
+
 /// Detect auth errors from session stderr (stub — requires stderr plumbing).
 /// Auth errors will cause session death, which `check_dead_workers` handles.
 pub fn check_auth_errors(_proj: &Projections) -> Vec<Command> {

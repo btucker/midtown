@@ -108,6 +108,11 @@ fn check_duplicate_workers_fn(proj: &Projections, _channel: &str) -> Vec<Command
     decisions::dispatch::check_duplicate_workers(proj)
 }
 
+/// Wrapper: nudge workers that have been running for > 5 minutes without activity.
+fn nudge_stale_workers_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
+    health::nudge_stale_workers(proj)
+}
+
 /// Wrapper: detect auth errors from session stderr (stub).
 fn check_auth_errors_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
     health::check_auth_errors(proj)
@@ -283,6 +288,11 @@ impl DaemonV2 {
             "check_usage_limits",
             Duration::from_secs(60),
             check_usage_limits_fn,
+        );
+        scheduler.register(
+            "nudge_stale_workers",
+            Duration::from_secs(300), // 5 minutes
+            nudge_stale_workers_fn,
         );
 
         // Move the receiver out so `config` can be stored on the daemon.

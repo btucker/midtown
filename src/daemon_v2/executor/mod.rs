@@ -353,6 +353,10 @@ async fn execute_nudge(
     channels_dir: &Path,
 ) -> Vec<DomainEvent> {
     let action = resolve_nudge_action(id, projections);
+    eprintln!(
+        "[DEBUG] execute_nudge id={id} action={action:?} sessions={:?}",
+        sessions.keys().collect::<Vec<_>>()
+    );
     let (events, target_id) = match action {
         NudgeAction::Deliver => (vec![], id.to_string()),
         NudgeAction::ResumeAndDeliver { .. } => {
@@ -392,11 +396,13 @@ async fn deliver_nudge(
     message: &str,
 ) {
     if let Some(session) = sessions.get_mut(agent_id) {
-        if let Err(e) = session.send_message(message).await {
-            tracing::error!(%agent_id, %e, "failed to deliver nudge");
+        eprintln!("[DEBUG] deliver_nudge: sending to {agent_id}");
+        match session.send_message(message).await {
+            Ok(()) => eprintln!("[DEBUG] deliver_nudge: sent successfully to {agent_id}"),
+            Err(e) => eprintln!("[DEBUG] deliver_nudge: FAILED for {agent_id}: {e}"),
         }
     } else {
-        tracing::warn!(%agent_id, "no session found after ensure-alive — nudge not delivered");
+        eprintln!("[DEBUG] deliver_nudge: NO SESSION for {agent_id} in sessions map");
     }
 }
 

@@ -432,6 +432,13 @@ pub fn handle_channel_post(
     }];
 
     let mention_commands = chat::route_message(proj, channel, sender, content, thread_id);
+    eprintln!(
+        "[DEBUG] channel.post from={sender} channel={channel} → {} commands",
+        mention_commands.len()
+    );
+    for cmd in &mention_commands {
+        eprintln!("[DEBUG]   command: {cmd:?}");
+    }
 
     Ok((
         json!({ "ok": true, "id": msg_id }),

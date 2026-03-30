@@ -516,3 +516,109 @@ fn task_dispatched_after_blocker_unblocked() {
         commands
     );
 }
+
+// ── Stale Worker Nudging ───────────────────────────────────────────────────
+
+/// Spec 2.2: WHEN a worker has not reported a state change for 5 minutes
+/// THEN the system SHALL nudge it
+#[test]
+fn stale_worker_nudged_after_5_minutes() {
+    use crate::daemon_v2::decisions::health::nudge_stale_workers;
+    use chrono::{Duration, Utc};
+
+    let mut proj = Projections::default();
+
+    // Create task + worker that started 10 minutes ago
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Stale task".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+        parent: None,
+    });
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "stale-hawk".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 1234,
+        session_id: Some("sess-stale".into()),
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "w1".into(),
+    });
+
+    // Backdate started_at to 10 minutes ago
+    proj.agents.by_id.get_mut("w1").unwrap().started_at = Some(Utc::now() - Duration::minutes(10));
+
+    let commands = nudge_stale_workers(&proj);
+    assert_eq!(
+        commands.len(),
+        1,
+        "stale worker should be nudged, got {:?}",
+        commands
+    );
+    assert!(
+        matches!(&commands[0], Command::NudgeAgent { id, .. } if id == "w1"),
+        "should nudge stale worker w1"
+    );
+}
+
+/// Spec 2.2: recently started worker should NOT be nudged
+#[test]
+fn fresh_worker_not_nudged() {
+    use crate::daemon_v2::decisions::health::nudge_stale_workers;
+
+    let mut proj = Projections::default();
+
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Fresh task".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+        parent: None,
+    });
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "fresh-hawk".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 1234,
+        session_id: Some("sess-fresh".into()),
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "w1".into(),
+    });
+
+    // started_at is now() — should not be nudged
+    let commands = nudge_stale_workers(&proj);
+    assert!(
+        commands.is_empty(),
+        "fresh worker should NOT be nudged, got {:?}",
+        commands
+    );
+}
