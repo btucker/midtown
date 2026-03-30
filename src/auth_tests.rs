@@ -29,9 +29,8 @@ fn test_profile_dir() {
         let dir = profile_dir("myprofile");
         let s = dir.to_string_lossy();
         assert!(s.contains(".midtown"));
-        assert!(s.contains("auth"));
-        // Claude profiles now have a claude/ subdirectory
-        assert!(s.ends_with("myprofile/claude"));
+        assert!(s.contains("platforms/claude/myprofile"));
+        assert!(s.ends_with("myprofile"));
     });
 }
 
@@ -167,12 +166,12 @@ fn test_shared_provider_storage_dir_other_providers() {
 #[test]
 fn test_claude_profile_dir_structure() {
     with_isolated_midtown_base_dir(|| {
-        // Claude profile dirs should be at ~/.midtown/auth/<profile>/claude/
+        // Claude profile dirs should be at ~/.midtown/platforms/claude/<profile>/
         let dir = profile_dir_for(AuthProvider::Claude, "test@example.com");
         let s = dir.to_string_lossy();
-        assert!(s.contains(".midtown/auth"));
-        assert!(s.contains("test@example.com/claude"));
-        assert!(s.ends_with("claude"));
+        assert!(s.contains(".midtown/platforms/claude"));
+        assert!(s.contains("platforms/claude/test@example.com"));
+        assert!(s.ends_with("test@example.com"));
     });
 }
 
@@ -183,11 +182,11 @@ fn test_migration_with_temp_profile() {
         // Create a temporary profile in the old structure, migrate it, verify the new structure
         let test_profile = unique_test_profile("test-migration");
 
-        // Clean up any leftover test data first
-        let old_base = provider_profiles_dir(AuthProvider::Claude).join(&test_profile);
+        // Clean up any leftover test data first — use the legacy path explicitly
+        let old_base = auth_base_dir().join(&test_profile);
         let _ = std::fs::remove_dir_all(&old_base);
 
-        // Create old-style profile directory with test data
+        // Create old-style profile directory with test data (legacy layout: ~/.midtown/auth/<profile>/)
         std::fs::create_dir_all(&old_base)
             .unwrap_or_else(|_| panic!("Failed to create dir: {}", old_base.display()));
         std::fs::write(old_base.join(".claude.json"), "{\"auth\":\"test\"}")
@@ -412,6 +411,29 @@ fn test_broken_symlink_is_repaired() {
         // Clean up
         let _ = std::fs::remove_dir_all(profile_dir.parent().unwrap());
         let _ = std::fs::remove_file(&test_file);
+    });
+}
+
+#[test]
+fn profile_dir_for_claude_uses_platforms_layout() {
+    with_isolated_midtown_base_dir(|| {
+        let dir = profile_dir_for(AuthProvider::Claude, "user@example.com");
+        assert!(
+            dir.to_string_lossy()
+                .contains("platforms/claude/user@example.com"),
+            "Claude profile should be under platforms/claude/<profile>, got: {}",
+            dir.display()
+        );
+        assert!(
+            !dir.to_string_lossy().contains("/auth/"),
+            "Should not use old /auth/ path, got: {}",
+            dir.display()
+        );
+        assert!(
+            !dir.to_string_lossy().ends_with("/claude"),
+            "Should not have /claude suffix, got: {}",
+            dir.display()
+        );
     });
 }
 

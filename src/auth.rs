@@ -219,14 +219,14 @@ fn provider_root(provider: AuthProvider) -> PathBuf {
 /// Returns the directory containing provider profiles.
 fn provider_profiles_dir(provider: AuthProvider) -> PathBuf {
     match provider {
-        AuthProvider::Claude => auth_base_dir(),
+        AuthProvider::Claude => midtown_base_dir().join("platforms").join("claude"),
         AuthProvider::Codex | AuthProvider::Zai => provider_root(provider).join("profiles"),
     }
 }
 
 /// Get the profile directory for a specific profile.
 ///
-/// Returns `~/.midtown/auth/<profile>/claude/`
+/// Returns `~/.midtown/platforms/claude/<profile>/`
 /// (the directory used as CLAUDE_CONFIG_DIR).
 pub fn profile_dir(name: &str) -> PathBuf {
     profile_dir_for(AuthProvider::Claude, name)
@@ -234,16 +234,12 @@ pub fn profile_dir(name: &str) -> PathBuf {
 
 /// Get the profile directory for a specific provider/profile pair.
 ///
-/// For Claude, this returns `~/.midtown/auth/<profile>/claude/`
+/// For Claude, this returns `~/.midtown/platforms/claude/<profile>/`
 /// (the directory that gets set as CLAUDE_CONFIG_DIR, containing .claude.json
 /// plus symlinks to shared state).
 /// For other providers, returns the provider-scoped profile directory as before.
 pub fn profile_dir_for(provider: AuthProvider, name: &str) -> PathBuf {
-    let base = provider_profiles_dir(provider).join(name);
-    match provider {
-        AuthProvider::Claude => base.join("claude"),
-        AuthProvider::Codex | AuthProvider::Zai => base,
-    }
+    provider_profiles_dir(provider).join(name)
 }
 
 /// Get the shared provider storage directory.
