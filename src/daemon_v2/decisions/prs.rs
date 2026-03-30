@@ -146,7 +146,7 @@ pub fn nudge_rebase_after_merge(proj: &Projections) -> Vec<Command> {
     proj.agents
         .by_id
         .values()
-        .filter(|agent| agent.kind == AgentKind::Worker)
+        .filter(|agent| agent.kind == AgentKind::Worker && !agent.gc)
         .filter(|agent| {
             !proj
                 .cooldowns
