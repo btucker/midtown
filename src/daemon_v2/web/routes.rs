@@ -695,10 +695,19 @@ pub async fn auth_login(
         .unwrap_or("claude");
     tracing::info!(%provider, "auth login requested — starting OAuth flow");
 
-    // Spawn claude auth login with piped stdin/stdout.
+    // Resolve the auth profile directory — must match what the daemon's agents use
+    let auth_provider = match provider {
+        "codex" => crate::auth::AuthProvider::Codex,
+        _ => crate::auth::AuthProvider::Claude,
+    };
+    let config_dir = crate::auth::current_profile_dir_for(auth_provider);
+    tracing::info!(config_dir = %config_dir.display(), "using auth profile dir");
+
+    // Spawn claude auth login with CLAUDE_CONFIG_DIR set to the profile dir
     let mut child = match tokio::process::Command::new("claude")
         .args(["auth", "login"])
         .env("BROWSER", "false")
+        .env(auth_provider.env_var(), &config_dir)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
