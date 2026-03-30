@@ -277,7 +277,12 @@ async fn execute_spawn(
 ) -> Vec<DomainEvent> {
     match spawn::spawn_agent(config, paths).await {
         Ok((mut session, events)) => {
-            drain_session_output(&mut session, &config.name);
+            drain_session_output(
+                &mut session,
+                &config.name,
+                config.channel.as_deref(),
+                channels_dir,
+            );
             if let Some(DomainEvent::AgentCreated { id, .. }) = events.first() {
                 sessions.insert(id.clone(), session);
             }
@@ -413,16 +418,40 @@ async fn deliver_nudge(
     }
 }
 
-/// Detach stdout/stderr receivers and spawn a background drain task.
-/// Without this, the child's stdout pipe fills up and the process blocks.
-fn drain_session_output(session: &mut HeadlessSession, agent_name: &str) {
+/// Detach stdout/stderr receivers and spawn a background task that:
+/// 1. Drains pipes so the child process doesn't block
+/// 2. Extracts assistant text from stream events and posts to the channel
+fn drain_session_output(
+    session: &mut HeadlessSession,
+    agent_name: &str,
+    channel: Option<&str>,
+    channels_dir: &Path,
+) {
     if let Some((mut stdout_rx, mut stderr_rx)) = session.take_receivers() {
         let name = agent_name.to_string();
+        let channel = channel.map(|s| s.to_string());
+        let channels_dir = channels_dir.to_path_buf();
         tokio::spawn(async move {
+            use crate::headless::StreamEvent;
+
+            let mut pending_events: Vec<StreamEvent> = Vec::new();
+            // Flush accumulated events every 2 seconds or when the stream ends
+            let mut flush_interval = tokio::time::interval(std::time::Duration::from_secs(2));
+            flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
             loop {
                 tokio::select! {
                     msg = stdout_rx.recv() => {
-                        if msg.is_none() { break; }
+                        match msg {
+                            Some(event) => {
+                                pending_events.push(event);
+                            }
+                            None => {
+                                // Stream ended — flush remaining
+                                flush_auto_output(&name, &channel, &channels_dir, &mut pending_events);
+                                break;
+                            }
+                        }
                     }
                     msg = stderr_rx.recv() => {
                         match msg {
@@ -433,9 +462,37 @@ fn drain_session_output(session: &mut HeadlessSession, agent_name: &str) {
                             _ => {}
                         }
                     }
+                    _ = flush_interval.tick() => {
+                        flush_auto_output(&name, &channel, &channels_dir, &mut pending_events);
+                    }
                 }
             }
             tracing::debug!(agent = %name, "stdout/stderr drain ended");
         });
+    }
+}
+
+/// Extract assistant text from accumulated stream events and post to channel.
+fn flush_auto_output(
+    agent_name: &str,
+    channel: &Option<String>,
+    channels_dir: &std::path::Path,
+    events: &mut Vec<crate::headless::StreamEvent>,
+) {
+    if events.is_empty() {
+        return;
+    }
+    let text = crate::daemon::stream::extract_assistant_text(events)
+        .trim()
+        .to_string();
+    events.clear();
+
+    if text.is_empty() {
+        return;
+    }
+    if let Some(ch) = channel
+        && let Err(e) = channel_io::post_message(channels_dir, ch, agent_name, &text, None)
+    {
+        tracing::warn!(agent = %agent_name, %ch, %e, "failed to auto-post output");
     }
 }
