@@ -618,9 +618,10 @@ fn drain_session_output(
     }
 }
 
-/// Extract assistant text from accumulated stream events and post to channel.
-/// Also extracts `★ Insight` blocks and posts them as standalone messages
-/// so they remain visible regardless of the "Show full lead output" setting.
+/// Extract assistant text and tool data from accumulated stream events and
+/// post to channel. Also extracts `★ Insight` blocks and posts them as
+/// standalone messages so they remain visible regardless of the "Show full
+/// lead output" setting.
 fn flush_auto_output(
     agent_name: &str,
     channel: &Option<String>,
@@ -634,9 +635,10 @@ fn flush_auto_output(
     let text = crate::daemon::stream::extract_assistant_text(events)
         .trim()
         .to_string();
+    let tool_blocks = crate::daemon::stream::extract_tool_blocks(events);
     events.clear();
 
-    if text.is_empty() {
+    if text.is_empty() && tool_blocks.is_empty() {
         return;
     }
     if let Some(ch) = channel {
@@ -659,20 +661,42 @@ fn flush_auto_output(
             }
         }
 
-        let msg_id = match channel_io::post_message(channels_dir, ch, agent_name, &text, None) {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::warn!(agent = %agent_name, %ch, %e, "failed to auto-post output");
-                return;
+        // Post assistant text (auto_output=true for filtering)
+        if !text.is_empty() {
+            let msg_id =
+                match channel_io::post_auto_output(channels_dir, ch, agent_name, &text, None) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        tracing::warn!(agent = %agent_name, %ch, %e, "failed to auto-post output");
+                        return;
+                    }
+                };
+            let _ = event_tx.send(DomainEvent::MessagePosted {
+                id: msg_id,
+                channel: ch.clone(),
+                sender: agent_name.to_string(),
+                content: text,
+                thread_id: None,
+            });
+        }
+
+        // Post tool data as a separate auto-output message (matching v1 behavior)
+        if !tool_blocks.is_empty() {
+            match channel_io::post_auto_output(channels_dir, ch, agent_name, "", Some(tool_blocks))
+            {
+                Ok(msg_id) => {
+                    let _ = event_tx.send(DomainEvent::MessagePosted {
+                        id: msg_id,
+                        channel: ch.clone(),
+                        sender: agent_name.to_string(),
+                        content: String::new(),
+                        thread_id: None,
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!(agent = %agent_name, %ch, %e, "failed to post tool data");
+                }
             }
-        };
-        // Broadcast to WebSocket clients so the web UI updates in real-time
-        let _ = event_tx.send(DomainEvent::MessagePosted {
-            id: msg_id,
-            channel: ch.clone(),
-            sender: agent_name.to_string(),
-            content: text,
-            thread_id: None,
-        });
+        }
     }
 }

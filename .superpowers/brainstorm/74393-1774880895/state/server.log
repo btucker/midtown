@@ -1,0 +1,2 @@
+{"type":"server-started","port":54055,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:54055","screen_dir":"/Users/btucker/projects/midtown/.superpowers/brainstorm/74393-1774880895/content","state_dir":"/Users/btucker/projects/midtown/.superpowers/brainstorm/74393-1774880895/state"}
+{"type":"server-stopped","reason":"idle timeout"}

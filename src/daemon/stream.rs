@@ -271,7 +271,7 @@ fn get_parent_tool_use_id(extra: &serde_json::Value) -> Option<String> {
 /// Each ToolBlock carries `call_id` (the tool_use block's `id`) and
 /// `parent_tool_use_id` (from the event's `parentToolUseID` field) for
 /// sub-agent thread resolution.
-fn extract_tool_blocks(events: &[StreamEvent]) -> Vec<ToolBlock> {
+pub fn extract_tool_blocks(events: &[StreamEvent]) -> Vec<ToolBlock> {
     // Collect tool results keyed by call_id from top-level User events.
     let mut results: HashMap<String, (serde_json::Value, bool)> = HashMap::new();
     for event in events {

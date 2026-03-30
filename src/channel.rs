@@ -464,6 +464,15 @@ impl Channel {
                 %e,
                 "failed to roll channel file"
             );
+            return;
+        }
+        // Recreate current.jsonl so the channel remains discoverable.
+        if let Err(e) = fs::File::create(&self.channel_file) {
+            tracing::warn!(
+                channel = %self.channel_name,
+                %e,
+                "failed to recreate current.jsonl after roll"
+            );
         }
     }
 

@@ -7,13 +7,13 @@ use std::time::{Duration, Instant};
 use crate::daemon_v2::decisions::Command;
 use crate::daemon_v2::projections::Projections;
 
-/// A pure decision function: given projections and a channel key, returns commands.
-pub type DecisionFn = fn(&Projections, &str) -> Vec<Command>;
+/// A boxed decision function: given projections and a channel key, returns commands.
+type DecisionFn = Box<dyn Fn(&Projections, &str) -> Vec<Command> + Send + Sync>;
 
 /// A registered decision that is due to run.
-pub struct DueDecision {
+pub struct DueDecision<'a> {
     pub name: &'static str,
-    pub run: DecisionFn,
+    pub run: &'a DecisionFn,
 }
 
 struct Entry {
@@ -34,12 +34,32 @@ impl Scheduler {
         Scheduler { entries: vec![] }
     }
 
-    /// Register a decision function with a given interval.
-    pub fn register(&mut self, name: &'static str, interval: Duration, run: DecisionFn) {
+    /// Register a channel-aware decision function.
+    pub fn register(
+        &mut self,
+        name: &'static str,
+        interval: Duration,
+        run: impl Fn(&Projections, &str) -> Vec<Command> + Send + Sync + 'static,
+    ) {
         self.entries.push(Entry {
             name,
             interval,
-            run,
+            run: Box::new(run),
+            last_ran: None,
+        });
+    }
+
+    /// Register a global decision function that ignores the channel argument.
+    pub fn register_global(
+        &mut self,
+        name: &'static str,
+        interval: Duration,
+        run: impl Fn(&Projections) -> Vec<Command> + Send + Sync + 'static,
+    ) {
+        self.entries.push(Entry {
+            name,
+            interval,
+            run: Box::new(move |proj, _channel| run(proj)),
             last_ran: None,
         });
     }
@@ -49,24 +69,23 @@ impl Scheduler {
     /// A decision is due if it has never run, or if enough time has elapsed
     /// since it last ran. Results are returned in ascending interval order
     /// (shortest interval first).
-    pub fn due_decisions(&self, now: Instant) -> Vec<DueDecision> {
-        let mut due: Vec<(usize, &Entry)> = self
+    pub fn due_decisions(&self, now: Instant) -> Vec<DueDecision<'_>> {
+        let mut due: Vec<&Entry> = self
             .entries
             .iter()
-            .enumerate()
-            .filter(|(_, e)| match e.last_ran {
+            .filter(|e| match e.last_ran {
                 None => true,
                 Some(last) => now.duration_since(last) >= e.interval,
             })
             .collect();
 
         // Sort by interval ascending so shorter intervals run first
-        due.sort_by_key(|(_, e)| e.interval);
+        due.sort_by_key(|e| e.interval);
 
         due.into_iter()
-            .map(|(_, e)| DueDecision {
+            .map(|e| DueDecision {
                 name: e.name,
-                run: e.run,
+                run: &e.run,
             })
             .collect()
     }

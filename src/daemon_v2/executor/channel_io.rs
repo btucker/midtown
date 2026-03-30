@@ -24,6 +24,25 @@ pub fn post_message(
     Ok(id)
 }
 
+/// Post an auto-output message (from agent drain loop). Sets `auto_output: true`
+/// so the web UI can filter these when "show full lead output" is off.
+/// Optionally includes tool data blocks.
+pub fn post_auto_output(
+    channels_dir: &Path,
+    channel: &str,
+    sender: &str,
+    content: &str,
+    tool_data: Option<Vec<crate::message::ToolBlock>>,
+) -> Result<String, String> {
+    let ch = Channel::new(channels_dir, channel).map_err(|e| e.to_string())?;
+    let mut msg = Message::for_channel(channel, sender, content, MessageType::Text);
+    msg.auto_output = true;
+    msg.tool_data = tool_data;
+    let id = msg.id.clone();
+    ch.send(&msg).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
 /// Post a system message to a channel.
 pub fn post_system_message(
     channels_dir: &Path,

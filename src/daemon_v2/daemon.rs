@@ -84,107 +84,6 @@ pub enum DaemonV2ExitStatus {
     Shutdown,
 }
 
-/// Wrapper matching `DecisionFn = fn(&Projections, &str) -> Vec<Command>`.
-/// Ignores the channel argument; delegates to the channel-agnostic health check.
-fn check_dead_workers_fn(
-    proj: &Projections,
-    _channel: &str,
-) -> Vec<crate::daemon_v2::decisions::Command> {
-    health::check_dead_workers(proj)
-}
-
-/// Wrapper matching `DecisionFn`.
-fn ensure_channel_leads_alive_fn(proj: &Projections, channel: &str) -> Vec<Command> {
-    health::ensure_channel_leads_alive(proj, channel)
-}
-
-/// Wrapper: dispatch pending tasks (up to 3 concurrent workers).
-fn dispatch_pending_tasks_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
-    decisions::dispatch::dispatch_pending_tasks(proj, 3)
-}
-
-/// Wrapper: stop agents whose tasks have completed.
-fn stop_completed_agents_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
-    decisions::dispatch::stop_completed_agents(proj)
-}
-
-/// Wrapper: stop workers that have been running without a task for > 5 minutes.
-fn check_idle_workers_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
-    health::check_idle_workers(proj)
-}
-
-/// Wrapper: stop the older of two agents assigned to the same task.
-fn check_duplicate_workers_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
-    let mut cmds = decisions::dispatch::check_duplicate_workers(proj);
-    cmds.extend(decisions::dispatch::check_duplicate_leads(proj));
-    cmds
-}
-
-/// Wrapper: nudge workers that have been running for > 5 minutes without activity.
-fn nudge_stale_workers_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
-    health::nudge_stale_workers(proj)
-}
-
-/// Wrapper: stop workers that reported idle > 2 minutes ago.
-fn stop_idle_reported_workers_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
-    health::stop_idle_reported_workers(proj)
-}
-
-/// Wrapper: resume dead reviewer agents that have session_ids.
-fn resume_dead_reviewers_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
-    decisions::prs::resume_dead_reviewers(proj)
-}
-
-/// Wrapper: nudge workers with open PRs to rebase after a merge.
-fn nudge_rebase_after_merge_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
-    decisions::prs::nudge_rebase_after_merge(proj)
-}
-
-/// Wrapper: detect CI failures and nudge authors.
-fn detect_stale_ci_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
-    decisions::prs::detect_stale_ci(proj)
-}
-
-/// Wrapper: detect auth errors from session stderr (stub).
-fn check_auth_errors_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
-    health::check_auth_errors(proj)
-}
-
-/// Wrapper: detect usage limits from session output (stub).
-fn check_usage_limits_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
-    health::check_usage_limits(proj)
-}
-
-/// Wrapper: poll process health for all running sessions.
-fn poll_process_health_fn(_proj: &Projections, _channel: &str) -> Vec<Command> {
-    vec![Command::PollProcessHealth]
-}
-
-/// Wrapper: poll GitHub PRs.
-fn poll_prs_fn(_proj: &Projections, _channel: &str) -> Vec<Command> {
-    vec![Command::PollPrs]
-}
-
-/// Wrapper: complete tasks for merged PRs.
-fn handle_merged_prs_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
-    decisions::prs::handle_merged_prs(proj)
-}
-
-/// Wrapper: spawn reviewer agents for PRs needing review.
-fn spawn_reviewers_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
-    decisions::prs::spawn_reviewers(proj)
-}
-
-/// Wrapper: suspend author agents whose tasks have open PRs awaiting review.
-fn suspend_authors_with_prs_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
-    decisions::prs::suspend_authors_with_prs(proj)
-}
-
-/// Wrapper: garbage collect old stopped agent records.
-fn garbage_collect_fn(proj: &Projections, channel: &str) -> Vec<Command> {
-    lifecycle::gc_decision(proj, channel)
-}
-
 impl DaemonV2 {
     /// Create a new DaemonV2, recovering state from the event store.
     ///
@@ -255,96 +154,96 @@ impl DaemonV2 {
         }
 
         let mut scheduler = Scheduler::new();
-        scheduler.register(
+        // Global decisions (channel-agnostic)
+        scheduler.register_global(
             "check_dead_workers",
             Duration::from_secs(30),
-            check_dead_workers_fn,
+            health::check_dead_workers,
         );
+        scheduler.register_global("dispatch_pending_tasks", Duration::from_secs(5), |proj| {
+            decisions::dispatch::dispatch_pending_tasks(proj, 3)
+        });
+        scheduler.register_global(
+            "stop_completed_agents",
+            Duration::from_secs(5),
+            decisions::dispatch::stop_completed_agents,
+        );
+        scheduler.register_global("poll_process_health", Duration::from_secs(10), |_| {
+            vec![Command::PollProcessHealth]
+        });
+        scheduler.register_global("poll_prs", Duration::from_secs(45), |_| {
+            vec![Command::PollPrs]
+        });
+        scheduler.register_global(
+            "handle_merged_prs",
+            Duration::from_secs(10),
+            decisions::prs::handle_merged_prs,
+        );
+        scheduler.register_global(
+            "spawn_reviewers",
+            Duration::from_secs(45),
+            decisions::prs::spawn_reviewers,
+        );
+        scheduler.register_global(
+            "resume_dead_reviewers",
+            Duration::from_secs(30),
+            decisions::prs::resume_dead_reviewers,
+        );
+        scheduler.register_global(
+            "nudge_rebase_after_merge",
+            Duration::from_secs(30),
+            decisions::prs::nudge_rebase_after_merge,
+        );
+        scheduler.register_global(
+            "suspend_authors_with_prs",
+            Duration::from_secs(10),
+            decisions::prs::suspend_authors_with_prs,
+        );
+        scheduler.register_global(
+            "check_idle_workers",
+            Duration::from_secs(30),
+            health::check_idle_workers,
+        );
+        scheduler.register_global("check_duplicate_workers", Duration::from_secs(30), |proj| {
+            let mut cmds = decisions::dispatch::check_duplicate_workers(proj);
+            cmds.extend(decisions::dispatch::check_duplicate_leads(proj));
+            cmds
+        });
+        scheduler.register_global(
+            "check_auth_errors",
+            Duration::from_secs(30),
+            health::check_auth_errors,
+        );
+        scheduler.register_global(
+            "check_usage_limits",
+            Duration::from_secs(60),
+            health::check_usage_limits,
+        );
+        scheduler.register_global(
+            "nudge_stale_workers",
+            Duration::from_secs(300),
+            health::nudge_stale_workers,
+        );
+        scheduler.register_global(
+            "stop_idle_reported_workers",
+            Duration::from_secs(30),
+            health::stop_idle_reported_workers,
+        );
+        scheduler.register_global(
+            "detect_stale_ci",
+            Duration::from_secs(60),
+            decisions::prs::detect_stale_ci,
+        );
+        // Channel-aware decisions
         scheduler.register(
             "ensure_channel_leads_alive",
             Duration::from_secs(30),
-            ensure_channel_leads_alive_fn,
-        );
-        scheduler.register(
-            "dispatch_pending_tasks",
-            Duration::from_secs(5),
-            dispatch_pending_tasks_fn,
-        );
-        scheduler.register(
-            "stop_completed_agents",
-            Duration::from_secs(5),
-            stop_completed_agents_fn,
-        );
-        scheduler.register(
-            "poll_process_health",
-            Duration::from_secs(10),
-            poll_process_health_fn,
-        );
-        scheduler.register("poll_prs", Duration::from_secs(45), poll_prs_fn);
-        scheduler.register(
-            "handle_merged_prs",
-            Duration::from_secs(10),
-            handle_merged_prs_fn,
-        );
-        scheduler.register(
-            "spawn_reviewers",
-            Duration::from_secs(45),
-            spawn_reviewers_fn,
-        );
-        scheduler.register(
-            "resume_dead_reviewers",
-            Duration::from_secs(30),
-            resume_dead_reviewers_fn,
-        );
-        scheduler.register(
-            "nudge_rebase_after_merge",
-            Duration::from_secs(30),
-            nudge_rebase_after_merge_fn,
-        );
-        scheduler.register(
-            "suspend_authors_with_prs",
-            Duration::from_secs(10),
-            suspend_authors_with_prs_fn,
+            health::ensure_channel_leads_alive,
         );
         scheduler.register(
             "garbage_collect",
             Duration::from_secs(3600),
-            garbage_collect_fn,
-        );
-        scheduler.register(
-            "check_idle_workers",
-            Duration::from_secs(30),
-            check_idle_workers_fn,
-        );
-        scheduler.register(
-            "check_duplicate_workers",
-            Duration::from_secs(30),
-            check_duplicate_workers_fn,
-        );
-        scheduler.register(
-            "check_auth_errors",
-            Duration::from_secs(30),
-            check_auth_errors_fn,
-        );
-        scheduler.register(
-            "check_usage_limits",
-            Duration::from_secs(60),
-            check_usage_limits_fn,
-        );
-        scheduler.register(
-            "nudge_stale_workers",
-            Duration::from_secs(300), // 5 minutes
-            nudge_stale_workers_fn,
-        );
-        scheduler.register(
-            "stop_idle_reported_workers",
-            Duration::from_secs(30),
-            stop_idle_reported_workers_fn,
-        );
-        scheduler.register(
-            "detect_stale_ci",
-            Duration::from_secs(60),
-            detect_stale_ci_fn,
+            lifecycle::gc_decision,
         );
 
         // Move the receiver out so `config` can be stored on the daemon.
@@ -715,21 +614,26 @@ impl DaemonV2 {
     /// apply the produced events to the event store and projections.
     async fn run_due_decisions(&mut self) {
         let now = Instant::now();
-        let due = self.scheduler.due_decisions(now);
+        // Collect due decisions into owned data to release the scheduler borrow
+        // before calling mark_ran and dispatch_command (which need &mut self).
+        let due: Vec<(&'static str, Vec<Command>)> = {
+            let proj = self.projections.lock().await;
+            self.scheduler
+                .due_decisions(now)
+                .into_iter()
+                .map(|d| {
+                    let cmds = if self.draining && d.name == "dispatch_pending_tasks" {
+                        vec![]
+                    } else {
+                        (d.run)(&proj, &self.config.default_channel)
+                    };
+                    (d.name, cmds)
+                })
+                .collect()
+        };
 
-        for decision in due {
-            // Skip dispatch decisions when draining
-            if self.draining && decision.name == "dispatch_pending_tasks" {
-                self.scheduler.mark_ran(decision.name, now);
-                continue;
-            }
-
-            let commands = {
-                let proj = self.projections.lock().await;
-                (decision.run)(&proj, &self.config.default_channel)
-            };
-            self.scheduler.mark_ran(decision.name, now);
-
+        for (name, commands) in due {
+            self.scheduler.mark_ran(name, now);
             for command in commands {
                 self.dispatch_command(command).await;
             }
