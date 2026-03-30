@@ -786,11 +786,17 @@ pub fn handle_channel_read(params: Option<&Value>, channels_dir: &Path) -> Resul
         .and_then(|v| v.as_u64())
         .map(|n| n as usize);
 
-    let messages =
-        channel_io::read_messages(channels_dir, channel, limit).map_err(|e| RpcError {
-            code: -32000,
-            message: e,
-        })?;
+    let thread_parent_id = params.get("thread_parent_id").and_then(|v| v.as_str());
+
+    let messages = if let Some(tid) = thread_parent_id {
+        channel_io::read_thread_messages(channels_dir, channel, tid, limit)
+    } else {
+        channel_io::read_messages(channels_dir, channel, limit)
+    }
+    .map_err(|e| RpcError {
+        code: -32000,
+        message: e,
+    })?;
 
     Ok(json!(messages))
 }

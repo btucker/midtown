@@ -952,3 +952,108 @@ fn session_fork_inherits_parent_lead_session() {
 
 // Spec 4.5: fork returns existing fork (tested in session_fork_returns_existing_running_fork)
 // Spec 11.3: message→content transformation (tested in daemon-v2-live.spec.js E2E)
+
+/// Spec 5.3: channel.read with thread_parent_id returns only thread messages
+#[test]
+fn channel_read_with_thread_parent_id() {
+    let proj = Projections::default();
+    let dir = tempfile::TempDir::new().unwrap();
+
+    // Post top-level messages
+    crate::daemon_v2::executor::channel_io::post_message(
+        dir.path(),
+        "test",
+        "alice",
+        "top msg",
+        None,
+    )
+    .unwrap();
+
+    // Get the message ID
+    let msgs =
+        crate::daemon_v2::executor::channel_io::read_messages(dir.path(), "test", None).unwrap();
+    let parent_id = msgs[0]["id"].as_str().unwrap().to_string();
+
+    // Post a thread reply
+    crate::daemon_v2::executor::channel_io::post_message(
+        dir.path(),
+        "test",
+        "bob",
+        "thread reply",
+        Some(&parent_id),
+    )
+    .unwrap();
+
+    // Read with thread_parent_id should return only thread messages
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.read",
+        "id": 300,
+        "params": {
+            "channel": "test",
+            "thread_parent_id": parent_id,
+        }
+    });
+    let (response, _, _) = dispatch_request(request, &proj, dir.path());
+    assert!(response["error"].is_null());
+    let results = response["result"].as_array().unwrap();
+    assert_eq!(
+        results.len(),
+        2,
+        "should return parent + reply, got {:?}",
+        results
+    );
+}
+
+/// Spec 5.3: channel.read without thread_parent_id excludes thread replies
+#[test]
+fn channel_read_excludes_thread_replies() {
+    let proj = Projections::default();
+    let dir = tempfile::TempDir::new().unwrap();
+
+    crate::daemon_v2::executor::channel_io::post_message(
+        dir.path(),
+        "test",
+        "alice",
+        "top 1",
+        None,
+    )
+    .unwrap();
+    crate::daemon_v2::executor::channel_io::post_message(
+        dir.path(),
+        "test",
+        "alice",
+        "top 2",
+        None,
+    )
+    .unwrap();
+
+    let msgs =
+        crate::daemon_v2::executor::channel_io::read_messages(dir.path(), "test", None).unwrap();
+    let parent_id = msgs[0]["id"].as_str().unwrap().to_string();
+
+    crate::daemon_v2::executor::channel_io::post_message(
+        dir.path(),
+        "test",
+        "bob",
+        "reply",
+        Some(&parent_id),
+    )
+    .unwrap();
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.read",
+        "id": 301,
+        "params": { "channel": "test" }
+    });
+    let (response, _, _) = dispatch_request(request, &proj, dir.path());
+    assert!(response["error"].is_null());
+    let results = response["result"].as_array().unwrap();
+    assert_eq!(
+        results.len(),
+        2,
+        "thread replies should be excluded, got {:?}",
+        results
+    );
+}
