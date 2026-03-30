@@ -359,7 +359,7 @@
 - Reminder system (cron + all-work-merged triggers)
 - Workflow system (assignment, state machine, event emission)
 - ~~Task prompt / handoff between agents~~ — **Implemented** (task.prompt nudges assigned agent, task.handoff stops + respawns)
-- Session attach/detach (interactive takeover)
+- ~~Session attach/detach (interactive takeover)~~ — **Partially Implemented** (session.detach stops agent, attach not yet)
 - ~~CI issue detection (stale checks, auto-rerun)~~ — **Implemented** (detect_stale_ci nudges authors on CI failure)
 
 ### Nice to Have

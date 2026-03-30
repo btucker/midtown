@@ -138,6 +138,14 @@ pub fn dispatch_request(
             }
             Err(err) => (err.to_json(&id), vec![], vec![]),
         },
+        // session.detach — stop an agent by name (detach from the daemon)
+        "session.detach" => match handlers::handle_agent_stop(params, proj) {
+            Ok(commands) => {
+                let response = json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id });
+                (response, vec![], commands)
+            }
+            Err(err) => (err.to_json(&id), vec![], vec![]),
+        },
         "task.prompt" => match handlers::handle_task_prompt(params, proj) {
             Ok(commands) => {
                 let response = json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id });
@@ -182,7 +190,6 @@ pub fn dispatch_request(
                 | "reminder.cancel"
                 | "workflow.set_state"
                 | "workflow.list"
-                | "session.detach"
                 | "task.update"
                 | "pr.review"
                 | "pr.merge"

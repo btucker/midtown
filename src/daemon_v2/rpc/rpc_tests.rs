@@ -1404,6 +1404,27 @@ fn channel_archive_and_unarchive_via_rpc() {
     assert!(!archived_dir.exists(), "archived dir should be gone");
 }
 
+// ── session.detach ──────────────────────────────────────────────────────
+
+/// Section 15: session.detach stops agent by name
+#[test]
+fn session_detach_stops_agent() {
+    let proj = projections_with_agents();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "session.detach",
+        "id": 800,
+        "params": { "name": "ghost-town" }
+    });
+    let (response, _, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(commands.len(), 1);
+    assert!(
+        matches!(&commands[0], crate::daemon_v2::decisions::Command::StopAgent { id, .. } if id == "a1"),
+        "session.detach should stop the agent"
+    );
+}
+
 // ── channel.rename ──────────────────────────────────────────────────────
 
 /// Section 15: channel.rename renames a channel directory
