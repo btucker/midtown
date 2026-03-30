@@ -105,7 +105,9 @@ fn check_idle_workers_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
 
 /// Wrapper: stop the older of two agents assigned to the same task.
 fn check_duplicate_workers_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
-    decisions::dispatch::check_duplicate_workers(proj)
+    let mut cmds = decisions::dispatch::check_duplicate_workers(proj);
+    cmds.extend(decisions::dispatch::check_duplicate_leads(proj));
+    cmds
 }
 
 /// Wrapper: nudge workers that have been running for > 5 minutes without activity.
@@ -512,6 +514,19 @@ impl DaemonV2 {
                                 };
                                 self.handle_worktree_cleanup(&cmd_events);
                                 self.apply_events(&cmd_events).await;
+                                // Auto-assign tasks when a worker spawns with a task_id
+                                let mut assign_events = Vec::new();
+                                for event in &cmd_events {
+                                    if let DomainEvent::AgentCreated { id, task_id: Some(tid), .. } = event {
+                                        assign_events.push(DomainEvent::TaskAssigned {
+                                            task_id: tid.clone(),
+                                            agent_id: id.clone(),
+                                        });
+                                    }
+                                }
+                                if !assign_events.is_empty() {
+                                    self.apply_events(&assign_events).await;
+                                }
                             }
                             if outcome == RpcOutcome::Shutdown {
                                 tracing::info!("shutdown requested via RPC");
@@ -553,6 +568,19 @@ impl DaemonV2 {
                         .await
                     };
                     self.apply_events(&events).await;
+                    // Auto-assign tasks when a worker spawns with a task_id
+                    let mut assign_events = Vec::new();
+                    for event in &events {
+                        if let DomainEvent::AgentCreated { id, task_id: Some(tid), .. } = event {
+                            assign_events.push(DomainEvent::TaskAssigned {
+                                task_id: tid.clone(),
+                                agent_id: id.clone(),
+                            });
+                        }
+                    }
+                    if !assign_events.is_empty() {
+                        self.apply_events(&assign_events).await;
+                    }
                 }
 
                 () = &mut sleep => {
@@ -613,6 +641,26 @@ impl DaemonV2 {
                 // Clean up worktrees for completed tasks.
                 self.handle_worktree_cleanup(&events);
                 self.apply_events(&events).await;
+
+                // After spawning a worker with a task_id, emit TaskAssigned
+                // so the task moves from Pending to InProgress.
+                let mut assign_events = Vec::new();
+                for event in &events {
+                    if let DomainEvent::AgentCreated {
+                        id,
+                        task_id: Some(tid),
+                        ..
+                    } = event
+                    {
+                        assign_events.push(DomainEvent::TaskAssigned {
+                            task_id: tid.clone(),
+                            agent_id: id.clone(),
+                        });
+                    }
+                }
+                if !assign_events.is_empty() {
+                    self.apply_events(&assign_events).await;
+                }
             }
         }
     }

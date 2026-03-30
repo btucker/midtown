@@ -97,6 +97,35 @@ pub fn check_duplicate_workers(proj: &Projections) -> Vec<Command> {
     commands
 }
 
+/// Detect when multiple leads are running for the same channel and stop the newer ones.
+/// Prevents race conditions between ensure_channel_leads_alive and demand-spawned leads.
+pub fn check_duplicate_leads(proj: &Projections) -> Vec<Command> {
+    let mut channel_leads: HashMap<&str, Vec<&Agent>> = HashMap::new();
+    for id in &proj.agents.running {
+        if let Some(agent) = proj.agents.by_id.get(id)
+            && agent.kind == AgentKind::Lead
+            && let Some(ref ch) = agent.channel
+        {
+            channel_leads.entry(ch.as_str()).or_default().push(agent);
+        }
+    }
+
+    let mut commands = Vec::new();
+    for agents in channel_leads.values() {
+        if agents.len() > 1 {
+            let mut sorted = agents.clone();
+            sorted.sort_by_key(|a| a.started_at);
+            for agent in &sorted[1..] {
+                commands.push(Command::StopAgent {
+                    id: agent.id.clone(),
+                    reason: "duplicate lead for channel".into(),
+                });
+            }
+        }
+    }
+    commands
+}
+
 /// Find running Worker agents whose task has completed.
 /// Returns `StopAgent` commands for each such agent.
 pub fn stop_completed_agents(proj: &Projections) -> Vec<Command> {

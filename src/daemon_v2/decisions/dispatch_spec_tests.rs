@@ -424,6 +424,63 @@ fn duplicate_workers_stops_newer_agent() {
     );
 }
 
+/// Duplicate leads for the same channel should be detected and the newer one stopped
+#[test]
+fn duplicate_leads_stopped() {
+    use crate::daemon_v2::decisions::dispatch::check_duplicate_leads;
+    use chrono::{Duration, Utc};
+
+    let mut proj = Projections::default();
+    // Create two leads for the same channel
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "lead-old".into(),
+        name: "midtown-old".into(),
+        kind: AgentKind::Lead,
+        agent_type: "midtown-project-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "lead-old".into(),
+        pid: 100,
+        session_id: Some("sess-old".into()),
+    });
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "lead-new".into(),
+        name: "midtown-new".into(),
+        kind: AgentKind::Lead,
+        agent_type: "midtown-project-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "lead-new".into(),
+        pid: 101,
+        session_id: Some("sess-new".into()),
+    });
+
+    // Make old definitively older
+    proj.agents.by_id.get_mut("lead-old").unwrap().started_at =
+        Some(Utc::now() - Duration::minutes(10));
+    proj.agents.by_id.get_mut("lead-new").unwrap().started_at = Some(Utc::now());
+
+    let commands = check_duplicate_leads(&proj);
+    assert_eq!(commands.len(), 1);
+    assert!(
+        matches!(&commands[0], Command::StopAgent { id, .. } if id == "lead-new"),
+        "newer duplicate lead should be stopped, got {:?}",
+        commands[0]
+    );
+}
+
 /// Spec 2.2: WHEN a worker has no task for more than 5 minutes THEN the system
 /// SHALL stop it
 #[test]
