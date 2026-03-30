@@ -613,16 +613,26 @@ impl DaemonV2 {
                 // Results from background executor tasks (spawns, stops, PR polls, etc.)
                 Some(result) = self.result_rx.recv() => {
                     match result {
-                        executor::ExecutorResult::Events(events) => {
+                        executor::ExecutorResult::Events { events, lifecycle_key } => {
                             self.handle_worktree_cleanup(&events);
                             self.apply_events(&events).await;
+                            // Clear lifecycle guard on failure (P1 fix)
+                            if let Some(key) = lifecycle_key {
+                                let stashed = self.lifecycle_guard.complete(&key);
+                                for msg in stashed {
+                                    self.dispatch_nudge(&key, &msg).await;
+                                }
+                            }
                         }
-                        executor::ExecutorResult::SessionReady { id, session, events } => {
+                        executor::ExecutorResult::SessionReady { id, session, events, lifecycle_key } => {
                             self.sessions.insert(id.clone(), *session);
                             self.handle_worktree_cleanup(&events);
                             self.apply_events(&events).await;
                             self.auto_assign_tasks(&events).await;
-                            let stashed = self.lifecycle_guard.complete(&id);
+                            // Use lifecycle_key if set (P2 fix: respawn uses old
+                            // agent ID as key, but SessionReady has new ID)
+                            let guard_key = lifecycle_key.as_deref().unwrap_or(&id);
+                            let stashed = self.lifecycle_guard.complete(guard_key);
                             for msg in stashed {
                                 if let Some(s) = self.sessions.get_mut(&id)
                                     && let Err(e) = s.send_message(&msg).await
@@ -853,15 +863,15 @@ impl DaemonV2 {
         match command {
             Command::SpawnAgent(mut config) => {
                 self.prepare_worktree_for_spawn(&mut config);
-                // Use the agent name as the lifecycle guard key since the
-                // agent_id isn't generated until spawn completes.
-                self.lifecycle_guard.mark_pending(config.name.clone());
+                let key = config.name.clone();
+                self.lifecycle_guard.mark_pending(key.clone());
                 executor::spawn_background_agent(
                     config,
                     self.paths.clone(),
                     self.config.channels_dir.clone(),
                     self.event_tx.clone(),
                     self.result_tx.clone(),
+                    Some(key),
                 );
             }
             Command::ResumeAgent { id } => {
@@ -876,6 +886,7 @@ impl DaemonV2 {
                         agent,
                         self.paths.clone(),
                         self.result_tx.clone(),
+                        None, // id matches — no alias needed
                     );
                 }
             }
@@ -941,11 +952,13 @@ impl DaemonV2 {
                         agent,
                         self.paths.clone(),
                         self.result_tx.clone(),
+                        None, // id matches — no alias needed
                     );
                 }
             }
             executor::NudgeAction::RespawnAndDeliver { config } => {
-                self.lifecycle_guard.mark_pending(id.to_string());
+                let key = id.to_string();
+                self.lifecycle_guard.mark_pending(key.clone());
                 self.lifecycle_guard.stash_nudge(id, message.to_string());
                 executor::spawn_background_agent(
                     *config,
@@ -953,6 +966,7 @@ impl DaemonV2 {
                     self.config.channels_dir.clone(),
                     self.event_tx.clone(),
                     self.result_tx.clone(),
+                    Some(key), // old agent ID — new agent gets a different ID
                 );
             }
             executor::NudgeAction::Drop => {

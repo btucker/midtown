@@ -56,12 +56,18 @@ pub fn resolve_nudge_action(agent_id: &str, proj: &Projections) -> NudgeAction {
 /// Result sent from background tasks back to the main event loop.
 pub enum ExecutorResult {
     /// Events to apply to store + projections + broadcast.
-    Events(Vec<DomainEvent>),
+    /// `lifecycle_key`: if set, clear this key from the lifecycle guard (for failed spawns).
+    Events {
+        events: Vec<DomainEvent>,
+        lifecycle_key: Option<String>,
+    },
     /// A new session is ready — main loop inserts into sessions map.
+    /// `lifecycle_key`: if set, clear this key from the lifecycle guard instead of `id`.
     SessionReady {
         id: String,
         session: Box<HeadlessSession>,
         events: Vec<DomainEvent>,
+        lifecycle_key: Option<String>,
     },
     /// A lifecycle operation (stop) completed — deliver stashed nudges.
     LifecycleComplete {
@@ -113,12 +119,15 @@ pub fn classify_command(cmd: &Command) -> CommandClass {
 #[derive(Default)]
 pub struct LifecycleGuard {
     pending: HashMap<String, Vec<String>>,
+    /// Maps an alias (e.g., new agent ID after respawn) to the original pending key.
+    aliases: HashMap<String, String>,
 }
 
 impl LifecycleGuard {
     pub fn new() -> Self {
         Self {
             pending: HashMap::new(),
+            aliases: HashMap::new(),
         }
     }
 
@@ -139,9 +148,18 @@ impl LifecycleGuard {
         }
     }
 
+    /// Register an alias so that `complete(alias)` resolves to the original key.
+    /// Used when a respawned agent gets a new ID but the guard was keyed on the old ID.
+    pub fn add_alias(&mut self, alias: String, original_key: String) {
+        self.aliases.insert(alias, original_key);
+    }
+
     /// Complete a lifecycle operation. Returns stashed nudge messages.
+    /// Resolves aliases: if `agent_id` is an alias, completes the original key.
     pub fn complete(&mut self, agent_id: &str) -> Vec<String> {
-        self.pending.remove(agent_id).unwrap_or_default()
+        let resolved = self.aliases.remove(agent_id);
+        let key = resolved.as_deref().unwrap_or(agent_id);
+        self.pending.remove(key).unwrap_or_default()
     }
 }
 
@@ -271,7 +289,12 @@ pub fn spawn_background_poll_prs(
             }
         };
         if !events.is_empty() {
-            let _ = result_tx.send(ExecutorResult::Events(events)).await;
+            let _ = result_tx
+                .send(ExecutorResult::Events {
+                    events,
+                    lifecycle_key: None,
+                })
+                .await;
         }
     });
 }
@@ -283,6 +306,7 @@ pub fn spawn_background_agent(
     channels_dir: std::path::PathBuf,
     event_tx: tokio::sync::broadcast::Sender<DomainEvent>,
     result_tx: tokio::sync::mpsc::Sender<ExecutorResult>,
+    lifecycle_key: Option<String>,
 ) {
     tokio::spawn(async move {
         match spawn::spawn_agent(&config, &paths).await {
@@ -319,19 +343,21 @@ pub fn spawn_background_agent(
                         id,
                         session: Box::new(session),
                         events,
+                        lifecycle_key,
                     })
                     .await;
             }
             Err(e) => {
                 tracing::error!(%e, name = %config.name, "failed to spawn agent");
                 let _ = result_tx
-                    .send(ExecutorResult::Events(vec![
-                        DomainEvent::AgentSpawnFailed {
+                    .send(ExecutorResult::Events {
+                        events: vec![DomainEvent::AgentSpawnFailed {
                             name: config.name.clone(),
                             agent_type: config.agent_type.clone(),
                             reason: e.to_string(),
-                        },
-                    ]))
+                        }],
+                        lifecycle_key,
+                    })
                     .await;
             }
         }
@@ -344,6 +370,7 @@ pub fn spawn_background_resume(
     agent: crate::daemon_v2::projections::agents::Agent,
     paths: ProjectPaths,
     result_tx: tokio::sync::mpsc::Sender<ExecutorResult>,
+    lifecycle_key: Option<String>,
 ) {
     tokio::spawn(async move {
         let config = spawn_config_from_agent(&agent);
@@ -351,13 +378,14 @@ pub fn spawn_background_resume(
             Some(sid) => sid.clone(),
             None => {
                 let _ = result_tx
-                    .send(ExecutorResult::Events(vec![
-                        DomainEvent::AgentSpawnFailed {
+                    .send(ExecutorResult::Events {
+                        events: vec![DomainEvent::AgentSpawnFailed {
                             name: agent.name.clone(),
                             agent_type: agent.agent_type.clone(),
                             reason: "no session_id for resume".into(),
-                        },
-                    ]))
+                        }],
+                        lifecycle_key,
+                    })
                     .await;
                 return;
             }
@@ -374,18 +402,20 @@ pub fn spawn_background_resume(
                         id: agent_id.clone(),
                         session: Box::new(session),
                         events: vec![DomainEvent::AgentResumed { id: agent_id, pid }],
+                        lifecycle_key,
                     })
                     .await;
             }
             Err(e) => {
                 let _ = result_tx
-                    .send(ExecutorResult::Events(vec![
-                        DomainEvent::AgentSpawnFailed {
+                    .send(ExecutorResult::Events {
+                        events: vec![DomainEvent::AgentSpawnFailed {
                             name: agent.name.clone(),
                             agent_type: agent.agent_type.clone(),
                             reason: format!("resume failed: {e}"),
-                        },
-                    ]))
+                        }],
+                        lifecycle_key,
+                    })
                     .await;
             }
         }
@@ -488,7 +518,12 @@ pub fn spawn_background_gh_command(
             _ => vec![],
         };
         if !events.is_empty() {
-            let _ = result_tx.send(ExecutorResult::Events(events)).await;
+            let _ = result_tx
+                .send(ExecutorResult::Events {
+                    events,
+                    lifecycle_key: None,
+                })
+                .await;
         }
     });
 }

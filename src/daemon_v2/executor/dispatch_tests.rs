@@ -271,6 +271,21 @@ fn lifecycle_guard_stashes_multiple_nudges() {
 }
 
 #[test]
+fn lifecycle_guard_complete_by_alias_clears_original_key() {
+    let mut guard = LifecycleGuard::new();
+    guard.mark_pending("old-agent-id".into());
+    guard.stash_nudge("old-agent-id", "hello".into());
+
+    // Alias maps the new ID back to the original key
+    guard.add_alias("new-agent-id".into(), "old-agent-id".into());
+
+    // Completing with the new ID should find and drain the original entry
+    let stashed = guard.complete("new-agent-id");
+    assert_eq!(stashed, vec!["hello".to_string()]);
+    assert!(!guard.is_pending("old-agent-id"));
+}
+
+#[test]
 fn lifecycle_guard_stash_ignored_for_non_pending() {
     let mut guard = LifecycleGuard::new();
     // Stash for an agent that isn't pending — should be silently ignored
