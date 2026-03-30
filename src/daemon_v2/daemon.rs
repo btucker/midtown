@@ -657,6 +657,32 @@ impl DaemonV2 {
             proj.apply(event);
             // Broadcast to WebSocket clients (ignore if no receivers).
             let _ = self.event_tx.send(event.clone());
+
+            // Record SpawnFailure cooldown when a lead dies shortly after starting.
+            // This prevents tight respawn loops when auth is broken.
+            if let DomainEvent::AgentStopped { id, .. } = event {
+                let cooldown_channel = proj.agents.by_id.get(id).and_then(|agent| {
+                    if agent.kind == crate::daemon_v2::events::AgentKind::Lead
+                        && agent
+                            .started_at
+                            .is_some_and(|t| (chrono::Utc::now() - t).num_seconds() < 60)
+                    {
+                        agent.channel.clone()
+                    } else {
+                        None
+                    }
+                });
+                if let Some(ch) = cooldown_channel {
+                    tracing::warn!(
+                        %id, channel = %ch,
+                        "lead died within 60s of start — applying spawn cooldown"
+                    );
+                    proj.cooldowns.record(
+                        crate::daemon_v2::projections::cooldowns::CooldownCategory::SpawnFailure,
+                        ch,
+                    );
+                }
+            }
         }
     }
 

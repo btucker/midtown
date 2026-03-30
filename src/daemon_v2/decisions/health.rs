@@ -162,18 +162,35 @@ pub fn ensure_channel_leads_alive(proj: &Projections, default_channel: &str) -> 
 
 /// Ensure a single channel has a lead. Returns None if a lead is already running.
 /// Resumes a stopped lead if one exists. Only spawns new if no lead exists at all.
+/// Uses SpawnFailure cooldown to avoid tight respawn loops when the lead keeps dying.
 fn ensure_lead_for_channel(proj: &Projections, channel: &str, agent_type: &str) -> Option<Command> {
+    use crate::daemon_v2::projections::cooldowns::CooldownCategory;
+
     let lead = proj.agents.channel_lead(channel);
 
     match lead {
         // Running lead — nothing to do
         Some(agent) if proj.agents.running.contains(&agent.id) => None,
-        // Stopped lead — resume it
-        Some(agent) => Some(Command::ResumeAgent {
-            id: agent.id.clone(),
-        }),
-        // No lead at all — spawn one
+        // Stopped lead — resume it (with cooldown to prevent respawn storms)
+        Some(agent) => {
+            if proj
+                .cooldowns
+                .is_active(CooldownCategory::SpawnFailure, channel)
+            {
+                return None; // In cooldown from a recent failed spawn/resume
+            }
+            Some(Command::ResumeAgent {
+                id: agent.id.clone(),
+            })
+        }
+        // No lead at all — spawn one (with cooldown to prevent respawn storms)
         None => {
+            if proj
+                .cooldowns
+                .is_active(CooldownCategory::SpawnFailure, channel)
+            {
+                return None;
+            }
             let working_dir = proj
                 .channels
                 .channel_directory(channel)
