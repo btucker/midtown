@@ -1407,6 +1407,36 @@ test.describe('Daemon v2 Live Web UI', () => {
     expect(data).toHaveProperty('ok')
   })
 
+  test('webhook: pull_request_review emits PrUpdated', async ({ request }) => {
+    // Spec 3.1: WHEN a GitHub webhook reports a review state change THEN the
+    // system SHALL emit a PrUpdated event
+    const webhookPayload = {
+      action: 'submitted',
+      review: {
+        state: 'approved',
+        user: { login: 'reviewer-alice' },
+      },
+      pull_request: {
+        number: 997,
+        head: { ref: 'feat/approved' },
+        user: { login: 'author-bob' },
+      },
+    }
+
+    const res = await request.post(`${BASE_URL}/webhook`, {
+      data: webhookPayload,
+      headers: {
+        'x-github-event': 'pull_request_review',
+        'content-type': 'application/json',
+      },
+    })
+
+    expect(res.ok()).toBeTruthy()
+    const data = await res.json()
+    expect(data).toHaveProperty('ok')
+    expect(data.events).toBeGreaterThan(0)
+  })
+
   test('webhook: unrecognized event returns ok', async ({ request }) => {
     // Spec 12: WHEN a webhook has no recognized events THEN an empty event list
     // SHALL be produced

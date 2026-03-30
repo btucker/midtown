@@ -734,6 +734,33 @@ pub async fn webhook_handler(
                 _ => {}
             }
         }
+        // Spec 3.1: handle review state changes
+        "pull_request_review" => {
+            let action = payload.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            if action == "submitted" {
+                let pr = &payload["pull_request"];
+                let number = pr.get("number").and_then(|v| v.as_u64()).unwrap_or(0);
+                let state = payload
+                    .get("review")
+                    .and_then(|r| r.get("state"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let review_state = match state {
+                    "approved" => crate::daemon_v2::events::ReviewState::Approved,
+                    "changes_requested" => crate::daemon_v2::events::ReviewState::ChangesRequested,
+                    _ => crate::daemon_v2::events::ReviewState::Pending,
+                };
+
+                if number > 0 {
+                    events.push(crate::daemon_v2::events::DomainEvent::PrUpdated {
+                        number,
+                        ci_status: crate::daemon_v2::events::CiStatus::Passed, // CI unchanged
+                        review_state,
+                    });
+                }
+            }
+        }
         // Spec 12: handle PR comments — both top-level (issue_comment on PR)
         // and inline review comments (pull_request_review_comment)
         "issue_comment" | "pull_request_review_comment" => {
