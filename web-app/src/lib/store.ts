@@ -230,9 +230,8 @@ channelOrder.subscribe((v) => debouncedSaveToLocalStorage("midtown_channel_order
 export const activeChannelTab = writable<Record<string, ChannelTab>>({});
 
 // Per-channel settings persisted to localStorage.
-// Format: { [channelName]: { inlineToolCalls: boolean } }
-// inlineToolCalls: when true, tool calls are shown inline in the message
-// stream (like DM threads) instead of grouped in the ThreadActivityDrawer.
+// showFullLeadOutput: when true (default), all auto-posted lead messages
+// and tool call blocks are shown inline in the message stream.
 export const channelSettings = writable<Record<string, ChannelSettings>>(
 	loadFromLocalStorage("midtown_channel_settings", {}),
 );

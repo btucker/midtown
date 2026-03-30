@@ -371,7 +371,7 @@ pub async fn channel_settings_get(
                 "directory": meta.settings.directory,
             })
         })
-        .unwrap_or_else(|| json!({"show_full_lead_output": false, "lead_driven": false}));
+        .unwrap_or_else(|| json!({"show_full_lead_output": true, "lead_driven": false}));
     Json(settings)
 }
 

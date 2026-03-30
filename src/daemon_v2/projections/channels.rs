@@ -8,8 +8,13 @@ use crate::daemon_v2::events::DomainEvent;
 #[cfg(test)]
 mod tests;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelSettings {
+    #[serde(default = "default_true")]
     pub show_full_lead_output: bool,
     #[serde(default)]
     pub lead_driven: bool,
@@ -17,6 +22,16 @@ pub struct ChannelSettings {
     /// The lead agent's AGENTS.md/CLAUDE.md is loaded from this directory.
     #[serde(default)]
     pub directory: Option<String>,
+}
+
+impl Default for ChannelSettings {
+    fn default() -> Self {
+        Self {
+            show_full_lead_output: true,
+            lead_driven: false,
+            directory: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
