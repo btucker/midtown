@@ -396,20 +396,49 @@
 
 ## 16. Authentication
 
-### 16.1 Profile Storage
-- WHEN a profile is created THEN its directory SHALL be `~/.midtown/auth/<name>/claude/` for Claude providers
-- WHEN a Claude profile is created THEN shared state (projects, tasks, settings, agents, plugins) SHALL be symlinked from `~/.midtown/platforms/claude/`
-- WHEN a Claude profile is created THEN `.claude.json` SHALL be profile-local (never symlinked) — this file holds the OAuth token
+### 16.1 Platform Directory Layout
+
+All auth and shared state lives under `~/.midtown/platforms/<platform>/`:
+
+```
+~/.midtown/platforms/
+├── claude/
+│   ├── shared/              # state shared across all Claude profiles
+│   │   ├── settings.json
+│   │   ├── agents/
+│   │   ├── plugins/
+│   │   ├── projects/
+│   │   ├── tasks/
+│   │   └── teams/
+│   ├── <profile>/           # e.g. "claude@quotably.com", "default"
+│   │   ├── .claude.json     # OAuth token (profile-local, never symlinked)
+│   │   ├── settings.json -> ../shared/settings.json
+│   │   ├── agents -> ../shared/agents
+│   │   ├── plugins -> ../shared/plugins
+│   │   ├── projects -> ../shared/projects
+│   │   ├── tasks -> ../shared/tasks
+│   │   └── teams -> ../shared/teams
+│   └── current              # text file containing active profile name
+└── codex/
+    ├── shared/
+    ├── <profile>/
+    └── current
+```
+
+- WHEN a profile is created THEN its directory SHALL be `~/.midtown/platforms/<platform>/<profile>/`
+- WHEN a Claude profile is created THEN shared entries SHALL be symlinked from `../shared/`
+- WHEN a profile is created THEN `.claude.json` SHALL be profile-local (never symlinked) — this file holds the OAuth token
 - WHEN checking if a profile has valid credentials THEN the system SHALL check for `.claude.json` in the profile directory
+- WHEN the shared directory does not exist THEN the system SHALL create it before setting up symlinks
 
 ### 16.2 CLAUDE_CONFIG_DIR
-- WHEN an agent session is spawned THEN `CLAUDE_CONFIG_DIR` SHALL be set to the active profile's directory
-- WHEN resolving the active profile THEN the system SHALL check project config first (`auth_profiles.claude`), then global config (`providers.claude.auth_profile`), then fall back to "default"
+- WHEN an agent session is spawned THEN `CLAUDE_CONFIG_DIR` SHALL be set to `~/.midtown/platforms/claude/<active-profile>/`
+- WHEN resolving the active profile THEN the system SHALL check project config first (`auth_profiles.claude`), then global config (`providers.claude.auth_profile`), then the `current` file, then fall back to "default"
 - WHEN `CLAUDE_CONFIG_DIR` is set THEN the Claude CLI reads and writes auth tokens from that directory
 - WHEN the profile directory does not exist THEN the system SHALL create it and set up symlinks before spawning
 
 ### 16.3 Auth Login
-- WHEN `midtown auth login <email>` is run THEN the system SHALL create the profile directory with symlinks
+- WHEN `midtown auth login <email>` is run THEN the system SHALL create the profile directory at `~/.midtown/platforms/claude/<email>/` with symlinks to shared
 - WHEN logging in for Claude THEN the system SHALL spawn `claude auth login --email <email>` with `CLAUDE_CONFIG_DIR` pointing to the profile directory
 - WHEN the login is the first profile THEN the system SHALL automatically set it as the current profile
 - WHEN login completes THEN the system SHALL re-run symlink setup to pick up any new shared files
@@ -417,7 +446,7 @@
 
 ### 16.4 Auth Switch
 - WHEN `auth.switch` RPC is received THEN the system SHALL validate the profile exists and has credentials
-- WHEN switching globally THEN the system SHALL update `providers.claude.auth_profile` in `~/.midtown/config.toml`
+- WHEN switching globally THEN the system SHALL update the `current` file AND `providers.claude.auth_profile` in config
 - WHEN switching globally THEN the system SHALL clear all per-project auth profile overrides
 - WHEN auth is switched THEN all running agents for that provider SHALL be stopped and relaunched with the new profile
 - WHEN relaunching agents after auth switch THEN session resume SHALL be used if the platform is compatible (Claude↔Claude or Codex↔Codex)
@@ -433,6 +462,10 @@
 - WHEN a profile hits a usage limit THEN it SHALL be excluded from selection until the limit resets
 - WHEN selecting a profile THEN the system SHALL prefer never-used profiles, then the one with the oldest `last_used_at`
 
+### 16.7 Migration
+- WHEN the system detects profiles in the legacy location (`~/.midtown/auth/<name>/claude/`) THEN it SHALL migrate them to `~/.midtown/platforms/claude/<name>/`
+- WHEN migrating THEN symlinks SHALL be updated to point to `../shared/` instead of the old shared path
+
 ---
 
 ## Revision History
@@ -441,4 +474,4 @@
 |------|--------|
 | 2026-03-29 | Initial spec. All sections reviewed and approved. Key design decisions: demand-spawned leads (not polled), resume-on-nudge for all agent types, @all scoped by channel type, task parent-child hierarchy, PR comment routing to task threads. |
 | 2026-03-30 | Added: auto-output (4.1) — agent stdout must be posted to channels; channel lead resolution (5.1) — must prefer running agents over stopped ones; concurrency (8.1) — web handlers must not be blocked by executor; v1 field name compatibility (10.5). Found via live testing: lead not responding was caused by discarded stdout + wrong lead resolution + field name mismatch. |
-| 2026-03-30 | Added: section 16 (Authentication) — profile storage, CLAUDE_CONFIG_DIR resolution, auth login, auth switch with agent relaunch, auth error detection, profile pool rotation. Based on v1 auth system analysis. |
+| 2026-03-30 | Added: section 16 (Authentication) — profile storage under `~/.midtown/platforms/<platform>/`, CLAUDE_CONFIG_DIR resolution, auth login, auth switch with agent relaunch, auth error detection, profile pool rotation, migration from legacy layout. |
