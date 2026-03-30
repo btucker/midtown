@@ -4,7 +4,7 @@
 
 use crate::daemon_v2::decisions::Command;
 use crate::daemon_v2::decisions::prs::{
-    handle_merged_prs, spawn_reviewers, suspend_authors_with_prs,
+    handle_merged_prs, nudge_rebase_after_merge, spawn_reviewers, suspend_authors_with_prs,
 };
 use crate::daemon_v2::events::*;
 use crate::daemon_v2::projections::Projections;
@@ -284,6 +284,74 @@ fn merged_pr_without_task_produces_no_commands() {
     assert!(
         commands.is_empty(),
         "expected no commands for merged PR without linked task, got {:?}",
+        commands
+    );
+}
+
+/// Spec 3.3: WHEN a PR merges THEN the system SHALL nudge workers with other
+/// open PRs to rebase (1hr cooldown per agent)
+#[test]
+fn merged_pr_nudges_other_workers_to_rebase() {
+    let mut proj = Projections::default();
+
+    // Worker A has merged PR
+    proj.apply(&DomainEvent::PrOpened {
+        number: 10,
+        branch: "feat-a".into(),
+        author: "dev-a".into(),
+    });
+    proj.apply(&DomainEvent::PrMerged {
+        number: 10,
+        branch: "feat-a".into(),
+    });
+
+    // Worker B has an open PR — should get nudged to rebase
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "a2".into(),
+        name: "worker-b".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t2".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "a2".into(),
+        pid: 200,
+        session_id: Some("sess-b".into()),
+    });
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t2".into(),
+        subject: "Feat B".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        icon: None,
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t2".into(),
+        agent_id: "a2".into(),
+    });
+    proj.apply(&DomainEvent::PrOpened {
+        number: 20,
+        branch: "feat-b".into(),
+        author: "dev-b".into(),
+    });
+    proj.apply(&DomainEvent::PrLinkedToTask {
+        number: 20,
+        task_id: "t2".into(),
+    });
+
+    let commands = nudge_rebase_after_merge(&proj);
+
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "a2")),
+        "worker B should be nudged to rebase, got {:?}",
         commands
     );
 }

@@ -49,3 +49,40 @@ fn list_channels_shows_created_channels() {
     assert!(names.contains(&"alpha"), "missing alpha: {names:?}");
     assert!(names.contains(&"beta"), "missing beta: {names:?}");
 }
+
+/// Spec 5.3: WHEN messages are read from a channel THEN thread replies SHALL be
+/// excluded UNLESS the read request specifies a thread_parent_id
+#[test]
+fn read_messages_excludes_thread_replies() {
+    let dir = TempDir::new().unwrap();
+    post_message(dir.path(), "chan", "alice", "top-level 1", None).unwrap();
+    post_message(dir.path(), "chan", "alice", "top-level 2", None).unwrap();
+
+    // Get the first message's ID to use as thread parent
+    let all_msgs = read_messages(dir.path(), "chan", None).unwrap();
+    let parent_id = all_msgs[0]["id"].as_str().unwrap().to_string();
+
+    // Post a thread reply
+    post_message(
+        dir.path(),
+        "chan",
+        "bob",
+        "this is a reply",
+        Some(&parent_id),
+    )
+    .unwrap();
+
+    // Default read should exclude the thread reply
+    let msgs = read_messages(dir.path(), "chan", None).unwrap();
+    assert_eq!(
+        msgs.len(),
+        2,
+        "thread reply should be excluded from default read, got {}",
+        msgs.len()
+    );
+    assert!(
+        msgs.iter()
+            .all(|m| m.get("thread_parent_id").is_none() || m["thread_parent_id"].is_null()),
+        "no message should have thread_parent_id in default read"
+    );
+}

@@ -33,13 +33,21 @@ pub fn post_system_message(
 }
 
 /// Read messages from a channel, optionally limited to the last N.
+/// Per spec 5.3: thread replies are excluded unless reading a specific thread.
 pub fn read_messages(
     channels_dir: &Path,
     channel: &str,
     limit: Option<usize>,
 ) -> Result<Vec<Value>, String> {
     let ch = Channel::new(channels_dir, channel).map_err(|e| e.to_string())?;
-    let messages = ch.read_all().map_err(|e| e.to_string())?;
+    let all_messages = ch.read_all().map_err(|e| e.to_string())?;
+
+    // Exclude thread replies (messages with thread_parent_id set)
+    let messages: Vec<_> = all_messages
+        .iter()
+        .filter(|m| m.thread_parent_id.is_none())
+        .collect();
+
     let msgs: Vec<Value> = if let Some(n) = limit {
         messages
             .iter()
