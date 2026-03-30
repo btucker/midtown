@@ -1,6 +1,10 @@
 use super::*;
 use crate::daemon_v2::events::DomainEvent;
 
+// ── Section 6.3: ChannelIndex ───────────────────────────────────────────────
+
+/// Spec 6.3: WHEN MessagePosted is applied THEN channel ensured to exist,
+/// last_message_at updated
 #[test]
 fn message_creates_channel_if_missing() {
     let mut idx = ChannelIndex::default();
@@ -15,6 +19,8 @@ fn message_creates_channel_if_missing() {
     assert!(idx.channels.get("main").unwrap().last_message_at.is_some());
 }
 
+/// Spec 6.3: WHEN MessagePosted has thread_id THEN thread added to
+/// known_threads and thread_count incremented
 #[test]
 fn thread_message_increments_thread_count() {
     let mut idx = ChannelIndex::default();
@@ -62,6 +68,7 @@ fn multiple_replies_same_thread_no_double_count() {
     assert_eq!(idx.channels.get("main").unwrap().thread_count, 1);
 }
 
+/// Spec 6.3: WHEN ChannelLeadDrivenSet is applied THEN lead_driven setting updated
 #[test]
 fn lead_driven_flag() {
     let mut idx = ChannelIndex::default();
@@ -78,4 +85,30 @@ fn lead_driven_flag() {
         lead_driven: false,
     });
     assert!(!idx.is_lead_driven("test"));
+}
+
+/// Spec 6.3: WHEN ChannelDirectorySet is applied THEN directory setting updated
+#[test]
+fn channel_directory_set() {
+    let mut idx = ChannelIndex::default();
+    assert!(idx.channel_directory("docs").is_none());
+
+    idx.apply(&DomainEvent::ChannelDirectorySet {
+        channel: "docs".into(),
+        directory: Some("packages/docs".into()),
+    });
+    assert_eq!(
+        idx.channel_directory("docs"),
+        Some("packages/docs"),
+        "directory should be set"
+    );
+
+    idx.apply(&DomainEvent::ChannelDirectorySet {
+        channel: "docs".into(),
+        directory: None,
+    });
+    assert!(
+        idx.channel_directory("docs").is_none(),
+        "directory should be cleared"
+    );
 }
