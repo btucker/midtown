@@ -93,7 +93,7 @@ pub fn handle_status(proj: &Projections) -> Result<Value, RpcError> {
 
     Ok(json!({
         "agents": {
-            "total": proj.agents.by_id.len(),
+            "total": proj.agents.by_id.values().filter(|a| !a.gc).count(),
             "running": proj.agents.running.len(),
         },
         "coworkers": coworkers,
@@ -114,6 +114,8 @@ pub fn handle_agent_list(
         .agents
         .by_id
         .values()
+        // Spec 4.4: GC'd agents excluded from active queries
+        .filter(|agent| !agent.gc)
         .filter(|agent| {
             if let Some(ref f) = filter {
                 if let Some(ref kind) = f.kind
