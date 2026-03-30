@@ -7,6 +7,10 @@ pub mod webhook;
 #[cfg(test)]
 mod nudge_tests;
 
+#[path = "dispatch_tests.rs"]
+#[cfg(test)]
+mod dispatch_tests;
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -46,6 +50,61 @@ pub fn resolve_nudge_action(agent_id: &str, proj: &Projections) -> NudgeAction {
         NudgeAction::RespawnAndDeliver {
             config: Box::new(spawn_config_from_agent(agent)),
         }
+    }
+}
+
+/// Result sent from background tasks back to the main event loop.
+pub enum ExecutorResult {
+    /// Events to apply to store + projections + broadcast.
+    Events(Vec<DomainEvent>),
+    /// A new session is ready — main loop inserts into sessions map.
+    SessionReady {
+        id: String,
+        session: Box<HeadlessSession>,
+        events: Vec<DomainEvent>,
+    },
+    /// A lifecycle operation (stop) completed — deliver stashed nudges.
+    LifecycleComplete {
+        id: String,
+        events: Vec<DomainEvent>,
+    },
+}
+
+/// Classification of how a command should be executed.
+pub enum CommandClass {
+    /// Execute immediately in the main loop (fast, may need &mut sessions).
+    Inline,
+    /// Execute in a background tokio task (slow I/O).
+    Background,
+    /// Needs runtime resolution (NudgeAgent — may be inline or background).
+    NeedsResolution,
+}
+
+/// Classify a command as inline, background, or needs-resolution.
+pub fn classify_command(cmd: &Command) -> CommandClass {
+    match cmd {
+        // Inline: pure event emission or fast session ops
+        Command::AssignTask { .. }
+        | Command::CompleteTask { .. }
+        | Command::ResetTask { .. }
+        | Command::GarbageCollect { .. }
+        | Command::CreateWorktree { .. }
+        | Command::RemoveWorktree { .. }
+        | Command::Post { .. }
+        | Command::PostSystem { .. }
+        | Command::PollProcessHealth => CommandClass::Inline,
+
+        // Background: slow I/O
+        Command::SpawnAgent(_)
+        | Command::ResumeAgent { .. }
+        | Command::StopAgent { .. }
+        | Command::PollPrs
+        | Command::MergePr { .. }
+        | Command::PostPrComment { .. }
+        | Command::RerunCi { .. } => CommandClass::Background,
+
+        // Needs resolution at dispatch time
+        Command::NudgeAgent { .. } => CommandClass::NeedsResolution,
     }
 }
 
