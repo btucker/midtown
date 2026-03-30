@@ -110,6 +110,86 @@ fn full_lifecycle_through_store_and_projections() {
     assert_eq!(status["result"]["agents"]["running"], 1);
 }
 
+/// Verify the TaskAssigned auto-emit logic works when an AgentCreated event
+/// with task_id is produced (simulates daemon's run_due_decisions behavior).
+#[test]
+fn task_assigned_auto_emitted_after_agent_created_with_task() {
+    let mut proj = Projections::default();
+
+    // Create a task
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Test task".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+    assert_eq!(
+        proj.work.tasks.get("t1").unwrap().status,
+        TaskStatus::Pending
+    );
+
+    // Simulate what execute_spawn returns
+    let spawn_events = vec![
+        DomainEvent::AgentCreated {
+            id: "a1".into(),
+            name: "swift-river".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("t1".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "a1".into(),
+            pid: 5000,
+            session_id: Some("sess-1".into()),
+        },
+    ];
+
+    // Apply spawn events (what apply_events does)
+    for event in &spawn_events {
+        proj.apply(event);
+    }
+
+    // Simulate the daemon's auto-emit: check for AgentCreated with task_id
+    let mut assign_events = Vec::new();
+    for event in &spawn_events {
+        if let DomainEvent::AgentCreated {
+            id,
+            task_id: Some(tid),
+            ..
+        } = event
+        {
+            assign_events.push(DomainEvent::TaskAssigned {
+                task_id: tid.clone(),
+                agent_id: id.clone(),
+            });
+        }
+    }
+
+    assert_eq!(assign_events.len(), 1, "should auto-emit 1 TaskAssigned");
+
+    // Apply the auto-emitted TaskAssigned
+    for event in &assign_events {
+        proj.apply(event);
+    }
+
+    // Task should now be InProgress
+    assert_eq!(
+        proj.work.tasks.get("t1").unwrap().status,
+        TaskStatus::InProgress,
+        "task should be InProgress after TaskAssigned auto-emit"
+    );
+}
+
 #[test]
 fn recover_from_empty_directory() {
     let dir = TempDir::new().unwrap();
