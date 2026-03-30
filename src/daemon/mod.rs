@@ -1526,22 +1526,11 @@ impl DaemonState {
         }
 
         // Register in the CoworkerManager tracking map (keyed by slot_id)
-        // Extract profile name from auth_profile_dir.
-        // For Claude, profile_dir_for() returns `<base>/<name>/claude`, so the profile
-        // name is the parent's file_name, not the leaf. For other providers, it's the leaf.
+        // Extract profile name from auth_profile_dir (leaf directory for all providers).
         let profile = config
             .auth_profile_dir
             .as_ref()
-            .and_then(|p| {
-                if config.auth_provider == crate::auth::AuthProvider::Claude {
-                    // Path is ~/.midtown/auth/<profile>/claude — extract <profile>
-                    p.parent()
-                        .and_then(|parent| parent.file_name())
-                        .and_then(|n| n.to_str())
-                } else {
-                    p.file_name().and_then(|n| n.to_str())
-                }
-            })
+            .and_then(|p| p.file_name().and_then(|n| n.to_str()))
             .unwrap_or(crate::auth::DEFAULT_PROFILE)
             .to_string();
 
