@@ -490,6 +490,60 @@ fn test_daemon_v2_channel_post_and_read() {
     );
 }
 
+/// Spec 5.2: channel create + archive + unarchive via RPC
+#[test]
+#[ignore]
+fn test_daemon_v2_channel_create_archive_unarchive() {
+    let harness = V2Harness::start();
+
+    // Create a channel
+    let resp = harness.rpc_call(
+        "channel.create",
+        Some(serde_json::json!({ "name": "rpc-archive-test" })),
+    );
+    assert!(resp["error"].is_null(), "channel.create error: {resp}");
+
+    // Verify it appears in channel.list
+    let resp = harness.rpc_call("channel.list", None);
+    let channels = resp["result"].as_array().expect("should be array");
+    assert!(
+        channels.iter().any(|c| c["name"] == "rpc-archive-test"),
+        "created channel should appear in list"
+    );
+
+    // Archive it
+    let resp = harness.rpc_call(
+        "channel.archive",
+        Some(serde_json::json!({ "channel": "rpc-archive-test" })),
+    );
+    assert!(resp["error"].is_null(), "channel.archive error: {resp}");
+
+    // Verify it's gone from default list
+    let resp = harness.rpc_call("channel.list", None);
+    let channels = resp["result"].as_array().expect("should be array");
+    assert!(
+        !channels
+            .iter()
+            .any(|c| c["name"] == "rpc-archive-test" && c["is_archived"] == false),
+        "archived channel should not appear as non-archived"
+    );
+
+    // Unarchive it
+    let resp = harness.rpc_call(
+        "channel.unarchive",
+        Some(serde_json::json!({ "channel": "rpc-archive-test" })),
+    );
+    assert!(resp["error"].is_null(), "channel.unarchive error: {resp}");
+
+    // Verify it's back
+    let resp = harness.rpc_call("channel.list", None);
+    let channels = resp["result"].as_array().expect("should be array");
+    assert!(
+        channels.iter().any(|c| c["name"] == "rpc-archive-test"),
+        "unarchived channel should appear in list"
+    );
+}
+
 /// Spec 5.3: thread replies excluded from default read, included with thread_parent_id
 #[test]
 #[ignore]

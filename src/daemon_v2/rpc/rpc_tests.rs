@@ -1233,3 +1233,74 @@ fn channel_read_with_limit() {
     assert_eq!(messages[0]["message"], "msg 4");
     assert_eq!(messages[1]["message"], "msg 5");
 }
+
+// ── channel.create / channel.archive / channel.unarchive ────────────────
+
+/// Spec 5.2 + 10.1: channel.create creates a new channel via RPC
+#[test]
+fn channel_create_via_rpc() {
+    let proj = Projections::default();
+    let dir = tempfile::TempDir::new().unwrap();
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.create",
+        "id": 600,
+        "params": { "name": "new-chan" }
+    });
+    let (response, _, _) = dispatch_request(request, &proj, dir.path());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert_eq!(response["result"]["channel"], "new-chan");
+
+    // Verify the channel directory exists
+    let ch_dir = dir.path().join("channels").join("new-chan");
+    assert!(ch_dir.exists(), "channel directory should be created");
+}
+
+/// Spec 5.2: channel.archive renames directory with .archived suffix
+#[test]
+fn channel_archive_and_unarchive_via_rpc() {
+    let proj = Projections::default();
+    let dir = tempfile::TempDir::new().unwrap();
+
+    // Create a channel first
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.create",
+        "id": 601,
+        "params": { "name": "archive-rpc" }
+    });
+    let (response, _, _) = dispatch_request(request, &proj, dir.path());
+    assert!(response["error"].is_null());
+
+    let ch_dir = dir.path().join("channels").join("archive-rpc");
+    let archived_dir = dir.path().join("channels").join("archive-rpc.archived");
+
+    assert!(ch_dir.exists());
+    assert!(!archived_dir.exists());
+
+    // Archive
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.archive",
+        "id": 602,
+        "params": { "channel": "archive-rpc" }
+    });
+    let (response, _, _) = dispatch_request(request, &proj, dir.path());
+    assert!(response["error"].is_null());
+    assert!(!ch_dir.exists(), "original dir should be gone");
+    assert!(archived_dir.exists(), "archived dir should exist");
+
+    // Unarchive
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.unarchive",
+        "id": 603,
+        "params": { "channel": "archive-rpc" }
+    });
+    let (response, _, _) = dispatch_request(request, &proj, dir.path());
+    assert!(response["error"].is_null());
+    assert!(ch_dir.exists(), "restored dir should exist");
+    assert!(!archived_dir.exists(), "archived dir should be gone");
+}

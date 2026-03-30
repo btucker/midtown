@@ -838,3 +838,78 @@ pub fn handle_channel_read(params: Option<&Value>, channels_dir: &Path) -> Resul
 
     Ok(json!(messages))
 }
+
+/// Handle `channel.create` — create a new channel directory.
+pub fn handle_channel_create(
+    params: Option<&Value>,
+    channels_dir: &Path,
+) -> Result<Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+    let name = params
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: name"))?;
+
+    // Creating a channel = writing a system message to create the directory structure
+    channel_io::post_system_message(channels_dir, name, &format!("Channel {name} created"))
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: e,
+        })?;
+
+    Ok(json!({"ok": true, "channel": name}))
+}
+
+/// Handle `channel.archive` — rename channel directory with .archived suffix.
+pub fn handle_channel_archive(
+    params: Option<&Value>,
+    channels_dir: &Path,
+) -> Result<Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+    let name = params
+        .get("channel")
+        .or_else(|| params.get("name"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: channel"))?;
+
+    let ch_dir = channels_dir.join("channels").join(name);
+    let archived_dir = channels_dir
+        .join("channels")
+        .join(format!("{name}.archived"));
+
+    if ch_dir.exists() {
+        std::fs::rename(&ch_dir, &archived_dir).map_err(|e| RpcError {
+            code: -32000,
+            message: format!("failed to archive: {e}"),
+        })?;
+    }
+
+    Ok(json!({"ok": true}))
+}
+
+/// Handle `channel.unarchive` — remove .archived suffix from channel directory.
+pub fn handle_channel_unarchive(
+    params: Option<&Value>,
+    channels_dir: &Path,
+) -> Result<Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+    let name = params
+        .get("channel")
+        .or_else(|| params.get("name"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: channel"))?;
+
+    let archived_dir = channels_dir
+        .join("channels")
+        .join(format!("{name}.archived"));
+    let ch_dir = channels_dir.join("channels").join(name);
+
+    if archived_dir.exists() {
+        std::fs::rename(&archived_dir, &ch_dir).map_err(|e| RpcError {
+            code: -32000,
+            message: format!("failed to unarchive: {e}"),
+        })?;
+    }
+
+    Ok(json!({"ok": true}))
+}

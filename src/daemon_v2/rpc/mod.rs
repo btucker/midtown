@@ -158,11 +158,11 @@ pub fn dispatch_request(
                 "prs.status" => handlers::handle_prs_status(proj),
                 "channel.list" => handlers::handle_channel_list(channels_dir),
                 "channel.read" => handlers::handle_channel_read(params, channels_dir),
+                "channel.create" => handlers::handle_channel_create(params, channels_dir),
+                "channel.archive" => handlers::handle_channel_archive(params, channels_dir),
+                "channel.unarchive" => handlers::handle_channel_unarchive(params, channels_dir),
                 // Stubs for CLI methods that don't have full v2 implementations yet
-                "channel.create"
-                | "channel.archive"
-                | "channel.unarchive"
-                | "reminder.list"
+                "reminder.list"
                 | "reminder.create"
                 | "reminder.cancel"
                 | "workflow.set_state"
