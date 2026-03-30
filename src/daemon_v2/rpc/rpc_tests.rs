@@ -239,6 +239,31 @@ fn channel_update_no_known_fields_returns_empty_events() {
     assert!(events.is_empty());
 }
 
+/// Spec 10.1: channel.update sets directory
+#[test]
+fn channel_update_sets_directory() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.update",
+        "id": 23,
+        "params": {
+            "channel": "docs",
+            "directory": "packages/docs"
+        }
+    });
+    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert!(events.iter().any(|e| matches!(
+        e,
+        DomainEvent::ChannelDirectorySet {
+            channel,
+            directory: Some(dir),
+        } if channel == "docs" && dir == "packages/docs"
+    )));
+}
+
 #[test]
 fn session_fork_returns_spawn_command() {
     let proj = Projections::default();
