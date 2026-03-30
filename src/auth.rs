@@ -244,12 +244,17 @@ pub fn profile_dir_for(provider: AuthProvider, name: &str) -> PathBuf {
 
 /// Get the shared provider storage directory.
 ///
-/// For Claude, returns `~/.midtown/platforms/claude/` where shared state (tasks, projects,
+/// For Claude, returns `~/.midtown/platforms/claude/shared/` where shared state (tasks, projects,
 /// settings, etc.) lives across all auth profiles.
 /// For other providers, this isn't used (they don't share state).
 fn shared_provider_storage_dir(provider: AuthProvider) -> Option<PathBuf> {
     match provider {
-        AuthProvider::Claude => Some(midtown_base_dir().join("platforms").join("claude")),
+        AuthProvider::Claude => Some(
+            midtown_base_dir()
+                .join("platforms")
+                .join("claude")
+                .join("shared"),
+        ),
         AuthProvider::Codex | AuthProvider::Zai => None,
     }
 }
@@ -854,7 +859,8 @@ pub fn list_profiles_for(provider: AuthProvider) -> std::io::Result<Vec<String>>
             if path.is_dir()
                 && let Some(name) = path.file_name().and_then(|n| n.to_str())
             {
-                if provider == AuthProvider::Claude && (name == "providers" || name == "platforms")
+                if provider == AuthProvider::Claude
+                    && (name == "providers" || name == "platforms" || name == "shared")
                 {
                     continue;
                 }
