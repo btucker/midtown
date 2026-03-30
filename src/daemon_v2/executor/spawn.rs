@@ -73,9 +73,17 @@ pub async fn spawn_agent(
         headless_config.fork_session = true;
     }
 
-    let session = HeadlessSession::spawn(&headless_config)
+    let mut session = HeadlessSession::spawn(&headless_config)
         .await
         .map_err(|e| format!("failed to spawn agent '{}': {}", spawn_config.name, e))?;
+
+    // Deliver the initial prompt via stdin (send_message).
+    // The -p flag tells Claude to wait for stdin input — we must actually send it.
+    if let Some(ref prompt) = spawn_config.initial_prompt
+        && let Err(e) = session.send_message(prompt).await
+    {
+        tracing::error!(name = %spawn_config.name, %e, "failed to send initial prompt");
+    }
 
     let pid = session.pid().unwrap_or(0);
     let agent_id: AgentId = uuid::Uuid::new_v4().to_string();
