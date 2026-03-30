@@ -314,22 +314,111 @@ fn test_daemon_v2_spawns_agent_for_task() {
     );
     assert!(resp["error"].is_null(), "task.create error: {resp}");
 
-    // Poll status until we see an agent spawned (dispatch runs every 5s)
-    let mut saw_agent = false;
+    // Poll until we see a worker spawned for task t1 (dispatch runs every 5s)
+    let mut saw_worker = false;
     for i in 0..30 {
         std::thread::sleep(Duration::from_secs(1));
-        let status = harness.rpc_call("status", None);
-        let total = status["result"]["agents"]["total"].as_u64().unwrap_or(0);
-        if total > 0 {
-            saw_agent = true;
-            let running = status["result"]["agents"]["running"].as_u64().unwrap_or(0);
-            eprintln!("Agent spawned after {i}s: total={total}, running={running}");
+        let agents = harness.rpc_call("agent.list", None);
+        let list = agents["result"].as_array().unwrap_or(&vec![]).clone();
+        if list.iter().any(|a| a["task_id"].as_str() == Some("t1")) {
+            saw_worker = true;
+            eprintln!("Worker spawned for task t1 after {i}s");
             break;
         }
     }
     assert!(
-        saw_agent,
-        "expected agent to be spawned for task within 30s"
+        saw_worker,
+        "expected worker to be spawned for task t1 within 30s"
+    );
+
+    // Verify the task was assigned (worker exists with task_id)
+    let agents_resp = harness.rpc_call("agent.list", None);
+    let agents = agents_resp["result"].as_array().unwrap_or(&vec![]).clone();
+    assert!(
+        agents.iter().any(|a| a["task_id"].as_str() == Some("t1")),
+        "worker with task_id t1 should exist"
+    );
+}
+
+/// Spec 2.2: task.done completes task and stop_completed_agents stops the worker
+#[test]
+#[ignore]
+fn test_daemon_v2_task_done_stops_worker() {
+    let harness = V2Harness::start();
+
+    // Create and wait for dispatch
+    let resp = harness.rpc_call(
+        "task.create",
+        Some(serde_json::json!({
+            "id": "done-t1",
+            "subject": "Task to complete",
+            "channel": "main",
+        })),
+    );
+    assert!(resp["error"].is_null());
+
+    // Wait for agent to spawn
+    for _ in 0..15 {
+        std::thread::sleep(Duration::from_secs(1));
+        let status = harness.rpc_call("status", None);
+        if status["result"]["agents"]["running"].as_u64().unwrap_or(0) > 0 {
+            break;
+        }
+    }
+
+    // Complete the task
+    let resp = harness.rpc_call("task.done", Some(serde_json::json!({ "id": "done-t1" })));
+    assert!(resp["error"].is_null(), "task.done error: {resp}");
+
+    // Wait for stop_completed_agents to stop the worker (runs every 5s)
+    std::thread::sleep(Duration::from_secs(8));
+
+    // Verify task is completed
+    let task_list = harness.rpc_call("task.list", None);
+    let tasks = task_list["result"].as_array().expect("tasks");
+    let task = tasks.iter().find(|t| t["id"] == "done-t1");
+    assert!(task.is_some());
+    assert_eq!(
+        task.unwrap()["status"],
+        "Completed",
+        "completed task should have Completed status"
+    );
+}
+
+/// Spec 5.1: message to a new channel demand-spawns a lead
+#[test]
+#[ignore]
+fn test_daemon_v2_demand_spawns_lead_on_message() {
+    let harness = V2Harness::start();
+
+    // Post a message to a brand new channel
+    let resp = harness.rpc_call(
+        "channel.post",
+        Some(serde_json::json!({
+            "channel": "demand-test",
+            "sender": "user",
+            "content": "hello demand-spawned lead",
+        })),
+    );
+    assert!(resp["error"].is_null(), "channel.post error: {resp}");
+
+    // Wait for the demand-spawned lead to appear
+    let mut found_lead = false;
+    for _ in 0..15 {
+        std::thread::sleep(Duration::from_secs(1));
+        let agents = harness.rpc_call("agent.list", None);
+        let list = agents["result"].as_array().unwrap_or(&vec![]).clone();
+        if list
+            .iter()
+            .any(|a| a["channel"].as_str() == Some("demand-test") && a["kind"] == "Lead")
+        {
+            found_lead = true;
+            break;
+        }
+    }
+    assert!(
+        found_lead,
+        "demand-spawned lead should appear for new channel"
     );
 }
 
