@@ -360,7 +360,7 @@
 - Workflow system (assignment, state machine, event emission)
 - Task prompt / handoff between agents
 - Session attach/detach (interactive takeover)
-- CI issue detection (stale checks, auto-rerun)
+- ~~CI issue detection (stale checks, auto-rerun)~~ — **Implemented** (detect_stale_ci nudges authors on CI failure)
 
 ### Nice to Have
 - Channel rename/merge

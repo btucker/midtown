@@ -130,6 +130,11 @@ fn nudge_rebase_after_merge_fn(proj: &Projections, _channel: &str) -> Vec<Comman
     decisions::prs::nudge_rebase_after_merge(proj)
 }
 
+/// Wrapper: detect CI failures and nudge authors.
+fn detect_stale_ci_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
+    decisions::prs::detect_stale_ci(proj)
+}
+
 /// Wrapper: detect auth errors from session stderr (stub).
 fn check_auth_errors_fn(proj: &Projections, _channel: &str) -> Vec<Command> {
     health::check_auth_errors(proj)
@@ -325,6 +330,11 @@ impl DaemonV2 {
             "stop_idle_reported_workers",
             Duration::from_secs(30),
             stop_idle_reported_workers_fn,
+        );
+        scheduler.register(
+            "detect_stale_ci",
+            Duration::from_secs(60),
+            detect_stale_ci_fn,
         );
 
         // Move the receiver out so `config` can be stored on the daemon.

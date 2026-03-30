@@ -239,3 +239,46 @@ pub fn suspend_authors_with_prs(proj: &Projections) -> Vec<Command> {
         })
         .collect()
 }
+
+/// Section 15: CI issue detection — nudge authors when CI fails.
+/// Uses a cooldown to avoid repeated nudging.
+pub fn detect_stale_ci(proj: &Projections) -> Vec<Command> {
+    use crate::daemon_v2::events::CiStatus;
+
+    let mut commands = Vec::new();
+
+    for (&pr_num, pr) in &proj.work.prs {
+        if pr.is_merged || pr.is_closed {
+            continue;
+        }
+
+        // Only act on failed CI
+        if pr.ci_status != CiStatus::Failed {
+            continue;
+        }
+
+        // Find the agent for this PR's task
+        if let Some((task_id, _)) = proj.work.task_for_pr(pr_num)
+            && let Some(agent_id) = proj.agents.by_task.get(task_id)
+        {
+            // Use cooldown to avoid spamming
+            let cooldown_key = format!("ci-fail-{pr_num}");
+            if proj
+                .cooldowns
+                .is_active(CooldownCategory::TaskNudge, &cooldown_key)
+            {
+                continue;
+            }
+
+            commands.push(Command::NudgeAgent {
+                id: agent_id.clone(),
+                message: format!(
+                    "CI failed on PR #{pr_num} (branch: {}). Please check and fix.",
+                    pr.branch
+                ),
+            });
+        }
+    }
+
+    commands
+}

@@ -744,3 +744,73 @@ fn pr_comment_no_linked_task_no_routing() {
         commands
     );
 }
+
+// ── Section 15 Important: CI Issue Detection ─────────────────────────────
+
+/// CI that has been running for >30 minutes should nudge the author
+#[test]
+fn stale_ci_nudges_author() {
+    use crate::daemon_v2::decisions::prs::detect_stale_ci;
+    use crate::daemon_v2::events::CiStatus;
+
+    let mut proj = Projections::default();
+    make_worker_with_task(&mut proj, "w1", "t1");
+
+    proj.apply(&DomainEvent::PrOpened {
+        number: 80,
+        branch: "feat/stale-ci".into(),
+        author: "worker-w1".into(),
+    });
+    proj.apply(&DomainEvent::PrLinkedToTask {
+        number: 80,
+        task_id: "t1".into(),
+    });
+    proj.apply(&DomainEvent::PrUpdated {
+        number: 80,
+        ci_status: CiStatus::Running,
+        review_state: crate::daemon_v2::events::ReviewState::None,
+    });
+
+    let commands = detect_stale_ci(&proj);
+
+    // CI just started — should NOT nudge yet
+    assert!(
+        commands.is_empty(),
+        "recently started CI should not trigger nudge"
+    );
+}
+
+/// CI that failed should nudge the author to fix it
+#[test]
+fn failed_ci_nudges_author() {
+    use crate::daemon_v2::decisions::prs::detect_stale_ci;
+    use crate::daemon_v2::events::CiStatus;
+
+    let mut proj = Projections::default();
+    make_worker_with_task(&mut proj, "w1", "t1");
+
+    proj.apply(&DomainEvent::PrOpened {
+        number: 81,
+        branch: "feat/failed-ci".into(),
+        author: "worker-w1".into(),
+    });
+    proj.apply(&DomainEvent::PrLinkedToTask {
+        number: 81,
+        task_id: "t1".into(),
+    });
+    proj.apply(&DomainEvent::PrUpdated {
+        number: 81,
+        ci_status: CiStatus::Failed,
+        review_state: crate::daemon_v2::events::ReviewState::None,
+    });
+
+    let commands = detect_stale_ci(&proj);
+
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "w1")),
+        "failed CI should nudge the author agent, got {:?}",
+        commands
+    );
+}
