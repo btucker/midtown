@@ -130,6 +130,33 @@ pub fn dispatch_request(
                 Err(err) => (err.to_json(&id), vec![], vec![]),
             }
         }
+        // auth.switch — switch auth profile for a provider
+        "auth.switch" => {
+            let profile = params
+                .and_then(|p| p.get("profile").and_then(|v| v.as_str()))
+                .unwrap_or("default");
+            let provider_str = params
+                .and_then(|p| p.get("provider").and_then(|v| v.as_str()))
+                .unwrap_or("claude");
+            let provider = match provider_str {
+                "codex" => crate::auth::AuthProvider::Codex,
+                _ => crate::auth::AuthProvider::Claude,
+            };
+            match crate::auth::set_current_profile_for(provider, profile) {
+                Ok(()) => {
+                    tracing::info!(%profile, %provider_str, "auth profile switched");
+                    let response = json!({ "jsonrpc": "2.0", "result": { "ok": true, "profile": profile }, "id": id });
+                    (response, vec![], vec![])
+                }
+                Err(e) => {
+                    let err = handlers::RpcError {
+                        code: -32000,
+                        message: format!("Failed to switch profile: {e}"),
+                    };
+                    (err.to_json(&id), vec![], vec![])
+                }
+            }
+        }
         // v1 alias: coworker.nudge — nudge an agent by name
         "coworker.nudge" => match handlers::handle_agent_nudge(params, proj) {
             Ok(commands) => {
