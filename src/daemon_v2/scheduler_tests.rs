@@ -12,6 +12,8 @@ fn other_decision(_proj: &Projections, _channel: &str) -> Vec<Command> {
     vec![]
 }
 
+/// Spec 9: WHEN multiple decisions are due THEN they SHALL run in order of
+/// shortest interval first
 #[test]
 fn scheduler_returns_decisions_in_interval_order() {
     let mut sched = Scheduler::new();
@@ -28,6 +30,7 @@ fn scheduler_returns_decisions_in_interval_order() {
     assert_eq!(due[1].name, "slow");
 }
 
+/// Spec 9: WHEN a decision's interval has elapsed THEN it SHALL be executed
 #[test]
 fn scheduler_respects_intervals() {
     let mut sched = Scheduler::new();
