@@ -367,7 +367,7 @@
 - ~~Oneshot execute~~ — **Implemented** (oneshot.execute spawns a one-off worker with prompt)
 - ~~Daemon exec-restart / draining mode~~ — **Partially Implemented** (daemon.set-draining stops new dispatch, exec-restart not yet)
 - Push notifications (VAPID web push delivery)
-- RPC response caching
+- ~~RPC response caching~~ — **Implemented** (2s TTL cache for read-only methods, invalidated on mutations)
 
 ---
 

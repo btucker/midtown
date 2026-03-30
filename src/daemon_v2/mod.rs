@@ -6,6 +6,7 @@ pub mod executor;
 pub mod naming;
 pub mod projections;
 pub mod rpc;
+pub mod rpc_cache;
 pub mod scheduler;
 pub mod web;
 

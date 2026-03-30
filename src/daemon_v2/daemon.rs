@@ -62,6 +62,8 @@ pub struct DaemonV2 {
     webhook_rx: Option<mpsc::Receiver<WebhookEvent>>,
     /// Broadcast sender for domain events — feeds WebSocket clients.
     event_tx: broadcast::Sender<DomainEvent>,
+    /// RPC response cache for read-only methods.
+    rpc_cache: crate::daemon_v2::rpc_cache::RpcCache,
     /// Draining mode — when true, dispatch_pending_tasks is skipped.
     draining: bool,
     /// Manages git worktree creation/removal for worker isolation.
@@ -369,6 +371,9 @@ impl DaemonV2 {
             pending_resumes,
             webhook_rx,
             event_tx,
+            rpc_cache: crate::daemon_v2::rpc_cache::RpcCache::new(std::time::Duration::from_secs(
+                2,
+            )),
             draining: false,
             worktree_manager,
             worktree_registry,
@@ -522,7 +527,12 @@ impl DaemonV2 {
                         Ok((stream, _addr)) => {
                             let (outcome, events, mut commands) = {
                                 let proj = self.projections.lock().await;
-                                handle_rpc_connection(stream, &proj, &self.config.channels_dir).await
+                                handle_rpc_connection(
+                                    stream,
+                                    &proj,
+                                    &self.config.channels_dir,
+                                    &mut self.rpc_cache,
+                                ).await
                             };
 
                             // Check for daemon.set-draining (managed at daemon level)
@@ -831,6 +841,7 @@ async fn handle_rpc_connection(
     mut stream: UnixStream,
     proj: &Projections,
     channels_dir: &Path,
+    rpc_cache: &mut crate::daemon_v2::rpc_cache::RpcCache,
 ) -> (
     RpcOutcome,
     Vec<crate::daemon_v2::events::DomainEvent>,
@@ -865,7 +876,11 @@ async fn handle_rpc_connection(
         }
     };
 
-    let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    let method = request
+        .get("method")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
 
     // Handle daemon.set-draining before dispatching
     if method == "daemon.set-draining" {
@@ -907,7 +922,29 @@ async fn handle_rpc_connection(
         return (RpcOutcome::Shutdown, vec![], vec![]);
     }
 
+    // Check cache for read-only methods
+    if crate::daemon_v2::rpc_cache::RpcCache::is_cacheable(&method)
+        && let Some(cached) = rpc_cache.get(&method)
+    {
+        let _ = write_response(&mut stream, cached).await;
+        return (RpcOutcome::Continue, vec![], vec![]);
+    }
+
     let (response, events, commands) = rpc::dispatch_request(request, proj, channels_dir);
+
+    // Cache read-only responses
+    if crate::daemon_v2::rpc_cache::RpcCache::is_cacheable(&method)
+        && events.is_empty()
+        && commands.is_empty()
+    {
+        rpc_cache.set(method.clone(), response.clone());
+    }
+
+    // Invalidate cache on mutations
+    if !events.is_empty() || !commands.is_empty() {
+        rpc_cache.invalidate_all();
+    }
+
     let _ = write_response(&mut stream, &response).await;
 
     (RpcOutcome::Continue, events, commands)
