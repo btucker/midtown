@@ -214,6 +214,8 @@
 - WHEN the daemon executes a command THEN it SHALL NOT hold the projections lock across await points that may take more than 100ms
 - WHEN the web API needs to read projections THEN it SHALL acquire the lock for the minimum duration needed (read, copy data, release)
 - WHEN the web API posts a message THEN routing commands SHALL be sent to the daemon via a channel, NOT executed inline with the lock held
+- WHEN an executor command involves I/O that may take more than 1 second (PR polling, gh CLI calls) THEN it SHALL run in a background task so the event loop remains responsive
+- WHEN a user posts to a channel THEN the resulting SpawnAgent or NudgeAgent command SHALL be executed within 5 seconds, regardless of what the scheduler is doing
 
 ---
 
