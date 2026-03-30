@@ -261,16 +261,23 @@
 - `coworkers.status` → agent.list (running only)
 - `lead.spawn` → ok (leads demand-spawned via nudge system)
 
-### 10.3 Stubbed Methods
-- `reminder.create`, `reminder.list`, `reminder.cancel`
-- `workflow.set_state`, `workflow.list`
-- `coworker.report-state`
-- `session.detach`
-- `task.prompt`, `task.handoff`
-- `pr.review`, `pr.merge`, `pr.list-external`, `pr.allow`
-- `daemon.check-pending`
+### 10.3 Additional Implemented Methods
+- `reminder.create`, `reminder.list`, `reminder.cancel` — reminder CRUD
+- `workflow.set_state`, `workflow.list` — workflow state management
+- `coworker.report-state` — agent idle/working state reporting
+- `session.detach` — stop agent by name
+- `task.prompt` — nudge task's assigned agent
+- `task.handoff` — stop agent, reset task, spawn replacement
+- `pr.merge` — shortcut for pr.action merge
+- `oneshot.execute` — spawn one-off worker with prompt
+- `channel.create`, `channel.archive`, `channel.unarchive`, `channel.rename` — channel management
+- `daemon.set-draining` — toggle draining mode
+- `daemon.check-pending` — check draining state
 
-### 10.4 Error Handling
+### 10.4 Remaining Stubs
+- `pr.review`, `pr.list-external`, `pr.allow` — external PR management
+
+### 10.5 Error Handling
 - WHEN required params are missing THEN error -32602 SHALL be returned
 - WHEN method is unknown THEN error -32601 SHALL be returned
 - WHEN a referenced resource (task, PR, agent) is not found THEN error -32000 or -32001 SHALL be returned
