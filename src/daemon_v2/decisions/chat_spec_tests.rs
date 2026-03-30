@@ -210,6 +210,48 @@ fn at_all_in_main_channel_nudges_all_leads_and_task_agents() {
     );
 }
 
+/// Spec 1.2 + 4.4: @all in main should NOT nudge GC'd agents
+#[test]
+fn at_all_excludes_gced_agents() {
+    let mut proj = Projections::default();
+    let _main_lead = make_lead(&mut proj, "main-lead", "main");
+    let gced_worker = make_worker(&mut proj, "gced", "main", "t-gc");
+
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t-gc".into(),
+        subject: "GC task".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t-gc".into(),
+        agent_id: gced_worker.clone(),
+    });
+
+    // Stop and GC the worker
+    proj.apply(&DomainEvent::AgentStopped {
+        id: gced_worker.clone(),
+        reason: "done".into(),
+    });
+    proj.apply(&DomainEvent::AgentGarbageCollected {
+        id: gced_worker.clone(),
+    });
+
+    let cmds = route_message(&proj, "main", "user", "@all status?", None);
+    let targets = nudge_targets(&cmds);
+
+    assert!(
+        !targets.contains(&gced_worker),
+        "@all should NOT nudge GC'd agents, got {:?}",
+        targets
+    );
+}
+
 /// Spec 1.2: WHEN @all in topic channel THEN nudge channel lead AND agents
 /// in that channel bound to in-progress tasks, excluding sender
 #[test]

@@ -316,6 +316,50 @@ fn dead_worker_resumed() {
     );
 }
 
+/// Spec 2.2: WHEN a worker cannot be resumed (no session ID) THEN the system
+/// SHALL spawn a replacement worker with the same task configuration
+#[test]
+fn dead_worker_no_session_spawns_replacement() {
+    let mut proj = Projections::default();
+    make_task(&mut proj, "t1", "main");
+
+    // Create worker WITHOUT session_id
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w-nosess".into(),
+        name: "lost-hawk".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w-nosess".into(),
+        pid: 1234,
+        session_id: None, // No session_id
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "w-nosess".into(),
+    });
+    proj.apply(&DomainEvent::AgentStopped {
+        id: "w-nosess".into(),
+        reason: "crashed".into(),
+    });
+
+    let commands = check_dead_workers(&proj);
+
+    assert_eq!(commands.len(), 1, "expected 1 command, got {:?}", commands);
+    assert!(
+        matches!(&commands[0], Command::SpawnAgent(cfg) if cfg.task_id.as_deref() == Some("t1")),
+        "expected SpawnAgent replacement with task_id t1, got {:?}",
+        commands[0]
+    );
+}
+
 /// Spec 2.2: WHEN two agents are assigned to the same task THEN the system SHALL
 /// stop the newer one
 #[test]

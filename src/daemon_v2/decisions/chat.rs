@@ -144,8 +144,8 @@ fn route_refs(
 
             if is_main {
                 // Main channel @all: nudge ALL leads + ALL in-progress task agents
-                // across ALL channels
-                for agent in proj.agents.by_id.values() {
+                // across ALL channels (exclude GC'd agents)
+                for agent in proj.agents.by_id.values().filter(|a| !a.gc) {
                     let is_lead = agent.kind == AgentKind::Lead;
                     let has_in_progress_task = agent.task_id.as_ref().is_some_and(|tid| {
                         proj.work
