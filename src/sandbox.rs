@@ -112,18 +112,19 @@ pub fn writable_dirs(
             .to_string_lossy()
             .to_string(),
     );
-    // Auth profile directories live under ~/.midtown/auth/ and are set as
-    // CLAUDE_CONFIG_DIR or CODEX_HOME. Claude Code writes session data, project
-    // settings, and tasks there — blocking writes causes immediate process death.
-    dirs.push(home.join(".midtown/auth").to_string_lossy().to_string());
-    // Shared platform state: auth profiles symlink projects/plans/tasks into
-    // ~/.midtown/platforms/<provider>/. sandbox-exec resolves symlinks, so the
-    // real target must be writable — not just the symlink source in auth/.
+    // Auth profiles and shared platform state live under ~/.midtown/platforms/.
+    // Profiles are set as CLAUDE_CONFIG_DIR or CODEX_HOME; Claude Code writes
+    // session data, project settings, and tasks there — blocking writes causes
+    // immediate process death. Shared entries (projects, plans, tasks) are
+    // symlinked from profile dirs into the shared/ subdirectory.
     dirs.push(
         home.join(".midtown/platforms")
             .to_string_lossy()
             .to_string(),
     );
+    // Legacy: Codex/z.ai profiles still live under ~/.midtown/auth/providers/.
+    // Remove this entry once all providers are migrated to the platforms/ layout.
+    dirs.push(home.join(".midtown/auth").to_string_lossy().to_string());
     dirs.push(home.join(".claude").to_string_lossy().to_string());
     dirs.push(home.join(".codex").to_string_lossy().to_string());
 
