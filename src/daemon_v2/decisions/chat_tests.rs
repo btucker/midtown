@@ -58,7 +58,7 @@ fn worker_events(id: &str, name: &str, channel: &str, task_id: Option<&str>) -> 
 #[test]
 fn channel_lead_nudged_on_every_message() {
     let proj = make_projections(&running_lead_events("main"));
-    let commands = route_message(&proj, "main", "alice", "just chatting", None);
+    let commands = route_message(&proj, "main", "alice", "just chatting", None, None);
 
     assert!(
         commands
@@ -96,7 +96,7 @@ fn stopped_lead_still_nudged() {
     ];
 
     let proj = make_projections(&events);
-    let commands = route_message(&proj, "main", "alice", "hey lead", None);
+    let commands = route_message(&proj, "main", "alice", "hey lead", None, None);
 
     assert!(
         commands
@@ -110,7 +110,7 @@ fn stopped_lead_still_nudged() {
 #[test]
 fn no_self_nudge_for_lead() {
     let proj = make_projections(&running_lead_events("main"));
-    let commands = route_message(&proj, "main", "main", "I'm posting", None);
+    let commands = route_message(&proj, "main", "main", "I'm posting", None, None);
 
     assert!(
         !commands
@@ -147,7 +147,14 @@ fn thread_bound_agent_nudged_on_thread_reply() {
     ]);
 
     let proj = make_projections(&events);
-    let commands = route_message(&proj, "main", "alice", "follow-up", Some("thread-abc"));
+    let commands = route_message(
+        &proj,
+        "main",
+        "alice",
+        "follow-up",
+        Some("thread-abc"),
+        None,
+    );
 
     assert!(
         commands
@@ -186,7 +193,14 @@ fn stopped_thread_bound_agent_still_nudged() {
     ]);
 
     let proj = make_projections(&events);
-    let commands = route_message(&proj, "main", "alice", "follow-up", Some("thread-abc"));
+    let commands = route_message(
+        &proj,
+        "main",
+        "alice",
+        "follow-up",
+        Some("thread-abc"),
+        None,
+    );
 
     assert!(
         commands
@@ -200,7 +214,7 @@ fn stopped_thread_bound_agent_still_nudged() {
 #[test]
 fn thread_without_bound_agent_falls_through_to_lead() {
     let proj = make_projections(&running_lead_events("main"));
-    let commands = route_message(&proj, "main", "alice", "reply", Some("thread-xyz"));
+    let commands = route_message(&proj, "main", "alice", "reply", Some("thread-xyz"), None);
 
     assert!(
         commands
@@ -233,7 +247,14 @@ fn thread_bound_agent_self_post_no_nudge() {
     });
 
     let proj = make_projections(&events);
-    let commands = route_message(&proj, "main", "fork-abc", "responding", Some("thread-abc"));
+    let commands = route_message(
+        &proj,
+        "main",
+        "fork-abc",
+        "responding",
+        Some("thread-abc"),
+        None,
+    );
 
     assert!(
         !commands
@@ -252,7 +273,14 @@ fn at_mention_nudges_agent_by_name() {
     events.extend(worker_events("w1", "ghost-town", "main", Some("t1")));
 
     let proj = make_projections(&events);
-    let commands = route_message(&proj, "main", "alice", "hey @ghost-town check this", None);
+    let commands = route_message(
+        &proj,
+        "main",
+        "alice",
+        "hey @ghost-town check this",
+        None,
+        None,
+    );
 
     let nudge_ids: Vec<&str> = commands
         .iter()
@@ -280,6 +308,7 @@ fn at_mention_nudges_stopped_agent() {
         "main",
         "alice",
         "hey @ghost-town are you there?",
+        None,
         None,
     );
 
@@ -330,7 +359,7 @@ fn at_all_nudges_leads_and_in_progress_task_agents() {
     });
 
     let proj = make_projections(&events);
-    let commands = route_message(&proj, "main", "alice", "@all please rebase", None);
+    let commands = route_message(&proj, "main", "alice", "@all please rebase", None, None);
 
     let nudge_ids: Vec<&str> = commands
         .iter()
@@ -366,7 +395,7 @@ fn at_all_excludes_sender() {
 
     let proj = make_projections(&events);
     // Sender is "main" — same as lead's name
-    let commands = route_message(&proj, "main", "main", "@all please rebase", None);
+    let commands = route_message(&proj, "main", "main", "@all please rebase", None, None);
 
     assert!(
         !commands
@@ -386,7 +415,7 @@ fn at_all_excludes_sender() {
 #[test]
 fn at_lead_nudges_channel_lead() {
     let proj = make_projections(&running_lead_events("main"));
-    let commands = route_message(&proj, "main", "alice", "hey @lead help", None);
+    let commands = route_message(&proj, "main", "alice", "hey @lead help", None, None);
 
     // Lead gets nudged (from both the implicit channel nudge and @lead,
     // but deduplication means only one NudgeAgent)
@@ -405,7 +434,14 @@ fn at_lead_nudges_channel_lead() {
 #[test]
 fn self_mention_ignored() {
     let proj = make_projections(&running_lead_events("main"));
-    let commands = route_message(&proj, "main", "ghost-town", "hey @ghost-town oops", None);
+    let commands = route_message(
+        &proj,
+        "main",
+        "ghost-town",
+        "hey @ghost-town oops",
+        None,
+        None,
+    );
 
     assert!(
         !commands
@@ -420,7 +456,7 @@ fn self_mention_ignored() {
 #[test]
 fn unknown_mention_no_nudge() {
     let proj = make_projections(&running_lead_events("main"));
-    let commands = route_message(&proj, "main", "alice", "hey @nobody-exists", None);
+    let commands = route_message(&proj, "main", "alice", "hey @nobody-exists", None, None);
 
     // Should only have the implicit lead nudge, not one for @nobody-exists
     assert_eq!(
@@ -454,7 +490,7 @@ fn task_ref_nudges_assigned_agent() {
     });
 
     let proj = make_projections(&events);
-    let commands = route_message(&proj, "main", "alice", "check !42 progress", None);
+    let commands = route_message(&proj, "main", "alice", "check !42 progress", None, None);
 
     let nudge_ids: Vec<&str> = commands
         .iter()
@@ -485,7 +521,7 @@ fn task_ref_no_nudge_for_unassigned() {
     });
 
     let proj = make_projections(&events);
-    let commands = route_message(&proj, "main", "alice", "what about !42?", None);
+    let commands = route_message(&proj, "main", "alice", "what about !42?", None, None);
 
     // Should have a nudge for the lead (top-level message) but NOT a separate
     // nudge specifically for the task reference (since the task has no assigned agent)
@@ -506,7 +542,14 @@ fn task_ref_no_nudge_for_unassigned() {
 fn no_duplicate_nudges() {
     let proj = make_projections(&running_lead_events("main"));
     // @lead + @main both resolve to lead-1, plus implicit channel lead nudge
-    let commands = route_message(&proj, "main", "alice", "@lead @main do something", None);
+    let commands = route_message(
+        &proj,
+        "main",
+        "alice",
+        "@lead @main do something",
+        None,
+        None,
+    );
 
     let lead_nudges = commands
         .iter()
@@ -516,5 +559,84 @@ fn no_duplicate_nudges() {
         lead_nudges, 1,
         "lead nudged exactly once, got {:?}",
         commands
+    );
+}
+
+// ── nudge message format ────────────────────────────────────────
+
+#[test]
+fn nudge_message_includes_channel_msg_id() {
+    let proj = make_projections(&running_lead_events("main"));
+    let commands = route_message(
+        &proj,
+        "main",
+        "alice",
+        "hello lead",
+        None,
+        Some("msg-uuid-123"),
+    );
+
+    let msg = match &commands[0] {
+        Command::NudgeAgent { message, .. } => message,
+        _ => panic!("expected NudgeAgent"),
+    };
+    assert!(
+        msg.contains("channel-msg-id: msg-uuid-123"),
+        "nudge should include channel-msg-id, got: {msg}"
+    );
+    assert!(
+        msg.contains("alice"),
+        "nudge should include sender name, got: {msg}"
+    );
+}
+
+#[test]
+fn nudge_message_includes_thread_reply_instructions() {
+    let mut events = running_lead_events("main");
+    events.extend(vec![
+        DomainEvent::AgentCreated {
+            id: "fork-1".into(),
+            name: "fork-abc".into(),
+            kind: AgentKind::Fork,
+            agent_type: "midtown-channel-lead".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: None,
+            bound_thread_id: Some("thread-abc".into()),
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "fork-1".into(),
+            pid: 88,
+            session_id: None,
+        },
+    ]);
+
+    let proj = make_projections(&events);
+    let commands = route_message(
+        &proj,
+        "main",
+        "alice",
+        "thread reply",
+        Some("thread-abc"),
+        Some("msg-456"),
+    );
+
+    let msg = match &commands[0] {
+        Command::NudgeAgent { message, .. } => message,
+        _ => panic!("expected NudgeAgent"),
+    };
+    assert!(
+        msg.contains("channel-msg-id: msg-456"),
+        "thread nudge should include msg id, got: {msg}"
+    );
+    assert!(
+        msg.contains("--thread thread-abc"),
+        "thread nudge should include reply instructions, got: {msg}"
+    );
+    assert!(
+        msg.contains("--channel main"),
+        "thread nudge should include channel in instructions, got: {msg}"
     );
 }

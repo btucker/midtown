@@ -19,6 +19,10 @@ pub struct WebState {
     pub command_tx: tokio::sync::mpsc::Sender<crate::daemon_v2::decisions::Command>,
     /// Pending OAuth login process (holds child stdin for code submission).
     pub pending_auth_login: Arc<Mutex<Option<routes::AuthLoginProcess>>>,
+    /// Short repo name (e.g., "midtown") for display.
+    pub repo_name: String,
+    /// Full GitHub owner/repo name (e.g., "btucker/midtown") for PR link generation.
+    pub repo_full_name: String,
 }
 
 pub fn create_router(state: Arc<WebState>) -> Router {

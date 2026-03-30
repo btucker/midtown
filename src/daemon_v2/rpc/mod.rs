@@ -37,7 +37,7 @@ pub fn dispatch_request(
     // Mutating methods return events alongside the result.
     match method {
         "task.create" => {
-            let result = handlers::handle_task_create(params);
+            let result = handlers::handle_task_create(params, proj);
             match result {
                 Ok(events) => {
                     let response = json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id });

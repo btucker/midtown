@@ -79,8 +79,9 @@ let autocompleteStartPos = $state(0);
 let activeChannelMeta = $derived($channelsStore.find((ch) => ch.name === $activeChannel) ?? null);
 let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith("dm-"));
 let dmPeerName = $derived($activeChannel.startsWith("dm-") ? $activeChannel.slice(3) : $activeChannel);
-let showInlineToolData = $derived(isDm || ($channelSettings[$activeChannel]?.inlineToolCalls ?? true));
 let showFullLeadOutput = $derived($channelSettings[$activeChannel]?.showFullLeadOutput ?? true);
+// Tool data is shown inline when full lead output is enabled (or in DM channels always)
+let showInlineToolData = $derived(isDm || showFullLeadOutput);
 
 // Filter messages by active channel, optionally hiding auto-output from lead
 let channelMessages = $derived.by(() => {

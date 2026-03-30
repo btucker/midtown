@@ -154,20 +154,34 @@ pub fn handle_agent_list(
 ///
 /// Required fields: `id`, `subject`, `channel`.
 /// Optional fields: `blocked_by` (array of task IDs).
-pub fn handle_task_create(params: Option<&Value>) -> Result<Vec<DomainEvent>, RpcError> {
+pub fn handle_task_create(
+    params: Option<&Value>,
+    proj: &crate::daemon_v2::Projections,
+) -> Result<Vec<DomainEvent>, RpcError> {
     let params = params.ok_or_else(|| RpcError {
         code: -32602,
         message: "Missing params".into(),
     })?;
 
+    // Accept client-provided ID (string or numeric) or generate server-side.
+    // V1 CLI doesn't send IDs — they were generated server-side via auto-increment.
     let id = params
         .get("id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| RpcError {
-            code: -32602,
-            message: "Missing required field: id".into(),
-        })?
-        .to_string();
+        .and_then(|v| {
+            v.as_str()
+                .map(String::from)
+                .or_else(|| v.as_u64().map(|n| n.to_string()))
+        })
+        .unwrap_or_else(|| {
+            let max_id = proj
+                .work
+                .tasks
+                .keys()
+                .filter_map(|k| k.parse::<u64>().ok())
+                .max()
+                .unwrap_or(0);
+            (max_id + 1).to_string()
+        });
 
     let subject = params
         .get("subject")
@@ -427,7 +441,10 @@ pub fn handle_channel_post(
             message: "Missing required field: content (or message)".into(),
         })?;
 
-    let thread_id = params.get("thread_id").and_then(|v| v.as_str());
+    let thread_id = params
+        .get("thread_id")
+        .or_else(|| params.get("thread_parent_id"))
+        .and_then(|v| v.as_str());
 
     let msg_id = channel_io::post_message(channels_dir, channel, sender, content, thread_id)
         .map_err(|e| RpcError {
@@ -442,7 +459,8 @@ pub fn handle_channel_post(
         thread_id: thread_id.map(String::from),
     }];
 
-    let mention_commands = chat::route_message(proj, channel, sender, content, thread_id);
+    let mention_commands =
+        chat::route_message(proj, channel, sender, content, thread_id, Some(&msg_id));
 
     Ok((
         json!({ "ok": true, "id": msg_id }),

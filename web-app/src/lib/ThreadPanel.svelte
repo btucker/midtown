@@ -305,13 +305,10 @@ let prevThreadId = null;
   })
 
   // Extract Edit/Write tool calls to render as inline diffs.
-  // Enabled by default for all channels; can be disabled per-channel via inlineToolCalls setting.
-  // Tool items are keyed by channel name in the store; we pull the items for
-  // that channel and filter for Edit/Write calls.
+  // Shown when full lead output is enabled (or in DM channels always).
   let isDmChannel = $derived($threadData?.channelName?.startsWith('dm-') ?? false)
-  let showInlineDiffs = $derived(
-    isDmChannel || ($channelSettings[$threadData?.channelName]?.inlineToolCalls ?? true)
-  )
+  let showFullLeadOutput = $derived($channelSettings[$threadData?.channelName]?.showFullLeadOutput ?? true)
+  let showInlineDiffs = $derived(isDmChannel || showFullLeadOutput)
 
   let editDiffs = $derived.by(() => {
     if (!showInlineDiffs || !$threadData) return []

@@ -29,9 +29,8 @@ fn test_profile_dir() {
         let dir = profile_dir("myprofile");
         let s = dir.to_string_lossy();
         assert!(s.contains(".midtown"));
-        assert!(s.contains("auth"));
-        // Claude profiles now have a claude/ subdirectory
-        assert!(s.ends_with("myprofile/claude"));
+        assert!(s.contains("platforms/claude/myprofile"));
+        assert!(s.ends_with("myprofile"));
     });
 }
 
@@ -167,12 +166,12 @@ fn test_shared_provider_storage_dir_other_providers() {
 #[test]
 fn test_claude_profile_dir_structure() {
     with_isolated_midtown_base_dir(|| {
-        // Claude profile dirs should be at ~/.midtown/auth/<profile>/claude/
+        // Claude profile dirs should be at ~/.midtown/platforms/claude/<profile>/
         let dir = profile_dir_for(AuthProvider::Claude, "test@example.com");
         let s = dir.to_string_lossy();
-        assert!(s.contains(".midtown/auth"));
-        assert!(s.contains("test@example.com/claude"));
-        assert!(s.ends_with("claude"));
+        assert!(s.contains(".midtown/platforms/claude"));
+        assert!(s.contains("platforms/claude/test@example.com"));
+        assert!(s.ends_with("test@example.com"));
     });
 }
 
@@ -183,11 +182,11 @@ fn test_migration_with_temp_profile() {
         // Create a temporary profile in the old structure, migrate it, verify the new structure
         let test_profile = unique_test_profile("test-migration");
 
-        // Clean up any leftover test data first
-        let old_base = provider_profiles_dir(AuthProvider::Claude).join(&test_profile);
+        // Clean up any leftover test data first — use the legacy path explicitly
+        let old_base = auth_base_dir().join(&test_profile);
         let _ = std::fs::remove_dir_all(&old_base);
 
-        // Create old-style profile directory with test data
+        // Create old-style profile directory with test data (legacy layout: ~/.midtown/auth/<profile>/)
         std::fs::create_dir_all(&old_base)
             .unwrap_or_else(|_| panic!("Failed to create dir: {}", old_base.display()));
         std::fs::write(old_base.join(".claude.json"), "{\"auth\":\"test\"}")
@@ -264,14 +263,17 @@ fn test_setup_claude_profile_symlinks() {
             "settings.json symlink should exist"
         );
 
-        // Verify symlinks point to shared storage
+        // Verify symlinks use relative ../shared/ targets
         #[cfg(unix)]
         {
             let tasks_target = std::fs::read_link(&tasks_link).unwrap();
-            assert_eq!(tasks_target, shared.join("tasks"));
+            assert_eq!(tasks_target, std::path::PathBuf::from("../shared/tasks"));
 
             let settings_target = std::fs::read_link(&settings_link).unwrap();
-            assert_eq!(settings_target, shared.join("settings.json"));
+            assert_eq!(
+                settings_target,
+                std::path::PathBuf::from("../shared/settings.json")
+            );
         }
 
         // Clean up profile dir only — don't remove shared storage
@@ -323,7 +325,7 @@ fn test_setup_claude_profile_symlinks_only_uses_allowlist() {
             );
             assert_eq!(
                 std::fs::read_link(dir_link).unwrap(),
-                shared.join("plugins")
+                std::path::PathBuf::from("../shared/plugins")
             );
         }
 
@@ -415,6 +417,29 @@ fn test_broken_symlink_is_repaired() {
     });
 }
 
+#[test]
+fn profile_dir_for_claude_uses_platforms_layout() {
+    with_isolated_midtown_base_dir(|| {
+        let dir = profile_dir_for(AuthProvider::Claude, "user@example.com");
+        assert!(
+            dir.to_string_lossy()
+                .contains("platforms/claude/user@example.com"),
+            "Claude profile should be under platforms/claude/<profile>, got: {}",
+            dir.display()
+        );
+        assert!(
+            !dir.to_string_lossy().contains("/auth/"),
+            "Should not use old /auth/ path, got: {}",
+            dir.display()
+        );
+        assert!(
+            !dir.to_string_lossy().ends_with("/claude"),
+            "Should not have /claude suffix, got: {}",
+            dir.display()
+        );
+    });
+}
+
 #[cfg(unix)]
 #[test]
 fn test_directory_replaced_with_symlink() {
@@ -448,5 +473,113 @@ fn test_directory_replaced_with_symlink() {
         // Clean up
         let _ = std::fs::remove_dir_all(profile_dir.parent().unwrap());
         let _ = std::fs::remove_dir_all(shared.join("tasks"));
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinks_point_to_shared_sibling() {
+    with_isolated_midtown_base_dir(|| {
+        // Create shared dir with test entries
+        let shared = shared_provider_storage_dir(AuthProvider::Claude).unwrap();
+        std::fs::create_dir_all(shared.join("agents")).unwrap();
+        std::fs::write(shared.join("settings.json"), "{}").unwrap();
+
+        // Run setup
+        ensure_profile_dir_for(AuthProvider::Claude, "test-profile").unwrap();
+
+        let profile = profile_dir_for(AuthProvider::Claude, "test-profile");
+        assert!(profile.exists(), "profile dir should exist");
+
+        // Check symlinks point to ../shared/
+        let agents_link = profile.join("agents");
+        assert!(agents_link.is_symlink(), "agents should be a symlink");
+        let target = std::fs::read_link(&agents_link).unwrap();
+        assert_eq!(
+            target,
+            std::path::PathBuf::from("../shared/agents"),
+            "symlink should use relative ../shared/ target"
+        );
+
+        let settings_link = profile.join("settings.json");
+        assert!(
+            settings_link.is_symlink(),
+            "settings.json should be a symlink"
+        );
+        let settings_target = std::fs::read_link(&settings_link).unwrap();
+        assert_eq!(
+            settings_target,
+            std::path::PathBuf::from("../shared/settings.json"),
+            "symlink should use relative ../shared/ target"
+        );
+    });
+}
+
+#[test]
+fn migrates_legacy_auth_profile_to_platforms() {
+    with_isolated_midtown_base_dir(|| {
+        // Create legacy layout at ~/.midtown/auth/<profile>/claude/
+        let legacy_dir = midtown_base_dir()
+            .join("auth")
+            .join("user@example.com")
+            .join("claude");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(legacy_dir.join(".claude.json"), r#"{"token":"abc"}"#).unwrap();
+
+        // Run ensure (triggers migration)
+        ensure_profile_dir_for(AuthProvider::Claude, "user@example.com").unwrap();
+
+        // New location should exist with the token
+        let new_dir = profile_dir_for(AuthProvider::Claude, "user@example.com");
+        assert!(new_dir.exists(), "new profile dir should exist");
+        assert!(
+            new_dir.join(".claude.json").exists(),
+            ".claude.json should be migrated"
+        );
+
+        // Old location should be gone
+        assert!(
+            !legacy_dir.join(".claude.json").exists(),
+            "old .claude.json should be removed"
+        );
+    });
+}
+
+#[test]
+fn migrates_legacy_flat_auth_profile_to_platforms() {
+    with_isolated_midtown_base_dir(|| {
+        // Create legacy layout at ~/.midtown/auth/<profile>/ (oldest format, no claude/ subdir)
+        let legacy_dir = midtown_base_dir().join("auth").join("flat-user");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(legacy_dir.join(".claude.json"), r#"{"token":"flat"}"#).unwrap();
+
+        // Run ensure (triggers migration)
+        ensure_profile_dir_for(AuthProvider::Claude, "flat-user").unwrap();
+
+        // New location should exist with the token
+        let new_dir = profile_dir_for(AuthProvider::Claude, "flat-user");
+        assert!(new_dir.exists(), "new profile dir should exist");
+        assert!(
+            new_dir.join(".claude.json").exists(),
+            ".claude.json should be migrated"
+        );
+
+        // Old location should be gone
+        assert!(
+            !legacy_dir.join(".claude.json").exists(),
+            "old .claude.json should be removed"
+        );
+    });
+}
+
+#[test]
+fn current_profile_file_under_platforms() {
+    with_isolated_midtown_base_dir(|| {
+        let file = current_profile_file_for(AuthProvider::Claude);
+        assert!(
+            file.to_string_lossy().contains("platforms/claude/current"),
+            "current file should be at platforms/claude/current, got: {}",
+            file.display()
+        );
     });
 }

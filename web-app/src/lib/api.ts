@@ -73,6 +73,9 @@ function trackThread(
 	content: string | null | undefined,
 	opts?: { replyCount?: number; replyContent?: string | null },
 ): void {
+	// Don't track threads from DM channels — they're private agent conversations
+	if (channelName.startsWith("dm-")) return;
+
 	const newSubject = extractThreadSubject(content);
 	// Use reply content for fullText when available, otherwise fall back to parent content
 	const newFullText = extractPlainText(opts?.replyContent ?? content);
@@ -729,6 +732,30 @@ export function clearErrorCallback(id: number): void {
 // Handle incoming WebSocket updates.
 // Exported for testing only — production code uses this via the WS onmessage handler.
 export function handleUpdate(update: Record<string, unknown>): void {
+	// V2 daemon sends domain events as {"EventName": {...}} instead of {type: "...", data: {...}}.
+	// Normalize to the {type, data} format the rest of the handler expects.
+	if (!update.type) {
+		const key = Object.keys(update).find((k) => k !== "_seq");
+		if (key === "MessagePosted") {
+			const d = update[key] as Record<string, unknown>;
+			update = {
+				type: "channel_message",
+				data: {
+					id: d.id,
+					from: d.sender,
+					content: d.content,
+					channel: d.channel,
+					timestamp: new Date().toISOString(),
+					msg_type: "text",
+					thread_parent_id: d.thread_id || null,
+				},
+			};
+		} else {
+			// Other domain events (AgentCreated, PrMerged, etc.) — ignore silently
+			return;
+		}
+	}
+
 	switch (update.type) {
 		case "channel_message": {
 			const msg = update.data as Message;

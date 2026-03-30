@@ -140,7 +140,12 @@ async fn handle_new_message(
     let commands = {
         let proj = projections.lock().await;
         crate::daemon_v2::decisions::chat::route_message(
-            &proj, channel, &msg.from, content, thread_id,
+            &proj,
+            channel,
+            &msg.from,
+            content,
+            thread_id,
+            Some(&msg.id),
         )
     };
 
