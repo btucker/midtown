@@ -290,6 +290,32 @@ fn spawned_worker_has_unique_name_icon_and_color() {
 
 // ── Section 2.2: Task Lifecycle ───────────────────────────────────────────────
 
+/// Edge case: InProgress task with no assigned agent in by_task should not crash
+#[test]
+fn dead_worker_check_skips_task_without_agent() {
+    let mut proj = Projections::default();
+    make_task(&mut proj, "orphan-t1", "main");
+
+    // Manually set task to InProgress without assigning an agent
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "orphan-t1".into(),
+        agent_id: "nonexistent".into(),
+    });
+
+    // check_dead_workers should handle this gracefully
+    let commands = check_dead_workers(&proj);
+    // No commands expected since the agent doesn't exist in by_id
+    // (the agent_id "nonexistent" is not in by_task because by_task
+    // is indexed by AgentCreated, not TaskAssigned)
+    assert!(
+        commands.is_empty()
+            || commands
+                .iter()
+                .all(|c| !matches!(c, Command::ResumeAgent { .. })),
+        "should not crash on orphaned InProgress task"
+    );
+}
+
 /// Spec 2.2: WHEN a worker dies while its task is InProgress THEN the system SHALL
 /// resume the worker
 #[test]
