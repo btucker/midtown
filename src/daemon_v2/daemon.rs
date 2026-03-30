@@ -1095,11 +1095,29 @@ async fn handle_rpc_connection(
         return (RpcOutcome::Shutdown, vec![], vec![]);
     }
 
+    // Build cache key from method + params (fixes: different params returning wrong data)
+    let request_id = request
+        .get("id")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let cache_key = {
+        let params_str = request
+            .get("params")
+            .map(|p| p.to_string())
+            .unwrap_or_default();
+        format!("{method}:{params_str}")
+    };
+
     // Check cache for read-only methods
     if crate::daemon_v2::rpc_cache::RpcCache::is_cacheable(&method)
-        && let Some(cached) = rpc_cache.get(&method)
+        && let Some(cached) = rpc_cache.get(&cache_key)
     {
-        let _ = write_response(&mut stream, cached).await;
+        // Patch the response ID to match this caller's request (fixes: stale ID from cache)
+        let mut patched = cached.clone();
+        if let Some(obj) = patched.as_object_mut() {
+            obj.insert("id".to_string(), request_id);
+        }
+        let _ = write_response(&mut stream, &patched).await;
         return (RpcOutcome::Continue, vec![], vec![]);
     }
 
@@ -1114,7 +1132,7 @@ async fn handle_rpc_connection(
         && events.is_empty()
         && commands.is_empty()
     {
-        rpc_cache.set(method.clone(), response.clone());
+        rpc_cache.set(cache_key, response.clone());
     }
 
     // Invalidate cache on mutations

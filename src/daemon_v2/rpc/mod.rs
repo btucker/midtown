@@ -178,18 +178,17 @@ pub fn dispatch_request(
             let result = handlers::handle_reminder_create(params);
             match result {
                 Ok(events) => {
-                    let id = events
+                    let reminder_id = events
                         .first()
                         .and_then(|e| {
-                            if let DomainEvent::ReminderCreated { id, .. } = e {
-                                Some(id.clone())
+                            if let DomainEvent::ReminderCreated { id: rid, .. } = e {
+                                Some(rid.clone())
                             } else {
                                 None
                             }
                         })
                         .unwrap_or_default();
-                    let response =
-                        json!({ "jsonrpc": "2.0", "result": { "ok": true, "id": id }, "id": id });
+                    let response = json!({ "jsonrpc": "2.0", "result": { "ok": true, "id": reminder_id }, "id": id });
                     (response, events, vec![])
                 }
                 Err(err) => (err.to_json(&id), vec![], vec![]),
@@ -290,6 +289,9 @@ pub fn dispatch_request(
                     }
                 }
                 "pr.review" => Ok(json!({"ok": true, "stub": true})),
+                // shutdown is handled at the daemon level (RpcOutcome::Shutdown)
+                // but we also handle it here for web API dispatch
+                "shutdown" => Ok(json!({"ok": true})),
                 _ => Err(RpcError::method_not_found()),
             };
             let response = match result {
