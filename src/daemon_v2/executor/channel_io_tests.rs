@@ -101,6 +101,35 @@ fn jsonl_rolling_at_10mb() {
     );
 }
 
+/// Spec 5.3: WHEN messages are read with a thread_parent_id THEN only messages
+/// in that thread SHALL be returned
+#[test]
+fn read_thread_returns_only_thread_messages() {
+    let dir = TempDir::new().unwrap();
+    post_message(dir.path(), "chan", "alice", "top-level 1", None).unwrap();
+    post_message(dir.path(), "chan", "alice", "top-level 2", None).unwrap();
+
+    // Get the first message's ID to use as thread parent
+    let all_msgs = read_messages(dir.path(), "chan", None).unwrap();
+    let parent_id = all_msgs[0]["id"].as_str().unwrap().to_string();
+
+    // Post thread replies
+    post_message(dir.path(), "chan", "bob", "reply 1", Some(&parent_id)).unwrap();
+    post_message(dir.path(), "chan", "carol", "reply 2", Some(&parent_id)).unwrap();
+
+    // Read thread should return parent + replies
+    let thread_msgs = read_thread_messages(dir.path(), "chan", &parent_id, None).unwrap();
+    assert_eq!(
+        thread_msgs.len(),
+        3,
+        "thread read should return parent + 2 replies, got {}",
+        thread_msgs.len()
+    );
+    assert_eq!(thread_msgs[0]["message"], "top-level 1");
+    assert_eq!(thread_msgs[1]["message"], "reply 1");
+    assert_eq!(thread_msgs[2]["message"], "reply 2");
+}
+
 /// Spec 5.3: WHEN messages are read from a channel THEN thread replies SHALL be
 /// excluded UNLESS the read request specifies a thread_parent_id
 #[test]

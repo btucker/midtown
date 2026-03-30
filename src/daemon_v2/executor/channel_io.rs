@@ -39,14 +39,43 @@ pub fn read_messages(
     channel: &str,
     limit: Option<usize>,
 ) -> Result<Vec<Value>, String> {
+    read_messages_filtered(channels_dir, channel, limit, None)
+}
+
+/// Read messages from a specific thread.
+/// Per spec 5.3: returns the parent message and all replies with that thread_parent_id.
+pub fn read_thread_messages(
+    channels_dir: &Path,
+    channel: &str,
+    thread_parent_id: &str,
+    limit: Option<usize>,
+) -> Result<Vec<Value>, String> {
+    read_messages_filtered(channels_dir, channel, limit, Some(thread_parent_id))
+}
+
+/// Internal: read messages with optional thread filtering.
+fn read_messages_filtered(
+    channels_dir: &Path,
+    channel: &str,
+    limit: Option<usize>,
+    thread_parent_id: Option<&str>,
+) -> Result<Vec<Value>, String> {
     let ch = Channel::new(channels_dir, channel).map_err(|e| e.to_string())?;
     let all_messages = ch.read_all().map_err(|e| e.to_string())?;
 
-    // Exclude thread replies (messages with thread_parent_id set)
-    let messages: Vec<_> = all_messages
-        .iter()
-        .filter(|m| m.thread_parent_id.is_none())
-        .collect();
+    let messages: Vec<_> = if let Some(tid) = thread_parent_id {
+        // Thread read: include the parent message + all replies
+        all_messages
+            .iter()
+            .filter(|m| m.id == tid || m.thread_parent_id.as_deref() == Some(tid))
+            .collect()
+    } else {
+        // Default: exclude thread replies
+        all_messages
+            .iter()
+            .filter(|m| m.thread_parent_id.is_none())
+            .collect()
+    };
 
     let msgs: Vec<Value> = if let Some(n) = limit {
         messages
