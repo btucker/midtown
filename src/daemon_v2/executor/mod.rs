@@ -10,7 +10,7 @@ mod nudge_tests;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::daemon_v2::decisions::Command;
+use crate::daemon_v2::decisions::{Command, SpawnConfig};
 use crate::daemon_v2::events::DomainEvent;
 use crate::daemon_v2::projections::Projections;
 use crate::headless::HeadlessSession;
@@ -23,11 +23,14 @@ pub enum NudgeAction {
     Deliver,
     /// Agent is stopped but has a session_id — resume then deliver.
     ResumeAndDeliver { session_id: String },
-    /// Agent can't be nudged (unknown, no session_id, etc).
+    /// Agent is stopped with no session_id — spawn a replacement then deliver.
+    RespawnAndDeliver { config: Box<SpawnConfig> },
+    /// Agent is unknown — drop the nudge.
     Drop,
 }
 
 /// Determine the nudge strategy for a given agent.
+/// Per spec 1.4: stopped agents are resumed (with session_id) or respawned (without).
 pub fn resolve_nudge_action(agent_id: &str, proj: &Projections) -> NudgeAction {
     let agent = match proj.agents.by_id.get(agent_id) {
         Some(a) => a,
@@ -40,7 +43,28 @@ pub fn resolve_nudge_action(agent_id: &str, proj: &Projections) -> NudgeAction {
             session_id: session_id.clone(),
         }
     } else {
-        NudgeAction::Drop
+        NudgeAction::RespawnAndDeliver {
+            config: Box::new(spawn_config_from_agent(agent)),
+        }
+    }
+}
+
+/// Build a SpawnConfig that recreates an agent with the same configuration.
+fn spawn_config_from_agent(agent: &crate::daemon_v2::projections::agents::Agent) -> SpawnConfig {
+    SpawnConfig {
+        name: agent.name.clone(),
+        kind: agent.kind.clone(),
+        agent_type: agent.agent_type.clone(),
+        provider: agent.provider.clone(),
+        channel: agent.channel.clone(),
+        task_id: agent.task_id.clone(),
+        initial_prompt: None,
+        working_dir: None,
+        model: None,
+        bound_thread_id: agent.bound_thread_id.clone(),
+        fork_from_session: None,
+        icon: agent.icon.clone(),
+        color: agent.color.clone(),
     }
 }
 
@@ -52,63 +76,16 @@ pub async fn execute(
     channels_dir: &Path,
 ) -> Vec<DomainEvent> {
     match command {
-        Command::SpawnAgent(config) => match spawn::spawn_agent(&config, paths).await {
-            Ok((mut session, events)) => {
-                // Detach stdout/stderr receivers and spawn a background drain task.
-                // Without this, the child's stdout pipe fills up and the process blocks.
-                if let Some((mut stdout_rx, mut stderr_rx)) = session.take_receivers() {
-                    let agent_name = config.name.clone();
-                    tokio::spawn(async move {
-                        loop {
-                            tokio::select! {
-                                msg = stdout_rx.recv() => {
-                                    if msg.is_none() { break; }
-                                    // Drained — output is persisted by Claude Code itself
-                                }
-                                msg = stderr_rx.recv() => {
-                                    match msg {
-                                        Some(line) if !line.trim().is_empty() => {
-                                            tracing::debug!(agent = %agent_name, "stderr: {line}");
-                                        }
-                                        None => break,
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-                        tracing::debug!(agent = %agent_name, "stdout/stderr drain ended");
-                    });
-                }
-
-                // The agent ID is in the first event (AgentCreated).
-                if let Some(DomainEvent::AgentCreated { id, .. }) = events.first() {
-                    sessions.insert(id.clone(), session);
-                }
-                // Auto-create DM channel for workers so they can communicate privately.
-                if config.kind == crate::daemon_v2::events::AgentKind::Worker {
-                    let dm_channel = crate::daemon_v2::decisions::lifecycle::create_dm_channel_name(
-                        &config.name,
-                    );
-                    if let Err(e) = channel_io::post_system_message(
-                        channels_dir,
-                        &dm_channel,
-                        &format!("DM channel for {}", config.name),
-                    ) {
-                        tracing::warn!(%e, channel = %dm_channel, "failed to create DM channel");
-                    }
-                }
-                events
-            }
-            Err(e) => {
-                tracing::error!(%e, name = %config.name, "failed to spawn agent");
-                vec![]
-            }
-        },
+        Command::SpawnAgent(config) => execute_spawn(&config, sessions, paths, channels_dir).await,
         Command::StopAgent { id, reason } => {
             if let Some(mut session) = sessions.remove(&id)
                 && let Err(e) = spawn::stop_agent(&mut session).await
             {
                 tracing::warn!(%id, %e, "error stopping agent");
+                return vec![DomainEvent::AgentStopFailed {
+                    id,
+                    reason: e.to_string(),
+                }];
             }
             vec![DomainEvent::AgentStopped { id, reason }]
         }
@@ -195,48 +172,9 @@ pub async fn execute(
             }]
         }
         Command::NudgeAgent { id, message } => {
-            match resolve_nudge_action(&id, projections) {
-                NudgeAction::Deliver => {
-                    if let Some(session) = sessions.get_mut(&id)
-                        && let Err(e) = session.send_message(&message).await
-                    {
-                        tracing::error!(%id, %e, "failed to nudge agent");
-                    }
-                    vec![]
-                }
-                NudgeAction::ResumeAndDeliver { session_id } => {
-                    tracing::info!(%id, %session_id, "resuming stopped agent for nudge");
-                    match resume_agent(&id, projections, sessions, paths).await {
-                        Ok(events) => {
-                            // Deliver the nudge to the now-resumed session
-                            if let Some(session) = sessions.get_mut(&id)
-                                && let Err(e) = session.send_message(&message).await
-                            {
-                                tracing::error!(%id, %e, "failed to nudge resumed agent");
-                            }
-                            events
-                        }
-                        Err(e) => {
-                            tracing::error!(%id, %e, "failed to resume agent for nudge");
-                            vec![]
-                        }
-                    }
-                }
-                NudgeAction::Drop => {
-                    tracing::debug!(%id, "nudge target cannot be resumed, dropping");
-                    vec![]
-                }
-            }
+            execute_nudge(&id, &message, projections, sessions, paths, channels_dir).await
         }
-        Command::ResumeAgent { id } => {
-            match resume_agent(&id, projections, sessions, paths).await {
-                Ok(events) => events,
-                Err(e) => {
-                    tracing::error!(%id, %e, "failed to resume agent");
-                    vec![]
-                }
-            }
-        }
+        Command::ResumeAgent { id } => execute_resume(&id, projections, sessions, paths).await,
         Command::AssignTask { task_id, agent_id } => {
             vec![DomainEvent::TaskAssigned { task_id, agent_id }]
         }
@@ -244,16 +182,10 @@ pub async fn execute(
             vec![DomainEvent::TaskCompleted { task_id }]
         }
         Command::CreateWorktree { task_id, branch } => {
-            // Worktree creation is handled in DaemonV2::prepare_worktree_for_spawn()
-            // before SpawnAgent commands are executed. This arm exists for explicit
-            // worktree creation requests that bypass the spawn path.
             tracing::debug!(%task_id, %branch, "CreateWorktree command received (worktree lifecycle managed by daemon)");
             vec![]
         }
         Command::RemoveWorktree { task_id } => {
-            // Worktree removal is handled in DaemonV2::handle_worktree_cleanup()
-            // after TaskCompleted events. This arm exists for explicit removal
-            // requests that bypass the task completion path.
             tracing::debug!(%task_id, "RemoveWorktree command received (worktree lifecycle managed by daemon)");
             vec![]
         }
@@ -320,58 +252,177 @@ pub async fn execute(
     }
 }
 
-/// Resume a stopped agent session. Returns AgentResumed events on success.
-async fn resume_agent(
+// ── Shared execution helpers ─────────────────────────────────────────
+
+/// Spawn an agent, drain its stdout/stderr, insert into sessions map,
+/// and create a DM channel if needed. Single path for all spawning.
+async fn execute_spawn(
+    config: &SpawnConfig,
+    sessions: &mut HashMap<String, HeadlessSession>,
+    paths: &ProjectPaths,
+    channels_dir: &Path,
+) -> Vec<DomainEvent> {
+    match spawn::spawn_agent(config, paths).await {
+        Ok((mut session, events)) => {
+            drain_session_output(&mut session, &config.name);
+            if let Some(DomainEvent::AgentCreated { id, .. }) = events.first() {
+                sessions.insert(id.clone(), session);
+            }
+            // Auto-create DM channel for agents whose output isn't bound to a channel/thread
+            if config.channel.is_none() && config.bound_thread_id.is_none() {
+                let dm_channel =
+                    crate::daemon_v2::decisions::lifecycle::create_dm_channel_name(&config.name);
+                if let Err(e) = channel_io::post_system_message(
+                    channels_dir,
+                    &dm_channel,
+                    &format!("DM channel for {}", config.name),
+                ) {
+                    tracing::warn!(%e, channel = %dm_channel, "failed to create DM channel");
+                }
+            }
+            events
+        }
+        Err(e) => {
+            tracing::error!(%e, name = %config.name, "failed to spawn agent");
+            vec![DomainEvent::AgentSpawnFailed {
+                name: config.name.clone(),
+                agent_type: config.agent_type.clone(),
+                reason: e.to_string(),
+            }]
+        }
+    }
+}
+
+/// Resume a stopped agent session. Returns AgentResumed events on success,
+/// AgentSpawnFailed on failure.
+async fn execute_resume(
     id: &str,
     projections: &Projections,
     sessions: &mut HashMap<String, HeadlessSession>,
     paths: &ProjectPaths,
-) -> Result<Vec<DomainEvent>, String> {
-    let agent = projections
-        .agents
-        .by_id
-        .get(id)
-        .ok_or_else(|| format!("unknown agent {id}"))?;
-    let session_id = agent
-        .session_id
-        .as_ref()
-        .ok_or_else(|| format!("agent {id} has no session_id"))?
-        .clone();
-
-    let spawn_config = crate::daemon_v2::decisions::SpawnConfig {
-        name: agent.name.clone(),
-        kind: agent.kind.clone(),
-        agent_type: agent.agent_type.clone(),
-        provider: agent.provider.clone(),
-        channel: agent.channel.clone(),
-        task_id: agent.task_id.clone(),
-        initial_prompt: None,
-        working_dir: None,
-        model: None,
-        bound_thread_id: agent.bound_thread_id.clone(),
-        fork_from_session: None,
-        icon: agent.icon.clone(),
-        color: agent.color.clone(),
+) -> Vec<DomainEvent> {
+    let agent = match projections.agents.by_id.get(id) {
+        Some(a) => a,
+        None => {
+            tracing::warn!(%id, "resume requested for unknown agent");
+            return vec![];
+        }
+    };
+    let session_id = match &agent.session_id {
+        Some(sid) => sid.clone(),
+        None => {
+            tracing::warn!(%id, "resume requested but agent has no session_id");
+            return vec![];
+        }
     };
 
-    let launch_config = spawn::build_launch_config(&spawn_config, paths.dir_key());
+    let config = spawn_config_from_agent(agent);
+    let launch_config = spawn::build_launch_config(&config, paths.dir_key());
     let mut headless_config = launch_config.to_headless_config(paths);
     headless_config.resume_session_id = Some(session_id.clone());
 
-    tracing::info!(
-        %id, name = %agent.name, %session_id,
-        "resuming agent session"
-    );
+    tracing::info!(%id, name = %agent.name, %session_id, "resuming agent session");
 
     match HeadlessSession::spawn(&headless_config).await {
         Ok(session) => {
             let pid = session.pid().unwrap_or(0);
             sessions.insert(id.to_string(), session);
-            Ok(vec![DomainEvent::AgentResumed {
+            vec![DomainEvent::AgentResumed {
                 id: id.to_string(),
                 pid,
-            }])
+            }]
         }
-        Err(e) => Err(format!("spawn failed: {e}")),
+        Err(e) => {
+            tracing::error!(%id, %e, "failed to resume agent session");
+            vec![DomainEvent::AgentSpawnFailed {
+                name: agent.name.clone(),
+                agent_type: agent.agent_type.clone(),
+                reason: format!("resume failed: {e}"),
+            }]
+        }
+    }
+}
+
+/// Execute a nudge: resolve action, ensure agent is alive, deliver message.
+async fn execute_nudge(
+    id: &str,
+    message: &str,
+    projections: &Projections,
+    sessions: &mut HashMap<String, HeadlessSession>,
+    paths: &ProjectPaths,
+    channels_dir: &Path,
+) -> Vec<DomainEvent> {
+    let action = resolve_nudge_action(id, projections);
+    let (events, target_id) = match action {
+        NudgeAction::Deliver => (vec![], id.to_string()),
+        NudgeAction::ResumeAndDeliver { .. } => {
+            tracing::info!(%id, "resuming stopped agent for nudge");
+            let events = execute_resume(id, projections, sessions, paths).await;
+            (events, id.to_string())
+        }
+        NudgeAction::RespawnAndDeliver { config } => {
+            tracing::info!(%id, name = %config.name, "respawning agent for nudge");
+            let events = execute_spawn(&config, sessions, paths, channels_dir).await;
+            // The new agent has a new ID from AgentCreated
+            let new_id = events
+                .iter()
+                .find_map(|e| match e {
+                    DomainEvent::AgentCreated { id, .. } => Some(id.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| id.to_string());
+            (events, new_id)
+        }
+        NudgeAction::Drop => {
+            tracing::debug!(%id, "nudge target unknown, dropping");
+            return vec![];
+        }
+    };
+
+    // Deliver the message to whichever session is now alive
+    deliver_nudge(sessions, &target_id, message).await;
+
+    events
+}
+
+/// Send a message to an active session. Logs on failure but doesn't propagate.
+async fn deliver_nudge(
+    sessions: &mut HashMap<String, HeadlessSession>,
+    agent_id: &str,
+    message: &str,
+) {
+    if let Some(session) = sessions.get_mut(agent_id) {
+        if let Err(e) = session.send_message(message).await {
+            tracing::error!(%agent_id, %e, "failed to deliver nudge");
+        }
+    } else {
+        tracing::warn!(%agent_id, "no session found after ensure-alive — nudge not delivered");
+    }
+}
+
+/// Detach stdout/stderr receivers and spawn a background drain task.
+/// Without this, the child's stdout pipe fills up and the process blocks.
+fn drain_session_output(session: &mut HeadlessSession, agent_name: &str) {
+    if let Some((mut stdout_rx, mut stderr_rx)) = session.take_receivers() {
+        let name = agent_name.to_string();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    msg = stdout_rx.recv() => {
+                        if msg.is_none() { break; }
+                    }
+                    msg = stderr_rx.recv() => {
+                        match msg {
+                            Some(line) if !line.trim().is_empty() => {
+                                tracing::debug!(agent = %name, "stderr: {line}");
+                            }
+                            None => break,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            tracing::debug!(agent = %name, "stdout/stderr drain ended");
+        });
     }
 }

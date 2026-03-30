@@ -450,6 +450,23 @@ impl Channel {
             .to_path_buf()
     }
 
+    /// Roll `current.jsonl` to a timestamped archive file.
+    /// Called when the file exceeds the 10MB size limit (spec 5.3).
+    fn roll_current_file(&self) {
+        let history_dir = self.history_dir();
+        let timestamp = Utc::now().format("%Y-%m-%d-%H%M%S");
+        let archive_name = format!("{timestamp}.jsonl");
+        let archive_path = history_dir.join(&archive_name);
+
+        if let Err(e) = fs::rename(&self.channel_file, &archive_path) {
+            tracing::warn!(
+                channel = %self.channel_name,
+                %e,
+                "failed to roll channel file"
+            );
+        }
+    }
+
     /// List all `.jsonl` history files in chronological order.
     ///
     /// Returns date-named archives (`YYYY-MM-DD.jsonl`) sorted ascending,
@@ -971,6 +988,15 @@ impl Channel {
         json.push('\n');
         file.write_all(json.as_bytes())?;
         file.sync_all()?;
+
+        // Spec 5.3: roll to new file when current.jsonl exceeds 10MB
+        const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10MB
+        if let Ok(metadata) = file.metadata()
+            && metadata.len() > MAX_FILE_SIZE
+        {
+            drop(file); // release lock before rename
+            self.roll_current_file();
+        }
 
         // Lock is automatically released when file is dropped
         Ok(())
