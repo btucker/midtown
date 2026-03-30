@@ -664,6 +664,74 @@ fn pr_comment_skips_nudge_when_commenter_is_author() {
     );
 }
 
+/// Spec 3.3: PR comment SHALL be posted to the task's channel thread
+/// when the author agent has a bound_thread_id
+#[test]
+fn pr_comment_uses_agent_thread_id() {
+    let mut proj = Projections::default();
+
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Thread task".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+    // Create agent with a bound_thread_id
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "thread-worker".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: Some("thread-task-1".into()),
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 1000,
+        session_id: Some("sess-w".into()),
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "w1".into(),
+    });
+    proj.apply(&DomainEvent::PrOpened {
+        number: 60,
+        branch: "feat/thread".into(),
+        author: "thread-worker".into(),
+    });
+    proj.apply(&DomainEvent::PrLinkedToTask {
+        number: 60,
+        task_id: "t1".into(),
+    });
+
+    let commands = route_pr_comment(&proj, 60, "reviewer-alice", "Looks good");
+
+    // The Post command should include thread_id from the agent's bound_thread_id
+    let post = commands
+        .iter()
+        .find(|c| matches!(c, Command::Post { .. }))
+        .expect("should have a Post command");
+    match post {
+        Command::Post { thread_id, .. } => {
+            assert_eq!(
+                thread_id.as_deref(),
+                Some("thread-task-1"),
+                "PR comment should be posted to the agent's bound thread"
+            );
+        }
+        _ => unreachable!(),
+    }
+}
+
 /// Spec 3.3: WHEN PR has no linked task THEN no routing
 #[test]
 fn pr_comment_no_linked_task_no_routing() {

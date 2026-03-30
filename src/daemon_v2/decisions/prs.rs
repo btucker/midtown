@@ -195,12 +195,17 @@ pub fn route_pr_comment(
             .is_some_and(|a| a.name == commenter)
     });
 
-    // Post the comment to the task's channel thread
+    // Post the comment to the task's channel thread.
+    // Use the author agent's bound_thread_id if available.
+    let thread_id = author_agent
+        .and_then(|aid| proj.agents.by_id.get(aid))
+        .and_then(|a| a.bound_thread_id.clone());
+
     commands.push(Command::Post {
         channel: task.channel.clone(),
         sender: commenter.to_string(),
         content: format!("[PR #{pr_number} comment] {comment_body}"),
-        thread_id: None, // TODO: map to task thread when thread tracking is available
+        thread_id,
     });
 
     // Nudge the author agent unless commenter is the author
