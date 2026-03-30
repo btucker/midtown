@@ -550,3 +550,37 @@ fn dedup_multiple_matches() {
         "lead should be nudged exactly once, not {lead_count}"
     );
 }
+
+// ── Section 4.5: Fork Resume on Thread Reply ────────────────────────────
+
+/// Spec 4.5: WHEN a fork session stops THEN its thread binding SHALL persist
+/// AND any subsequent nudge to the thread SHALL target the stopped fork
+/// (executor handles resume via NudgeAction::ResumeAndDeliver)
+#[test]
+fn stopped_fork_still_targeted_by_thread_reply() {
+    let mut proj = Projections::default();
+    let _lead_id = make_lead(&mut proj, "main-lead", "main");
+    let fork_id = make_fork(&mut proj, "research", "main", "thread-123");
+
+    // Stop the fork
+    proj.apply(&DomainEvent::AgentStopped {
+        id: fork_id.clone(),
+        reason: "idle".into(),
+    });
+
+    // Thread binding should persist after stop (spec 6.1)
+    assert!(
+        proj.agents.by_thread.contains_key("thread-123"),
+        "thread binding should persist after fork stops"
+    );
+
+    // Thread reply should still target the stopped fork (not the lead)
+    let cmds = route_message(&proj, "main", "user", "any update?", Some("thread-123"));
+    let targets = nudge_targets(&cmds);
+
+    assert!(
+        targets.contains(&fork_id),
+        "thread reply should target the stopped fork for resume, got {:?}",
+        targets
+    );
+}
