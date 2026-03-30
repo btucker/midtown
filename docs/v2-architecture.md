@@ -95,7 +95,7 @@ struct AgentIndex {
 ```
 
 Key methods:
-- `channel_lead(channel)` — find the Lead agent for a channel (any running state)
+- `channel_lead(channel)` — find the Lead agent for a channel (prefers running; falls back to most recent stopped)
 - `fork_for_thread(thread_id)` — find the agent bound to a thread
 - `idle_workers()` — running workers with no task
 
@@ -178,7 +178,16 @@ enum NudgeAction {
 
 ### Agent Spawning
 
-`spawn_agent()` builds a `LaunchConfig` → `HeadlessConfig` → `HeadlessSession::spawn()`. Stdout/stderr are drained in a background tokio task. DM channels are auto-created for workers.
+`spawn_agent()` builds a `LaunchConfig` → `HeadlessConfig` → `HeadlessSession::spawn()`. DM channels are auto-created for agents without a channel/thread binding.
+
+### Auto-Output
+
+Agent stdout is processed in a background tokio task (`drain_session_output`). Every 2 seconds it:
+1. Accumulates `StreamEvent`s from the session's stdout
+2. Extracts assistant text via `extract_assistant_text()` (shared with v1's `daemon::stream`)
+3. Posts the text to the agent's bound channel via `channel_io::post_message()`
+
+This is how agent responses appear in channels — the agent writes to stdout, the daemon captures it and posts it. Without this, agents "respond" but their output is invisible.
 
 Worktree assignment happens in `DaemonV2::prepare_worktree_for_spawn()` before the command reaches the executor:
 - Workers with task_id get a task worktree (branched)

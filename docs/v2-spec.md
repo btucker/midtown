@@ -95,6 +95,9 @@
 - WHEN spawning succeeds THEN AgentCreated and AgentStarted events SHALL be emitted
 - WHEN spawning fails THEN the system SHALL emit an AgentSpawnFailed event with the agent configuration and error reason
 - WHEN a session is spawned THEN stdout/stderr SHALL be drained in a background task
+- WHEN an agent produces assistant text on stdout THEN the system SHALL auto-post it to the agent's bound channel
+- WHEN an agent has no bound channel THEN stdout text SHALL be posted to the agent's DM channel
+- WHEN multiple stdout events accumulate THEN the system SHALL flush and post at most every 2 seconds
 
 ### 4.2 Stopping
 - WHEN StopAgent is executed THEN the session process SHALL be killed AND AgentStopped emitted, but the session ID SHALL be preserved for potential resume
@@ -126,6 +129,8 @@
 - WHEN spawning a lead for the default channel THEN agent_type SHALL be `midtown-project-lead`
 - WHEN spawning a lead for a topic channel THEN agent_type SHALL be `midtown-channel-lead`
 - WHEN a channel has a `directory` setting THEN the lead's working_dir SHALL be set to that subdirectory
+- WHEN looking up a channel's lead AND multiple lead agents exist for that channel THEN the system SHALL prefer the running one
+- WHEN looking up a channel's lead AND no lead is running THEN the system SHALL return the most recently created non-GC'd lead (for resume-on-nudge)
 
 ### 5.2 Channel Settings
 - WHEN `lead_driven` is set to true THEN automatic task dispatch SHALL be skipped for that channel
@@ -204,6 +209,12 @@
 - WHEN a web port is configured THEN an HTTP server SHALL be started
 - WHEN pending resumes exist THEN they SHALL be executed before entering the main loop
 
+## 8.1 Concurrency
+- WHEN the web API handles a request THEN it SHALL NOT be blocked by long-running executor operations (agent spawn, PR polling, etc.)
+- WHEN the daemon executes a command THEN it SHALL NOT hold the projections lock across await points that may take more than 100ms
+- WHEN the web API needs to read projections THEN it SHALL acquire the lock for the minimum duration needed (read, copy data, release)
+- WHEN the web API posts a message THEN routing commands SHALL be sent to the daemon via a channel, NOT executed inline with the lock held
+
 ---
 
 ## 9. Scheduling
@@ -277,7 +288,12 @@
 ### 10.4 Remaining Stubs
 - `pr.review`, `pr.list-external`, `pr.allow` — external PR management
 
-### 10.5 Error Handling
+### 10.5 V1 Field Name Compatibility
+- WHEN `channel.post` receives `from` instead of `sender` THEN the system SHALL accept it
+- WHEN `channel.post` receives `message` instead of `content` THEN the system SHALL accept it
+- WHEN `channel.post` omits `channel` THEN the system SHALL default to the main channel
+
+### 10.6 Error Handling
 - WHEN required params are missing THEN error -32602 SHALL be returned
 - WHEN method is unknown THEN error -32601 SHALL be returned
 - WHEN a referenced resource (task, PR, agent) is not found THEN error -32000 or -32001 SHALL be returned
@@ -383,3 +399,4 @@
 | Date | Change |
 |------|--------|
 | 2026-03-29 | Initial spec. All sections reviewed and approved. Key design decisions: demand-spawned leads (not polled), resume-on-nudge for all agent types, @all scoped by channel type, task parent-child hierarchy, PR comment routing to task threads. |
+| 2026-03-30 | Added: auto-output (4.1) — agent stdout must be posted to channels; channel lead resolution (5.1) — must prefer running agents over stopped ones; concurrency (8.1) — web handlers must not be blocked by executor; v1 field name compatibility (10.5). Found via live testing: lead not responding was caused by discarded stdout + wrong lead resolution + field name mismatch. |
