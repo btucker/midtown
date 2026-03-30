@@ -108,6 +108,43 @@ pub fn classify_command(cmd: &Command) -> CommandClass {
     }
 }
 
+/// Tracks agents with in-flight lifecycle operations (spawn, stop).
+/// Nudges arriving during these operations are stashed and delivered when complete.
+#[derive(Default)]
+pub struct LifecycleGuard {
+    pending: HashMap<String, Vec<String>>,
+}
+
+impl LifecycleGuard {
+    pub fn new() -> Self {
+        Self {
+            pending: HashMap::new(),
+        }
+    }
+
+    /// Mark an agent as having an in-flight spawn or stop.
+    pub fn mark_pending(&mut self, agent_id: String) {
+        self.pending.entry(agent_id).or_default();
+    }
+
+    /// Check if an agent has an in-flight operation.
+    pub fn is_pending(&self, agent_id: &str) -> bool {
+        self.pending.contains_key(agent_id)
+    }
+
+    /// Stash a nudge message for delivery after the operation completes.
+    pub fn stash_nudge(&mut self, agent_id: &str, message: String) {
+        if let Some(stashed) = self.pending.get_mut(agent_id) {
+            stashed.push(message);
+        }
+    }
+
+    /// Complete a lifecycle operation. Returns stashed nudge messages.
+    pub fn complete(&mut self, agent_id: &str) -> Vec<String> {
+        self.pending.remove(agent_id).unwrap_or_default()
+    }
+}
+
 /// Execute a command that is known to be fast and inline.
 /// These commands either emit pure events or need &mut sessions but are non-blocking.
 pub fn execute_inline(

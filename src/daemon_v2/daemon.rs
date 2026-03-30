@@ -70,6 +70,12 @@ pub struct DaemonV2 {
     worktree_manager: Option<WorktreeManager>,
     /// Registry tracking worktree-to-task assignments.
     worktree_registry: WorktreeRegistry,
+    /// Sender for background executor results back to the main loop.
+    result_tx: mpsc::Sender<executor::ExecutorResult>,
+    /// Receiver for background executor results in the main loop.
+    result_rx: mpsc::Receiver<executor::ExecutorResult>,
+    /// Guards agents with in-flight lifecycle operations (spawn/stop).
+    lifecycle_guard: executor::LifecycleGuard,
 }
 
 /// Exit status returned by [`DaemonV2::run`].
@@ -361,6 +367,8 @@ impl DaemonV2 {
 
         let projections = Arc::new(Mutex::new(projections));
 
+        let (result_tx, result_rx) = tokio::sync::mpsc::channel::<executor::ExecutorResult>(64);
+
         Ok(Self {
             config,
             store,
@@ -377,6 +385,9 @@ impl DaemonV2 {
             draining: false,
             worktree_manager,
             worktree_registry,
+            result_tx,
+            result_rx,
+            lifecycle_guard: executor::LifecycleGuard::new(),
         })
     }
 
@@ -495,19 +506,7 @@ impl DaemonV2 {
         loop {
             // Process one pending resume per loop iteration (non-blocking startup)
             if let Some(cmd) = pending_resumes.pop() {
-                let events = {
-                    let proj = self.projections.lock().await;
-                    executor::execute(
-                        cmd,
-                        &mut self.sessions,
-                        &self.paths,
-                        &proj,
-                        &self.config.channels_dir,
-                        &self.event_tx,
-                    )
-                    .await
-                };
-                self.apply_events(&events).await;
+                self.dispatch_command(cmd).await;
             }
             // Use zero deadline while processing pending resumes to avoid sleeping
             let deadline = if !pending_resumes.is_empty() {
@@ -537,7 +536,7 @@ impl DaemonV2 {
                             // Spec 8.1: don't hold projections lock across socket I/O.
                             // handle_rpc_connection reads the request, dispatches
                             // (briefly locking projections), and writes the response.
-                            let (outcome, events, mut commands) =
+                            let (outcome, events, commands) =
                                 handle_rpc_connection(
                                     stream,
                                     &self.projections,
@@ -555,40 +554,8 @@ impl DaemonV2 {
                             }
 
                             self.apply_events(&events).await;
-                            for cmd in &mut commands {
-                                if let Command::SpawnAgent(config) = cmd {
-                                    self.prepare_worktree_for_spawn(config);
-                                }
-                            }
                             for command in commands {
-                                let proj_snapshot = {
-                                    let proj = self.projections.lock().await;
-                                    proj.clone()
-                                };
-                                let cmd_events = executor::execute(
-                                    command,
-                                    &mut self.sessions,
-                                    &self.paths,
-                                    &proj_snapshot,
-                                    &self.config.channels_dir,
-                                    &self.event_tx,
-                                )
-                                .await;
-                                self.handle_worktree_cleanup(&cmd_events);
-                                self.apply_events(&cmd_events).await;
-                                // Auto-assign tasks when a worker spawns with a task_id
-                                let mut assign_events = Vec::new();
-                                for event in &cmd_events {
-                                    if let DomainEvent::AgentCreated { id, task_id: Some(tid), .. } = event {
-                                        assign_events.push(DomainEvent::TaskAssigned {
-                                            task_id: tid.clone(),
-                                            agent_id: id.clone(),
-                                        });
-                                    }
-                                }
-                                if !assign_events.is_empty() {
-                                    self.apply_events(&assign_events).await;
-                                }
+                                self.dispatch_command(command).await;
                             }
                             if outcome == RpcOutcome::Shutdown {
                                 tracing::info!("shutdown requested via RPC");
@@ -618,32 +585,38 @@ impl DaemonV2 {
 
                 // Commands from the web layer (e.g., nudge after user message)
                 Some(cmd) = web_cmd_rx.recv() => {
-                    let proj_snapshot = {
-                        let proj = self.projections.lock().await;
-                        proj.clone()
-                    };
-                    let events = executor::execute(
-                        cmd,
-                        &mut self.sessions,
-                        &self.paths,
-                        &proj_snapshot,
-                        &self.config.channels_dir,
-                        &self.event_tx,
-                    )
-                    .await;
-                    self.apply_events(&events).await;
-                    // Auto-assign tasks when a worker spawns with a task_id
-                    let mut assign_events = Vec::new();
-                    for event in &events {
-                        if let DomainEvent::AgentCreated { id, task_id: Some(tid), .. } = event {
-                            assign_events.push(DomainEvent::TaskAssigned {
-                                task_id: tid.clone(),
-                                agent_id: id.clone(),
-                            });
+                    self.dispatch_command(cmd).await;
+                }
+
+                // Results from background executor tasks (spawns, stops, PR polls, etc.)
+                Some(result) = self.result_rx.recv() => {
+                    match result {
+                        executor::ExecutorResult::Events(events) => {
+                            self.handle_worktree_cleanup(&events);
+                            self.apply_events(&events).await;
                         }
-                    }
-                    if !assign_events.is_empty() {
-                        self.apply_events(&assign_events).await;
+                        executor::ExecutorResult::SessionReady { id, session, events } => {
+                            self.sessions.insert(id.clone(), *session);
+                            self.handle_worktree_cleanup(&events);
+                            self.apply_events(&events).await;
+                            self.auto_assign_tasks(&events).await;
+                            let stashed = self.lifecycle_guard.complete(&id);
+                            for msg in stashed {
+                                if let Some(s) = self.sessions.get_mut(&id)
+                                    && let Err(e) = s.send_message(&msg).await
+                                {
+                                    tracing::error!(%id, %e, "failed to deliver stashed nudge");
+                                }
+                            }
+                        }
+                        executor::ExecutorResult::LifecycleComplete { id, events } => {
+                            self.handle_worktree_cleanup(&events);
+                            self.apply_events(&events).await;
+                            let stashed = self.lifecycle_guard.complete(&id);
+                            for msg in stashed {
+                                self.dispatch_nudge(&id, &msg).await;
+                            }
+                        }
                     }
                 }
 
@@ -709,59 +682,14 @@ impl DaemonV2 {
                 continue;
             }
 
-            let mut commands = {
+            let commands = {
                 let proj = self.projections.lock().await;
                 (decision.run)(&proj, &self.config.default_channel)
             };
             self.scheduler.mark_ran(decision.name, now);
 
-            // Enrich SpawnAgent commands with worktree paths before execution.
-            for cmd in &mut commands {
-                if let Command::SpawnAgent(config) = cmd {
-                    self.prepare_worktree_for_spawn(config);
-                }
-            }
-
             for command in commands {
-                // Spec 8.1: snapshot projections then release lock before execute.
-                // Execute can spawn processes, do gh CLI calls, etc — holding the
-                // lock across those would block the web API.
-                let proj_snapshot = {
-                    let proj = self.projections.lock().await;
-                    proj.clone()
-                };
-                let events = executor::execute(
-                    command,
-                    &mut self.sessions,
-                    &self.paths,
-                    &proj_snapshot,
-                    &self.config.channels_dir,
-                    &self.event_tx,
-                )
-                .await;
-                // Clean up worktrees for completed tasks.
-                self.handle_worktree_cleanup(&events);
-                self.apply_events(&events).await;
-
-                // After spawning a worker with a task_id, emit TaskAssigned
-                // so the task moves from Pending to InProgress.
-                let mut assign_events = Vec::new();
-                for event in &events {
-                    if let DomainEvent::AgentCreated {
-                        id,
-                        task_id: Some(tid),
-                        ..
-                    } = event
-                    {
-                        assign_events.push(DomainEvent::TaskAssigned {
-                            task_id: tid.clone(),
-                            agent_id: id.clone(),
-                        });
-                    }
-                }
-                if !assign_events.is_empty() {
-                    self.apply_events(&assign_events).await;
-                }
+                self.dispatch_command(command).await;
             }
         }
     }
@@ -865,6 +793,170 @@ impl DaemonV2 {
                 }
                 self.worktree_registry.remove_worktree(&wt_id);
             }
+        }
+    }
+
+    // ── Non-blocking command dispatch ─────────────────────────────────
+
+    /// Classify and dispatch a command: inline commands execute immediately,
+    /// background commands are spawned as tokio tasks, and nudges are resolved
+    /// at dispatch time.
+    async fn dispatch_command(&mut self, command: Command) {
+        use executor::{CommandClass, classify_command};
+        match classify_command(&command) {
+            CommandClass::Inline => {
+                let events = executor::execute_inline(
+                    command,
+                    &mut self.sessions,
+                    &self.config.channels_dir,
+                );
+                self.handle_worktree_cleanup(&events);
+                self.apply_events(&events).await;
+                self.auto_assign_tasks(&events).await;
+            }
+            CommandClass::Background => {
+                self.dispatch_background(command).await;
+            }
+            CommandClass::NeedsResolution => {
+                if let Command::NudgeAgent { id, message } = command {
+                    self.dispatch_nudge(&id, &message).await;
+                }
+            }
+        }
+    }
+
+    /// Dispatch a background command by spawning a tokio task that sends
+    /// results back via `self.result_tx`.
+    async fn dispatch_background(&mut self, command: Command) {
+        match command {
+            Command::SpawnAgent(mut config) => {
+                self.prepare_worktree_for_spawn(&mut config);
+                // Use the agent name as the lifecycle guard key since the
+                // agent_id isn't generated until spawn completes.
+                self.lifecycle_guard.mark_pending(config.name.clone());
+                executor::spawn_background_agent(
+                    config,
+                    self.paths.clone(),
+                    self.config.channels_dir.clone(),
+                    self.event_tx.clone(),
+                    self.result_tx.clone(),
+                );
+            }
+            Command::ResumeAgent { id } => {
+                let agent = {
+                    let proj = self.projections.lock().await;
+                    proj.agents.by_id.get(&id).cloned()
+                };
+                if let Some(agent) = agent {
+                    self.lifecycle_guard.mark_pending(id.clone());
+                    executor::spawn_background_resume(
+                        id,
+                        agent,
+                        self.paths.clone(),
+                        self.result_tx.clone(),
+                    );
+                }
+            }
+            Command::StopAgent { id, reason } => {
+                if let Some(session) = self.sessions.remove(&id) {
+                    self.lifecycle_guard.mark_pending(id.clone());
+                    executor::spawn_background_stop(id, reason, session, self.result_tx.clone());
+                }
+            }
+            Command::PollPrs => {
+                let work = {
+                    let proj = self.projections.lock().await;
+                    proj.work.clone()
+                };
+                executor::spawn_background_poll_prs(work, self.result_tx.clone());
+            }
+            Command::MergePr { .. } | Command::PostPrComment { .. } | Command::RerunCi { .. } => {
+                executor::spawn_background_gh_command(command, self.result_tx.clone());
+            }
+            other => {
+                // Shouldn't happen — classified as Background but not matched above.
+                // Fallback to inline execution.
+                tracing::warn!(
+                    ?other,
+                    "dispatch_background called with unhandled command, falling back to inline"
+                );
+                let events =
+                    executor::execute_inline(other, &mut self.sessions, &self.config.channels_dir);
+                self.apply_events(&events).await;
+            }
+        }
+    }
+
+    /// Resolve and dispatch a nudge: deliver to running agents, resume stopped
+    /// agents, or stash if a lifecycle operation is in-flight.
+    async fn dispatch_nudge(&mut self, id: &str, message: &str) {
+        if self.lifecycle_guard.is_pending(id) {
+            self.lifecycle_guard.stash_nudge(id, message.to_string());
+            return;
+        }
+        let action = {
+            let proj = self.projections.lock().await;
+            executor::resolve_nudge_action(id, &proj)
+        };
+        match action {
+            executor::NudgeAction::Deliver => {
+                if let Some(session) = self.sessions.get_mut(id)
+                    && let Err(e) = session.send_message(message).await
+                {
+                    tracing::error!(%id, %e, "failed to deliver nudge");
+                }
+            }
+            executor::NudgeAction::ResumeAndDeliver { .. } => {
+                let agent = {
+                    let proj = self.projections.lock().await;
+                    proj.agents.by_id.get(id).cloned()
+                };
+                if let Some(agent) = agent {
+                    self.lifecycle_guard.mark_pending(id.to_string());
+                    self.lifecycle_guard.stash_nudge(id, message.to_string());
+                    executor::spawn_background_resume(
+                        id.to_string(),
+                        agent,
+                        self.paths.clone(),
+                        self.result_tx.clone(),
+                    );
+                }
+            }
+            executor::NudgeAction::RespawnAndDeliver { config } => {
+                self.lifecycle_guard.mark_pending(id.to_string());
+                self.lifecycle_guard.stash_nudge(id, message.to_string());
+                executor::spawn_background_agent(
+                    *config,
+                    self.paths.clone(),
+                    self.config.channels_dir.clone(),
+                    self.event_tx.clone(),
+                    self.result_tx.clone(),
+                );
+            }
+            executor::NudgeAction::Drop => {
+                tracing::debug!(%id, "nudge target unknown, dropping");
+            }
+        }
+    }
+
+    /// Emit TaskAssigned events for any AgentCreated events that have a task_id.
+    async fn auto_assign_tasks(&mut self, events: &[DomainEvent]) {
+        let mut assign_events = Vec::new();
+        for event in events {
+            if let DomainEvent::AgentCreated {
+                id,
+                task_id: Some(tid),
+                ..
+            } = event
+            {
+                assign_events.push(DomainEvent::TaskAssigned {
+                    task_id: tid.clone(),
+                    agent_id: id.clone(),
+                });
+            }
+        }
+        if !assign_events.is_empty() {
+            self.apply_events(&assign_events).await;
         }
     }
 }

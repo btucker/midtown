@@ -210,32 +210,56 @@ pub async fn read_state() -> Json<Value> {
     Json(json!({}))
 }
 
-pub async fn usage() -> Json<Value> {
-    // Return usage data for active auth profiles.
-    // Full usage stats (session_util, week_util) require API calls to Anthropic —
-    // for now return profile info so the AccountPanel renders correctly.
-    let mut usage = Vec::new();
+pub async fn usage() -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
 
+    // Collect active provider/profile combinations
+    let mut profiles = Vec::new();
     for provider in &[
         crate::auth::AuthProvider::Claude,
         crate::auth::AuthProvider::Codex,
     ] {
-        let profile = crate::auth::current_profile_for(*provider);
         let profile_dir = crate::auth::current_profile_dir_for(*provider);
         if profile_dir.exists() {
-            usage.push(json!({
-                "provider": provider.as_str(),
-                "profile": profile,
-                "account_email": profile,
-                "session_util": null,
-                "session_resets": null,
-                "week_util": null,
-                "week_resets": null,
-            }));
+            let profile = crate::auth::current_profile_for(*provider);
+            profiles.push((*provider, profile));
         }
     }
 
-    Json(json!({ "usage": usage }))
+    if profiles.is_empty() {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+
+    // Fetch real usage data (blocking — hits Anthropic OAuth API)
+    let data = match tokio::task::spawn_blocking(move || crate::usage::fetch_multi_usage(&profiles))
+        .await
+    {
+        Ok(data) if !data.is_empty() => data,
+        Ok(_) => return StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            tracing::warn!(%e, "usage fetch failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    // Build response matching v1 format
+    let usage: Vec<Value> = data
+        .iter()
+        .map(|d| {
+            json!({
+                "provider": d.provider.as_str(),
+                "profile": d.profile_name,
+                "account_email": d.account_email,
+                "session_util": d.session_util,
+                "session_resets": d.session_resets,
+                "week_util": d.week_util,
+                "week_resets": d.week_resets,
+            })
+        })
+        .collect();
+
+    Json(json!({ "usage": usage })).into_response()
 }
 
 pub async fn questions() -> Json<Value> {

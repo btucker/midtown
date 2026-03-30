@@ -230,3 +230,51 @@ async fn spawn_background_stop_sends_lifecycle_complete() {
         spawn_background_stop;
     drop(result_tx);
 }
+
+#[test]
+fn lifecycle_guard_stashes_nudge_during_spawn() {
+    let mut guard = LifecycleGuard::new();
+    guard.mark_pending("agent-1".into());
+
+    assert!(guard.is_pending("agent-1"));
+    guard.stash_nudge("agent-1", "hello".into());
+
+    let stashed = guard.complete("agent-1");
+    assert_eq!(stashed, vec!["hello".to_string()]);
+    assert!(!guard.is_pending("agent-1"));
+}
+
+#[test]
+fn lifecycle_guard_returns_empty_when_no_stashed() {
+    let mut guard = LifecycleGuard::new();
+    guard.mark_pending("agent-1".into());
+
+    let stashed = guard.complete("agent-1");
+    assert!(stashed.is_empty());
+}
+
+#[test]
+fn lifecycle_guard_not_pending_for_unknown() {
+    let guard = LifecycleGuard::new();
+    assert!(!guard.is_pending("nonexistent"));
+}
+
+#[test]
+fn lifecycle_guard_stashes_multiple_nudges() {
+    let mut guard = LifecycleGuard::new();
+    guard.mark_pending("agent-1".into());
+    guard.stash_nudge("agent-1", "first".into());
+    guard.stash_nudge("agent-1", "second".into());
+
+    let stashed = guard.complete("agent-1");
+    assert_eq!(stashed, vec!["first".to_string(), "second".to_string()]);
+}
+
+#[test]
+fn lifecycle_guard_stash_ignored_for_non_pending() {
+    let mut guard = LifecycleGuard::new();
+    // Stash for an agent that isn't pending — should be silently ignored
+    guard.stash_nudge("unknown", "hello".into());
+    let stashed = guard.complete("unknown");
+    assert!(stashed.is_empty());
+}
