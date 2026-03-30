@@ -111,6 +111,7 @@ fn count_stopped_reviewers(proj: &Projections, pr_num: u64) -> usize {
             a.name == reviewer_name
                 && a.agent_type == "midtown-code-reviewer"
                 && a.stopped_at.is_some()
+                && !a.gc
         })
         .count()
 }
@@ -126,6 +127,7 @@ pub fn resume_dead_reviewers(proj: &Projections) -> Vec<Command> {
                 && !proj.agents.running.contains(&a.id)
                 && a.stopped_at.is_some()
                 && a.session_id.is_some()
+                && !a.gc
         })
         .map(|a| Command::ResumeAgent { id: a.id.clone() })
         .collect()

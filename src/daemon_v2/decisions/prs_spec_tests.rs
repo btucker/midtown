@@ -529,6 +529,65 @@ fn dead_reviewer_without_session_not_resumed() {
     );
 }
 
+/// Spec 3.2 + 4.4: GC'd reviewers should NOT be counted toward restart limit
+/// or attempted for resume
+#[test]
+fn gced_reviewer_excluded_from_restart_count_and_resume() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::PrOpened {
+        number: 50,
+        branch: "feat/gc-test".into(),
+        author: "dev".into(),
+    });
+    proj.apply(&DomainEvent::PrReviewRequested { number: 50 });
+
+    // Create and stop 3 reviewers (would normally hit the limit)
+    for i in 0..3 {
+        let id = format!("rev-gc-{i}");
+        proj.apply(&DomainEvent::AgentCreated {
+            id: id.clone(),
+            name: "dev-reviewer".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-reviewer".into(),
+            provider: Provider::ClaudeCode,
+            channel: None,
+            task_id: None,
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        });
+        proj.apply(&DomainEvent::AgentStarted {
+            id: id.clone(),
+            pid: 5000 + i as u32,
+            session_id: Some(format!("sess-gc-{i}")),
+        });
+        proj.apply(&DomainEvent::AgentStopped {
+            id: id.clone(),
+            reason: "exited".into(),
+        });
+        // GC all of them
+        proj.apply(&DomainEvent::AgentGarbageCollected { id });
+    }
+
+    // GC'd reviewers should not count — spawn_reviewers should spawn a new one
+    let commands = spawn_reviewers(&proj);
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::SpawnAgent(cfg) if cfg.name == "dev-reviewer")),
+        "GC'd reviewers should not count toward restart limit — should spawn new reviewer, got {:?}",
+        commands
+    );
+
+    // GC'd reviewers should not be resumed
+    let resume_commands = resume_dead_reviewers(&proj);
+    assert!(
+        resume_commands.is_empty(),
+        "GC'd reviewers should NOT be resumed, got {:?}",
+        resume_commands
+    );
+}
+
 // ── Section 3.3: PR Comment Routing ────────────────────────────────────────
 
 /// Spec 3.3: WHEN a new comment is posted on a PR THEN the system SHALL post it

@@ -30,6 +30,7 @@ pub fn check_dead_workers(proj: &Projections) -> Vec<Command> {
 
         if !proj.agents.running.contains(agent_id)
             && let Some(agent) = proj.agents.by_id.get(agent_id)
+            && !agent.gc
         {
             if agent.session_id.is_some() {
                 // Has session_id — resume it
