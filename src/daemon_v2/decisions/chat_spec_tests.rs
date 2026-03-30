@@ -106,7 +106,7 @@ fn thread_reply_nudges_bound_agent() {
     let lead_id = make_lead(&mut proj, "main-lead", "main");
     let fork_id = make_fork(&mut proj, "fork-1", "main", "thread-abc");
 
-    let cmds = route_message(&proj, "main", "user", "hello", Some("thread-abc"));
+    let cmds = route_message(&proj, "main", "user", "hello", Some("thread-abc"), None);
     let targets = nudge_targets(&cmds);
 
     assert!(targets.contains(&fork_id), "bound fork should be nudged");
@@ -123,7 +123,7 @@ fn thread_reply_without_fork_nudges_lead() {
     let mut proj = Projections::default();
     let lead_id = make_lead(&mut proj, "main-lead", "main");
 
-    let cmds = route_message(&proj, "main", "user", "hello", Some("thread-xyz"));
+    let cmds = route_message(&proj, "main", "user", "hello", Some("thread-xyz"), None);
     let targets = nudge_targets(&cmds);
 
     assert!(
@@ -139,7 +139,7 @@ fn top_level_message_nudges_lead() {
     let mut proj = Projections::default();
     let lead_id = make_lead(&mut proj, "main-lead", "main");
 
-    let cmds = route_message(&proj, "main", "user", "hello everyone", None);
+    let cmds = route_message(&proj, "main", "user", "hello everyone", None, None);
     let targets = nudge_targets(&cmds);
 
     assert!(
@@ -158,7 +158,14 @@ fn at_mention_nudges_named_agent() {
     let _lead_id = make_lead(&mut proj, "main-lead", "main");
     let worker_id = make_worker(&mut proj, "park", "main", "t1");
 
-    let cmds = route_message(&proj, "main", "user", "hey @park can you check this?", None);
+    let cmds = route_message(
+        &proj,
+        "main",
+        "user",
+        "hey @park can you check this?",
+        None,
+        None,
+    );
     let targets = nudge_targets(&cmds);
 
     assert!(
@@ -193,7 +200,7 @@ fn at_all_in_main_channel_nudges_all_leads_and_task_agents() {
     });
 
     // @all from main channel should reach ALL leads + ALL in-progress task agents
-    let cmds = route_message(&proj, "main", "user", "@all heads up!", None);
+    let cmds = route_message(&proj, "main", "user", "@all heads up!", None, None);
     let targets = nudge_targets(&cmds);
 
     assert!(
@@ -242,7 +249,7 @@ fn at_all_excludes_gced_agents() {
         id: gced_worker.clone(),
     });
 
-    let cmds = route_message(&proj, "main", "user", "@all status?", None);
+    let cmds = route_message(&proj, "main", "user", "@all status?", None, None);
     let targets = nudge_targets(&cmds);
 
     assert!(
@@ -278,7 +285,7 @@ fn at_all_in_topic_channel_nudges_local_lead_and_task_agents() {
     });
 
     // @all from #web should only reach web's lead + web's task workers
-    let cmds = route_message(&proj, "web", "user", "@all update please", None);
+    let cmds = route_message(&proj, "web", "user", "@all update please", None, None);
     let targets = nudge_targets(&cmds);
 
     assert!(
@@ -307,7 +314,14 @@ fn at_lead_nudges_channel_lead() {
     let mut proj = Projections::default();
     let lead_id = make_lead(&mut proj, "main-lead", "main");
 
-    let cmds = route_message(&proj, "main", "user", "@lead what's the status?", None);
+    let cmds = route_message(
+        &proj,
+        "main",
+        "user",
+        "@lead what's the status?",
+        None,
+        None,
+    );
     let targets = nudge_targets(&cmds);
 
     assert!(targets.contains(&lead_id), "@lead should nudge lead");
@@ -320,7 +334,7 @@ fn unknown_mention_no_nudge() {
     let mut proj = Projections::default();
     let _lead_id = make_lead(&mut proj, "main-lead", "main");
 
-    let cmds = route_message(&proj, "main", "user", "@nonexistent hello", None);
+    let cmds = route_message(&proj, "main", "user", "@nonexistent hello", None, None);
     let targets = nudge_targets(&cmds);
 
     // Only the lead should be nudged (top-level message rule), not @nonexistent
@@ -335,7 +349,7 @@ fn mention_with_trailing_punctuation() {
     let _lead_id = make_lead(&mut proj, "main-lead", "main");
     let worker_id = make_worker(&mut proj, "park", "main", "t1");
 
-    let cmds = route_message(&proj, "main", "user", "@park, can you look?", None);
+    let cmds = route_message(&proj, "main", "user", "@park, can you look?", None, None);
     let targets = nudge_targets(&cmds);
 
     assert!(
@@ -353,7 +367,14 @@ fn at_channel_name_nudges_that_channels_lead() {
     let web_lead_id = make_channel_lead(&mut proj, "web-lead", "web");
 
     // Message in #main mentions @web → should nudge web's lead
-    let cmds = route_message(&proj, "main", "user", "hey @web can you check this?", None);
+    let cmds = route_message(
+        &proj,
+        "main",
+        "user",
+        "hey @web can you check this?",
+        None,
+        None,
+    );
     let targets = nudge_targets(&cmds);
 
     assert!(
@@ -379,7 +400,7 @@ fn at_channel_name_spawns_lead_for_known_channel_without_agents() {
     });
 
     // @docs should trigger a lead spawn (channel exists but has no agents)
-    let cmds = route_message(&proj, "main", "user", "hey @docs check this", None);
+    let cmds = route_message(&proj, "main", "user", "hey @docs check this", None, None);
 
     let spawn_leads: Vec<_> = cmds
         .iter()
@@ -403,7 +424,7 @@ fn message_to_leadless_channel_spawns_lead() {
     // No lead for "web" channel — just a worker
     let _worker = make_worker(&mut proj, "park", "web", "t1");
 
-    let cmds = route_message(&proj, "web", "user", "hello web channel", None);
+    let cmds = route_message(&proj, "web", "user", "hello web channel", None, None);
 
     // Should include a SpawnAgent for a lead
     let spawn_leads: Vec<_> = cmds
@@ -425,7 +446,7 @@ fn message_to_channel_with_lead_does_not_spawn() {
     let mut proj = Projections::default();
     let _lead = make_channel_lead(&mut proj, "web-lead", "web");
 
-    let cmds = route_message(&proj, "web", "user", "hello", None);
+    let cmds = route_message(&proj, "web", "user", "hello", None, None);
 
     let spawn_leads: Vec<_> = cmds
         .iter()
@@ -463,7 +484,7 @@ fn demand_spawn_topic_channel_uses_channel_lead_type() {
     });
 
     // Now message a topic channel that has no lead
-    let cmds = route_message(&proj, "backend", "user", "hello backend", None);
+    let cmds = route_message(&proj, "backend", "user", "hello backend", None, None);
 
     let spawn_cfgs: Vec<_> = cmds
         .iter()
@@ -488,7 +509,7 @@ fn demand_spawn_first_channel_uses_project_lead_type() {
     let proj = Projections::default();
 
     // No agents at all — first channel message should spawn project-lead
-    let cmds = route_message(&proj, "main", "user", "hello", None);
+    let cmds = route_message(&proj, "main", "user", "hello", None, None);
 
     let spawn_cfgs: Vec<_> = cmds
         .iter()
@@ -528,7 +549,7 @@ fn task_ref_nudges_assigned_agent() {
         parent: None,
     });
 
-    let cmds = route_message(&proj, "main", "user", "check !42 please", None);
+    let cmds = route_message(&proj, "main", "user", "check !42 please", None, None);
     let targets = nudge_targets(&cmds);
 
     assert!(
@@ -556,7 +577,7 @@ fn task_ref_no_assigned_agent() {
         parent: None,
     });
 
-    let cmds = route_message(&proj, "main", "user", "what about !99?", None);
+    let cmds = route_message(&proj, "main", "user", "what about !99?", None, None);
     let targets = nudge_targets(&cmds);
 
     // Only lead nudge (top-level), no task nudge
@@ -597,7 +618,7 @@ fn task_ref_nudges_descendant_agents() {
     let parent_worker = make_worker(&mut proj, "alpha", "main", "10");
     let child_worker = make_worker(&mut proj, "beta", "main", "11");
 
-    let cmds = route_message(&proj, "main", "user", "check !10 please", None);
+    let cmds = route_message(&proj, "main", "user", "check !10 please", None, None);
     let targets = nudge_targets(&cmds);
 
     assert!(
@@ -671,7 +692,7 @@ fn self_nudge_suppressed() {
     let _lead_id = make_lead(&mut proj, "main-lead", "main");
 
     // Lead posts a message — should NOT nudge itself
-    let cmds = route_message(&proj, "main", "main-lead", "status update", None);
+    let cmds = route_message(&proj, "main", "main-lead", "status update", None, None);
     let targets = nudge_targets(&cmds);
 
     assert!(targets.is_empty(), "lead should not nudge itself");
@@ -685,7 +706,7 @@ fn dedup_multiple_matches() {
     let lead_id = make_lead(&mut proj, "main-lead", "main");
 
     // Message that matches both top-level (→ lead) and @lead (→ lead)
-    let cmds = route_message(&proj, "main", "user", "@lead hello @main-lead", None);
+    let cmds = route_message(&proj, "main", "user", "@lead hello @main-lead", None, None);
     let targets = nudge_targets(&cmds);
 
     let lead_count = targets.iter().filter(|t| *t == &lead_id).count();
@@ -719,7 +740,14 @@ fn stopped_fork_still_targeted_by_thread_reply() {
     );
 
     // Thread reply should still target the stopped fork (not the lead)
-    let cmds = route_message(&proj, "main", "user", "any update?", Some("thread-123"));
+    let cmds = route_message(
+        &proj,
+        "main",
+        "user",
+        "any update?",
+        Some("thread-123"),
+        None,
+    );
     let targets = nudge_targets(&cmds);
 
     assert!(

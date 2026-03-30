@@ -29,9 +29,13 @@ pub fn route_message(
     sender: &str,
     content: &str,
     thread_id: Option<&str>,
+    msg_id: Option<&str>,
 ) -> Vec<Command> {
     let mut commands = Vec::new();
     let mut nudged = HashSet::new();
+
+    // Format the nudge message with structured context so agents can reply in threads
+    let nudge_msg = format_nudge_message(sender, channel, content, thread_id, msg_id);
 
     // 1. Thread-bound agent or channel lead
     if let Some(tid) = thread_id {
@@ -41,19 +45,13 @@ pub fn route_message(
             .get(tid)
             .and_then(|id| proj.agents.by_id.get(id))
         {
-            nudge(
-                agent,
-                sender,
-                &format!("Thread reply from {sender}: {content}"),
-                &mut nudged,
-                &mut commands,
-            );
+            nudge(agent, sender, &nudge_msg, &mut nudged, &mut commands);
         } else {
             nudge_channel_lead(
                 proj,
                 channel,
                 sender,
-                &format!("Thread reply from {sender} in #{channel}: {content}"),
+                &nudge_msg,
                 &mut nudged,
                 &mut commands,
             );
@@ -63,16 +61,48 @@ pub fn route_message(
             proj,
             channel,
             sender,
-            &format!("Message from {sender} in #{channel}: {content}"),
+            &nudge_msg,
             &mut nudged,
             &mut commands,
         );
     }
 
-    // 2. @mentions and !N task references
-    route_refs(proj, channel, sender, content, &mut nudged, &mut commands);
+    // 2. @mentions and !N task references — use same formatted message
+    route_refs(
+        proj,
+        channel,
+        sender,
+        content,
+        &nudge_msg,
+        &mut nudged,
+        &mut commands,
+    );
 
     commands
+}
+
+/// Format a nudge message with structured context matching v1's WakeReason format.
+/// Includes channel-msg-id so agents can reply in threads.
+fn format_nudge_message(
+    sender: &str,
+    channel: &str,
+    content: &str,
+    thread_id: Option<&str>,
+    msg_id: Option<&str>,
+) -> String {
+    let id_part = msg_id
+        .map(|id| format!(" (channel-msg-id: {id})"))
+        .unwrap_or_default();
+
+    if let Some(tid) = thread_id {
+        format!(
+            "{sender}{id_part}: {content}\n\n\
+             This is a thread reply. To reply in the thread:\n  \
+             midtown channel post \"...\" --thread {tid} --channel {channel}"
+        )
+    } else {
+        format!("{sender}{id_part}: {content}")
+    }
 }
 
 /// Parse @mentions and !N task references, emitting NudgeAgent commands.
@@ -81,6 +111,7 @@ fn route_refs(
     channel: &str,
     sender: &str,
     content: &str,
+    nudge_msg: &str,
     nudged: &mut HashSet<String>,
     commands: &mut Vec<Command>,
 ) {
@@ -90,26 +121,14 @@ fn route_refs(
         if let Some(agent_id) = proj.agents.by_task.get(&task_id)
             && let Some(agent) = proj.agents.by_id.get(agent_id)
         {
-            nudge(
-                agent,
-                sender,
-                &format!("!{task_id} reference from {sender}: {content}"),
-                nudged,
-                commands,
-            );
+            nudge(agent, sender, nudge_msg, nudged, commands);
         }
         // Spec 1.3: also nudge agents assigned to all descendant tasks
         for descendant_id in proj.work.descendants_of(&task_id) {
             if let Some(agent_id) = proj.agents.by_task.get(&descendant_id)
                 && let Some(agent) = proj.agents.by_id.get(agent_id)
             {
-                nudge(
-                    agent,
-                    sender,
-                    &format!("!{task_id} reference from {sender}: {content}"),
-                    nudged,
-                    commands,
-                );
+                nudge(agent, sender, nudge_msg, nudged, commands);
             }
         }
     }
@@ -154,13 +173,7 @@ fn route_refs(
                             .is_some_and(|t| t.status == TaskStatus::InProgress)
                     });
                     if is_lead || has_in_progress_task {
-                        nudge(
-                            agent,
-                            sender,
-                            &format!("@all from {sender}: {content}"),
-                            nudged,
-                            commands,
-                        );
+                        nudge(agent, sender, nudge_msg, nudged, commands);
                     }
                 }
             } else {
@@ -177,51 +190,24 @@ fn route_refs(
                                     .is_some_and(|t| t.status == TaskStatus::InProgress)
                             });
                             if is_lead || has_in_progress_task {
-                                nudge(
-                                    agent,
-                                    sender,
-                                    &format!("@all from {sender}: {content}"),
-                                    nudged,
-                                    commands,
-                                );
+                                nudge(agent, sender, nudge_msg, nudged, commands);
                             }
                         }
                     }
                 }
             }
         } else if target == "lead" {
-            nudge_channel_lead(
-                proj,
-                channel,
-                sender,
-                &format!("@lead mention from {sender}: {content}"),
-                nudged,
-                commands,
-            );
+            nudge_channel_lead(proj, channel, sender, nudge_msg, nudged, commands);
         } else if target == channel
             || proj.agents.by_channel.contains_key(target)
             || proj.channels.channels.contains_key(target)
         {
-            // @channel-name → nudge THAT channel's lead (may be cross-channel)
             let target_channel = target;
-            nudge_channel_lead(
-                proj,
-                target_channel,
-                sender,
-                &format!("@{target} mention from {sender}: {content}"),
-                nudged,
-                commands,
-            );
+            nudge_channel_lead(proj, target_channel, sender, nudge_msg, nudged, commands);
         } else if let Some(agent_id) = proj.agents.by_name.get(target)
             && let Some(agent) = proj.agents.by_id.get(agent_id)
         {
-            nudge(
-                agent,
-                sender,
-                &format!("@{target} mention from {sender}: {content}"),
-                nudged,
-                commands,
-            );
+            nudge(agent, sender, nudge_msg, nudged, commands);
         }
     }
 }
