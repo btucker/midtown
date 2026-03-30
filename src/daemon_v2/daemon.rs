@@ -62,6 +62,8 @@ pub struct DaemonV2 {
     webhook_rx: Option<mpsc::Receiver<WebhookEvent>>,
     /// Broadcast sender for domain events — feeds WebSocket clients.
     event_tx: broadcast::Sender<DomainEvent>,
+    /// Draining mode — when true, dispatch_pending_tasks is skipped.
+    draining: bool,
     /// Manages git worktree creation/removal for worker isolation.
     worktree_manager: Option<WorktreeManager>,
     /// Registry tracking worktree-to-task assignments.
@@ -367,6 +369,7 @@ impl DaemonV2 {
             pending_resumes,
             webhook_rx,
             event_tx,
+            draining: false,
             worktree_manager,
             worktree_registry,
         })
@@ -521,6 +524,16 @@ impl DaemonV2 {
                                 let proj = self.projections.lock().await;
                                 handle_rpc_connection(stream, &proj, &self.config.channels_dir).await
                             };
+
+                            // Check for daemon.set-draining (managed at daemon level)
+                            if outcome == RpcOutcome::SetDraining(true) {
+                                self.draining = true;
+                                tracing::info!("daemon entering draining mode");
+                            } else if outcome == RpcOutcome::SetDraining(false) {
+                                self.draining = false;
+                                tracing::info!("daemon exiting draining mode");
+                            }
+
                             self.apply_events(&events).await;
                             for cmd in &mut commands {
                                 if let Command::SpawnAgent(config) = cmd {
@@ -640,6 +653,12 @@ impl DaemonV2 {
         let due = self.scheduler.due_decisions(now);
 
         for decision in due {
+            // Skip dispatch decisions when draining
+            if self.draining && decision.name == "dispatch_pending_tasks" {
+                self.scheduler.mark_ran(decision.name, now);
+                continue;
+            }
+
             let mut commands = {
                 let proj = self.projections.lock().await;
                 (decision.run)(&proj, &self.config.default_channel)
@@ -801,6 +820,7 @@ impl DaemonV2 {
 enum RpcOutcome {
     Continue,
     Shutdown,
+    SetDraining(bool),
 }
 
 /// Read one JSON-RPC request from `stream`, dispatch it, and write the response.
@@ -845,8 +865,33 @@ async fn handle_rpc_connection(
         }
     };
 
+    let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
+
+    // Handle daemon.set-draining before dispatching
+    if method == "daemon.set-draining" {
+        let draining = request
+            .get("params")
+            .and_then(|p| p.get("draining"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let id = request
+            .get("id")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "result": { "ok": true, "draining": draining },
+            "id": id
+        });
+        let _ = stream
+            .write_all(serde_json::to_vec(&response).unwrap_or_default().as_slice())
+            .await;
+        let _ = stream.shutdown().await;
+        return (RpcOutcome::SetDraining(draining), vec![], vec![]);
+    }
+
     // Check for the special "shutdown" method before dispatching.
-    let is_shutdown = request.get("method").and_then(|m| m.as_str()) == Some("shutdown");
+    let is_shutdown = method == "shutdown";
 
     if is_shutdown {
         let id = request

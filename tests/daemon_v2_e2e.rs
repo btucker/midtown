@@ -948,6 +948,53 @@ fn test_daemon_v2_nudge_stopped_agent_triggers_resume() {
     eprintln!("Nudge stopped agent test: resumed={resumed}");
 }
 
+/// Section 15: daemon.set-draining prevents new task dispatch
+#[test]
+#[ignore]
+fn test_daemon_v2_draining_prevents_dispatch() {
+    let harness = V2Harness::start();
+
+    // Enable draining mode
+    let resp = harness.rpc_call(
+        "daemon.set-draining",
+        Some(serde_json::json!({"draining": true})),
+    );
+    assert!(resp["error"].is_null(), "set-draining error: {resp}");
+
+    // Create a task — should NOT be dispatched while draining
+    let resp = harness.rpc_call(
+        "task.create",
+        Some(serde_json::json!({
+            "id": "drain-t1",
+            "subject": "Should not dispatch",
+            "channel": "main",
+        })),
+    );
+    assert!(resp["error"].is_null());
+
+    // Wait for a dispatch cycle
+    std::thread::sleep(Duration::from_secs(8));
+
+    // No worker should be spawned for this task
+    let agents = harness.rpc_call("agent.list", None);
+    let list = agents["result"].as_array().unwrap_or(&vec![]).clone();
+    let drain_workers: Vec<_> = list
+        .iter()
+        .filter(|a| a["task_id"].as_str() == Some("drain-t1"))
+        .collect();
+    assert!(
+        drain_workers.is_empty(),
+        "draining mode should prevent task dispatch"
+    );
+
+    // Disable draining
+    let resp = harness.rpc_call(
+        "daemon.set-draining",
+        Some(serde_json::json!({"draining": false})),
+    );
+    assert!(resp["error"].is_null());
+}
+
 /// Wait up to `timeout` for `child` to exit. Returns true if it exited in time.
 fn wait_for_exit(mut child: Child, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;

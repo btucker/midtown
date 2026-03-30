@@ -365,7 +365,7 @@
 ### Nice to Have
 - ~~Channel rename/merge~~ — **Implemented** (channel.rename RPC, merge not yet)
 - ~~Oneshot execute~~ — **Implemented** (oneshot.execute spawns a one-off worker with prompt)
-- Daemon exec-restart / draining mode
+- ~~Daemon exec-restart / draining mode~~ — **Partially Implemented** (daemon.set-draining stops new dispatch, exec-restart not yet)
 - Push notifications (VAPID web push delivery)
 - RPC response caching
 

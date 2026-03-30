@@ -193,14 +193,15 @@ pub fn dispatch_request(
                 "channel.unarchive" => handlers::handle_channel_unarchive(params, channels_dir),
                 "channel.rename" => handlers::handle_channel_rename(params, channels_dir),
                 // Stubs for CLI methods that don't have full v2 implementations yet
-                "reminder.list"
-                | "reminder.create"
-                | "reminder.cancel"
-                | "workflow.set_state"
-                | "workflow.list"
-                | "pr.list-external"
-                | "pr.allow"
-                | "daemon.check-pending" => Ok(json!({"ok": true, "stub": true})),
+                "reminder.list" | "reminder.create" | "reminder.cancel" | "workflow.set_state"
+                | "workflow.list" | "pr.list-external" | "pr.allow" => {
+                    Ok(json!({"ok": true, "stub": true}))
+                }
+                // daemon.set-draining and daemon.check-pending return info
+                // about draining state (actual flag managed by the daemon loop)
+                "daemon.set-draining" | "daemon.check-pending" => {
+                    Ok(json!({"ok": true, "draining": false}))
+                }
                 // pr.merge and pr.review are shortcuts for pr.action
                 "pr.merge" => {
                     // Transform into pr.action merge
