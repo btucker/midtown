@@ -30,6 +30,7 @@ let {
 	senderSpacing = "1.5em",
 	senderClass = "",
 	currentTask = undefined,
+	onTaskClick = undefined,
 	channelName = undefined,
 	threadParentId = undefined,
 	isDedicatedSession = false,
@@ -201,7 +202,15 @@ let hidden = $derived(!showToolData && isToolOnly(msg));
           </span>
         {/if}
         {#if currentTask}
-          <span class="text-muted-foreground text-[0.7rem]"> — {currentTask}</span>
+          {@const taskInfo = typeof currentTask === 'object' ? currentTask : { label: currentTask }}
+          {#if taskInfo.threadId && taskInfo.channel}
+            <button
+              class="text-muted-foreground text-[0.7rem] hover:text-foreground hover:underline cursor-pointer"
+              onclick={() => onTaskClick?.(taskInfo)}
+            > — {taskInfo.label}</button>
+          {:else}
+            <span class="text-muted-foreground text-[0.7rem]"> — {taskInfo.label}</span>
+          {/if}
         {/if}
       </div>
       {#if children}

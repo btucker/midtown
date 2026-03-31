@@ -586,12 +586,19 @@ function handleMessageTap(event, msg) {
 	event.preventDefault();
 }
 
-// Build a map of coworker name -> current task
+// Build a map of coworker name -> { label, taskId, threadId, channel }
 function getCurrentTasks(coworkerList) {
 	const map = {};
+	const tasks = $daemonStatus?.tasks || [];
 	for (const cw of coworkerList) {
 		if (cw.current_task) {
-			map[cw.name.toLowerCase()] = cw.current_task;
+			const task = cw.task_id ? tasks.find((t) => String(t.id) === String(cw.task_id)) : null;
+			map[cw.name.toLowerCase()] = {
+				label: cw.current_task,
+				taskId: cw.task_id,
+				threadId: task?.thread_id || task?.message_id || null,
+				channel: task?.channel || null,
+			};
 		}
 	}
 	return map;
@@ -1041,6 +1048,10 @@ function getToolCallStatusIcon(entry) {
               index={globalIndex}
               senderClass="mt-1"
               currentTask={currentTasks[msg.from.toLowerCase()]}
+              onTaskClick={(taskInfo) => {
+                if (taskInfo.channel) activeChannel.set(taskInfo.channel);
+                openThread({ id: taskInfo.threadId, from: '', content: '' }, taskInfo.channel || $activeChannel);
+              }}
               channelName={$activeChannel}
               showToolData={showInlineToolData}
             />
