@@ -700,11 +700,16 @@ fn test_worktree_isolation() {
         return;
     }
 
-    // Extract the coworker name from the response
-    let coworker_name = spawn_response["result"]["coworkers"]
-        .as_array()
-        .and_then(|arr| arr.first())
-        .and_then(|cw| cw["name"].as_str())
+    // Extract the coworker name from the response.
+    // v2 returns {"ok": true, "name": "..."}, v1 returned {"coworkers": [{"name": "..."}]}
+    let coworker_name = spawn_response["result"]["name"]
+        .as_str()
+        .or_else(|| {
+            spawn_response["result"]["coworkers"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|cw| cw["name"].as_str())
+        })
         .unwrap_or("unknown");
 
     eprintln!("Extracted coworker name: {}", coworker_name);
