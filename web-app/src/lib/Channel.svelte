@@ -5,7 +5,17 @@ import Square from "@lucide/svelte/icons/square";
 import { onMount, tick, untrack } from "svelte";
 import { fly } from "svelte/transition";
 import Autocomplete from "./Autocomplete.svelte";
-import { cancelLead, closeThread, openTaskThread, openThread, sendMessage, uploadFile } from "./api.ts";
+import {
+	cancelLead,
+	closeThread,
+	getApiBase,
+	openTaskThread,
+	openThread,
+	sendMessage,
+	startAuthLogin,
+	submitAuthCode,
+	uploadFile,
+} from "./api.ts";
 import { openImageLightbox } from "./biggerPicture.ts";
 import {
 	collectToolBlocks,
@@ -25,6 +35,7 @@ import { clearMobileTextarea } from "./mobileInput.ts";
 import {
 	activeChannel,
 	activeProject,
+	authError,
 	channelSettings,
 	channels as channelsStore,
 	channelTargetMsgId,
@@ -48,6 +59,8 @@ const INITIAL_WINDOW_SIZE = 100; // messages to render on first load
 const LOAD_MORE_COUNT = 50; // messages to add when scrolling up
 
 let inputText = $state("");
+let authWaitingForCode = $state(false);
+let authCodeValue = $state("");
 let scrollAreaViewport = $state(null);
 let autoScroll = $state(true);
 let pendingFile = $state(null);
@@ -79,8 +92,9 @@ let autocompleteStartPos = $state(0);
 let activeChannelMeta = $derived($channelsStore.find((ch) => ch.name === $activeChannel) ?? null);
 let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith("dm-"));
 let dmPeerName = $derived($activeChannel.startsWith("dm-") ? $activeChannel.slice(3) : $activeChannel);
-let showInlineToolData = $derived(isDm || ($channelSettings[$activeChannel]?.inlineToolCalls ?? true));
 let showFullLeadOutput = $derived($channelSettings[$activeChannel]?.showFullLeadOutput ?? true);
+// Tool data is shown inline when full lead output is enabled (or in DM channels always)
+let showInlineToolData = $derived(isDm || showFullLeadOutput);
 
 // Filter messages by active channel, optionally hiding auto-output from lead
 let channelMessages = $derived.by(() => {
@@ -863,6 +877,65 @@ function getToolCallStatusIcon(entry) {
 </script>
 
 <div class="flex flex-col h-full min-h-0 overflow-hidden relative">
+  {#if $authError}
+    <div class="bg-destructive/15 border-b border-destructive/30 px-[18px] py-[10px] flex items-center gap-3 text-[0.85rem] shrink-0 flex-wrap">
+      <span class="text-destructive font-medium">Auth expired</span>
+      {#if !authWaitingForCode}
+        <span class="text-muted-foreground truncate flex-1">OAuth token needs refresh</span>
+        <button
+          class="px-3 py-1 rounded-md bg-primary text-primary-foreground text-[0.78rem] font-medium hover:opacity-90 transition-opacity"
+          onclick={async () => {
+            const result = await startAuthLogin("", "claude");
+            if (result.ok && result.url) {
+              window.open(result.url, "_blank");
+              authWaitingForCode = true;
+            }
+          }}
+        >
+          Re-authenticate
+        </button>
+      {:else}
+        <span class="text-muted-foreground">Paste the code from the browser:</span>
+        <input
+          type="text"
+          class="px-2 py-1 rounded-md border border-border bg-background text-foreground text-[0.82rem] w-[200px]"
+          placeholder="Paste code here"
+          bind:value={authCodeValue}
+          onkeydown={async (e) => {
+            if (e.key === "Enter" && authCodeValue.trim()) {
+              const result = await submitAuthCode(authCodeValue.trim());
+              if (result.ok) {
+                authError.set(null);
+                authWaitingForCode = false;
+                authCodeValue = "";
+              }
+            }
+          }}
+        />
+        <button
+          class="px-3 py-1 rounded-md bg-primary text-primary-foreground text-[0.78rem] font-medium hover:opacity-90 transition-opacity"
+          onclick={async () => {
+            if (authCodeValue.trim()) {
+              const result = await submitAuthCode(authCodeValue.trim());
+              if (result.ok) {
+                authError.set(null);
+                authWaitingForCode = false;
+                authCodeValue = "";
+              }
+            }
+          }}
+        >
+          Submit
+        </button>
+      {/if}
+      <button
+        class="text-muted-foreground hover:text-foreground text-[0.9rem]"
+        onclick={() => { authError.set(null); authWaitingForCode = false; authCodeValue = ""; }}
+      >
+        ×
+      </button>
+    </div>
+  {/if}
   <div
     class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain text-[1rem] leading-[1.55] px-[18px] pt-[14px] pb-[18px]"
     bind:this={scrollAreaViewport}

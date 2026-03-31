@@ -109,6 +109,10 @@ export const messages = writable<Message[]>([]);
 // WebSocket connection status
 export const connected = writable<boolean>(false);
 
+// Auth error detected in agent output — triggers re-login prompt in the UI.
+// Set to the error message string when an auth error is detected, null when cleared.
+export const authError = writable<string | null>(null);
+
 // Coworker status
 export const coworkers = writable<Coworker[]>([]);
 
@@ -230,9 +234,8 @@ channelOrder.subscribe((v) => debouncedSaveToLocalStorage("midtown_channel_order
 export const activeChannelTab = writable<Record<string, ChannelTab>>({});
 
 // Per-channel settings persisted to localStorage.
-// Format: { [channelName]: { inlineToolCalls: boolean } }
-// inlineToolCalls: when true, tool calls are shown inline in the message
-// stream (like DM threads) instead of grouped in the ThreadActivityDrawer.
+// showFullLeadOutput: when true (default), all auto-posted lead messages
+// and tool call blocks are shown inline in the message stream.
 export const channelSettings = writable<Record<string, ChannelSettings>>(
 	loadFromLocalStorage("midtown_channel_settings", {}),
 );

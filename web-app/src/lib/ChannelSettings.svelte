@@ -11,18 +11,7 @@ import {
 import ChannelWorkflow from "./ChannelWorkflow.svelte";
 import { activeChannel, channelSettings } from "./store.ts";
 
-let inlineToolCalls = $derived($channelSettings[$activeChannel]?.inlineToolCalls ?? true);
 let showFullLeadOutput = $derived($channelSettings[$activeChannel]?.showFullLeadOutput ?? true);
-
-function toggleInlineToolCalls() {
-	channelSettings.update((s) => ({
-		...s,
-		[$activeChannel]: {
-			...s[$activeChannel],
-			inlineToolCalls: !inlineToolCalls,
-		},
-	}));
-}
 
 function toggleShowFullLeadOutput() {
 	const newValue = !showFullLeadOutput;
@@ -198,29 +187,6 @@ $effect(() => {
           role="switch"
           aria-checked={showFullLeadOutput}
           aria-label="Toggle full lead output"
-        >
-          <span class="toggle-knob"></span>
-        </button>
-      </div>
-    </section>
-
-    <!-- Tool-call display toggle -->
-    <section class="settings-section">
-      <h2 class="section-title">Tool Call Display</h2>
-      <div class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">Inline tool calls</span>
-          <span class="setting-description">
-            Show tool calls inline in the message stream instead of grouped at the bottom.
-          </span>
-        </div>
-        <button
-          class="toggle-switch"
-          class:active={inlineToolCalls}
-          onclick={toggleInlineToolCalls}
-          role="switch"
-          aria-checked={inlineToolCalls}
-          aria-label="Toggle inline tool calls"
         >
           <span class="toggle-knob"></span>
         </button>

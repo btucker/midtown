@@ -1082,7 +1082,7 @@ fn fetch_repo_status(default_branch: &str) -> RepoStatus {
 async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, StatusCode> {
     // Load persistent state to get reviewer assignments, thread IDs, etc. (local file, cheap)
     let persistent_state =
-        crate::daemon::state::DaemonPersistentState::load_for_repo(&state.config.dir_key)
+        crate::daemon_state::DaemonPersistentState::load_for_repo(&state.config.dir_key)
             .unwrap_or_default();
 
     // Read tasks from TaskStore (local file, cheap)
@@ -2224,7 +2224,7 @@ async fn api_channel_workflow(
 
     // Load persistent state for assigned workflow and workflow state
     let persistent_state =
-        crate::daemon::state::DaemonPersistentState::load_for_repo(dir_key).unwrap_or_default();
+        crate::daemon_state::DaemonPersistentState::load_for_repo(dir_key).unwrap_or_default();
 
     let assigned_workflow = persistent_state.channel_workflows.get(channel).cloned();
     let lead_driven = persistent_state.lead_driven_channels.contains(channel);
@@ -2288,7 +2288,7 @@ async fn api_list_workflows(
 
     // Load persistent state for current channel assignments
     let persistent_state =
-        crate::daemon::state::DaemonPersistentState::load_for_repo(dir_key).unwrap_or_default();
+        crate::daemon_state::DaemonPersistentState::load_for_repo(dir_key).unwrap_or_default();
 
     // Discover available workflows
     let workflows_dir = crate::paths::projects_dir_for_repo(dir_key).join("workflows");

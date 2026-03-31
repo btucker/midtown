@@ -6,6 +6,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { VitePWA } from 'vite-plugin-pwa'
+import istanbul from 'vite-plugin-istanbul'
 
 // Auto-detect webserver URL from ~/.midtown/config.toml (TLS, port).
 // Override with MIDTOWN_WEBSERVER_URL env var if needed.
@@ -37,6 +38,13 @@ export default defineConfig({
   plugins: [
     svelte(),
     tailwindcss(),
+    // Istanbul code coverage instrumentation — only active when COVERAGE=true
+    ...(process.env.COVERAGE === 'true' ? [istanbul({
+      include: 'src/**/*',
+      exclude: ['node_modules', 'e2e', 'src/sw.ts'],
+      extension: ['.js', '.ts', '.svelte'],
+      requireEnv: true,
+    })] : []),
     VitePWA({
       strategies: 'injectManifest',
       srcDir: 'src',

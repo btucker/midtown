@@ -673,6 +673,7 @@ impl CodexSharedRuntime {
         }
     }
 
+    #[allow(dead_code)]
     async fn shutdown(&self) {
         let mut process = self.process.lock().await;
         let _ = process.child.start_kill();
@@ -728,6 +729,7 @@ async fn codex_shared_runtime(
     Ok(runtime)
 }
 
+#[allow(dead_code)]
 pub(crate) async fn shutdown_codex_runtime() {
     let mut guard = CODEX_RUNTIME.lock().await;
     let runtimes: Vec<_> = guard.values().cloned().collect();

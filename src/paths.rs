@@ -163,8 +163,8 @@ pub fn detect_repo_name_from_dir(dir: &std::path::Path) -> Option<String> {
         let git_path = std::path::Path::new(&git_dir);
         // The git-common-dir is the .git folder - get its parent's name
         if let Some(parent) = git_path.parent() {
-            // Handle relative ".git" by getting the actual toplevel
-            if git_dir == ".git" {
+            // Handle relative git dirs (e.g. ".git" or "../.git") by using show-toplevel
+            if git_dir.ends_with(".git") && !git_path.is_absolute() {
                 return std::process::Command::new("git")
                     .args(["rev-parse", "--show-toplevel"])
                     .current_dir(dir)
@@ -182,7 +182,9 @@ pub fn detect_repo_name_from_dir(dir: &std::path::Path) -> Option<String> {
                     });
             }
             // For worktrees, parent is the main repo directory
-            return parent.file_name().map(|s| s.to_string_lossy().to_string());
+            if let Some(name) = parent.file_name() {
+                return Some(name.to_string_lossy().to_string());
+            }
         }
     }
 

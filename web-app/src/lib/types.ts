@@ -196,7 +196,6 @@ export interface PendingQuestion {
 // ── Channel settings ─────────────────────────────────────────────────────────
 
 export interface ChannelSettings {
-	inlineToolCalls?: boolean;
 	showFullLeadOutput?: boolean;
 }
 

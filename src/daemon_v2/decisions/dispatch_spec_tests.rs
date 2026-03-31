@@ -1,0 +1,947 @@
+//! Behavioral tests for v2-spec.md Section 2: Task Dispatch
+//!
+//! Each test maps to a specific SHALL requirement from the spec.
+
+use crate::daemon_v2::decisions::Command;
+use crate::daemon_v2::decisions::dispatch::{
+    check_duplicate_workers, dispatch_pending_tasks, stop_completed_agents,
+};
+use crate::daemon_v2::decisions::health::{check_dead_workers, check_idle_workers};
+use crate::daemon_v2::events::*;
+use crate::daemon_v2::projections::Projections;
+
+fn make_worker(proj: &mut Projections, id: &str, name: &str, task_id: &str) {
+    proj.apply(&DomainEvent::AgentCreated {
+        id: id.into(),
+        name: name.into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some(task_id.into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: id.into(),
+        pid: 1000,
+        session_id: Some("sess-1".into()),
+    });
+}
+
+fn make_task(proj: &mut Projections, id: &str, channel: &str) {
+    proj.apply(&DomainEvent::TaskCreated {
+        id: id.into(),
+        subject: format!("Task {id}"),
+        channel: channel.into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+}
+
+fn spawn_task_ids(commands: &[Command]) -> Vec<Option<String>> {
+    commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::SpawnAgent(cfg) => Some(cfg.task_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+// ── Section 2.1: Spawning Workers ────────────────────────────────────────────
+
+/// Spec 2.1: WHEN pending unblocked tasks exist AND fewer than max_in_progress tasks
+/// are running THEN the system SHALL spawn a worker for each available slot
+#[test]
+fn spawns_workers_for_available_slots() {
+    let mut proj = Projections::default();
+    make_task(&mut proj, "t1", "main");
+    make_task(&mut proj, "t2", "main");
+
+    // Only 1 task in-progress, max is 3 → 2 slots available
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t-running".into(),
+        subject: "Running task".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t-running".into(),
+        agent_id: "existing-agent".into(),
+    });
+
+    let commands = dispatch_pending_tasks(&proj, 3);
+
+    assert_eq!(
+        commands.len(),
+        2,
+        "expected 2 spawns for 2 pending tasks with 2 slots, got {:?}",
+        commands
+    );
+    let task_ids = spawn_task_ids(&commands);
+    assert!(task_ids.contains(&Some("t1".into())), "should spawn for t1");
+    assert!(task_ids.contains(&Some("t2".into())), "should spawn for t2");
+}
+
+/// Spec 2.1: WHEN fewer than max_in_progress tasks are running THEN do not exceed
+/// max_in_progress by spawning more than the available slots
+#[test]
+fn respects_max_in_progress_cap() {
+    let mut proj = Projections::default();
+    // 3 tasks in-progress, 1 pending — limit is 3
+    for i in 0..3 {
+        let task_id = format!("running-{i}");
+        make_task(&mut proj, &task_id, "main");
+        proj.apply(&DomainEvent::TaskAssigned {
+            task_id: task_id.clone(),
+            agent_id: format!("agent-{i}"),
+        });
+    }
+    make_task(&mut proj, "pending-1", "main");
+
+    let commands = dispatch_pending_tasks(&proj, 3);
+
+    assert!(
+        commands.is_empty(),
+        "expected no spawns when at max_in_progress, got {:?}",
+        commands
+    );
+}
+
+/// Spec 2.1: WHEN a task has no agent_type THEN the system SHALL use
+/// midtown-code-author as default
+#[test]
+fn uses_default_agent_type_when_none_specified() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "No agent type".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+
+    let commands = dispatch_pending_tasks(&proj, 3);
+
+    assert_eq!(commands.len(), 1);
+    assert!(
+        matches!(
+            &commands[0],
+            Command::SpawnAgent(cfg) if cfg.agent_type == "midtown-code-author"
+        ),
+        "expected midtown-code-author as default agent_type, got {:?}",
+        commands[0]
+    );
+}
+
+/// Spec 2.1: WHEN a task specifies agent_type THEN the system SHALL use that type
+#[test]
+fn uses_specified_agent_type() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Custom agent type".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: Some("midtown-code-reviewer".into()),
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+
+    let commands = dispatch_pending_tasks(&proj, 3);
+
+    assert_eq!(commands.len(), 1);
+    assert!(
+        matches!(
+            &commands[0],
+            Command::SpawnAgent(cfg) if cfg.agent_type == "midtown-code-reviewer"
+        ),
+        "expected midtown-code-reviewer agent_type, got {:?}",
+        commands[0]
+    );
+}
+
+/// Spec 2.1: WHEN a task is in a lead_driven channel THEN the system SHALL NOT
+/// auto-dispatch it
+#[test]
+fn does_not_dispatch_lead_driven_channel_tasks() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::ChannelLeadDrivenSet {
+        channel: "manual".into(),
+        lead_driven: true,
+    });
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Lead-driven task".into(),
+        channel: "manual".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+
+    let commands = dispatch_pending_tasks(&proj, 5);
+
+    assert!(
+        commands.is_empty(),
+        "expected no spawns for lead_driven channel, got {:?}",
+        commands
+    );
+}
+
+/// Spec 2.1: WHEN spawning a worker THEN the system SHALL use name/icon/color
+/// from the task if set
+#[test]
+fn spawned_worker_uses_task_name_icon_color() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Custom task".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: Some("custom-hawk".into()),
+        icon: Some("rocket".into()),
+        color: Some("#FF0000".into()),
+        parent: None,
+    });
+
+    let commands = dispatch_pending_tasks(&proj, 3);
+    assert_eq!(commands.len(), 1);
+
+    match &commands[0] {
+        Command::SpawnAgent(cfg) => {
+            assert_eq!(cfg.name, "custom-hawk", "should use task agent_name");
+            assert_eq!(cfg.icon.as_deref(), Some("rocket"), "should use task icon");
+            assert_eq!(
+                cfg.color.as_deref(),
+                Some("#FF0000"),
+                "should use task color"
+            );
+        }
+        other => panic!("expected SpawnAgent, got {:?}", other),
+    }
+}
+
+/// Spec 2.1: WHEN spawning a worker THEN the system SHALL generate a unique name,
+/// random icon, and random color
+#[test]
+fn spawned_worker_has_unique_name_icon_and_color() {
+    let mut proj = Projections::default();
+    make_task(&mut proj, "t1", "main");
+    make_task(&mut proj, "t2", "main");
+
+    let commands = dispatch_pending_tasks(&proj, 3);
+
+    assert_eq!(commands.len(), 2);
+    let names: Vec<&str> = commands
+        .iter()
+        .filter_map(|c| match c {
+            Command::SpawnAgent(cfg) => Some(cfg.name.as_str()),
+            _ => None,
+        })
+        .collect();
+
+    // Names must be unique
+    let mut deduped = names.clone();
+    deduped.dedup();
+    assert_eq!(
+        names.len(),
+        deduped.len(),
+        "spawned names should be unique: {:?}",
+        names
+    );
+
+    // Each spawn must have an icon and color set
+    for cmd in &commands {
+        if let Command::SpawnAgent(cfg) = cmd {
+            assert!(
+                cfg.icon.is_some(),
+                "spawn for {} should have an icon",
+                cfg.name
+            );
+            assert!(
+                cfg.color.is_some(),
+                "spawn for {} should have a color",
+                cfg.name
+            );
+        }
+    }
+}
+
+// ── Section 2.2: Task Lifecycle ───────────────────────────────────────────────
+
+/// Edge case: InProgress task with no assigned agent in by_task should not crash
+#[test]
+fn dead_worker_check_skips_task_without_agent() {
+    let mut proj = Projections::default();
+    make_task(&mut proj, "orphan-t1", "main");
+
+    // Manually set task to InProgress without assigning an agent
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "orphan-t1".into(),
+        agent_id: "nonexistent".into(),
+    });
+
+    // check_dead_workers should handle this gracefully
+    let commands = check_dead_workers(&proj);
+    // No commands expected since the agent doesn't exist in by_id
+    // (the agent_id "nonexistent" is not in by_task because by_task
+    // is indexed by AgentCreated, not TaskAssigned)
+    assert!(
+        commands.is_empty()
+            || commands
+                .iter()
+                .all(|c| !matches!(c, Command::ResumeAgent { .. })),
+        "should not crash on orphaned InProgress task"
+    );
+}
+
+/// Spec 2.2: WHEN a worker dies while its task is InProgress THEN the system SHALL
+/// resume the worker
+#[test]
+fn dead_worker_resumed() {
+    let mut proj = Projections::default();
+    make_task(&mut proj, "t1", "main");
+    make_worker(&mut proj, "a1", "ghost-town", "t1");
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "a1".into(),
+    });
+    proj.apply(&DomainEvent::AgentStopped {
+        id: "a1".into(),
+        reason: "process died".into(),
+    });
+
+    let commands = check_dead_workers(&proj);
+
+    assert_eq!(commands.len(), 1, "expected 1 command, got {:?}", commands);
+    assert!(
+        matches!(&commands[0], Command::ResumeAgent { id } if id == "a1"),
+        "expected ResumeAgent for a1, got {:?}",
+        commands[0]
+    );
+}
+
+/// Spec 2.2: WHEN a worker cannot be resumed (no session ID) THEN the system
+/// SHALL spawn a replacement worker with the same task configuration
+#[test]
+fn dead_worker_no_session_spawns_replacement() {
+    let mut proj = Projections::default();
+    make_task(&mut proj, "t1", "main");
+
+    // Create worker WITHOUT session_id
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w-nosess".into(),
+        name: "lost-hawk".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w-nosess".into(),
+        pid: 1234,
+        session_id: None, // No session_id
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "w-nosess".into(),
+    });
+    proj.apply(&DomainEvent::AgentStopped {
+        id: "w-nosess".into(),
+        reason: "crashed".into(),
+    });
+
+    let commands = check_dead_workers(&proj);
+
+    assert_eq!(commands.len(), 1, "expected 1 command, got {:?}", commands);
+    assert!(
+        matches!(&commands[0], Command::SpawnAgent(cfg) if cfg.task_id.as_deref() == Some("t1")),
+        "expected SpawnAgent replacement with task_id t1, got {:?}",
+        commands[0]
+    );
+}
+
+/// Spec 2.2: WHEN two agents are assigned to the same task THEN the system SHALL
+/// stop the newer one
+#[test]
+fn duplicate_workers_stops_newer_agent() {
+    use chrono::{Duration, Utc};
+
+    let mut proj = Projections::default();
+    make_task(&mut proj, "t1", "main");
+
+    // Create two workers for the same task
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "old-agent".into(),
+        name: "old-worker".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "old-agent".into(),
+        pid: 100,
+        session_id: None,
+    });
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "new-agent".into(),
+        name: "new-worker".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "new-agent".into(),
+        pid: 101,
+        session_id: None,
+    });
+
+    // Make old-agent definitively older
+    proj.agents.by_id.get_mut("old-agent").unwrap().started_at =
+        Some(Utc::now() - Duration::minutes(10));
+    proj.agents.by_id.get_mut("new-agent").unwrap().started_at = Some(Utc::now());
+
+    let commands = check_duplicate_workers(&proj);
+
+    assert_eq!(commands.len(), 1);
+    assert!(
+        matches!(
+            &commands[0],
+            Command::StopAgent { id, reason }
+                if id == "new-agent" && reason == "duplicate worker for task"
+        ),
+        "expected StopAgent for old-agent, got {:?}",
+        commands[0]
+    );
+}
+
+/// Duplicate leads for the same channel should be detected and the newer one stopped
+#[test]
+fn duplicate_leads_stopped() {
+    use crate::daemon_v2::decisions::dispatch::check_duplicate_leads;
+    use chrono::{Duration, Utc};
+
+    let mut proj = Projections::default();
+    // Create two leads for the same channel
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "lead-old".into(),
+        name: "midtown-old".into(),
+        kind: AgentKind::Lead,
+        agent_type: "midtown-project-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "lead-old".into(),
+        pid: 100,
+        session_id: Some("sess-old".into()),
+    });
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "lead-new".into(),
+        name: "midtown-new".into(),
+        kind: AgentKind::Lead,
+        agent_type: "midtown-project-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "lead-new".into(),
+        pid: 101,
+        session_id: Some("sess-new".into()),
+    });
+
+    // Make old definitively older
+    proj.agents.by_id.get_mut("lead-old").unwrap().started_at =
+        Some(Utc::now() - Duration::minutes(10));
+    proj.agents.by_id.get_mut("lead-new").unwrap().started_at = Some(Utc::now());
+
+    let commands = check_duplicate_leads(&proj);
+    assert_eq!(commands.len(), 1);
+    assert!(
+        matches!(&commands[0], Command::StopAgent { id, .. } if id == "lead-new"),
+        "newer duplicate lead should be stopped, got {:?}",
+        commands[0]
+    );
+}
+
+/// Spec 2.2: WHEN a worker has no task for more than 5 minutes THEN the system
+/// SHALL stop it
+#[test]
+fn idle_worker_stopped_after_five_minutes() {
+    use chrono::{Duration, Utc};
+
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "idle-worker".into(),
+        name: "quiet-river".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "idle-worker".into(),
+        pid: 200,
+        session_id: None,
+    });
+
+    // Back-date started_at to beyond the 5-minute idle threshold
+    proj.agents.by_id.get_mut("idle-worker").unwrap().started_at =
+        Some(Utc::now() - Duration::minutes(6));
+
+    let commands = check_idle_workers(&proj);
+
+    assert_eq!(commands.len(), 1);
+    assert!(
+        matches!(
+            &commands[0],
+            Command::StopAgent { id, reason }
+                if id == "idle-worker" && reason == "idle worker"
+        ),
+        "expected StopAgent for idle worker, got {:?}",
+        commands[0]
+    );
+}
+
+/// Spec 2.2: WHEN a worker has no task but was started less than 5 minutes ago
+/// THEN the system SHALL NOT stop it yet
+#[test]
+fn recently_started_idle_worker_not_stopped() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "new-idle".into(),
+        name: "fresh-brook".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "new-idle".into(),
+        pid: 201,
+        session_id: None,
+    });
+    // started_at defaults to Utc::now() — within the 5-minute window
+
+    let commands = check_idle_workers(&proj);
+
+    assert!(
+        commands.is_empty(),
+        "recently started idle worker should not be stopped, got {:?}",
+        commands
+    );
+}
+
+/// Spec 2.2: WHEN a running worker's task is Completed THEN the system SHALL stop
+/// the worker
+#[test]
+fn worker_stopped_when_task_completed() {
+    let mut proj = Projections::default();
+    make_task(&mut proj, "t1", "main");
+    make_worker(&mut proj, "a1", "calm-cedar", "t1");
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "a1".into(),
+    });
+    proj.apply(&DomainEvent::TaskCompleted {
+        task_id: "t1".into(),
+    });
+
+    let commands = stop_completed_agents(&proj);
+
+    assert_eq!(commands.len(), 1);
+    assert!(
+        matches!(
+            &commands[0],
+            Command::StopAgent { id, reason }
+                if id == "a1" && reason == "task completed"
+        ),
+        "expected StopAgent for a1 with completed task, got {:?}",
+        commands[0]
+    );
+}
+
+/// Spec 2.2: WHEN a task declares blocked_by dependencies THEN the system SHALL
+/// NOT dispatch it until all blockers are completed
+#[test]
+fn blocked_task_not_dispatched_until_blockers_complete() {
+    let mut proj = Projections::default();
+
+    // t1 is unblocked, t2 is blocked by t1
+    make_task(&mut proj, "t1", "main");
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t2".into(),
+        subject: "Blocked task".into(),
+        channel: "main".into(),
+        blocked_by: vec!["t1".into()],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+
+    let commands = dispatch_pending_tasks(&proj, 5);
+
+    // Only t1 should be dispatched, t2 is blocked
+    assert_eq!(
+        commands.len(),
+        1,
+        "expected only 1 spawn for the unblocked task, got {:?}",
+        commands
+    );
+    assert!(
+        matches!(
+            &commands[0],
+            Command::SpawnAgent(cfg) if cfg.task_id.as_deref() == Some("t1")
+        ),
+        "expected spawn for t1 only, got {:?}",
+        commands[0]
+    );
+}
+
+/// Spec 2.2: WHEN all blockers complete (TaskUnblocked applied) THEN the blocked
+/// task becomes eligible for dispatch
+#[test]
+fn task_dispatched_after_blocker_unblocked() {
+    let mut proj = Projections::default();
+
+    make_task(&mut proj, "t1", "main");
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t2".into(),
+        subject: "Previously blocked".into(),
+        channel: "main".into(),
+        blocked_by: vec!["t1".into()],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+
+    // Complete t1 and unblock t2
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "a1".into(),
+    });
+    proj.apply(&DomainEvent::TaskCompleted {
+        task_id: "t1".into(),
+    });
+    proj.apply(&DomainEvent::TaskUnblocked {
+        task_id: "t2".into(),
+    });
+
+    let commands = dispatch_pending_tasks(&proj, 5);
+
+    let task_ids = spawn_task_ids(&commands);
+    assert!(
+        task_ids.contains(&Some("t2".into())),
+        "t2 should be dispatched after t1 unblocks it, got {:?}",
+        commands
+    );
+}
+
+// ── Idle State Reporting ────────────────────────────────────────────────────
+
+/// Spec 2.2: WHEN a worker reports its state as idle via midtown state THEN the
+/// system SHALL stop it after 2 minutes if it remains idle
+#[test]
+fn idle_reported_worker_stopped_after_2_minutes() {
+    use crate::daemon_v2::decisions::health::stop_idle_reported_workers;
+    use chrono::{Duration, Utc};
+
+    let mut proj = Projections::default();
+
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Idle task".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "idle-hawk".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 1234,
+        session_id: Some("sess-idle".into()),
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "w1".into(),
+    });
+
+    // Report idle state
+    proj.apply(&DomainEvent::AgentStateReported {
+        id: "w1".into(),
+        state: "idle".into(),
+    });
+
+    // Backdate the state report to 3 minutes ago
+    proj.agents.by_id.get_mut("w1").unwrap().state_reported_at =
+        Some(Utc::now() - Duration::minutes(3));
+
+    let commands = stop_idle_reported_workers(&proj);
+    assert_eq!(
+        commands.len(),
+        1,
+        "idle worker should be stopped after 2 minutes"
+    );
+    assert!(matches!(&commands[0], Command::StopAgent { id, .. } if id == "w1"));
+}
+
+/// Spec 2.2: worker that just reported idle should NOT be stopped yet
+#[test]
+fn recently_idle_worker_not_stopped() {
+    use crate::daemon_v2::decisions::health::stop_idle_reported_workers;
+
+    let mut proj = Projections::default();
+
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "fresh-idle".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 1234,
+        session_id: Some("sess-fresh-idle".into()),
+    });
+
+    // Report idle just now
+    proj.apply(&DomainEvent::AgentStateReported {
+        id: "w1".into(),
+        state: "idle".into(),
+    });
+
+    let commands = stop_idle_reported_workers(&proj);
+    assert!(
+        commands.is_empty(),
+        "recently idle worker should NOT be stopped yet"
+    );
+}
+
+/// Spec 2.2: worker reporting "working" should NOT be stopped
+#[test]
+fn working_reported_worker_not_stopped() {
+    use crate::daemon_v2::decisions::health::stop_idle_reported_workers;
+    use chrono::{Duration, Utc};
+
+    let mut proj = Projections::default();
+
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "working-hawk".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 1234,
+        session_id: Some("sess-working".into()),
+    });
+
+    // Report working state (not idle)
+    proj.apply(&DomainEvent::AgentStateReported {
+        id: "w1".into(),
+        state: "working".into(),
+    });
+
+    // Backdate to 5 minutes ago
+    proj.agents.by_id.get_mut("w1").unwrap().state_reported_at =
+        Some(Utc::now() - Duration::minutes(5));
+
+    let commands = stop_idle_reported_workers(&proj);
+    assert!(
+        commands.is_empty(),
+        "worker reporting 'working' should NOT be stopped"
+    );
+}
+
+// ── Stale Worker Nudging ───────────────────────────────────────────────────
+
+/// Spec 2.2: WHEN a worker has not reported a state change for 5 minutes
+/// THEN the system SHALL nudge it
+#[test]
+fn stale_worker_nudged_after_5_minutes() {
+    use crate::daemon_v2::decisions::health::nudge_stale_workers;
+    use chrono::{Duration, Utc};
+
+    let mut proj = Projections::default();
+
+    // Create task + worker that started 10 minutes ago
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Stale task".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "stale-hawk".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 1234,
+        session_id: Some("sess-stale".into()),
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "w1".into(),
+    });
+
+    // Backdate started_at to 10 minutes ago
+    proj.agents.by_id.get_mut("w1").unwrap().started_at = Some(Utc::now() - Duration::minutes(10));
+
+    let commands = nudge_stale_workers(&proj);
+    assert_eq!(
+        commands.len(),
+        1,
+        "stale worker should be nudged, got {:?}",
+        commands
+    );
+    assert!(
+        matches!(&commands[0], Command::NudgeAgent { id, .. } if id == "w1"),
+        "should nudge stale worker w1"
+    );
+}
+
+/// Spec 2.2: recently started worker should NOT be nudged
+#[test]
+fn fresh_worker_not_nudged() {
+    use crate::daemon_v2::decisions::health::nudge_stale_workers;
+
+    let mut proj = Projections::default();
+
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Fresh task".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+    });
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "fresh-hawk".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 1234,
+        session_id: Some("sess-fresh".into()),
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "w1".into(),
+    });
+
+    // started_at is now() — should not be nudged
+    let commands = nudge_stale_workers(&proj);
+    assert!(
+        commands.is_empty(),
+        "fresh worker should NOT be nudged, got {:?}",
+        commands
+    );
+}

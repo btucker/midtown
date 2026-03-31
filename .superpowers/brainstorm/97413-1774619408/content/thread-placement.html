@@ -1,0 +1,143 @@
+<h2>Where should threads live in the sidebar?</h2>
+<p class="subtitle">Same threads, three different placements. Which helps you stay focused?</p>
+
+<div class="options">
+
+  <div class="option" data-choice="under-channels" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Under Channels (current)</h3>
+      <p>Threads nested below their parent channel</p>
+      <div style="font-family: system-ui; font-size: 12px; background: #1a1a2e; color: #ccc; padding: 12px; border-radius: 8px; margin-top: 10px;">
+        <div style="font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Channels</div>
+        <div style="padding: 6px 8px; background: #2a2a4a; color: #fff; border-radius: 5px; margin-bottom: 2px;"># auth-refactor</div>
+        <div style="padding: 6px 8px 6px 16px; color: #bbb; margin-bottom: 2px; display: flex; align-items: center; gap: 5px;">
+          <span style="color: #444;">⌇</span> token refresh logic
+          <span style="margin-left: auto; width: 5px; height: 5px; border-radius: 50%; background: #3b82f6;"></span>
+        </div>
+        <div style="padding: 6px 8px; color: #999; margin-bottom: 2px;"># api-redesign</div>
+        <div style="padding: 6px 8px 6px 16px; color: #bbb; margin-bottom: 2px; display: flex; align-items: center; gap: 5px;">
+          <span style="color: #444;">⌇</span> pagination approach
+        </div>
+        <div style="padding: 6px 8px 6px 16px; color: #bbb; margin-bottom: 2px; display: flex; align-items: center; gap: 5px;">
+          <span style="color: #444;">⌇</span> error response format
+          <span style="margin-left: auto; width: 5px; height: 5px; border-radius: 50%; background: #3b82f6;"></span>
+        </div>
+        <div style="padding: 6px 8px; color: #999; margin-bottom: 2px;"># mobile-perf</div>
+        <div style="padding: 6px 8px; color: #999;"># ci-fixes</div>
+      </div>
+      <div class="pros-cons" style="margin-top: 10px;">
+        <div class="pros"><h4>Pros</h4><ul><li>Clear parent relationship</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Makes channel list long & hard to scan</li><li>Threads mixed with navigation</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="own-section" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Own Section</h3>
+      <p>Threads in a dedicated section between Tasks and Channels</p>
+      <div style="font-family: system-ui; font-size: 12px; background: #1a1a2e; color: #ccc; padding: 12px; border-radius: 8px; margin-top: 10px;">
+        <div style="font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Tasks <span style="background: #333; color: #aaa; font-size: 9px; padding: 1px 4px; border-radius: 8px;">3</span></div>
+        <div style="padding: 5px 8px; color: #e0e0e0; margin-bottom: 2px;">refactor auth middleware</div>
+        <div style="padding: 5px 8px; color: #e0e0e0; margin-bottom: 6px;">fix mobile scroll perf</div>
+
+        <div style="height: 1px; background: #2a2a4a; margin: 4px 0;"></div>
+
+        <div style="font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0;">Threads <span style="background: #333; color: #aaa; font-size: 9px; padding: 1px 4px; border-radius: 8px;">3</span></div>
+        <div style="padding: 5px 8px; color: #bbb; margin-bottom: 2px; display: flex; align-items: center; gap: 5px;">
+          token refresh logic
+          <span style="margin-left: auto; width: 5px; height: 5px; border-radius: 50%; background: #3b82f6;"></span>
+          <span style="color: #555; font-size: 10px;">#auth</span>
+        </div>
+        <div style="padding: 5px 8px; color: #bbb; margin-bottom: 2px; display: flex; align-items: center; gap: 5px;">
+          pagination approach
+          <span style="margin-left: auto; color: #555; font-size: 10px;">#api</span>
+        </div>
+        <div style="padding: 5px 8px; color: #bbb; margin-bottom: 2px; display: flex; align-items: center; gap: 5px;">
+          error response format
+          <span style="margin-left: auto; width: 5px; height: 5px; border-radius: 50%; background: #3b82f6;"></span>
+          <span style="color: #555; font-size: 10px;">#api</span>
+        </div>
+
+        <div style="height: 1px; background: #2a2a4a; margin: 4px 0;"></div>
+
+        <div style="font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0;">Channels</div>
+        <div style="padding: 6px 8px; background: #2a2a4a; color: #fff; border-radius: 5px; margin-bottom: 2px;"># auth-refactor</div>
+        <div style="padding: 6px 8px; color: #999; margin-bottom: 2px;"># api-redesign</div>
+        <div style="padding: 6px 8px; color: #999; margin-bottom: 2px;"># mobile-perf</div>
+        <div style="padding: 6px 8px; color: #999;"># ci-fixes</div>
+      </div>
+      <div class="pros-cons" style="margin-top: 10px;">
+        <div class="pros"><h4>Pros</h4><ul><li>Threads are their own thing — easy to scan</li><li>Channel list stays clean</li><li>Channel tag gives context without nesting</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>More sections in sidebar</li><li>Thread/task relationship not visible</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="with-tasks" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Merged with Tasks</h3>
+      <p>Threads grouped under their related task — one "Active Work" section</p>
+      <div style="font-family: system-ui; font-size: 12px; background: #1a1a2e; color: #ccc; padding: 12px; border-radius: 8px; margin-top: 10px;">
+        <div style="font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;">Active Work <span style="background: #333; color: #aaa; font-size: 9px; padding: 1px 4px; border-radius: 8px;">3</span></div>
+
+        <div style="padding: 5px 8px; color: #e0e0e0; margin-bottom: 1px; display: flex; align-items: center;">
+          refactor auth middleware
+          <span style="margin-left: auto; color: #555; font-size: 10px;">#auth</span>
+        </div>
+        <div style="padding: 0 8px 4px; display: flex; align-items: center; gap: 5px;">
+          <div style="flex: 1; height: 3px; background: #2a2a4a; border-radius: 2px; overflow: hidden;">
+            <div style="width: 45%; height: 100%; background: #f59e0b;"></div>
+          </div>
+          <span style="font-size: 9px; color: #2dd4bf; font-family: monospace;">45%</span>
+        </div>
+        <div style="padding: 4px 8px 4px 20px; color: #999; font-size: 11px; display: flex; align-items: center; gap: 4px;">
+          💬 token refresh logic
+          <span style="margin-left: auto; width: 5px; height: 5px; border-radius: 50%; background: #3b82f6;"></span>
+        </div>
+
+        <div style="padding: 5px 8px; color: #e0e0e0; margin-top: 6px; margin-bottom: 1px; display: flex; align-items: center;">
+          fix mobile scroll perf
+          <span style="margin-left: auto; color: #555; font-size: 10px;">#mobile</span>
+        </div>
+        <div style="padding: 0 8px 4px; display: flex; align-items: center; gap: 5px;">
+          <div style="flex: 1; height: 3px; background: #2a2a4a; border-radius: 2px; overflow: hidden;">
+            <div style="width: 22%; height: 100%; background: #38bdf8;"></div>
+          </div>
+          <span style="font-size: 9px; color: #2dd4bf; font-family: monospace;">22%</span>
+        </div>
+
+        <div style="margin-top: 8px; padding-top: 6px; border-top: 1px solid #2a2a4a;">
+          <div style="font-size: 10px; color: #555; margin-bottom: 6px;">Standalone threads</div>
+          <div style="padding: 4px 8px; color: #999; font-size: 11px; display: flex; align-items: center; gap: 4px;">
+            💬 pagination approach
+            <span style="margin-left: auto; color: #555; font-size: 10px;">#api</span>
+          </div>
+          <div style="padding: 4px 8px; color: #999; font-size: 11px; display: flex; align-items: center; gap: 4px;">
+            💬 error response format
+            <span style="margin-left: auto; width: 5px; height: 5px; border-radius: 50%; background: #3b82f6;"></span>
+            <span style="color: #555; font-size: 10px;">#api</span>
+          </div>
+        </div>
+
+        <div style="height: 1px; background: #2a2a4a; margin: 8px 0 4px;"></div>
+
+        <div style="font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin: 4px 0;">Channels</div>
+        <div style="padding: 6px 8px; background: #2a2a4a; color: #fff; border-radius: 5px; margin-bottom: 2px;"># auth-refactor</div>
+        <div style="padding: 6px 8px; color: #999; margin-bottom: 2px;"># api-redesign</div>
+        <div style="padding: 6px 8px; color: #999; margin-bottom: 2px;"># mobile-perf</div>
+        <div style="padding: 6px 8px; color: #999;"># ci-fixes</div>
+      </div>
+      <div class="pros-cons" style="margin-top: 10px;">
+        <div class="pros"><h4>Pros</h4><ul><li>Shows thread ↔ task relationship</li><li>One "here's your work" section</li><li>Channel list is pure navigation</li></ul></div>
+        <div class="cons"><h4>Cons</h4><ul><li>Threads without a task need a fallback</li><li>More complex component</li></ul></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<p class="subtitle" style="margin-top: 16px;">The question: where do threads naturally belong in your mental model of the sidebar?</p>

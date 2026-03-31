@@ -176,7 +176,7 @@ fn claude_agents_dir_points_to_shared_platform_dir() {
     let dir = claude_agents_dir();
     let path_str = dir.to_string_lossy();
     assert!(
-        path_str.contains(".midtown/platforms/claude/agents"),
+        path_str.contains(".midtown/platforms/claude/shared/agents"),
         "should point to shared platform dir, got: {path_str}"
     );
 }

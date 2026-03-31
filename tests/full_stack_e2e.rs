@@ -674,9 +674,12 @@ fn test_worktree_isolation() {
         "Fixture failed to start daemon via `midtown start`"
     );
 
-    // Spawn a coworker via RPC. The daemon assigns names from the avenue pool,
-    // so we don't specify a name - just check the returned name.
-    let spawn_response = fixture.rpc_call("coworker.spawn", None);
+    // Spawn a coworker with a task_id so the daemon creates a worktree for it.
+    // (v2 only creates worktrees for task-bound workers, not bare coworkers.)
+    let spawn_response = fixture.rpc_call(
+        "coworker.spawn",
+        Some(serde_json::json!({"task_id": "test-task-1", "prompt": "test worktree isolation"})),
+    );
 
     assert!(
         spawn_response.is_some(),
@@ -700,39 +703,62 @@ fn test_worktree_isolation() {
         return;
     }
 
-    // Extract the coworker name from the response
-    let coworker_name = spawn_response["result"]["coworkers"]
-        .as_array()
-        .and_then(|arr| arr.first())
-        .and_then(|cw| cw["name"].as_str())
+    // Extract the coworker name from the response.
+    // v2 returns {"ok": true, "name": "..."}, v1 returned {"coworkers": [{"name": "..."}]}
+    let coworker_name = spawn_response["result"]["name"]
+        .as_str()
+        .or_else(|| {
+            spawn_response["result"]["coworkers"]
+                .as_array()
+                .and_then(|arr| arr.first())
+                .and_then(|cw| cw["name"].as_str())
+        })
         .unwrap_or("unknown");
 
     eprintln!("Extracted coworker name: {}", coworker_name);
 
-    // Poll for worktree to exist instead of fixed sleep (more robust for CI)
-    let worktree_path = dirs::home_dir()
+    // Poll for any worktree to appear in the worktrees directory.
+    // v2 names worktrees by task slug (e.g., "task-1-description"), not agent name.
+    let worktrees_base = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".midtown")
         .join("projects")
         .join(&fixture.repo_name)
-        .join("worktrees")
-        .join(coworker_name);
+        .join("worktrees");
 
-    eprintln!("Waiting for worktree at: {:?}", worktree_path);
+    eprintln!(
+        "Waiting for worktree in: {:?} (coworker: {})",
+        worktrees_base, coworker_name
+    );
 
-    // Poll for worktree existence (worktree creation is async in CI environments)
-    // Max wait time: 60s (matching other E2E tests), checking every 500ms
     let mut waited = 0;
     let max_wait = Duration::from_secs(60);
     let poll_interval = Duration::from_millis(500);
 
-    while !worktree_path.exists() && waited < max_wait.as_millis() as u64 {
+    let mut worktree_path = worktrees_base.join(coworker_name); // default guess
+    while waited < max_wait.as_millis() as u64 {
+        // Check for any worktree directory (agent name or task slug)
+        if let Ok(entries) = fs::read_dir(&worktrees_base) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() && p.join(".git").exists() {
+                    worktree_path = p;
+                    break;
+                }
+            }
+        }
+        if worktree_path.exists() && worktree_path.join(".git").exists() {
+            break;
+        }
         thread::sleep(poll_interval);
         waited += poll_interval.as_millis() as u64;
     }
 
     if worktree_path.exists() && waited > 0 {
-        eprintln!("Worktree appeared after {}ms", waited);
+        eprintln!(
+            "Worktree appeared after {}ms at {:?}",
+            waited, worktree_path
+        );
     } else if !worktree_path.exists() {
         eprintln!("Worktree did NOT appear after {}ms", waited);
 
@@ -805,10 +831,16 @@ fn test_worktree_isolation() {
     match worktree_list {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
+            // v2 names task worktrees by slug (e.g., "task-test-task-1-..."), not agent name.
+            // Check that the worktree path we found appears in the list.
+            let wt_name = worktree_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             assert!(
-                stdout.contains(coworker_name),
+                stdout.contains(&wt_name),
                 "Worktree '{}' should appear in git worktree list. Got:\n{}",
-                coworker_name,
+                wt_name,
                 stdout
             );
         }

@@ -1,0 +1,115 @@
+<h2>Refined: Flat Task List with Progress Bars</h2>
+<p class="subtitle">Flat list sorted by actionability, channel tags on the right (like A), progress bars from the current UI</p>
+
+<div class="mockup">
+  <div class="mockup-header">Tasks Section in Sidebar</div>
+  <div class="mockup-body" style="font-family: system-ui; font-size: 12px; background: #1a1a2e; color: #ccc; padding: 0;">
+
+    <!-- Section header -->
+    <div style="padding: 10px 14px 6px; display: flex; align-items: center; justify-content: space-between;">
+      <div style="font-size: 10px; text-transform: uppercase; color: #666; letter-spacing: 0.5px; display: flex; align-items: center; gap: 6px;">
+        Tasks
+        <span style="background: #333; color: #aaa; font-size: 9px; padding: 1px 5px; border-radius: 8px;">6</span>
+      </div>
+    </div>
+
+    <!-- Task: In Review (most actionable) -->
+    <div style="padding: 6px 12px; cursor: pointer;">
+      <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+        <span style="color: #a78bfa; font-size: 10px;">●</span>
+        <span style="color: #e0e0e0; flex: 1; font-size: 12px;">add rate limiting</span>
+        <span style="color: #555; font-size: 10px;">#api</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; padding-left: 16px;">
+        <div style="flex: 1; height: 3px; background: #2a2a4a; border-radius: 2px; overflow: hidden; display: flex;">
+          <div style="width: 70%; height: 100%; background: #a78bfa; transition: width 0.5s;"></div>
+          <div style="width: 15%; height: 100%; background: #f472b6; transition: width 0.5s;"></div>
+        </div>
+        <span style="font-size: 9px; color: #2dd4bf; font-family: monospace;">85%</span>
+      </div>
+    </div>
+
+    <!-- Task: In Progress -->
+    <div style="padding: 6px 12px; cursor: pointer;">
+      <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+        <span style="color: #f59e0b; font-size: 10px;">●</span>
+        <span style="color: #e0e0e0; flex: 1; font-size: 12px;">refactor auth middleware</span>
+        <span style="color: #555; font-size: 10px;">#auth</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; padding-left: 16px;">
+        <div style="flex: 1; height: 3px; background: #2a2a4a; border-radius: 2px; overflow: hidden; display: flex;">
+          <div style="width: 45%; height: 100%; background: #f59e0b; transition: width 0.5s;"></div>
+        </div>
+        <span style="font-size: 9px; color: #2dd4bf; font-family: monospace;">45%</span>
+      </div>
+    </div>
+
+    <!-- Task: In Progress -->
+    <div style="padding: 6px 12px; cursor: pointer;">
+      <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+        <span style="color: #f59e0b; font-size: 10px;">●</span>
+        <span style="color: #e0e0e0; flex: 1; font-size: 12px;">fix mobile scroll perf</span>
+        <span style="color: #555; font-size: 10px;">#mobile</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; padding-left: 16px;">
+        <div style="flex: 1; height: 3px; background: #2a2a4a; border-radius: 2px; overflow: hidden; display: flex;">
+          <div style="width: 22%; height: 100%; background: #38bdf8; transition: width 0.5s;"></div>
+        </div>
+        <span style="font-size: 9px; color: #2dd4bf; font-family: monospace;">22%</span>
+      </div>
+    </div>
+
+    <!-- Divider: done tasks -->
+    <div style="padding: 8px 14px 4px;">
+      <div style="font-size: 9px; color: #555; display: flex; align-items: center; gap: 8px;">
+        <span>Completed today</span>
+        <div style="flex: 1; height: 1px; background: #2a2a4a;"></div>
+        <span style="cursor: pointer;">▾</span>
+      </div>
+    </div>
+
+    <!-- Done tasks (dimmed, collapsible) -->
+    <div style="padding: 4px 12px; opacity: 0.5;">
+      <div style="display: flex; align-items: center; gap: 6px; padding: 4px 0;">
+        <span style="color: #4ade80; font-size: 10px;">✓</span>
+        <span style="color: #ccc; flex: 1; font-size: 12px;">update CI pipeline</span>
+        <span style="color: #444; font-size: 10px;">#ci</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; padding: 4px 0;">
+        <span style="color: #4ade80; font-size: 10px;">✓</span>
+        <span style="color: #ccc; flex: 1; font-size: 12px;">write onboarding docs</span>
+        <span style="color: #444; font-size: 10px;">#docs</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; padding: 4px 0;">
+        <span style="color: #4ade80; font-size: 10px;">✓</span>
+        <span style="color: #ccc; flex: 1; font-size: 12px;">seed test data</span>
+        <span style="color: #444; font-size: 10px;">#api</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div style="margin-top: 20px;">
+  <h3>Key design choices shown here:</h3>
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px;">
+    <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 12px;">
+      <div style="font-size: 11px; color: #a78bfa; margin-bottom: 4px; font-weight: 600;">Progress bars</div>
+      <div style="font-size: 12px; color: #999;">Multi-segment colored bars from current TaskRow — owner color + reviewer segment</div>
+    </div>
+    <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 12px;">
+      <div style="font-size: 11px; color: #f59e0b; margin-bottom: 4px; font-weight: 600;">Sort order</div>
+      <div style="font-size: 12px; color: #999;">Review → In Progress → Done. Most actionable first.</div>
+    </div>
+    <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 12px;">
+      <div style="font-size: 11px; color: #4ade80; margin-bottom: 4px; font-weight: 600;">Completed section</div>
+      <div style="font-size: 12px; color: #999;">Dimmed, collapsible "Completed today" — no progress bars needed, just ✓</div>
+    </div>
+    <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 12px;">
+      <div style="font-size: 11px; color: #2dd4bf; margin-bottom: 4px; font-weight: 600;">Channel tags</div>
+      <div style="font-size: 12px; color: #999;">Right-aligned, muted — provides context without dominating</div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top: 16px;">Does this feel right? Anything you'd change about density, info shown, or the completed section?</p>

@@ -38,7 +38,7 @@ fn test_writable_dirs_includes_config_dirs() {
     let has_midtown_project = dirs
         .iter()
         .any(|d| d.contains(".midtown/projects/test-project"));
-    let has_midtown_auth = dirs.iter().any(|d| d.contains(".midtown/auth"));
+    let has_midtown_platforms = dirs.iter().any(|d| d.contains(".midtown/platforms"));
     let has_claude = dirs.iter().any(|d| d.ends_with(".claude"));
     let has_codex = dirs.iter().any(|d| d.ends_with(".codex"));
     assert!(
@@ -46,8 +46,8 @@ fn test_writable_dirs_includes_config_dirs() {
         "Should include ~/.midtown/projects/test-project"
     );
     assert!(
-        has_midtown_auth,
-        "Should include ~/.midtown/auth (CLAUDE_CONFIG_DIR / CODEX_HOME profile dirs)"
+        has_midtown_platforms,
+        "Should include ~/.midtown/platforms (auth profiles + shared platform state)"
     );
     assert!(has_claude, "Should include ~/.claude");
     assert!(has_codex, "Should include ~/.codex");
@@ -682,12 +682,12 @@ fn test_auth_profile_dirs_are_sandbox_writable() {
         );
     }
 
-    // Also verify the common parent (~/.midtown/auth/) is writable,
+    // Also verify the common parent (~/.midtown/platforms/) is writable,
     // so future profiles added under it are automatically covered.
-    let auth_base = home.join(".midtown").join("auth");
-    let auth_str = auth_base
+    let platforms_base = home.join(".midtown").join("platforms");
+    let platforms_str = platforms_base
         .canonicalize()
-        .unwrap_or_else(|_| auth_base.clone())
+        .unwrap_or_else(|_| platforms_base.clone())
         .to_string_lossy()
         .to_string();
     assert!(
@@ -697,9 +697,9 @@ fn test_auth_profile_dirs_are_sandbox_writable() {
                 .unwrap_or_else(|_| PathBuf::from(d))
                 .to_string_lossy()
                 .to_string();
-            auth_str.starts_with(&canonical)
+            platforms_str.starts_with(&canonical)
         }),
-        "~/.midtown/auth/ should be under a sandbox-writable path"
+        "~/.midtown/platforms/ should be under a sandbox-writable path"
     );
 }
 

@@ -291,11 +291,13 @@ impl DaemonTestHarness {
         let log_file = fs::File::create(&log_path).ok();
         let log_err = fs::File::create(&err_path).ok();
 
-        // Build daemon command
+        // Build daemon command (uses daemon-v2 via the `daemon` alias)
         let mut cmd = Command::new(&binary_path);
         cmd.arg("daemon")
             .arg("--workdir")
-            .arg(&self.temp_dir)
+            .arg(&self.repo_name)
+            .arg("--channel")
+            .arg(&self.repo_name)
             .current_dir(&self.temp_dir)
             .env("MIDTOWN_CHAT_MONITOR", "0") // Disable for tests
             .env("XDG_STATE_HOME", &self.state_dir)

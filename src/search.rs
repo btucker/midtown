@@ -55,7 +55,7 @@ pub fn build_snippet(content: &str, query: &str, context_chars: usize) -> String
 
     let pos = match lower_content.find(&lower_query) {
         Some(p) => p,
-        None => return crate::daemon::helpers::truncate_str(content, context_chars * 2),
+        None => return crate::text::truncate_str(content, context_chars * 2),
     };
 
     let start = pos.saturating_sub(context_chars);
