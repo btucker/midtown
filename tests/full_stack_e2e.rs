@@ -674,9 +674,12 @@ fn test_worktree_isolation() {
         "Fixture failed to start daemon via `midtown start`"
     );
 
-    // Spawn a coworker via RPC. The daemon assigns names from the avenue pool,
-    // so we don't specify a name - just check the returned name.
-    let spawn_response = fixture.rpc_call("coworker.spawn", None);
+    // Spawn a coworker with a task_id so the daemon creates a worktree for it.
+    // (v2 only creates worktrees for task-bound workers, not bare coworkers.)
+    let spawn_response = fixture.rpc_call(
+        "coworker.spawn",
+        Some(serde_json::json!({"task_id": "test-task-1", "prompt": "test worktree isolation"})),
+    );
 
     assert!(
         spawn_response.is_some(),
@@ -828,10 +831,16 @@ fn test_worktree_isolation() {
     match worktree_list {
         Ok(output) if output.status.success() => {
             let stdout = String::from_utf8_lossy(&output.stdout);
+            // v2 names task worktrees by slug (e.g., "task-test-task-1-..."), not agent name.
+            // Check that the worktree path we found appears in the list.
+            let wt_name = worktree_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             assert!(
-                stdout.contains(coworker_name),
+                stdout.contains(&wt_name),
                 "Worktree '{}' should appear in git worktree list. Got:\n{}",
-                coworker_name,
+                wt_name,
                 stdout
             );
         }
