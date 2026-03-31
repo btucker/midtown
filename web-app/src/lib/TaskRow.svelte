@@ -146,7 +146,7 @@ function handleDescriptionClick(e) {
         </div>
         <span class="shrink-0 text-[0.6rem] text-[hsl(var(--accent-teal))] tabular-nums">{doneCount}/{children.length}</span>
       </div>
-    {:else if isActive && (hasProgress || effectiveReviewer) && task.owner}
+    {:else if isActive && task.owner}
       {@const segments = lifecycleSegments(effectiveCw?.progress ?? 0, effectiveReviewer, effectiveReviewPosted, ownerColor || getSenderColor(task.owner), effectiveReviewer ? getSenderColor(effectiveReviewer) : null)}
       {@const totalPct = Math.round(segments.reduce((sum, s) => sum + s.width, 0))}
       <div class="flex items-center gap-1.5 pr-0.5">
