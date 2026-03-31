@@ -830,31 +830,45 @@ pub async fn auth_login_code(
         }
     }
 
-    // Wait briefly for process to complete, then let it finish in background
+    // Wait for process to complete — auth code submission should be fast
     let mut child = process.child;
-    match tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await {
+    let auth_ok = match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait()).await
+    {
         Ok(Ok(status)) if status.success() => {
             tracing::info!("auth login completed successfully");
-            Json(json!({"ok": true}))
+            true
         }
         Ok(Ok(status)) => {
-            Json(json!({"ok": false, "error": format!("auth login exited with {status}")}))
+            return Json(json!({"ok": false, "error": format!("auth login exited with {status}")}));
         }
-        Ok(Err(e)) => Json(json!({"ok": false, "error": format!("auth login error: {e}")})),
+        Ok(Err(e)) => {
+            return Json(json!({"ok": false, "error": format!("auth login error: {e}")}));
+        }
         Err(_) => {
-            // Process still running — let it finish in background
-            tokio::spawn(async move {
-                match tokio::time::timeout(std::time::Duration::from_secs(60), child.wait()).await {
-                    Ok(Ok(status)) => tracing::info!(%status, "auth login completed in background"),
-                    _ => {
-                        let _ = child.kill().await;
-                    }
-                }
-            });
-            // Return success — the code was written, process is working
-            Json(json!({"ok": true, "note": "auth login still processing"}))
+            let _ = child.kill().await;
+            return Json(json!({"ok": false, "error": "auth login timed out after 30s"}));
         }
+    };
+
+    // After successful auth, restart all running agents so they pick up the new token.
+    // Stop them — the scheduler will respawn leads, and task dispatch will respawn workers.
+    if auth_ok {
+        let proj = state.projections.lock().await;
+        let running: Vec<String> = proj.agents.running.iter().cloned().collect();
+        drop(proj);
+        for agent_id in running {
+            let cmd = crate::daemon_v2::decisions::Command::StopAgent {
+                id: agent_id,
+                reason: "restarting after auth refresh".into(),
+            };
+            if let Err(e) = state.command_tx.send(cmd).await {
+                tracing::warn!(%e, "failed to send stop command after auth refresh");
+            }
+        }
+        tracing::info!("stopped all running agents for auth refresh — scheduler will respawn");
     }
+
+    Json(json!({"ok": true}))
 }
 
 pub struct AuthLoginProcess {
