@@ -446,6 +446,7 @@ function insertAutocompleteItem(item) {
 
 // Cache current tasks to avoid recalculating on every render
 let currentTasks = $derived(getCurrentTasks($coworkers));
+let currentTaskIds = $derived(getCurrentTaskIds($coworkers));
 
 // Get PR status from kanban data
 function getPrStatus(prNum) {
@@ -571,12 +572,23 @@ function handleMessageTap(event, msg) {
 	event.preventDefault();
 }
 
-// Build a map of coworker name -> current task
+// Build a map of coworker name -> current task label
 function getCurrentTasks(coworkerList) {
 	const map = {};
 	for (const cw of coworkerList) {
 		if (cw.current_task) {
 			map[cw.name.toLowerCase()] = cw.current_task;
+		}
+	}
+	return map;
+}
+
+// Build a map of coworker name -> task_id (for linking task labels to threads)
+function getCurrentTaskIds(coworkerList) {
+	const map = {};
+	for (const cw of coworkerList) {
+		if (cw.task_id != null) {
+			map[cw.name.toLowerCase()] = cw.task_id;
 		}
 	}
 	return map;
@@ -891,6 +903,7 @@ function getToolCallStatusIcon(entry) {
               startIndex={renderStartIndex + segment._offset}
               channelName={$activeChannel}
               {currentTasks}
+              {currentTaskIds}
               showToolData={showInlineToolData}
             />
           {:else}
@@ -928,6 +941,7 @@ function getToolCallStatusIcon(entry) {
               index={globalIndex}
               senderClass="mt-1"
               currentTask={currentTasks[msg.from.toLowerCase()]}
+              currentTaskId={currentTaskIds[msg.from.toLowerCase()]}
               channelName={$activeChannel}
               showToolData={showInlineToolData}
             />

@@ -13,6 +13,7 @@ let {
 	startIndex = 0,
 	channelName = undefined,
 	currentTasks = {},
+	currentTaskIds = {},
 	showToolData = true,
 } = $props();
 
@@ -94,6 +95,7 @@ function toggle() {
 				senderClass="mt-1"
 				{channelName}
 				currentTask={currentTasks[entry.msg.from?.toLowerCase()]}
+				currentTaskId={currentTaskIds[entry.msg.from?.toLowerCase()]}
 				{showToolData}
 			/>
 		{/each}

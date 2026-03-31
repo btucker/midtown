@@ -14,7 +14,8 @@ import {
 	senderChanged,
 	timeChanged,
 } from "./messageUtils.ts";
-import { activeProject, channels, coworkers, threadForkOwners } from "./store.ts";
+import { activeProject, channels, coworkers, kanbanData, activeChannel, threadForkOwners } from "./store.ts";
+import { openTaskThread } from "./api.ts";
 import ToolDataBlocks from "./ToolDataBlocks.svelte";
 import { isToolOnly } from "./toolRunGrouping.ts";
 
@@ -30,6 +31,7 @@ let {
 	senderSpacing = "1.5em",
 	senderClass = "",
 	currentTask = undefined,
+	currentTaskId = undefined,
 	channelName = undefined,
 	threadParentId = undefined,
 	isDedicatedSession = false,
@@ -201,7 +203,20 @@ let hidden = $derived(!showToolData && isToolOnly(msg));
           </span>
         {/if}
         {#if currentTask}
-          <span class="text-muted-foreground text-[0.7rem]"> — {currentTask}</span>
+          {#if currentTaskId}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <span
+              class="text-muted-foreground text-[0.7rem] cursor-pointer hover:text-foreground hover:underline"
+              onclick={(e) => {
+                e.stopPropagation();
+                const allTasks = [...$kanbanData.inProgress, ...$kanbanData.backlog];
+                const task = allTasks.find((t) => t.id === currentTaskId);
+                if (task) openTaskThread(task, task.channel || $activeChannel);
+              }}
+            > — {currentTask}</span>
+          {:else}
+            <span class="text-muted-foreground text-[0.7rem]"> — {currentTask}</span>
+          {/if}
         {/if}
       </div>
       {#if children}
