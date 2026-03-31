@@ -26,7 +26,7 @@ $effect(() => {
 		return;
 	}
 	if (iconName === loadedName) return;
-	import(`@lucide/svelte/icons/${iconName}`)
+	import(/* @vite-ignore */ `@lucide/svelte/icons/${iconName}`)
 		.then((m) => {
 			Comp = m.default;
 			loadedName = iconName;
