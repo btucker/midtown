@@ -770,7 +770,7 @@ export function handleUpdate(update: Record<string, unknown>): void {
 					msg_type: "text",
 					thread_parent_id: d.thread_id || null,
 					tool_data: d.tool_data || undefined,
-					auto_output: d.tool_data ? true : undefined,
+					auto_output: d.auto_output || d.tool_data ? true : undefined,
 				},
 			};
 		} else {
@@ -845,8 +845,8 @@ export function handleUpdate(update: Record<string, unknown>): void {
 				// user's own message, and increment unread for tracked threads.
 				// Compare against both 'user' and the configured user_display_name to avoid
 				// counting the user's own replies as unread.
-				// Skip tool-only messages — they inflate unread badges with visual noise.
-				if (!isToolOnly(msg) && msg.from !== "user" && msg.from !== get(userSenderName)) {
+				// Skip tool-only and auto-output messages — they inflate unread badges with visual noise.
+				if (!isToolOnly(msg) && !msg.auto_output && msg.from !== "user" && msg.from !== get(userSenderName)) {
 					// Auto-track: if the parent message was sent by the user, track
 					// the thread in the sidebar so the user sees replies to their messages.
 					// Pass reply content so fullText shows the reply, not the parent.

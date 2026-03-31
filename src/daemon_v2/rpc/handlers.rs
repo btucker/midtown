@@ -524,6 +524,7 @@ pub fn handle_channel_post(
         content: content.to_string(),
         thread_id: thread_id.map(String::from),
         tool_data: None,
+        auto_output: false,
     }];
 
     let mention_commands =

@@ -404,6 +404,7 @@ fn at_channel_name_spawns_lead_for_known_channel_without_agents() {
         content: "channel created".into(),
         thread_id: None,
         tool_data: None,
+        auto_output: false,
     });
 
     // @docs should trigger a lead spawn (channel exists but has no agents)
