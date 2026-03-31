@@ -889,15 +889,21 @@ fn test_daemon_v2_nudge_stopped_agent_triggers_resume() {
     );
     assert!(resp["error"].is_null(), "stop should succeed: {resp}");
 
-    // Wait for it to actually stop
-    std::thread::sleep(Duration::from_secs(3));
-    let resp = harness.rpc_call("agent.list", None);
-    let agents = resp["result"].as_array().unwrap();
-    let stopped = agents
-        .iter()
-        .find(|a| a["id"] == agent_id)
-        .map(|a| a["running"] == false)
-        .unwrap_or(false);
+    // Poll for the agent to stop (background stop is async in non-blocking executor)
+    let mut stopped = false;
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_secs(1));
+        let resp = harness.rpc_call("agent.list", None);
+        let agents = resp["result"].as_array().unwrap();
+        stopped = agents
+            .iter()
+            .find(|a| a["id"] == agent_id)
+            .map(|a| a["running"] == false)
+            .unwrap_or(false);
+        if stopped {
+            break;
+        }
+    }
     assert!(stopped, "agent should be stopped after break");
 
     // Nudge the stopped agent — this should trigger a resume

@@ -714,30 +714,48 @@ fn test_worktree_isolation() {
 
     eprintln!("Extracted coworker name: {}", coworker_name);
 
-    // Poll for worktree to exist instead of fixed sleep (more robust for CI)
-    let worktree_path = dirs::home_dir()
+    // Poll for any worktree to appear in the worktrees directory.
+    // v2 names worktrees by task slug (e.g., "task-1-description"), not agent name.
+    let worktrees_base = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".midtown")
         .join("projects")
         .join(&fixture.repo_name)
-        .join("worktrees")
-        .join(coworker_name);
+        .join("worktrees");
 
-    eprintln!("Waiting for worktree at: {:?}", worktree_path);
+    eprintln!(
+        "Waiting for worktree in: {:?} (coworker: {})",
+        worktrees_base, coworker_name
+    );
 
-    // Poll for worktree existence (worktree creation is async in CI environments)
-    // Max wait time: 60s (matching other E2E tests), checking every 500ms
     let mut waited = 0;
     let max_wait = Duration::from_secs(60);
     let poll_interval = Duration::from_millis(500);
 
-    while !worktree_path.exists() && waited < max_wait.as_millis() as u64 {
+    let mut worktree_path = worktrees_base.join(coworker_name); // default guess
+    while waited < max_wait.as_millis() as u64 {
+        // Check for any worktree directory (agent name or task slug)
+        if let Ok(entries) = fs::read_dir(&worktrees_base) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() && p.join(".git").exists() {
+                    worktree_path = p;
+                    break;
+                }
+            }
+        }
+        if worktree_path.exists() && worktree_path.join(".git").exists() {
+            break;
+        }
         thread::sleep(poll_interval);
         waited += poll_interval.as_millis() as u64;
     }
 
     if worktree_path.exists() && waited > 0 {
-        eprintln!("Worktree appeared after {}ms", waited);
+        eprintln!(
+            "Worktree appeared after {}ms at {:?}",
+            waited, worktree_path
+        );
     } else if !worktree_path.exists() {
         eprintln!("Worktree did NOT appear after {}ms", waited);
 
