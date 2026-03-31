@@ -113,7 +113,6 @@ fn test_fetch_multi_usage_mixed_providers_no_panic() {
     let profiles = vec![
         (AuthProvider::Claude, "claude-profile".to_string()),
         (AuthProvider::Codex, "codex-profile".to_string()),
-        (AuthProvider::Zai, "zai-profile".to_string()),
     ];
     let _ = fetch_multi_usage(&profiles);
 }
@@ -147,48 +146,8 @@ fn test_codex_snapshot_to_usage_prefers_5h_and_7d_windows() {
 #[test]
 fn test_parse_status_text_fallback_with_two_percents() {
     let text = "Provider status: 12% used now, 34% weekly.";
-    let usage = parse_status_text_to_usage(text, AuthProvider::Zai, "zai-profile").unwrap();
+    let usage = parse_status_text_to_usage(text, AuthProvider::Claude, "test-profile").unwrap();
     assert_eq!(usage.session_util, 12.0);
     assert_eq!(usage.week_util, 34.0);
 }
 
-#[test]
-fn test_zai_monitor_usage_urls_from_anthropic_base() {
-    let urls = zai_monitor_usage_urls("https://api.z.ai/api/anthropic");
-    assert!(
-        urls.iter()
-            .any(|u| u == "https://api.z.ai/api/monitor/usage/quota/limit")
-    );
-}
-
-#[test]
-fn test_parse_zai_monitor_usage_response_labeled_windows() {
-    let body = r#"{
-        "data": {
-            "session_limit": { "usedPercent": 12.5, "resetAt": "2026-02-17T20:00:00Z" },
-            "week_limit": { "usedPercent": 44.0, "resetAt": "2026-02-21T20:00:00Z" }
-        }
-    }"#;
-
-    let usage = parse_zai_monitor_usage_response(body, "zai-profile").unwrap();
-    assert_eq!(usage.session_util, 12.5);
-    assert_eq!(usage.week_util, 44.0);
-    assert!(usage.session_resets.is_some());
-    assert!(usage.week_resets.is_some());
-}
-
-#[test]
-fn test_parse_zai_monitor_usage_response_used_limit_pair() {
-    let body = r#"{
-        "data": {
-            "limits": [
-                { "window_minutes": 300, "used": 25, "limit": 100 },
-                { "window_minutes": 10080, "used": 150, "limit": 600 }
-            ]
-        }
-    }"#;
-
-    let usage = parse_zai_monitor_usage_response(body, "zai-profile").unwrap();
-    assert_eq!(usage.session_util, 25.0);
-    assert_eq!(usage.week_util, 25.0);
-}

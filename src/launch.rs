@@ -114,48 +114,6 @@ pub struct LaunchCommand {
     pub session_id: Option<String>,
 }
 
-/// Read z.ai environment variables from profile directory.
-///
-/// Returns (ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL).
-/// Base URL defaults to https://api.z.ai/api/anthropic if not configured.
-pub fn zai_env_vars(profile_dir: &std::path::Path) -> std::io::Result<(String, String)> {
-    let api_key_file = profile_dir.join("api_key.txt");
-    let api_key = std::fs::read_to_string(&api_key_file)
-        .map_err(|e| {
-            std::io::Error::new(
-                e.kind(),
-                format!(
-                    "Failed to read z.ai API key from {}: {}",
-                    api_key_file.display(),
-                    e
-                ),
-            )
-        })?
-        .trim()
-        .to_string();
-
-    let base_url_file = profile_dir.join("base_url.txt");
-    let base_url = if base_url_file.exists() {
-        std::fs::read_to_string(&base_url_file)
-            .map_err(|e| {
-                std::io::Error::new(
-                    e.kind(),
-                    format!(
-                        "Failed to read z.ai base URL from {}: {}",
-                        base_url_file.display(),
-                        e
-                    ),
-                )
-            })?
-            .trim()
-            .to_string()
-    } else {
-        "https://api.z.ai/api/anthropic".to_string()
-    };
-
-    Ok((api_key, base_url))
-}
-
 /// Build environment variables common to all agent sessions (headless and interactive).
 ///
 /// Returns a BTreeMap of env var name -> value that should be set for any Claude Code
@@ -181,41 +139,13 @@ pub fn build_agent_env_vars(
     env.insert("DISABLE_AUTOUPDATER".to_string(), "1".to_string());
 
     // Set auth-provider-specific env vars
-    match auth_provider {
-        crate::auth::AuthProvider::Zai => {
-            // z.ai uses API key + base URL, no config dir
-            match zai_env_vars(auth_profile_dir) {
-                Ok((api_key, base_url)) => {
-                    env.insert("ANTHROPIC_AUTH_TOKEN".to_string(), api_key);
-                    env.insert("ANTHROPIC_BASE_URL".to_string(), base_url);
-                    // Anthropic alias -> GLM mapping for z.ai provider.
-                    env.insert(
-                        "ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string(),
-                        "GLM-4.5-Air".to_string(),
-                    );
-                    env.insert(
-                        "ANTHROPIC_DEFAULT_SONNET_MODEL".to_string(),
-                        "GLM-4.7".to_string(),
-                    );
-                    env.insert(
-                        "ANTHROPIC_DEFAULT_OPUS_MODEL".to_string(),
-                        "GLM-5".to_string(),
-                    );
-                }
-                Err(e) => {
-                    eprintln!("Warning: failed to load z.ai credentials: {}", e);
-                }
-            }
-        }
-        _ => {
-            // Claude and Codex use config dir env var
-            let env_var = auth_provider.env_var();
-            if !env_var.is_empty() {
-                env.insert(
-                    env_var.to_string(),
-                    auth_profile_dir.to_string_lossy().to_string(),
-                );
-            }
+    {
+        let env_var = auth_provider.env_var();
+        if !env_var.is_empty() {
+            env.insert(
+                env_var.to_string(),
+                auth_profile_dir.to_string_lossy().to_string(),
+            );
         }
     }
 
@@ -262,7 +192,7 @@ pub fn channel_lead_session_name(channel_name: &str) -> String {
 /// Tools that channel leads (and their forks) are not allowed to use.
 ///
 /// Channel leads are coordinators and domain experts — they scope work and create
-/// tasks, but never implement code. For Claude/z.ai providers, this list is passed
+/// tasks, but never implement code. For Claude providers, this list is passed
 /// as `--disallowedTools` to the CLI, providing hard enforcement that the LLM
 /// cannot bypass. For Codex, `disallowed_tools` is not supported, so enforcement
 /// relies on the prompt-based instruction in the channel lead agent definition.
@@ -273,7 +203,7 @@ pub fn channel_lead_session_name(channel_name: &str) -> String {
 /// maintain their notes and workflow files in `~/.midtown/projects/*/channels/*/`.
 /// The soft restriction in the channel lead agent definition covers "do not use Bash to
 /// modify code", which is sufficient since Write is hard-blocked for
-/// Claude/z.ai and prompt-restricted for Codex.
+/// Claude and prompt-restricted for Codex.
 pub fn channel_lead_disallowed_tools() -> Vec<String> {
     ["Write", "NotebookEdit"]
         .iter()
@@ -793,7 +723,7 @@ impl LaunchConfig {
     /// Build the full shell command string for launching the configured provider in a terminal pane.
     ///
     /// `settings_file`, `prompt_file`, and `initial_prompt_file` are provider
-    /// launch inputs. Claude/z.ai consume the files directly via `$(cat ...)`;
+    /// launch inputs. Claude consumes the files directly via `$(cat ...)`;
     /// Codex reads `initial_prompt_file` eagerly and forwards its contents as
     /// the final positional prompt argument because its interactive CLI does not
     /// accept the same file-based prompt pattern.
@@ -1200,38 +1130,6 @@ mod tests {
             !headless.env.contains_key("CLAUDE_CONFIG_DIR"),
             "Codex provider should not inject CLAUDE_CONFIG_DIR"
         );
-    }
-
-    #[test]
-    fn test_to_headless_config_uses_zai_env_model_defaults() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("api_key.txt"), "test-key\n").expect("write api key");
-        std::fs::write(
-            dir.path().join("base_url.txt"),
-            "https://api.z.ai/api/anthropic\n",
-        )
-        .expect("write base url");
-
-        let mut config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None);
-        config.auth_provider = crate::auth::AuthProvider::Zai;
-        config.auth_profile_dir = Some(dir.path().to_path_buf());
-        config.model = "haiku".to_string();
-
-        let headless = config.to_headless_config(&test_paths());
-
-        assert_eq!(
-            headless.env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL"),
-            Some(&"GLM-4.5-Air".to_string())
-        );
-        assert_eq!(
-            headless.env.get("ANTHROPIC_DEFAULT_SONNET_MODEL"),
-            Some(&"GLM-4.7".to_string())
-        );
-        assert_eq!(
-            headless.env.get("ANTHROPIC_DEFAULT_OPUS_MODEL"),
-            Some(&"GLM-5".to_string())
-        );
-        assert_eq!(headless.model, "haiku");
     }
 
     // Tests for parse_task_model function

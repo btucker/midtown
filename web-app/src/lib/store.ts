@@ -174,13 +174,13 @@ export const userSenderName = writable<string>("user");
 export const multiProjectMode = writable<boolean>(true);
 
 // Auth profiles: Map of provider -> [{name, is_current, has_credentials}]
-// Example: { 'claude': [...], 'codex': [...], 'zai': [...] }
+// Example: { 'claude': [...], 'codex': [...] }
 export const authProfilesByProvider = writable<Record<string, AuthProfile[]>>({});
 
 // Legacy: single flat array for backward compatibility
 export const authProfiles = writable<AuthProfile[]>([]);
 
-// Currently selected auth provider ('claude', 'codex', 'zai')
+// Currently selected auth provider ('claude', 'codex')
 export const selectedAuthProvider = writable<string>("claude");
 
 // Whether an auth switch is in progress

@@ -5,7 +5,7 @@
 
 /// Default model alias for an agent type/provider pair.
 ///
-/// Claude/z.ai use "sonnet" for coworker/channel-lead and "opus" for lead/reviewer.
+/// Claude uses "sonnet" for coworker/channel-lead and "opus" for lead/reviewer.
 /// Codex uses "gpt-5.4" for all roles.
 pub fn default_model_for_provider_role(
     provider: crate::auth::AuthProvider,
@@ -45,7 +45,7 @@ pub fn normalize_model_for_provider_role(
 
     match provider {
         crate::auth::AuthProvider::Codex => {
-            // Claude/z.ai aliases are not valid in Codex.
+            // Claude aliases are not valid in Codex.
             if lower.contains("sonnet") || lower.contains("opus") || lower.contains("haiku") {
                 default_model.to_string()
             } else {
@@ -53,7 +53,7 @@ pub fn normalize_model_for_provider_role(
             }
         }
         crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {
-            // OpenAI/Codex model aliases are not valid in Claude/z.ai.
+            // OpenAI/Codex model aliases are not valid in Claude.
             if is_openai_model_alias(&lower) {
                 default_model.to_string()
             } else {
@@ -108,7 +108,7 @@ pub fn provider_for_model_alias(model: &str) -> Option<crate::auth::AuthProvider
         return None;
     }
 
-    // Claude/z.ai model aliases
+    // Claude model aliases
     if lower.contains("sonnet") || lower.contains("opus") || lower.contains("haiku") {
         return Some(crate::auth::AuthProvider::Claude);
     }

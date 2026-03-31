@@ -17,8 +17,7 @@ static CLAUDE_PLUGIN_SYNC_OK: AtomicBool = AtomicBool::new(false);
 
 /// Run platform-specific pre-launch hooks.
 ///
-/// Providers are normalized to launch platforms first (`zai` uses the Claude
-/// platform). When `profile_dir` is provided, provider setup that writes into a
+/// Providers are normalized to launch platforms first. When `profile_dir` is provided, provider setup that writes into a
 /// profile container targets that explicit directory instead of the ambient
 /// local profile. Codex skill sync relies on this so attach/resume flows update
 /// the launched session's `CODEX_HOME`, not whichever Codex profile is currently active.

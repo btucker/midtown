@@ -18,12 +18,6 @@ fn test_platform_from_provider_claude_is_claude() {
 }
 
 #[test]
-fn test_platform_from_provider_zai_is_claude() {
-    // z.ai uses the same claude binary, just different auth
-    assert_eq!(Platform::from_provider(AuthProvider::Zai), Platform::Claude);
-}
-
-#[test]
 fn test_platform_from_provider_codex_is_codex() {
     assert_eq!(
         Platform::from_provider(AuthProvider::Codex),

@@ -9,7 +9,7 @@ fn test_status_response_with_full_info() {
         "socket_path": "/tmp/midtown.sock",
         "coworkers": [
             {"name": "lex", "status": "running", "current_task": "implement auth", "started_at": "2024-01-01T00:00:00Z", "provider": "claude", "profile": "ben@quotably.com"},
-            {"name": "park", "status": "running", "current_task": null, "started_at": "2024-01-01T00:00:00Z", "provider": "zai", "profile": "ben@btucker.net"}
+            {"name": "park", "status": "running", "current_task": null, "started_at": "2024-01-01T00:00:00Z", "provider": "codex", "profile": "ben@btucker.net"}
         ],
         "tasks": [
             {"id": "t1", "subject": "implement auth endpoint", "status": "in_progress", "assignee": "lex"}
@@ -41,7 +41,7 @@ fn test_status_response_with_full_info() {
                 Some("ben@quotably.com".to_string())
             );
             assert_eq!(full.coworkers[1].current_task, None);
-            assert_eq!(full.coworkers[1].provider, Some("zai".to_string()));
+            assert_eq!(full.coworkers[1].provider, Some("codex".to_string()));
             assert_eq!(
                 full.coworkers[1].profile,
                 Some("ben@btucker.net".to_string())
@@ -88,7 +88,7 @@ fn test_coworkers_response_includes_provider_and_profile() {
     // Test that coworker list includes provider and profile fields
     let json = r#"{"success": true, "coworkers": [
         {"name": "lexington", "status": "running", "current_task": null, "started_at": "2026-01-26T20:52:06.779326+00:00", "provider": "claude", "profile": "ben@quotably.com"},
-        {"name": "park", "status": "running", "current_task": "reviewing PR", "started_at": "2026-01-26T20:52:06.779326+00:00", "provider": "zai", "profile": "ben@btucker.net"}
+        {"name": "park", "status": "running", "current_task": "reviewing PR", "started_at": "2026-01-26T20:52:06.779326+00:00", "provider": "codex", "profile": "ben@btucker.net"}
     ]}"#;
     let response: Response = serde_json::from_str(json).expect("Should parse");
 
@@ -97,7 +97,7 @@ fn test_coworkers_response_includes_provider_and_profile() {
             assert_eq!(coworkers.len(), 2);
             assert_eq!(coworkers[0].provider, Some("claude".to_string()));
             assert_eq!(coworkers[0].profile, Some("ben@quotably.com".to_string()));
-            assert_eq!(coworkers[1].provider, Some("zai".to_string()));
+            assert_eq!(coworkers[1].provider, Some("codex".to_string()));
             assert_eq!(coworkers[1].profile, Some("ben@btucker.net".to_string()));
         }
         other => panic!("Expected Coworkers, got {:?}", other),
@@ -179,7 +179,7 @@ fn test_coworkers_response_display_includes_provider_and_profile() {
                 status: "running".to_string(),
                 current_task: None,
                 started_at: None,
-                provider: Some("zai".to_string()),
+                provider: Some("codex".to_string()),
                 profile: Some("ben@btucker.net".to_string()),
                 is_channel_lead: false,
                 input_tokens: 0,
@@ -196,7 +196,7 @@ fn test_coworkers_response_display_includes_provider_and_profile() {
     assert!(pretty.contains("lexington"));
     assert!(pretty.contains("(claude: ben@quotably.com)"));
     assert!(pretty.contains("park"));
-    assert!(pretty.contains("(zai: ben@btucker.net)"));
+    assert!(pretty.contains("(codex: ben@btucker.net)"));
 }
 
 #[test]
@@ -391,7 +391,7 @@ fn test_status_pretty_format() {
                     status: "running".to_string(),
                     current_task: None,
                     started_at: None,
-                    provider: Some("zai".to_string()),
+                    provider: Some("codex".to_string()),
                     profile: Some("ben@btucker.net".to_string()),
                     is_channel_lead: false,
                     input_tokens: 0,
@@ -425,7 +425,7 @@ fn test_status_pretty_format() {
     assert!(
         pretty.contains("lex - working on: implement auth endpoint (claude: ben@quotably.com)")
     );
-    assert!(pretty.contains("park - idle (zai: ben@btucker.net)"));
+    assert!(pretty.contains("park - idle (codex: ben@btucker.net)"));
     assert!(pretty.contains("Tasks: 1 open"));
     assert!(pretty.contains("[in_progress] implement auth endpoint (lex)"));
     assert!(pretty.contains("PRs: 1 open"));

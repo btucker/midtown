@@ -122,7 +122,7 @@ pub fn writable_dirs(
             .to_string_lossy()
             .to_string(),
     );
-    // Legacy: Codex/z.ai profiles still live under ~/.midtown/auth/providers/.
+    // Legacy: Codex profiles still live under ~/.midtown/auth/providers/.
     // Remove this entry once all providers are migrated to the platforms/ layout.
     dirs.push(home.join(".midtown/auth").to_string_lossy().to_string());
     dirs.push(home.join(".claude").to_string_lossy().to_string());

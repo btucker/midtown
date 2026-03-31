@@ -63,15 +63,6 @@ fn normalize_attach_target_accepts_provider_alias() {
 }
 
 #[test]
-fn normalize_attach_target_rejects_zai_platform_selector() {
-    let args = AttachArgs {
-        target: "zai".to_string(),
-        value: Some("abc-123".to_string()),
-    };
-    assert!(normalize_attach_target(&args).is_err());
-}
-
-#[test]
 fn normalize_single_target_defaults_to_name() {
     assert_eq!(normalize_single_target("madison").unwrap(), "name/madison");
 }
@@ -107,7 +98,6 @@ fn parse_provider_accepts_aliases() {
         midtown::auth::AuthProvider::Claude
     );
     assert_eq!(parse_provider("openai"), midtown::auth::AuthProvider::Codex);
-    assert_eq!(parse_provider("z.ai"), midtown::auth::AuthProvider::Zai);
 }
 
 #[test]

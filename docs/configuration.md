@@ -28,13 +28,13 @@ pr_poll_interval_secs = 30            # PR polling interval
 chat_monitor_enabled = true           # Enable @mention routing
 
 [execution]
-lead_provider = "claude"              # Default for all leads ("claude", "codex", or "zai")
-project_lead_provider = "zai"         # Optional override for project/main lead only
+lead_provider = "claude"              # Default for all leads ("claude" or "codex")
+project_lead_provider = "claude"      # Optional override for project/main lead only
 coworker_provider = "codex"           # Default provider for dev coworkers
 reviewer_provider = "claude"          # Independent default for reviewers
 channel_lead_provider = "codex"       # Optional channel-lead override (falls back to lead_provider)
 specialized_provider = "claude"       # Default for specialized workers
-architect_provider = "zai"            # Optional override (falls back to specialized_provider)
+architect_provider = "claude"         # Optional override (falls back to specialized_provider)
 headless_execute_provider = "claude"  # Optional override (falls back to specialized_provider)
 ```
 
@@ -58,7 +58,7 @@ webhook_port = 47023              # Auto-assigned if not set
 
 [execution]
 lead_provider = "codex"           # Shared default for project + channel leads in this project
-project_lead_provider = "zai"     # Optional override for project lead only
+project_lead_provider = "claude"  # Optional override for project lead only
 reviewer_provider = "claude"      # Keep reviewers independent
 ```
 
@@ -84,11 +84,10 @@ Model aliases are auto-normalized per provider at launch:
 
 - Generic sizes:
   - Claude: `small` → `haiku`, `medium` → `sonnet`, `large` → `opus`
-  - z.ai: `small` → `GLM-4.5-Air`, `medium` → `GLM-4.7`, `large` → `GLM-5`
   - Codex: `small` → `gpt-5.1-codex-mini`, `medium` → `gpt-5.3-codex-spark`, `large` → `gpt-5.4`
 - Cross-provider safety:
-  - Claude/z.ai aliases (`haiku`/`sonnet`/`opus`) are normalized to Codex defaults when provider is Codex.
-  - `gpt-5.4` is normalized to role defaults (`opus` for lead/reviewer, `sonnet` for coworker/channel lead) when provider is Claude/z.ai.
+  - Claude aliases (`haiku`/`sonnet`/`opus`) are normalized to Codex defaults when provider is Codex.
+  - `gpt-5.4` is normalized to role defaults (`opus` for lead/reviewer, `sonnet` for coworker/channel lead) when provider is Claude.
 
 ## Environment Variable Overrides
 

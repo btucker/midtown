@@ -1,5 +1,4 @@
 use super::*;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn with_isolated_midtown_base_dir<T>(test: impl FnOnce() -> T) -> T {
@@ -42,10 +41,7 @@ fn test_default_profile_constant() {
 #[test]
 fn test_auth_provider_all_contains_expected_providers() {
     let providers = AuthProvider::all();
-    assert_eq!(
-        providers,
-        &[AuthProvider::Claude, AuthProvider::Codex, AuthProvider::Zai]
-    );
+    assert_eq!(providers, &[AuthProvider::Claude, AuthProvider::Codex]);
 }
 
 #[test]
@@ -57,40 +53,6 @@ fn test_codex_profile_dir_is_provider_scoped() {
         assert!(s.contains("auth"));
         assert!(s.contains("providers/codex/profiles/myprofile"));
     });
-}
-
-#[test]
-fn test_zai_profile_dir_is_provider_scoped() {
-    with_isolated_midtown_base_dir(|| {
-        let dir = profile_dir_for(AuthProvider::Zai, "test@z.ai");
-        let s = dir.to_string_lossy();
-        assert!(s.contains(".midtown"));
-        assert!(s.contains("auth"));
-        assert!(s.contains("providers/zai/profiles/test@z.ai"));
-    });
-}
-
-#[test]
-fn test_zai_provider_from_str() {
-    assert_eq!(AuthProvider::from_str("zai").unwrap(), AuthProvider::Zai);
-    assert_eq!(AuthProvider::from_str("ZAI").unwrap(), AuthProvider::Zai);
-    assert_eq!(AuthProvider::from_str(" zai ").unwrap(), AuthProvider::Zai);
-}
-
-#[test]
-fn test_zai_provider_as_str() {
-    assert_eq!(AuthProvider::Zai.as_str(), "zai");
-}
-
-#[test]
-fn test_zai_provider_env_var() {
-    // z.ai doesn't use a single env var for config dir
-    assert_eq!(AuthProvider::Zai.env_var(), "");
-}
-
-#[test]
-fn test_zai_provider_cli_command() {
-    assert_eq!(AuthProvider::Zai.cli_command(), "claude");
 }
 
 #[test]
@@ -160,7 +122,6 @@ fn test_shared_provider_storage_dir_claude() {
 #[test]
 fn test_shared_provider_storage_dir_other_providers() {
     assert!(shared_provider_storage_dir(AuthProvider::Codex).is_none());
-    assert!(shared_provider_storage_dir(AuthProvider::Zai).is_none());
 }
 
 #[test]

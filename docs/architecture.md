@@ -315,7 +315,7 @@ Note: `route_mentions()` is enabled for non-user, non-system senders in topic ch
 
 ### Forked Sessions (Thread-Specific Channel Leads)
 
-Channel leads can fork themselves into thread-specific sessions via the `session.fork` RPC (`midtown agent fork --thread-id <id>`). A forked session gets an independent session ID bound to a specific thread. Claude/z.ai forks launch as fresh sessions (headless sessions don't persist JSONL files, so `--fork-session` has nothing to fork from); Codex uses `thread/fork`. Fork context is injected via the initial nudge message rather than inherited from the parent session.
+Channel leads can fork themselves into thread-specific sessions via the `session.fork` RPC (`midtown agent fork --thread-id <id>`). A forked session gets an independent session ID bound to a specific thread. Claude forks launch as fresh sessions (headless sessions don't persist JSONL files, so `--fork-session` has nothing to fork from); Codex uses `thread/fork`. Fork context is injected via the initial nudge message rather than inherited from the parent session.
 
 **Root session as router:** The root session stays lightweight — it handles top-level messages and decides when to fork. Once a fork exists for a thread, subsequent replies in that thread bypass the root session entirely and route directly to the fork.
 

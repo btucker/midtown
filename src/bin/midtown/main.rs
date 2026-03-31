@@ -49,7 +49,6 @@ enum OutputFormat {
 enum AuthProviderArg {
     Claude,
     Codex,
-    Zai,
 }
 
 impl From<AuthProviderArg> for midtown::auth::AuthProvider {
@@ -57,7 +56,6 @@ impl From<AuthProviderArg> for midtown::auth::AuthProvider {
         match value {
             AuthProviderArg::Claude => midtown::auth::AuthProvider::Claude,
             AuthProviderArg::Codex => midtown::auth::AuthProvider::Codex,
-            AuthProviderArg::Zai => midtown::auth::AuthProvider::Zai,
         }
     }
 }
@@ -780,25 +778,7 @@ fn main() {
         // Use project-aware resolution when inside a project
         let project = midtown::paths::detect_repo_name().unwrap_or_default();
 
-        // Determine which provider to use for this project
-        let provider = if project.is_empty() {
-            // No project detected - use Claude as default
-            midtown::auth::AuthProvider::Claude
-        } else if let Some(config) = midtown::config::FullProjectConfig::load(&project) {
-            // Check if project has a ZAI profile configured
-            if config
-                .project
-                .auth_profiles
-                .as_ref()
-                .is_some_and(|m| m.contains_key("zai"))
-            {
-                midtown::auth::AuthProvider::Zai
-            } else {
-                midtown::auth::AuthProvider::Claude
-            }
-        } else {
-            midtown::auth::AuthProvider::Claude
-        };
+        let provider = midtown::auth::AuthProvider::Claude;
 
         let (profile, profile_dir) = if project.is_empty() {
             (
@@ -830,27 +810,10 @@ fn main() {
 
         // Set provider-specific environment variables
         match provider {
-            midtown::auth::AuthProvider::Zai => {
-                // z.ai uses ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL
-                match midtown::launch::zai_env_vars(&profile_dir) {
-                    Ok((api_key, base_url)) => {
-                        cmd.env("ANTHROPIC_AUTH_TOKEN", &api_key);
-                        cmd.env("ANTHROPIC_BASE_URL", &base_url);
-                        // Set default model mappings for z.ai (GLM models)
-                        cmd.env("ANTHROPIC_DEFAULT_HAIKU_MODEL", "GLM-4.5-Air");
-                        cmd.env("ANTHROPIC_DEFAULT_OPUS_MODEL", "GLM-5");
-                        cmd.env("ANTHROPIC_DEFAULT_SONNET_MODEL", "GLM-4.7");
-                    }
-                    Err(e) => {
-                        eprintln!("Error: Failed to load z.ai credentials: {}", e);
-                        std::process::exit(1);
-                    }
-                }
-            }
             midtown::auth::AuthProvider::Codex => {
                 cmd.env("CODEX_HOME", &profile_dir);
             }
-            midtown::auth::AuthProvider::Claude => {
+            midtown::auth::AuthProvider::Claude | midtown::auth::AuthProvider::Zai => {
                 cmd.env("CLAUDE_CONFIG_DIR", &profile_dir);
             }
         }

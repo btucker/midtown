@@ -1,6 +1,6 @@
 //! Auth profile management for midtown.
 //!
-//! Manages multiple authentication profiles across providers (Claude, Codex, z.ai), allowing
+//! Manages multiple authentication profiles across providers (Claude, Codex), allowing
 //! different accounts to be used for different purposes (e.g., separate accounts for E2E
 //! testing, development, production).
 //!
@@ -23,7 +23,6 @@
 //! When spawning sessions, set the appropriate environment variable:
 //! - Claude: `CLAUDE_CONFIG_DIR` to the profile directory
 //! - Codex: `CODEX_HOME` to the profile directory
-//! - z.ai: `ANTHROPIC_AUTH_TOKEN` (API key) and `ANTHROPIC_BASE_URL`
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -61,42 +60,53 @@ pub enum AuthProvider {
     #[default]
     Claude,
     Codex,
+    /// Legacy variant kept only for backward-compatible deserialization of
+    /// persisted state (daemon-state.json, TOML configs) that may still
+    /// contain `"zai"`. Mapped to `Claude` on load via `normalize()`.
+    #[serde(rename = "zai")]
+    #[doc(hidden)]
     Zai,
 }
 
 impl AuthProvider {
     /// Providers supported by this build, in display order.
-    pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::Zai];
+    /// Does NOT include `Zai` — that variant exists only for deserialization compat.
+    pub const ALL: [Self; 2] = [Self::Claude, Self::Codex];
 
     /// Iterate all supported providers.
     pub const fn all() -> &'static [Self] {
         &Self::ALL
     }
 
+    /// Normalize legacy provider values. Maps `Zai` → `Claude`.
+    pub const fn normalize(self) -> Self {
+        match self {
+            Self::Zai => Self::Claude,
+            other => other,
+        }
+    }
+
     /// Stable lower-case provider name used in config and paths.
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Claude => "claude",
+            Self::Claude | Self::Zai => "claude",
             Self::Codex => "codex",
-            Self::Zai => "zai",
         }
     }
 
     /// Environment variable used by this provider to resolve auth/config home.
     pub const fn env_var(self) -> &'static str {
         match self {
-            Self::Claude => "CLAUDE_CONFIG_DIR",
+            Self::Claude | Self::Zai => "CLAUDE_CONFIG_DIR",
             Self::Codex => "CODEX_HOME",
-            Self::Zai => "", // z.ai uses multiple env vars (ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL)
         }
     }
 
     /// CLI executable name for interactive login.
     pub const fn cli_command(self) -> &'static str {
         match self {
-            Self::Claude => "claude",
+            Self::Claude | Self::Zai => "claude",
             Self::Codex => "codex",
-            Self::Zai => "claude", // z.ai uses the claude CLI
         }
     }
 }
@@ -112,11 +122,10 @@ impl FromStr for AuthProvider {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "claude" => Ok(Self::Claude),
+            "claude" | "zai" => Ok(Self::Claude),
             "codex" => Ok(Self::Codex),
-            "zai" => Ok(Self::Zai),
             other => Err(format!(
-                "Unsupported provider '{}'. Use one of: claude, codex, zai.",
+                "Unsupported provider '{}'. Use one of: claude, codex.",
                 other
             )),
         }
@@ -181,7 +190,7 @@ pub fn validate_profile_name(name: &str) -> std::io::Result<()> {
 
 /// Get the legacy auth directory.
 ///
-/// Returns `~/.midtown/auth/`. Used only for legacy paths (Codex/z.ai profiles
+/// Returns `~/.midtown/auth/`. Used only for legacy paths (Codex profiles
 /// not yet migrated to the platforms/ layout) and migration code.
 pub fn auth_base_dir() -> PathBuf {
     midtown_base_dir().join("auth")
@@ -190,22 +199,22 @@ pub fn auth_base_dir() -> PathBuf {
 /// Root directory for provider-scoped auth data (legacy).
 ///
 /// For Claude this returns the legacy root (`~/.midtown/auth`).
-/// Codex/z.ai still use this path; Claude profiles have moved to
+/// Codex still uses this path; Claude profiles have moved to
 /// `~/.midtown/platforms/claude/`.
 fn provider_root(provider: AuthProvider) -> PathBuf {
     match provider {
-        AuthProvider::Claude => auth_base_dir(),
-        AuthProvider::Codex | AuthProvider::Zai => {
-            auth_base_dir().join("providers").join(provider.as_str())
-        }
+        AuthProvider::Claude | AuthProvider::Zai => auth_base_dir(),
+        AuthProvider::Codex => auth_base_dir().join("providers").join(provider.as_str()),
     }
 }
 
 /// Returns the directory containing provider profiles.
 fn provider_profiles_dir(provider: AuthProvider) -> PathBuf {
     match provider {
-        AuthProvider::Claude => midtown_base_dir().join("platforms").join("claude"),
-        AuthProvider::Codex | AuthProvider::Zai => provider_root(provider).join("profiles"),
+        AuthProvider::Claude | AuthProvider::Zai => {
+            midtown_base_dir().join("platforms").join("claude")
+        }
+        AuthProvider::Codex => provider_root(provider).join("profiles"),
     }
 }
 
@@ -234,13 +243,13 @@ pub fn profile_dir_for(provider: AuthProvider, name: &str) -> PathBuf {
 /// For other providers, this isn't used (they don't share state).
 fn shared_provider_storage_dir(provider: AuthProvider) -> Option<PathBuf> {
     match provider {
-        AuthProvider::Claude => Some(
+        AuthProvider::Claude | AuthProvider::Zai => Some(
             midtown_base_dir()
                 .join("platforms")
                 .join("claude")
                 .join("shared"),
         ),
-        AuthProvider::Codex | AuthProvider::Zai => None,
+        AuthProvider::Codex => None,
     }
 }
 
@@ -635,11 +644,11 @@ fn setup_claude_profile_symlinks(profile_name: &str) -> std::io::Result<()> {
 /// For other providers, this is under their provider root.
 fn current_profile_file_for(provider: AuthProvider) -> PathBuf {
     match provider {
-        AuthProvider::Claude => midtown_base_dir()
+        AuthProvider::Claude | AuthProvider::Zai => midtown_base_dir()
             .join("platforms")
             .join("claude")
             .join("current"),
-        AuthProvider::Codex | AuthProvider::Zai => provider_root(provider).join("current"),
+        AuthProvider::Codex => provider_root(provider).join("current"),
     }
 }
 
@@ -670,7 +679,7 @@ pub fn current_profile() -> String {
 /// For other providers: Uses file-based marker at `~/.midtown/auth/providers/<provider>/current`.
 pub fn current_profile_for(provider: AuthProvider) -> String {
     match provider {
-        AuthProvider::Claude => {
+        AuthProvider::Claude | AuthProvider::Zai => {
             // Primary: read from global config
             let config = crate::config::GlobalConfig::load();
             if let Some(ref profile) = config.providers.claude.auth_profile
@@ -698,8 +707,8 @@ pub fn current_profile_for(provider: AuthProvider) -> String {
 
             DEFAULT_PROFILE.to_string()
         }
-        AuthProvider::Codex | AuthProvider::Zai => {
-            // Codex and z.ai use file-based storage (no config.toml integration yet)
+        AuthProvider::Codex => {
+            // Codex uses file-based storage (no config.toml integration yet)
             std::fs::read_to_string(current_profile_file_for(provider))
                 .ok()
                 .map(|s| s.trim().to_string())
@@ -825,7 +834,7 @@ pub fn set_current_profile_for(provider: AuthProvider, name: &str) -> std::io::R
     }
 
     match provider {
-        AuthProvider::Claude => {
+        AuthProvider::Claude | AuthProvider::Zai => {
             set_current_profile_in_config(name)?;
 
             // Clean up file-based markers if they exist (both new and legacy locations)
@@ -840,8 +849,8 @@ pub fn set_current_profile_for(provider: AuthProvider, name: &str) -> std::io::R
 
             Ok(())
         }
-        AuthProvider::Codex | AuthProvider::Zai => {
-            // Codex and z.ai use file-based storage
+        AuthProvider::Codex => {
+            // Codex uses file-based storage
             let current_file = current_profile_file_for(provider);
             std::fs::create_dir_all(current_file.parent().unwrap())?;
             std::fs::write(current_file, format!("{}\n", name))
@@ -988,7 +997,7 @@ pub fn profile_status(name: &str) -> Option<ProfileStatus> {
 
 fn has_credentials_for(provider: AuthProvider, dir: &Path) -> bool {
     match provider {
-        AuthProvider::Claude => dir.join(".claude.json").exists(),
+        AuthProvider::Claude | AuthProvider::Zai => dir.join(".claude.json").exists(),
         // Codex stores config/auth state under CODEX_HOME. We treat either
         // config or auth artifacts as "credentials present" for UX purposes.
         AuthProvider::Codex => {
@@ -996,8 +1005,6 @@ fn has_credentials_for(provider: AuthProvider, dir: &Path) -> bool {
                 || dir.join("credentials.json").exists()
                 || dir.join("config.toml").exists()
         }
-        // z.ai stores credentials in api_key.txt
-        AuthProvider::Zai => dir.join("api_key.txt").exists(),
     }
 }
 
@@ -1062,27 +1069,19 @@ pub fn start_login(
     email: &str,
     inherit_stdio: bool,
 ) -> Result<std::process::Child, String> {
-    if provider == AuthProvider::Zai {
-        return Err(
-            "z.ai uses API keys, not OAuth. Use `midtown auth login --key <key>` instead."
-                .to_string(),
-        );
-    }
-
     let profile_dir = ensure_profile_dir_for(provider, email)
         .map_err(|e| format!("Failed to create profile directory: {}", e))?;
 
     let mut cmd = Command::new(provider.cli_command());
 
     match provider {
-        AuthProvider::Claude => {
+        AuthProvider::Claude | AuthProvider::Zai => {
             cmd.args(["auth", "login", "--email", email])
                 .env("CLAUDE_CONFIG_DIR", &profile_dir);
         }
         AuthProvider::Codex => {
             cmd.arg("login").env("CODEX_HOME", &profile_dir);
         }
-        AuthProvider::Zai => unreachable!(),
     }
 
     if inherit_stdio {
