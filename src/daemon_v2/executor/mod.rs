@@ -670,58 +670,46 @@ fn flush_auto_output(
             }
         }
 
-        // Post assistant text (auto_output=true for filtering)
+        // Post assistant text + tool data as a single auto-output message.
+        // Tool blocks are attached to the text message rather than posted
+        // separately, preventing empty message bubbles in the web UI.
         let thread_owned = thread_id.map(String::from);
-        if !text.is_empty() {
-            let msg_id = match channel_io::post_auto_output(
-                channels_dir,
-                ch,
-                agent_name,
-                &text,
-                None,
-                thread_id,
-            ) {
-                Ok(id) => id,
-                Err(e) => {
-                    tracing::warn!(agent = %agent_name, %ch, %e, "failed to auto-post output");
-                    return;
-                }
-            };
-            let _ = event_tx.send(DomainEvent::MessagePosted {
-                id: msg_id,
-                channel: ch.clone(),
-                sender: agent_name.to_string(),
-                content: text,
-                thread_id: thread_owned.clone(),
-                tool_data: None,
-            });
+        let tool_data = if tool_blocks.is_empty() {
+            None
+        } else {
+            Some(tool_blocks.clone())
+        };
+
+        // Skip entirely empty turns (no text, no tool data)
+        if text.is_empty() && tool_data.is_none() {
+            return;
         }
 
-        // Post tool data as a separate auto-output message (matching v1 behavior)
-        if !tool_blocks.is_empty() {
-            let tool_data_clone = tool_blocks.clone();
-            match channel_io::post_auto_output(
-                channels_dir,
-                ch,
-                agent_name,
-                "",
-                Some(tool_blocks),
-                thread_id,
-            ) {
-                Ok(msg_id) => {
-                    let _ = event_tx.send(DomainEvent::MessagePosted {
-                        id: msg_id,
-                        channel: ch.clone(),
-                        sender: agent_name.to_string(),
-                        content: String::new(),
-                        thread_id: thread_owned,
-                        tool_data: Some(tool_data_clone),
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!(agent = %agent_name, %ch, %e, "failed to post tool data");
-                }
+        let msg_id = match channel_io::post_auto_output(
+            channels_dir,
+            ch,
+            agent_name,
+            &text,
+            if tool_blocks.is_empty() {
+                None
+            } else {
+                Some(tool_blocks)
+            },
+            thread_id,
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(agent = %agent_name, %ch, %e, "failed to auto-post output");
+                return;
             }
-        }
+        };
+        let _ = event_tx.send(DomainEvent::MessagePosted {
+            id: msg_id,
+            channel: ch.clone(),
+            sender: agent_name.to_string(),
+            content: text,
+            thread_id: thread_owned,
+            tool_data,
+        });
     }
 }

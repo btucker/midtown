@@ -160,9 +160,14 @@ impl DaemonV2 {
             Duration::from_secs(30),
             health::check_dead_workers,
         );
-        scheduler.register_global("dispatch_pending_tasks", Duration::from_secs(5), |proj| {
-            decisions::dispatch::dispatch_pending_tasks(proj, 3)
-        });
+        let max_in_progress = crate::config::load_full_project_config(&config.dir_key)
+            .and_then(|c| c.default.max_in_progress_tasks())
+            .unwrap_or(12);
+        scheduler.register_global(
+            "dispatch_pending_tasks",
+            Duration::from_secs(5),
+            move |proj| decisions::dispatch::dispatch_pending_tasks(proj, max_in_progress),
+        );
         scheduler.register_global(
             "stop_completed_agents",
             Duration::from_secs(5),
@@ -228,6 +233,11 @@ impl DaemonV2 {
             "stop_idle_reported_workers",
             Duration::from_secs(30),
             health::stop_idle_reported_workers,
+        );
+        scheduler.register_global(
+            "stop_silent_workers",
+            Duration::from_secs(60),
+            health::stop_silent_workers,
         );
         scheduler.register_global(
             "detect_stale_ci",

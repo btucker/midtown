@@ -30,6 +30,7 @@ fn make_stopped_worker(id: &str, name: &str, hours_ago: i64) -> Agent {
         color: None,
         reported_state: None,
         state_reported_at: None,
+        last_output_at: None,
         gc: false,
     }
 }
@@ -52,6 +53,7 @@ fn make_stopped_lead(id: &str, name: &str, hours_ago: i64) -> Agent {
         color: None,
         reported_state: None,
         state_reported_at: None,
+        last_output_at: None,
         gc: false,
     }
 }
