@@ -679,8 +679,8 @@ describe("selectDm", () => {
 
 		expect(get(activeChannel)).toBe("auth");
 		expect(globalThis.fetch).toHaveBeenCalledTimes(1);
-		expect(globalThis.fetch.mock.calls[0][0]).toContain("/channels/history");
-		expect(globalThis.fetch.mock.calls[0][0]).toContain("channel=auth");
+		expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain("/channels/history");
+		expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain("channel=auth");
 		expect(get(channels).some((c) => c.name === "dm-auth")).toBe(false);
 	});
 });

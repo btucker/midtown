@@ -1,13 +1,14 @@
 <script lang="ts">
 import { getChannelPrs } from "./channelUtils.ts";
 import { activeChannel, kanbanData, repoStatus, repoStatuses } from "./store.ts";
+import type { MergedPullRequest, PullRequest } from "./types.ts";
 import { formatRelativeTime } from "./utils.ts";
 
-let openPrs = $derived(getChannelPrs($activeChannel, $kanbanData));
+let openPrs = $derived(getChannelPrs($activeChannel ?? "midtown", $kanbanData));
 // done PRs don't include task_id so they can't be channel-filtered; show all
 let mergedPrs = $derived($kanbanData.done || []);
 
-function getPrUrl(pr) {
+function getPrUrl(pr: PullRequest | MergedPullRequest) {
 	if (pr.repo && $repoStatuses.length > 0) {
 		const info = $repoStatuses.find((s) => s.label === pr.repo);
 		if (info?.fullName) return `https://github.com/${info.fullName}/pull/${pr.number}`;
@@ -16,7 +17,7 @@ function getPrUrl(pr) {
 	return null;
 }
 
-function statusInfo(status) {
+function statusInfo(status: string | undefined) {
 	switch (status) {
 		case "ci_passed":
 			return { label: "CI passed", color: "hsl(var(--status-green))", char: "●" };

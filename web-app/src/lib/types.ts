@@ -143,9 +143,9 @@ export interface UsageEntry {
 	provider: string;
 	profile: string;
 	session_util: number;
-	session_resets: number;
+	session_resets: string;
 	week_util: number;
-	week_resets: number;
+	week_resets: string;
 	account_email: string;
 }
 

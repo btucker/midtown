@@ -442,7 +442,7 @@ describe("getDisplayableDmChannels", () => {
 			{ name: "dm-park", is_dm: true },
 		]);
 
-		expect(result.map((ch) => ch.name)).toEqual(["dm-park"]);
+		expect(result.map((ch: { name: string }) => ch.name)).toEqual(["dm-park"]);
 	});
 
 	it("hides DM mirrors for fork sessions that stream to their bound thread", () => {
@@ -456,7 +456,7 @@ describe("getDisplayableDmChannels", () => {
 			forkNames,
 		);
 
-		expect(result.map((ch) => ch.name)).toEqual(["dm-park"]);
+		expect(result.map((ch: { name: string }) => ch.name)).toEqual(["dm-park"]);
 	});
 });
 

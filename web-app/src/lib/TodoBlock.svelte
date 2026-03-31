@@ -14,7 +14,7 @@ let { block } = $props();
 let collapsed = $state(false);
 
 let todos = $derived(block.input?.todos || []);
-let doneCount = $derived(todos.filter((t) => t.status === "completed").length);
+let doneCount = $derived(todos.filter((t: { status: string; content: string }) => t.status === "completed").length);
 let totalCount = $derived(todos.length);
 let summaryText = $derived(`Todos (${doneCount}/${totalCount} done)`);
 </script>

@@ -4,6 +4,7 @@ import { openTaskThread } from "./api.ts";
 import { coworkerMap as coworkerMapStore, kanbanData, reviewerByTaskId as reviewerByTaskIdStore } from "./store.ts";
 import TaskRow from "./TaskRow.svelte";
 import { groupTasksByParent } from "./taskGrouping.ts";
+import type { Task } from "./types.ts";
 
 const sidebar = useSidebar();
 
@@ -17,16 +18,16 @@ let { channelName = "" } = $props();
  * This matches the TUI implementation in src/bin/midtown/cli/chat/ui/board.rs
  * which groups tasks by `task.channel.as_deref().unwrap_or(main_channel)`.
  */
-function filterTasksByChannel(tasks, channel) {
+function filterTasksByChannel(tasks: Task[], channel: string) {
 	if (channel === "midtown") {
 		// Main channel shows only tasks with no channel (or channel='midtown').
 		// Tasks assigned to other channels appear there only, not duplicated here.
 		// Matches TUI's unwrap_or(main_channel) grouping.
-		return tasks.filter((task) => !task.channel || task.channel === "midtown");
+		return tasks.filter((task: Task) => !task.channel || task.channel === "midtown");
 	}
 
 	// Topic channels only show tasks explicitly assigned to that channel via the channel field
-	return tasks.filter((task) => task.channel === channel);
+	return tasks.filter((task: Task) => task.channel === channel);
 }
 
 // Derived: tasks for this channel, grouped by parent-child hierarchy.
@@ -47,7 +48,7 @@ const groupedTasks = $derived.by(() => {
 const cwMap = $derived($coworkerMapStore);
 const taskReviewerMap = $derived($reviewerByTaskIdStore);
 
-function handleTaskClick(task) {
+function handleTaskClick(task: Task) {
 	if (sidebar.isMobile) sidebar.setOpenMobile(false);
 	openTaskThread(task, task.channel || channelName);
 }

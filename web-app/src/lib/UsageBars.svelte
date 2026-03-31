@@ -2,9 +2,9 @@
 import { usageData } from "./store.ts";
 import { estimateTimeToFull, formatResetTime, usageColor } from "./usage-utils.ts";
 
-let expandedAccount = $state(null);
+let expandedAccount: string | null = $state(null);
 
-function toggleAccount(label) {
+function toggleAccount(label: string) {
 	expandedAccount = expandedAccount === label ? null : label;
 }
 </script>

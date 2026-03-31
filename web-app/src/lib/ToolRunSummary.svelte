@@ -2,6 +2,7 @@
 import { fade, slide } from "svelte/transition";
 import MessageRow from "./MessageRow.svelte";
 import { filterChannelPosts } from "./toolRunGrouping.ts";
+import type { Message, Task } from "./types.ts";
 import { createAutoCollapse } from "./useAutoCollapse.ts";
 
 const TOOL_RUN_DELAY_MS = 10_000;
@@ -14,6 +15,14 @@ let {
 	channelName = undefined,
 	currentTasks = {},
 	showToolData = true,
+}: {
+	messages: Message[];
+	lastTimestamp: string;
+	allMessages?: Message[];
+	startIndex?: number;
+	channelName?: string;
+	currentTasks?: Record<string, Task>;
+	showToolData?: boolean;
 } = $props();
 
 let displayState = $state("collapsed");
@@ -51,11 +60,13 @@ let visibleEntries = $derived.by(() =>
 			if (filtered.length === 0) return null;
 			return { msg: { ...msg, tool_data: filtered }, origIndex: i };
 		})
-		.filter(Boolean),
+		.filter((e): e is { msg: Message; origIndex: number } => Boolean(e)),
 );
 
 // Count visible tools (after filtering channel posts like 'midtown channel post')
-let visibleToolCount = $derived(visibleEntries.reduce((sum, entry) => sum + (entry.msg.tool_data?.length || 0), 0));
+let visibleToolCount = $derived(
+	visibleEntries.reduce((sum: number, entry) => sum + (entry.msg.tool_data?.length || 0), 0),
+);
 
 function toggle() {
 	userOverride = true;

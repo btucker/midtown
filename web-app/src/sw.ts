@@ -48,12 +48,12 @@ self.addEventListener("push", (event: PushEvent) => {
 	event.waitUntil(
 		self.clients
 			.matchAll({ type: "window", includeUncontrolled: true })
-			.then((windowClients: readonly WindowClient[]) => {
+			.then(async (windowClients: readonly WindowClient[]) => {
 				const hasFocusedClient = windowClients.some(
 					(client: WindowClient) => client.visibilityState === "visible" && client.focused,
 				);
 				if (hasFocusedClient) return;
-				return self.registration.showNotification(title, options);
+				await self.registration.showNotification(title, options);
 			}),
 	);
 });
@@ -67,21 +67,17 @@ self.addEventListener("notificationclick", (event: NotificationEvent) => {
 	event.waitUntil(
 		self.clients
 			.matchAll({ type: "window", includeUncontrolled: true })
-			.then((windowClients: readonly WindowClient[]) => {
+			.then(async (windowClients: readonly WindowClient[]): Promise<void> => {
 				for (const client of windowClients) {
 					if (client.url.includes(self.location.origin) && "focus" in client) {
-						// Use postMessage instead of client.navigate() for cross-platform
-						// reliability (Safari PWA support for navigate() is spotty).
-						// The app registers a listener that handles navigation using its
-						// own stores, avoiding a full page reload.
-						return client.focus().then((focusedClient) => {
-							if (targetUrl && targetUrl !== "/") {
-								focusedClient.postMessage({ type: "NAVIGATE", url: targetUrl });
-							}
-						});
+						const focusedClient = await client.focus();
+						if (targetUrl && targetUrl !== "/") {
+							focusedClient.postMessage({ type: "NAVIGATE", url: targetUrl });
+						}
+						return;
 					}
 				}
-				return self.clients.openWindow(new URL(targetUrl, self.location.origin).href);
+				await self.clients.openWindow(new URL(targetUrl, self.location.origin).href);
 			}),
 	);
 });

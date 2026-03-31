@@ -11,7 +11,7 @@ let loading = $state(true);
 let counter = 0;
 
 // Strip dangerous elements and attributes from SVG output
-function sanitizeSvg(svg) {
+function sanitizeSvg(svg: string) {
 	const parser = new DOMParser();
 	const doc = parser.parseFromString(svg, "image/svg+xml");
 	// Remove script tags (mermaid uses foreignObject for text rendering, so keep it)
@@ -32,7 +32,7 @@ function sanitizeSvg(svg) {
 }
 
 // Convert SVG string to data URL for Bigger Picture
-function svgToDataUrl(svgString) {
+function svgToDataUrl(svgString: string) {
 	return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svgString)))}`;
 }
 
@@ -52,8 +52,8 @@ $effect(() => {
 				const result = await renderer.render(id, themedCode);
 				svgHtml = sanitizeSvg(result.svg);
 				error = "";
-			} catch (e) {
-				error = e.message || String(e);
+			} catch (e: unknown) {
+				error = (e instanceof Error ? e.message : null) || String(e);
 				svgHtml = "";
 			}
 			loading = false;
