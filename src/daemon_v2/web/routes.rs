@@ -211,8 +211,8 @@ pub async fn channel_create(
 // Stub routes for endpoints the web UI calls but v2 doesn't fully implement yet.
 // Return empty/default data instead of 404 so the UI doesn't break.
 
-pub async fn read_state() -> Json<Value> {
-    let path = read_state_path();
+pub async fn read_state(State(state): State<Arc<WebState>>) -> Json<Value> {
+    let path = read_state_path(&state.channels_dir);
     match std::fs::read_to_string(&path) {
         Ok(contents) => {
             let data: Value = serde_json::from_str(&contents).unwrap_or(json!({}));
@@ -222,21 +222,22 @@ pub async fn read_state() -> Json<Value> {
     }
 }
 
-fn read_state_path() -> std::path::PathBuf {
-    crate::paths::midtown_base_dir().join("read-state.json")
+/// Read state file lives next to the project's channels directory.
+fn read_state_path(channels_dir: &std::path::Path) -> std::path::PathBuf {
+    channels_dir.join("read-state.json")
 }
 
-fn load_read_state() -> Value {
-    let path = read_state_path();
+fn load_read_state(channels_dir: &std::path::Path) -> Value {
+    let path = read_state_path(channels_dir);
     std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(json!({"channels": {}, "threads": {}}))
 }
 
-fn save_read_state(state: &Value) {
-    let path = read_state_path();
-    if let Ok(json) = serde_json::to_string(state) {
+fn save_read_state(channels_dir: &std::path::Path, data: &Value) {
+    let path = read_state_path(channels_dir);
+    if let Ok(json) = serde_json::to_string(data) {
         let _ = std::fs::write(&path, json);
     }
 }
@@ -1082,6 +1083,7 @@ pub async fn webhook_handler(
 }
 
 pub async fn mark_read(
+    State(state): State<Arc<WebState>>,
     axum::extract::Path((item_type, id)): axum::extract::Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> StatusCode {
@@ -1094,15 +1096,15 @@ pub async fn mark_read(
         return StatusCode::BAD_REQUEST;
     }
 
-    let mut state = load_read_state();
+    let mut data = load_read_state(&state.channels_dir);
     let key = match item_type.as_str() {
         "channel" => "channels",
         "thread" => "threads",
         _ => return StatusCode::BAD_REQUEST,
     };
-    if let Some(obj) = state.get_mut(key).and_then(|v| v.as_object_mut()) {
+    if let Some(obj) = data.get_mut(key).and_then(|v| v.as_object_mut()) {
         obj.insert(id, Value::String(timestamp));
     }
-    save_read_state(&state);
+    save_read_state(&state.channels_dir, &data);
     StatusCode::NO_CONTENT
 }
