@@ -21,6 +21,8 @@ fn make_worker_with_task(proj: &mut Projections, agent_id: &str, task_id: &str) 
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: agent_id.into(),
@@ -199,6 +201,8 @@ fn merged_pr_completes_linked_in_progress_task() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -243,6 +247,8 @@ fn merged_pr_does_not_re_complete_already_completed_task() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -343,6 +349,8 @@ fn merged_pr_nudges_other_workers_to_rebase() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t2".into(),
@@ -680,6 +688,8 @@ fn pr_comment_uses_agent_thread_id() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     // Create agent with a bound_thread_id
     proj.apply(&DomainEvent::AgentCreated {

@@ -40,6 +40,8 @@
 - WHEN a task has no `agent_type` THEN the system SHALL use `midtown-code-author` as default
 - WHEN a task is in a `lead_driven` channel THEN the system SHALL NOT auto-dispatch it
 - WHEN spawning a worker THEN the system SHALL use name/icon/color from the task if set, OTHERWISE from the spawn command if set, OTHERWISE generate random values
+- WHEN spawning a worker THEN the worker's auto-output channel SHALL be `dm-{agent_name}`, NOT the task's channel
+- WHEN a task has a `thread_id` THEN the worker SHALL be spawned with `bound_thread_id` set to that thread
 
 ### 2.2 Task Lifecycle
 - WHEN a worker dies while its task is InProgress THEN the system SHALL resume the worker
@@ -249,7 +251,7 @@
 ### 10.1 V2 Methods
 - `status` — agent/task/PR counts
 - `agent.list` — query agents with optional kind and running_only filter
-- `task.create` — emit TaskCreated (required: id, subject, channel)
+- `task.create` — emit TaskCreated (required: id, subject, channel; optional: thread_id, message_id, blocked_by, agent_type, agent_name, icon, color, parent)
 - `task.list` — return all tasks
 - `task.done` — emit TaskCompleted (accepts string or numeric id)
 - `task.update` — validate task exists
@@ -306,7 +308,7 @@
 
 ### 11.1 REST Endpoints
 - `GET /api/health` → "ok"
-- `GET /api/status` → agent/task/PR dashboard data
+- `GET /api/status` → agent/task/PR dashboard data; tasks SHALL include id, subject, status, channel, owner, thread_id, message_id, updated_at, color, icon fields for web UI rendering
 - `GET /api/channels` → channel list (with optional `include_archived`)
 - `GET /api/channels/history` → messages (params: channel, limit, thread_parent_id)
 - `POST /api/channels/create` → create channel

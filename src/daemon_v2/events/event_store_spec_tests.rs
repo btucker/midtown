@@ -41,6 +41,8 @@ fn sample_task_event() -> DomainEvent {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     }
 }
 
@@ -99,6 +101,8 @@ fn each_append_increments_sequence_by_one() {
                 icon: None,
                 color: None,
                 parent: None,
+                thread_id: None,
+                message_id: None,
             })
             .unwrap();
         assert_eq!(

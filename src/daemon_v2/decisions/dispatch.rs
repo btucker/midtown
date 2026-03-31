@@ -8,6 +8,7 @@ mod spec_tests;
 
 use std::collections::{HashMap, HashSet};
 
+use crate::daemon_v2::decisions::lifecycle::create_dm_channel_name;
 use crate::daemon_v2::decisions::{Command, SpawnConfig};
 use crate::daemon_v2::events::{AgentKind, Provider, TaskStatus};
 use crate::daemon_v2::naming;
@@ -47,17 +48,20 @@ pub fn dispatch_pending_tasks(proj: &Projections, max_in_progress: usize) -> Vec
         existing_names.insert(name.clone());
         let icon = Some(task.icon.clone().unwrap_or_else(naming::random_icon));
         let color = Some(task.color.clone().unwrap_or_else(naming::random_color));
+        // Workers auto-output to a DM channel, not the task channel.
+        // Insights are cross-posted to the task channel by flush_auto_output.
+        let dm_channel = create_dm_channel_name(&name);
         commands.push(Command::SpawnAgent(SpawnConfig {
             name,
             kind: AgentKind::Worker,
             agent_type,
             provider: Provider::ClaudeCode,
-            channel: Some(task.channel.clone()),
+            channel: Some(dm_channel),
             task_id: Some(task.id.clone()),
             initial_prompt: Some(task.subject.clone()),
             working_dir: None,
             model: None,
-            bound_thread_id: None,
+            bound_thread_id: task.thread_id.clone(),
             fork_from_session: None,
             icon,
             color,
