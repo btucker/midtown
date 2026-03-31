@@ -33,11 +33,15 @@ pub fn post_auto_output(
     sender: &str,
     content: &str,
     tool_data: Option<Vec<crate::message::ToolBlock>>,
+    thread_id: Option<&str>,
 ) -> Result<String, String> {
     let ch = Channel::new(channels_dir, channel).map_err(|e| e.to_string())?;
     let mut msg = Message::for_channel(channel, sender, content, MessageType::Text);
     msg.auto_output = true;
     msg.tool_data = tool_data;
+    if let Some(tid) = thread_id {
+        msg.thread_parent_id = Some(tid.to_string());
+    }
     let id = msg.id.clone();
     ch.send(&msg).map_err(|e| e.to_string())?;
     Ok(id)

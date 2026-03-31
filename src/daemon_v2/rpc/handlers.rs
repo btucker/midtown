@@ -336,10 +336,17 @@ pub fn handle_session_fork(
             )
         });
 
-    let initial_message = params
+    let raw_message = params
         .get("message")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .or_else(|| params.get("initial_message"))
+        .and_then(|v| v.as_str());
+    // Wrap the initial message with fork context so the agent knows its role
+    let initial_message = Some(format!(
+        "You are a thread fork — your output is automatically posted to thread {thread_parent_id} \
+         in #{channel}. Focus on the task below and post results in this thread. \
+         Do not post to the main channel.\n\n{}",
+        raw_message.unwrap_or("Investigate this thread and report your findings.")
+    ));
 
     let agent_type = params
         .get("agent_type")

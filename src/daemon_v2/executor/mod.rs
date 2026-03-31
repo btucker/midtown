@@ -317,6 +317,7 @@ pub fn spawn_background_agent(
                     &mut session,
                     &config.name,
                     config.channel.as_deref(),
+                    config.bound_thread_id.as_deref(),
                     &channels_dir,
                     &event_tx,
                 );
@@ -405,6 +406,7 @@ pub fn spawn_background_resume(
                     &mut session,
                     &agent.name,
                     agent.channel.as_deref(),
+                    agent.bound_thread_id.as_deref(),
                     &channels_dir,
                     &event_tx,
                 );
@@ -565,12 +567,14 @@ fn drain_session_output(
     session: &mut HeadlessSession,
     agent_name: &str,
     channel: Option<&str>,
+    bound_thread_id: Option<&str>,
     channels_dir: &Path,
     event_tx: &tokio::sync::broadcast::Sender<DomainEvent>,
 ) {
     if let Some((mut stdout_rx, mut stderr_rx)) = session.take_receivers() {
         let name = agent_name.to_string();
         let channel = channel.map(|s| s.to_string());
+        let thread_id = bound_thread_id.map(|s| s.to_string());
         let channels_dir = channels_dir.to_path_buf();
         let event_tx = event_tx.clone();
         tokio::spawn(async move {
@@ -591,12 +595,12 @@ fn drain_session_output(
                                 let is_turn_end = matches!(&event, StreamEvent::Result { .. });
                                 pending_events.push(event);
                                 if is_turn_end {
-                                    flush_auto_output(&name, &channel, &channels_dir, &mut pending_events, &event_tx);
+                                    flush_auto_output(&name, &channel, thread_id.as_deref(), &channels_dir, &mut pending_events, &event_tx);
                                 }
                             }
                             None => {
                                 // Stream ended — flush remaining
-                                flush_auto_output(&name, &channel, &channels_dir, &mut pending_events, &event_tx);
+                                flush_auto_output(&name, &channel, thread_id.as_deref(), &channels_dir, &mut pending_events, &event_tx);
                                 break;
                             }
                         }
@@ -611,7 +615,7 @@ fn drain_session_output(
                         }
                     }
                     _ = flush_interval.tick() => {
-                        flush_auto_output(&name, &channel, &channels_dir, &mut pending_events, &event_tx);
+                        flush_auto_output(&name, &channel, thread_id.as_deref(), &channels_dir, &mut pending_events, &event_tx);
                     }
                 }
             }
@@ -627,6 +631,7 @@ fn drain_session_output(
 fn flush_auto_output(
     agent_name: &str,
     channel: &Option<String>,
+    thread_id: Option<&str>,
     channels_dir: &std::path::Path,
     events: &mut Vec<crate::headless::StreamEvent>,
     event_tx: &tokio::sync::broadcast::Sender<DomainEvent>,
@@ -665,21 +670,28 @@ fn flush_auto_output(
         }
 
         // Post assistant text (auto_output=true for filtering)
+        let thread_owned = thread_id.map(String::from);
         if !text.is_empty() {
-            let msg_id =
-                match channel_io::post_auto_output(channels_dir, ch, agent_name, &text, None) {
-                    Ok(id) => id,
-                    Err(e) => {
-                        tracing::warn!(agent = %agent_name, %ch, %e, "failed to auto-post output");
-                        return;
-                    }
-                };
+            let msg_id = match channel_io::post_auto_output(
+                channels_dir,
+                ch,
+                agent_name,
+                &text,
+                None,
+                thread_id,
+            ) {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!(agent = %agent_name, %ch, %e, "failed to auto-post output");
+                    return;
+                }
+            };
             let _ = event_tx.send(DomainEvent::MessagePosted {
                 id: msg_id,
                 channel: ch.clone(),
                 sender: agent_name.to_string(),
                 content: text,
-                thread_id: None,
+                thread_id: thread_owned.clone(),
                 tool_data: None,
             });
         }
@@ -687,15 +699,21 @@ fn flush_auto_output(
         // Post tool data as a separate auto-output message (matching v1 behavior)
         if !tool_blocks.is_empty() {
             let tool_data_clone = tool_blocks.clone();
-            match channel_io::post_auto_output(channels_dir, ch, agent_name, "", Some(tool_blocks))
-            {
+            match channel_io::post_auto_output(
+                channels_dir,
+                ch,
+                agent_name,
+                "",
+                Some(tool_blocks),
+                thread_id,
+            ) {
                 Ok(msg_id) => {
                     let _ = event_tx.send(DomainEvent::MessagePosted {
                         id: msg_id,
                         channel: ch.clone(),
                         sender: agent_name.to_string(),
                         content: String::new(),
-                        thread_id: None,
+                        thread_id: thread_owned,
                         tool_data: Some(tool_data_clone),
                     });
                 }

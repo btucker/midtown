@@ -296,9 +296,19 @@ fn session_fork_returns_spawn_command() {
             assert_eq!(cfg.agent_type, "midtown-channel-lead");
             assert_eq!(cfg.channel.as_deref(), Some("web"));
             assert_eq!(cfg.bound_thread_id.as_deref(), Some("thread-abc123"));
-            assert_eq!(
-                cfg.initial_prompt.as_deref(),
-                Some("Look into the auth issue")
+            assert!(
+                cfg.initial_prompt
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("Look into the auth issue"),
+                "initial_prompt should contain the user's message"
+            );
+            assert!(
+                cfg.initial_prompt
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("thread fork"),
+                "initial_prompt should contain fork context"
             );
         }
         other => panic!("expected SpawnAgent, got {:?}", other),
