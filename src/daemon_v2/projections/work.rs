@@ -31,7 +31,10 @@ pub struct Task {
 pub struct PrState {
     pub number: u64,
     pub branch: String,
+    /// GitHub username of the PR author.
     pub author: String,
+    /// Midtown agent name that created this PR (set via PrLinkedToTask).
+    pub midtown_author: Option<String>,
     pub ci_status: CiStatus,
     pub review_state: ReviewState,
     pub is_merged: bool,
@@ -132,6 +135,7 @@ impl WorkIndex {
                     number: *number,
                     branch: branch.clone(),
                     author: author.clone(),
+                    midtown_author: None,
                     ci_status: CiStatus::Pending,
                     review_state: ReviewState::None,
                     is_merged: false,
@@ -177,8 +181,13 @@ impl WorkIndex {
                 }
             }
             DomainEvent::PrLinkedToTask { number, task_id } => {
+                // Resolve the agent name from the linked task
+                let agent_name = self.tasks.get(task_id).and_then(|t| t.agent_name.clone());
                 if let Some(task) = self.tasks.get_mut(task_id) {
                     task.pr_number = Some(*number);
+                }
+                if let Some(pr) = self.prs.get_mut(number) {
+                    pr.midtown_author = agent_name;
                 }
             }
             _ => {}

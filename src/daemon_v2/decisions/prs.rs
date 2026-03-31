@@ -45,7 +45,9 @@ pub fn spawn_reviewers(proj: &Projections) -> Vec<Command> {
             None => continue,
         };
         // Spec 3.2: reviewer named {author_name}-reviewer
-        let reviewer_name = format!("{}-reviewer", pr.author);
+        // Prefer the midtown agent name over the GitHub username
+        let author_name = pr.midtown_author.as_deref().unwrap_or(&pr.author);
+        let reviewer_name = format!("{author_name}-reviewer");
 
         // Skip if reviewer is already running
         if proj
