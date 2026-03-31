@@ -8,6 +8,7 @@ import Autocomplete from "./Autocomplete.svelte";
 import {
 	cancelLead,
 	closeThread,
+	fetchOlderMessages,
 	getApiBase,
 	openTaskThread,
 	openThread,
@@ -794,13 +795,50 @@ function handleKeyDown(e) {
 }
 
 // Load more messages when scrolling to the top of the visible window.
-// Preserves scroll position so the user doesn't jump.
-function loadMoreMessages() {
-	if (renderStartIndex <= 0 || !scrollAreaViewport) return;
+// If all in-memory messages are already rendered, fetch older ones from the server.
+let fetchingOlder = false;
+async function loadMoreMessages() {
+	if (!scrollAreaViewport) return;
+
+	// If there are unrendered messages in memory, expand the render window
+	if (renderStartIndex > 0) {
+		const prevScrollHeight = scrollAreaViewport.scrollHeight;
+		const prevScrollTop = scrollAreaViewport.scrollTop;
+		renderStartIndex = Math.max(0, renderStartIndex - LOAD_MORE_COUNT);
+		tick().then(() => {
+			if (scrollAreaViewport) {
+				const newScrollHeight = scrollAreaViewport.scrollHeight;
+				scrollAreaViewport.scrollTop = prevScrollTop + (newScrollHeight - prevScrollHeight);
+			}
+		});
+		return;
+	}
+
+	// All in-memory messages rendered — fetch older from server
+	if (fetchingOlder) return;
+	const msgs = channelMessages;
+	if (msgs.length === 0) return;
+	const oldest = msgs[0];
+	if (!oldest?.timestamp) return;
+
+	fetchingOlder = true;
+	const channel = $activeChannel;
+	const olderMsgs = await fetchOlderMessages(channel, oldest.timestamp);
+	fetchingOlder = false;
+
+	if (olderMsgs.length === 0) return;
+
+	// Prepend to the channel's message store
 	const prevScrollHeight = scrollAreaViewport.scrollHeight;
 	const prevScrollTop = scrollAreaViewport.scrollTop;
-	renderStartIndex = Math.max(0, renderStartIndex - LOAD_MORE_COUNT);
-	// After Svelte renders the new messages, restore scroll position
+	messagesByChannel.update((byChannel) => {
+		const existing = byChannel[channel] || [];
+		// Deduplicate by ID
+		const existingIds = new Set(existing.map((m) => m.id));
+		const newMsgs = olderMsgs.filter((m) => !existingIds.has(m.id));
+		return { ...byChannel, [channel]: [...newMsgs, ...existing] };
+	});
+	// Restore scroll position after new messages are rendered
 	tick().then(() => {
 		if (scrollAreaViewport) {
 			const newScrollHeight = scrollAreaViewport.scrollHeight;

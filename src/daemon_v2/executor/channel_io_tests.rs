@@ -6,7 +6,7 @@ fn post_and_read_message() {
     let dir = TempDir::new().unwrap();
     post_message(dir.path(), "test-chan", "alice", "hello world", None).unwrap();
 
-    let msgs = read_messages(dir.path(), "test-chan", None).unwrap();
+    let msgs = read_messages(dir.path(), "test-chan", None, None).unwrap();
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0]["from"], "alice");
     assert_eq!(msgs[0]["message"], "hello world");
@@ -17,7 +17,7 @@ fn post_system_message_uses_midtown_sender() {
     let dir = TempDir::new().unwrap();
     post_system_message(dir.path(), "sys-chan", "daemon started").unwrap();
 
-    let msgs = read_messages(dir.path(), "sys-chan", None).unwrap();
+    let msgs = read_messages(dir.path(), "sys-chan", None, None).unwrap();
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0]["from"], "midtown");
     assert_eq!(msgs[0]["message"], "daemon started");
@@ -31,7 +31,7 @@ fn read_messages_with_limit() {
         post_message(dir.path(), "chan", "bob", &format!("msg {i}"), None).unwrap();
     }
 
-    let msgs = read_messages(dir.path(), "chan", Some(2)).unwrap();
+    let msgs = read_messages(dir.path(), "chan", Some(2), None).unwrap();
     assert_eq!(msgs.len(), 2);
     // Should be the last 2 messages
     assert_eq!(msgs[0]["message"], "msg 3");
@@ -78,7 +78,7 @@ fn jsonl_rolling_at_10mb() {
     post_message(dir.path(), "big-chan", "carol", "small msg", None).unwrap();
 
     // Read should return ALL messages across all files
-    let msgs = read_messages(dir.path(), "big-chan", None).unwrap();
+    let msgs = read_messages(dir.path(), "big-chan", None, None).unwrap();
     assert_eq!(
         msgs.len(),
         3,
@@ -110,7 +110,7 @@ fn read_thread_returns_only_thread_messages() {
     post_message(dir.path(), "chan", "alice", "top-level 2", None).unwrap();
 
     // Get the first message's ID to use as thread parent
-    let all_msgs = read_messages(dir.path(), "chan", None).unwrap();
+    let all_msgs = read_messages(dir.path(), "chan", None, None).unwrap();
     let parent_id = all_msgs[0]["id"].as_str().unwrap().to_string();
 
     // Post thread replies
@@ -139,7 +139,7 @@ fn read_messages_excludes_thread_replies() {
     post_message(dir.path(), "chan", "alice", "top-level 2", None).unwrap();
 
     // Get the first message's ID to use as thread parent
-    let all_msgs = read_messages(dir.path(), "chan", None).unwrap();
+    let all_msgs = read_messages(dir.path(), "chan", None, None).unwrap();
     let parent_id = all_msgs[0]["id"].as_str().unwrap().to_string();
 
     // Post a thread reply
@@ -153,7 +153,7 @@ fn read_messages_excludes_thread_replies() {
     .unwrap();
 
     // Default read should exclude the thread reply
-    let msgs = read_messages(dir.path(), "chan", None).unwrap();
+    let msgs = read_messages(dir.path(), "chan", None, None).unwrap();
     assert_eq!(
         msgs.len(),
         2,

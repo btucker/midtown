@@ -1046,7 +1046,8 @@ fn channel_read_with_thread_parent_id() {
 
     // Get the message ID
     let msgs =
-        crate::daemon_v2::executor::channel_io::read_messages(dir.path(), "test", None).unwrap();
+        crate::daemon_v2::executor::channel_io::read_messages(dir.path(), "test", None, None)
+            .unwrap();
     let parent_id = msgs[0]["id"].as_str().unwrap().to_string();
 
     // Post a thread reply
@@ -1104,7 +1105,8 @@ fn channel_read_excludes_thread_replies() {
     .unwrap();
 
     let msgs =
-        crate::daemon_v2::executor::channel_io::read_messages(dir.path(), "test", None).unwrap();
+        crate::daemon_v2::executor::channel_io::read_messages(dir.path(), "test", None, None)
+            .unwrap();
     let parent_id = msgs[0]["id"].as_str().unwrap().to_string();
 
     crate::daemon_v2::executor::channel_io::post_message(

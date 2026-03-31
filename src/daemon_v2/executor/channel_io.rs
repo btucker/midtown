@@ -64,8 +64,9 @@ pub fn read_messages(
     channels_dir: &Path,
     channel: &str,
     limit: Option<usize>,
+    before: Option<&str>,
 ) -> Result<Vec<Value>, String> {
-    read_messages_filtered(channels_dir, channel, limit, None)
+    read_messages_filtered(channels_dir, channel, limit, None, before)
 }
 
 /// Read messages from a specific thread.
@@ -76,15 +77,17 @@ pub fn read_thread_messages(
     thread_parent_id: &str,
     limit: Option<usize>,
 ) -> Result<Vec<Value>, String> {
-    read_messages_filtered(channels_dir, channel, limit, Some(thread_parent_id))
+    read_messages_filtered(channels_dir, channel, limit, Some(thread_parent_id), None)
 }
 
-/// Internal: read messages with optional thread filtering.
+/// Internal: read messages with optional thread filtering and pagination.
+/// `before`: if set, only return messages with timestamp < this value (ISO string).
 fn read_messages_filtered(
     channels_dir: &Path,
     channel: &str,
     limit: Option<usize>,
     thread_parent_id: Option<&str>,
+    before: Option<&str>,
 ) -> Result<Vec<Value>, String> {
     let ch = Channel::new(channels_dir, channel).map_err(|e| e.to_string())?;
     let all_messages = ch.read_all().map_err(|e| e.to_string())?;
@@ -101,6 +104,21 @@ fn read_messages_filtered(
             .iter()
             .filter(|m| m.thread_parent_id.is_none())
             .collect()
+    };
+
+    // Apply `before` cursor for pagination
+    let messages: Vec<_> = if let Some(before_ts) = before {
+        if let Ok(cutoff) = chrono::DateTime::parse_from_rfc3339(before_ts) {
+            let cutoff_utc = cutoff.with_timezone(&chrono::Utc);
+            messages
+                .into_iter()
+                .filter(|m| m.timestamp < cutoff_utc)
+                .collect()
+        } else {
+            messages
+        }
+    } else {
+        messages
     };
 
     let msgs: Vec<Value> = if let Some(n) = limit {
