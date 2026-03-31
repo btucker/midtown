@@ -98,7 +98,8 @@ pub fn classify_command(cmd: &Command) -> CommandClass {
         | Command::RemoveWorktree { .. }
         | Command::Post { .. }
         | Command::PostSystem { .. }
-        | Command::PollProcessHealth => CommandClass::Inline,
+        | Command::PollProcessHealth
+        | Command::PersistEvents(_) => CommandClass::Inline,
 
         // Background: slow I/O
         Command::SpawnAgent(_)
