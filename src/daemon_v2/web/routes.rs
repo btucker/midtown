@@ -134,13 +134,17 @@ pub async fn channel_post(
         rpc::dispatch_request(rpc_request, &proj, &state.channels_dir)
     };
 
-    // Apply events (MessagePosted)
+    // Apply events to projections + broadcast + persist via daemon
     if !events.is_empty() {
-        let mut proj = state.projections.lock().await;
-        for event in &events {
-            proj.apply(event);
-            let _ = state.event_tx.send(event.clone());
+        {
+            let mut proj = state.projections.lock().await;
+            for event in &events {
+                proj.apply(event);
+                let _ = state.event_tx.send(event.clone());
+            }
         }
+        let persist = crate::daemon_v2::decisions::Command::PersistEvents(events);
+        let _ = state.command_tx.send(persist).await;
     }
 
     // Send routing commands to daemon for execution
@@ -454,12 +458,17 @@ pub async fn channel_settings_put(
         &state.channels_dir,
     );
     drop(proj);
-    // Apply the events (channel settings changes)
+    // Apply events to projections + broadcast + persist via daemon
     if !events.is_empty() {
-        let mut proj = state.projections.lock().await;
-        for event in &events {
-            proj.apply(event);
+        {
+            let mut proj = state.projections.lock().await;
+            for event in &events {
+                proj.apply(event);
+                let _ = state.event_tx.send(event.clone());
+            }
         }
+        let persist = crate::daemon_v2::decisions::Command::PersistEvents(events);
+        let _ = state.command_tx.send(persist).await;
     }
     Json(json!({"ok": true}))
 }
@@ -512,15 +521,17 @@ pub async fn channel_directory_put(
         .get("directory")
         .and_then(|v| v.as_str())
         .map(String::from);
-    // Apply via channel.update RPC
-    let proj = state.projections.lock().await;
     let event = crate::daemon_v2::events::DomainEvent::ChannelDirectorySet {
         channel: channel.clone(),
         directory,
     };
-    drop(proj);
-    let mut proj = state.projections.lock().await;
-    proj.apply(&event);
+    {
+        let mut proj = state.projections.lock().await;
+        proj.apply(&event);
+        let _ = state.event_tx.send(event.clone());
+    }
+    let persist = crate::daemon_v2::decisions::Command::PersistEvents(vec![event]);
+    let _ = state.command_tx.send(persist).await;
     Json(json!({"ok": true}))
 }
 
@@ -1064,16 +1075,19 @@ pub async fn webhook_handler(
         }
     }
 
-    // Apply events to shared projections
+    // Apply events to projections + broadcast + persist via daemon
     if !events.is_empty() {
-        let mut proj = state.projections.lock().await;
-        for event in &events {
-            proj.apply(event);
+        {
+            let mut proj = state.projections.lock().await;
+            for event in &events {
+                proj.apply(event);
+            }
+            for event in &events {
+                let _ = state.event_tx.send(event.clone());
+            }
         }
-        // Broadcast to WebSocket clients
-        for event in &events {
-            let _ = state.event_tx.send(event.clone());
-        }
+        let persist = crate::daemon_v2::decisions::Command::PersistEvents(events.clone());
+        let _ = state.command_tx.send(persist).await;
     }
 
     (

@@ -2,7 +2,7 @@ use super::DomainEvent;
 use crate::daemon_v2::Projections;
 use std::fs;
 use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[path = "store_tests.rs"]
 #[cfg(test)]
@@ -143,29 +143,23 @@ impl EventStore {
         Ok((store, snapshot, events))
     }
 
-    fn load_latest_snapshot(dir: &PathBuf) -> io::Result<(Option<Projections>, u64)> {
-        let mut entries: Vec<_> = fs::read_dir(dir)?
+    fn load_latest_snapshot(dir: &Path) -> io::Result<(Option<Projections>, u64)> {
+        /// Extract the numeric sequence from a snapshot filename like "snapshot-0042.json".
+        fn snapshot_seq(name: &std::ffi::OsStr) -> Option<u64> {
+            name.to_str()?
+                .strip_prefix("snapshot-")?
+                .strip_suffix(".json")?
+                .parse()
+                .ok()
+        }
+
+        let best = fs::read_dir(dir)?
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_str()
-                    .map(|n| n.starts_with("snapshot-") && n.ends_with(".json"))
-                    .unwrap_or(false)
-            })
-            .collect();
+            .filter_map(|e| snapshot_seq(&e.file_name()).map(|seq| (seq, e)))
+            .max_by_key(|(seq, _)| *seq);
 
-        entries.sort_by_key(|e| e.file_name());
-
-        if let Some(latest) = entries.last() {
-            let name = latest.file_name();
-            let name_str = name.to_str().unwrap_or("snapshot-0000.json");
-            let seq_str = name_str
-                .strip_prefix("snapshot-")
-                .and_then(|s| s.strip_suffix(".json"))
-                .unwrap_or("0000");
-            let seq: u64 = seq_str.parse().unwrap_or(0);
-
-            let content = fs::read_to_string(latest.path())?;
+        if let Some((seq, entry)) = best {
+            let content = fs::read_to_string(entry.path())?;
             let projections: Projections = serde_json::from_str(&content)?;
             Ok((Some(projections), seq))
         } else {

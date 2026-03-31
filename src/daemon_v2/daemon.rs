@@ -749,6 +749,15 @@ impl DaemonV2 {
     /// at dispatch time.
     async fn dispatch_command(&mut self, command: Command) {
         use executor::{CommandClass, classify_command};
+        // PersistEvents: store-only — projections are already updated by the web layer.
+        if let Command::PersistEvents(events) = command {
+            for event in &events {
+                if let Err(e) = self.store.append(event) {
+                    tracing::error!(%e, "failed to persist web event");
+                }
+            }
+            return;
+        }
         match classify_command(&command) {
             CommandClass::Inline => {
                 let events = executor::execute_inline(

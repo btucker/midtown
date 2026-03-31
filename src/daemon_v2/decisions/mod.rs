@@ -4,7 +4,7 @@ pub mod health;
 pub mod lifecycle;
 pub mod prs;
 
-use crate::daemon_v2::events::{AgentId, AgentKind, Provider, TaskId};
+use crate::daemon_v2::events::{AgentId, AgentKind, DomainEvent, Provider, TaskId};
 
 #[derive(Debug, Clone)]
 pub struct SpawnConfig {
@@ -81,4 +81,8 @@ pub enum Command {
         number: u64,
         body: String,
     },
+    /// Persist events to the event store without re-applying to projections.
+    /// Used by the web layer which applies events to shared projections
+    /// immediately but needs the daemon to persist them for restart recovery.
+    PersistEvents(Vec<DomainEvent>),
 }

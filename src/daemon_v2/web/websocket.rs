@@ -89,12 +89,17 @@ async fn handle_client_message(text: &str, state: &WebState, socket: &mut WebSoc
                 crate::daemon_v2::rpc::dispatch_request(rpc_request, &proj, &state.channels_dir)
             };
 
-            // Apply events (MessagePosted)
+            // Apply events to projections + broadcast + persist via daemon
             if !events.is_empty() {
-                let mut proj = state.projections.lock().await;
-                for event in &events {
-                    proj.apply(event);
+                {
+                    let mut proj = state.projections.lock().await;
+                    for event in &events {
+                        proj.apply(event);
+                        let _ = state.event_tx.send(event.clone());
+                    }
                 }
+                let persist = crate::daemon_v2::decisions::Command::PersistEvents(events);
+                let _ = state.command_tx.send(persist).await;
             }
 
             // Send commands (mention/thread nudges) to the daemon for execution
