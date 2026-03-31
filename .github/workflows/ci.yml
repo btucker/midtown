@@ -45,6 +45,8 @@ jobs:
     strategy:
       matrix:
         include:
+          - test: daemon_v2_e2e
+            flags: "--ignored --test-threads=1"
           - test: full_stack_e2e
             flags: "--ignored --test-threads=1 --skip nudge_reaches_real_claude"
           - test: chat_e2e
