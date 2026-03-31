@@ -848,11 +848,20 @@ pub fn handle_coworker_spawn(
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    let provider = match params
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("claude")
+    {
+        "codex" => Provider::Codex,
+        _ => Provider::ClaudeCode,
+    };
+
     let command = Command::SpawnAgent(SpawnConfig {
         name: name.clone(),
         kind: AgentKind::Worker,
         agent_type,
-        provider: Provider::ClaudeCode,
+        provider,
         channel,
         task_id,
         initial_prompt: prompt,
