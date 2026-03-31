@@ -281,7 +281,7 @@ fn normalize_usage(mut data: UsageData, provider: AuthProvider, profile: &str) -
 
 fn fetch_live_usage_for_profile(profile: &str, provider: AuthProvider) -> Option<UsageData> {
     match provider {
-        AuthProvider::Claude => {
+        AuthProvider::Claude | AuthProvider::Zai => {
             let creds = get_oauth_credentials_for_profile(profile)?;
             fetch_usage(&creds.token, creds.email, provider, profile.to_string())
         }

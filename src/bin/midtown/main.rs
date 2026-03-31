@@ -813,7 +813,7 @@ fn main() {
             midtown::auth::AuthProvider::Codex => {
                 cmd.env("CODEX_HOME", &profile_dir);
             }
-            midtown::auth::AuthProvider::Claude => {
+            midtown::auth::AuthProvider::Claude | midtown::auth::AuthProvider::Zai => {
                 cmd.env("CLAUDE_CONFIG_DIR", &profile_dir);
             }
         }

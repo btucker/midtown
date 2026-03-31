@@ -30,7 +30,7 @@ impl Platform {
     /// Map an auth provider to its corresponding platform.
     pub fn from_provider(provider: AuthProvider) -> Self {
         match provider {
-            AuthProvider::Claude => Platform::Claude,
+            AuthProvider::Claude | AuthProvider::Zai => Platform::Claude,
             AuthProvider::Codex => Platform::Codex,
         }
     }

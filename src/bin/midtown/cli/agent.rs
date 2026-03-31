@@ -821,7 +821,7 @@ pub(crate) fn build_attach_launch_spec(
 
     // Build provider-specific interactive CLI args.
     match provider {
-        midtown::auth::AuthProvider::Claude => {
+        midtown::auth::AuthProvider::Claude | midtown::auth::AuthProvider::Zai => {
             // Write system prompt to temp file
             let prompt_file = std::env::temp_dir().join(format!(
                 "midtown-attach-{}-{}.txt",

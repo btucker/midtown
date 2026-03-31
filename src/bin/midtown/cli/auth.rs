@@ -24,9 +24,6 @@ pub enum AuthCommand {
     Login {
         /// Email address for the profile (e.g., user@example.com)
         email: String,
-        /// API key for non-interactive login
-        #[arg(long)]
-        key: Option<String>,
     },
     /// List all profiles and interactively switch
     List,
@@ -196,7 +193,7 @@ pub fn handle(
     provider: midtown::auth::AuthProvider,
 ) -> Result<Response, String> {
     match cmd {
-        AuthCommand::Login { email, key } => handle_login(email, key.as_deref(), provider),
+        AuthCommand::Login { email } => handle_login(email, provider),
         AuthCommand::List => handle_list(provider),
         AuthCommand::Switch {
             profile,
@@ -251,11 +248,7 @@ pub fn handle_list_all_providers() -> Result<Response, String> {
     })
 }
 
-fn handle_login(
-    email: &str,
-    _api_key: Option<&str>,
-    provider: midtown::auth::AuthProvider,
-) -> Result<Response, String> {
+fn handle_login(email: &str, provider: midtown::auth::AuthProvider) -> Result<Response, String> {
     // Validate email format (must contain @)
     if !email.contains('@') {
         return Err(format!(
@@ -669,7 +662,7 @@ fn prompt_add_account(provider: midtown::auth::AuthProvider) -> Result<Response,
             message: "Cancelled.".to_string(),
         });
     }
-    handle_login(email, None, provider)
+    handle_login(email, provider)
 }
 
 /// Format profiles as a static table string.

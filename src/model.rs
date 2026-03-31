@@ -13,7 +13,7 @@ pub fn default_model_for_provider_role(
 ) -> &'static str {
     match provider {
         crate::auth::AuthProvider::Codex => "gpt-5.4",
-        crate::auth::AuthProvider::Claude => match agent_type {
+        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => match agent_type {
             "midtown-project-lead" | "midtown-code-reviewer" => "opus",
             _ => "sonnet",
         },
@@ -52,7 +52,7 @@ pub fn normalize_model_for_provider_role(
                 trimmed.to_string()
             }
         }
-        crate::auth::AuthProvider::Claude => {
+        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {
             // OpenAI/Codex model aliases are not valid in Claude.
             if is_openai_model_alias(&lower) {
                 default_model.to_string()
@@ -75,7 +75,7 @@ fn normalize_size_alias_for_provider(
     };
 
     let normalized = match provider {
-        crate::auth::AuthProvider::Claude => match size {
+        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => match size {
             "small" => "haiku",
             "medium" => "sonnet",
             "large" => "opus",
