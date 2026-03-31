@@ -932,10 +932,12 @@ pub fn handle_channel_read(params: Option<&Value>, channels_dir: &Path) -> Resul
 
     let thread_parent_id = params.get("thread_parent_id").and_then(|v| v.as_str());
 
+    let before = params.get("before").and_then(|v| v.as_str());
+
     let messages = if let Some(tid) = thread_parent_id {
         channel_io::read_thread_messages(channels_dir, channel, tid, limit)
     } else {
-        channel_io::read_messages(channels_dir, channel, limit)
+        channel_io::read_messages(channels_dir, channel, limit, before)
     }
     .map_err(|e| RpcError {
         code: -32000,

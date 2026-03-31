@@ -525,6 +525,26 @@ export async function fetchHistory(channelName: string | null = null): Promise<v
 	}
 }
 
+// Fetch older messages for a channel (pagination).
+// Returns the fetched messages (caller handles prepending to store).
+export async function fetchOlderMessages(
+	channelName: string,
+	beforeTimestamp: string,
+	limit = 100,
+): Promise<Message[]> {
+	try {
+		const url = `${getApiBase()}/channels/history?channel=${encodeURIComponent(channelName)}&limit=${limit}&before=${encodeURIComponent(beforeTimestamp)}`;
+		const res = await fetch(url);
+		if (res.ok) {
+			const data = await res.json();
+			return annotateThreadReplyCounts(data);
+		}
+	} catch (err) {
+		console.warn("Failed to fetch older messages:", err);
+	}
+	return [];
+}
+
 // Fetch daemon/coworker status and update kanban data
 export async function fetchStatus(): Promise<void> {
 	try {
