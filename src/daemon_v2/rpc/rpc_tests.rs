@@ -711,6 +711,8 @@ fn projections_with_tasks_and_prs() -> Projections {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
@@ -1284,6 +1286,8 @@ fn task_prompt_no_agent_returns_error() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     let request = json!({
         "jsonrpc": "2.0",
@@ -1309,6 +1313,8 @@ fn task_handoff_stops_and_respawns() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     let request = json!({
         "jsonrpc": "2.0",

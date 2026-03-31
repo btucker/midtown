@@ -193,6 +193,8 @@ fn at_all_in_main_channel_nudges_all_leads_and_task_agents() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -234,6 +236,8 @@ fn at_all_excludes_gced_agents() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t-gc".into(),
@@ -278,6 +282,8 @@ fn at_all_in_topic_channel_nudges_local_lead_and_task_agents() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -548,6 +554,8 @@ fn task_ref_nudges_assigned_agent() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
 
     let cmds = route_message(&proj, "main", "user", "check !42 please", None, None);
@@ -576,6 +584,8 @@ fn task_ref_no_assigned_agent() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
 
     let cmds = route_message(&proj, "main", "user", "what about !99?", None, None);
@@ -603,6 +613,8 @@ fn task_ref_nudges_descendant_agents() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::TaskCreated {
         id: "11".into(),
@@ -614,6 +626,8 @@ fn task_ref_nudges_descendant_agents() {
         icon: None,
         color: None,
         parent: Some("10".into()),
+        thread_id: None,
+        message_id: None,
     });
 
     let parent_worker = make_worker(&mut proj, "alpha", "main", "10");
@@ -648,6 +662,8 @@ fn task_parent_child_recorded() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::TaskCreated {
         id: "101".into(),
@@ -659,6 +675,8 @@ fn task_parent_child_recorded() {
         icon: None,
         color: None,
         parent: Some("100".into()),
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::TaskCreated {
         id: "102".into(),
@@ -670,6 +688,8 @@ fn task_parent_child_recorded() {
         icon: None,
         color: None,
         parent: Some("100".into()),
+        thread_id: None,
+        message_id: None,
     });
 
     let descendants = proj.work.descendants_of("100");

@@ -15,6 +15,8 @@ fn create_task_adds_to_pending() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     assert_eq!(idx.pending_tasks.len(), 1);
     assert_eq!(idx.tasks.get("t1").unwrap().status, TaskStatus::Pending);
@@ -35,6 +37,8 @@ fn task_assigned_moves_to_in_progress() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     idx.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -60,6 +64,8 @@ fn task_completed_removes_from_in_progress() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     idx.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -87,6 +93,8 @@ fn task_reset_returns_to_pending() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     idx.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -114,6 +122,8 @@ fn blocked_tasks_tracked() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     idx.apply(&DomainEvent::TaskCreated {
         id: "t2".into(),
@@ -125,6 +135,8 @@ fn blocked_tasks_tracked() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     assert!(idx.blocked.contains_key("t2"));
     let unblocked = idx.pending_unblocked();
@@ -146,6 +158,8 @@ fn unblock_removes_from_blocked() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     idx.apply(&DomainEvent::TaskCreated {
         id: "t2".into(),
@@ -157,6 +171,8 @@ fn unblock_removes_from_blocked() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     idx.apply(&DomainEvent::TaskUnblocked {
         task_id: "t2".into(),
@@ -179,6 +195,8 @@ fn pr_linked_to_task() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     idx.apply(&DomainEvent::PrOpened {
         number: 42,

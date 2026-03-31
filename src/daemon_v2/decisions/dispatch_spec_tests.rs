@@ -41,6 +41,8 @@ fn make_task(proj: &mut Projections, id: &str, channel: &str) {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
 }
 
@@ -75,6 +77,8 @@ fn spawns_workers_for_available_slots() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t-running".into(),
@@ -134,6 +138,8 @@ fn uses_default_agent_type_when_none_specified() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
 
     let commands = dispatch_pending_tasks(&proj, 3);
@@ -163,6 +169,8 @@ fn uses_specified_agent_type() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
 
     let commands = dispatch_pending_tasks(&proj, 3);
@@ -197,6 +205,8 @@ fn does_not_dispatch_lead_driven_channel_tasks() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
 
     let commands = dispatch_pending_tasks(&proj, 5);
@@ -223,6 +233,8 @@ fn spawned_worker_uses_task_name_icon_color() {
         icon: Some("rocket".into()),
         color: Some("#FF0000".into()),
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
 
     let commands = dispatch_pending_tasks(&proj, 3);
@@ -630,6 +642,8 @@ fn blocked_task_not_dispatched_until_blockers_complete() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
 
     let commands = dispatch_pending_tasks(&proj, 5);
@@ -668,6 +682,8 @@ fn task_dispatched_after_blocker_unblocked() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
 
     // Complete t1 and unblock t2
@@ -713,6 +729,8 @@ fn idle_reported_worker_stopped_after_2_minutes() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: "w1".into(),
@@ -858,6 +876,8 @@ fn stale_worker_nudged_after_5_minutes() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: "w1".into(),
@@ -914,6 +934,8 @@ fn fresh_worker_not_nudged() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: "w1".into(),
@@ -944,4 +966,72 @@ fn fresh_worker_not_nudged() {
         "fresh worker should NOT be nudged, got {:?}",
         commands
     );
+}
+
+// ── Worker DM channel and thread binding ────────────────────────────────────
+
+/// Spec 2.1: WHEN spawning a worker THEN the worker's auto-output channel
+/// SHALL be `dm-{agent_name}`, NOT the task's channel
+#[test]
+fn worker_spawns_with_dm_channel() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Build feature".into(),
+        channel: "multi-platform".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: Some("ghost-town".into()),
+        icon: None,
+        color: None,
+        parent: None,
+        thread_id: None,
+        message_id: None,
+    });
+
+    let commands = dispatch_pending_tasks(&proj, 3);
+    assert_eq!(commands.len(), 1);
+
+    if let Command::SpawnAgent(cfg) = &commands[0] {
+        assert_eq!(
+            cfg.channel.as_deref(),
+            Some("dm-ghost-town"),
+            "worker should auto-output to DM channel, not task channel"
+        );
+    } else {
+        panic!("expected SpawnAgent");
+    }
+}
+
+/// Spec 2.1: WHEN a task has a `thread_id` THEN the worker SHALL be spawned
+/// with `bound_thread_id` set to that thread
+#[test]
+fn worker_inherits_task_thread_id() {
+    let mut proj = Projections::default();
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Fix bug".into(),
+        channel: "multi-platform".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+        thread_id: Some("thread-abc-123".into()),
+        message_id: None,
+    });
+
+    let commands = dispatch_pending_tasks(&proj, 3);
+    assert_eq!(commands.len(), 1);
+
+    if let Command::SpawnAgent(cfg) = &commands[0] {
+        assert_eq!(
+            cfg.bound_thread_id.as_deref(),
+            Some("thread-abc-123"),
+            "worker should be bound to the task's thread"
+        );
+    } else {
+        panic!("expected SpawnAgent");
+    }
 }

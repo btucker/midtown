@@ -27,6 +27,8 @@ fn full_lifecycle_through_store_and_projections() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     };
     store.append(&e1).unwrap();
     proj.apply(&e1);
@@ -127,6 +129,8 @@ fn task_assigned_auto_emitted_after_agent_created_with_task() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     assert_eq!(
         proj.work.tasks.get("t1").unwrap().status,

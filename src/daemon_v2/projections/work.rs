@@ -21,6 +21,8 @@ pub struct Task {
     pub icon: Option<String>,
     pub color: Option<String>,
     pub parent: Option<TaskId>,
+    pub thread_id: Option<String>,
+    pub message_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub completed_at: Option<DateTime<Utc>>,
 }
@@ -63,6 +65,8 @@ impl WorkIndex {
                 icon,
                 color,
                 parent,
+                thread_id,
+                message_id,
             } => {
                 let task = Task {
                     id: id.clone(),
@@ -76,6 +80,8 @@ impl WorkIndex {
                     icon: icon.clone(),
                     color: color.clone(),
                     parent: parent.clone(),
+                    thread_id: thread_id.clone(),
+                    message_id: message_id.clone(),
                     created_at: Utc::now(),
                     completed_at: None,
                 };

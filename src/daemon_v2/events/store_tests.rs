@@ -34,6 +34,8 @@ fn sample_task_created() -> DomainEvent {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     }
 }
 
