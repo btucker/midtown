@@ -662,17 +662,38 @@ pub fn handle_task_update(
     let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
     let id = params
         .get("id")
-        .and_then(|v| v.as_str())
+        .and_then(|v| {
+            v.as_str()
+                .map(String::from)
+                .or_else(|| v.as_u64().map(|n| n.to_string()))
+        })
         .ok_or_else(|| RpcError::invalid_params("missing id"))?;
 
-    if !proj.work.tasks.contains_key(id) {
+    if !proj.work.tasks.contains_key(&id) {
         return Err(RpcError {
             code: -32000,
             message: format!("task {id} not found"),
         });
     }
 
-    Ok(vec![])
+    let thread_id = params
+        .get("thread_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let message_id = params
+        .get("message_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    if thread_id.is_none() && message_id.is_none() {
+        return Ok(vec![]);
+    }
+
+    Ok(vec![DomainEvent::TaskUpdated {
+        task_id: id,
+        thread_id,
+        message_id,
+    }])
 }
 
 /// Handle `pr.list` — returns all PR data from WorkIndex.

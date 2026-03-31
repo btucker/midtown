@@ -100,6 +100,20 @@ impl WorkIndex {
                         .push(id.clone());
                 }
             }
+            DomainEvent::TaskUpdated {
+                task_id,
+                thread_id,
+                message_id,
+            } => {
+                if let Some(task) = self.tasks.get_mut(task_id) {
+                    if thread_id.is_some() {
+                        task.thread_id = thread_id.clone();
+                    }
+                    if message_id.is_some() {
+                        task.message_id = message_id.clone();
+                    }
+                }
+            }
             DomainEvent::TaskAssigned { task_id, .. } => {
                 if let Some(task) = self.tasks.get_mut(task_id) {
                     task.status = TaskStatus::InProgress;

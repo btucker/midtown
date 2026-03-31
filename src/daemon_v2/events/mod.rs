@@ -115,6 +115,13 @@ pub enum DomainEvent {
         #[serde(default)]
         message_id: Option<String>,
     },
+    TaskUpdated {
+        task_id: TaskId,
+        #[serde(default)]
+        thread_id: Option<String>,
+        #[serde(default)]
+        message_id: Option<String>,
+    },
     TaskAssigned {
         task_id: TaskId,
         agent_id: AgentId,
