@@ -241,6 +241,7 @@ pub fn execute_inline(
                 content,
                 thread_id,
                 tool_data: None,
+                auto_output: false,
             }]
         }
         Command::PostSystem { channel, content } => {
@@ -255,6 +256,7 @@ pub fn execute_inline(
                 content,
                 thread_id: None,
                 tool_data: None,
+                auto_output: false,
             }]
         }
         other => {
@@ -662,6 +664,7 @@ fn flush_auto_output(
                         content: insight_content,
                         thread_id: None,
                         tool_data: None,
+                        auto_output: false, // insights are always visible
                     });
                 }
                 Err(e) => {
@@ -710,6 +713,7 @@ fn flush_auto_output(
             content: text,
             thread_id: thread_owned,
             tool_data,
+            auto_output: true,
         });
     }
 }
