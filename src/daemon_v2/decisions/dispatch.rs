@@ -18,9 +18,16 @@ use crate::daemon_v2::projections::agents::Agent;
 const DEFAULT_AGENT_TYPE: &str = "midtown-code-author";
 
 /// Dispatch pending unblocked tasks up to `max_in_progress` total running workers.
+/// Child tasks (tasks with a parent) don't count separately — they share the parent's slot.
 /// Returns `SpawnAgent` commands for each slot available.
 pub fn dispatch_pending_tasks(proj: &Projections, max_in_progress: usize) -> Vec<Command> {
-    let current_in_progress = proj.work.in_progress_tasks.len();
+    // Count only root-level in-progress tasks (no parent) toward the cap.
+    let current_in_progress = proj
+        .work
+        .in_progress_tasks
+        .iter()
+        .filter(|tid| proj.work.tasks.get(*tid).is_none_or(|t| t.parent.is_none()))
+        .count();
     let slots = max_in_progress.saturating_sub(current_in_progress);
     if slots == 0 {
         return vec![];

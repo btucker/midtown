@@ -121,6 +121,27 @@ pub fn stop_idle_reported_workers(proj: &Projections) -> Vec<Command> {
         .collect()
 }
 
+/// Stop workers that haven't produced any output for 10+ minutes.
+/// Catches agents that finished their task but didn't call `midtown state idle`.
+pub fn stop_silent_workers(proj: &Projections) -> Vec<Command> {
+    let cutoff = Utc::now() - chrono::Duration::minutes(10);
+    proj.agents
+        .running
+        .iter()
+        .filter_map(|id| proj.agents.by_id.get(id))
+        .filter(|a| a.kind == AgentKind::Worker)
+        .filter(|a| {
+            // Only stop if we've seen at least one output (last_output_at is set)
+            // and it's been more than 10 minutes since the last output.
+            a.last_output_at.is_some_and(|t| t < cutoff)
+        })
+        .map(|a| Command::StopAgent {
+            id: a.id.clone(),
+            reason: "no output for 10+ minutes".into(),
+        })
+        .collect()
+}
+
 /// Detect auth errors from session stderr (stub — requires stderr plumbing).
 /// Auth errors will cause session death, which `check_dead_workers` handles.
 pub fn check_auth_errors(_proj: &Projections) -> Vec<Command> {
