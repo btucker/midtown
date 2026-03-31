@@ -299,6 +299,8 @@ fn task_created_added_to_tasks_and_pending() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
 
     assert!(idx.tasks.contains_key("t1"), "task should be in tasks map");
@@ -327,6 +329,8 @@ fn task_created_with_blocked_by_added_to_blocked_map() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     idx.apply(&DomainEvent::TaskCreated {
         id: "t2".into(),
@@ -338,6 +342,8 @@ fn task_created_with_blocked_by_added_to_blocked_map() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
 
     assert!(
@@ -365,6 +371,8 @@ fn task_assigned_moves_to_in_progress() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     idx.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -401,6 +409,8 @@ fn task_completed_removes_from_in_progress_and_sets_completed_at() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     idx.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -440,6 +450,8 @@ fn pr_linked_to_task_sets_pr_number_on_task() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     idx.apply(&DomainEvent::PrOpened {
         number: 88,
@@ -473,6 +485,8 @@ fn pr_linked_to_task_enables_reverse_lookup() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     idx.apply(&DomainEvent::PrOpened {
         number: 88,
@@ -502,6 +516,8 @@ fn pending_unblocked_excludes_blocked_tasks() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     idx.apply(&DomainEvent::TaskCreated {
         id: "t2".into(),
@@ -513,6 +529,8 @@ fn pending_unblocked_excludes_blocked_tasks() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
 
     let unblocked = idx.pending_unblocked();

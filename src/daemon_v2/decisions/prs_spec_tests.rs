@@ -21,6 +21,8 @@ fn make_worker_with_task(proj: &mut Projections, agent_id: &str, task_id: &str) 
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: agent_id.into(),
@@ -199,6 +201,8 @@ fn merged_pr_completes_linked_in_progress_task() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -243,6 +247,8 @@ fn merged_pr_does_not_re_complete_already_completed_task() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t1".into(),
@@ -343,6 +349,8 @@ fn merged_pr_nudges_other_workers_to_rebase() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::TaskAssigned {
         task_id: "t2".into(),
@@ -680,6 +688,8 @@ fn pr_comment_uses_agent_thread_id() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     // Create agent with a bound_thread_id
     proj.apply(&DomainEvent::AgentCreated {
@@ -812,5 +822,55 @@ fn failed_ci_nudges_author() {
             .any(|c| matches!(c, Command::NudgeAgent { id, .. } if id == "w1")),
         "failed CI should nudge the author agent, got {:?}",
         commands
+    );
+}
+
+// ── Reviewer naming uses agent name, not GitHub username ────────────────────
+
+/// Spec 3.2: WHEN a PR is linked to a task THEN the reviewer SHALL be named
+/// after the task's agent_name, not the GitHub author login
+#[test]
+fn reviewer_named_after_agent_not_github_user() {
+    let mut proj = Projections::default();
+    // Task with agent_name "clean-slate"
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Remove zai".into(),
+        channel: "multi-platform".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: Some("clean-slate".into()),
+        icon: None,
+        color: None,
+        parent: None,
+        thread_id: None,
+        message_id: None,
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "agent-1".into(),
+    });
+    // PR opened by GitHub user "btucker" but linked to task t1
+    proj.apply(&DomainEvent::PrOpened {
+        number: 42,
+        branch: "feat/remove-zai".into(),
+        author: "btucker".into(),
+    });
+    proj.apply(&DomainEvent::PrLinkedToTask {
+        number: 42,
+        task_id: "t1".into(),
+    });
+    proj.apply(&DomainEvent::PrReviewRequested { number: 42 });
+
+    let commands = spawn_reviewers(&proj);
+
+    assert_eq!(commands.len(), 1);
+    assert!(
+        matches!(
+            &commands[0],
+            Command::SpawnAgent(cfg) if cfg.name == "clean-slate-reviewer"
+        ),
+        "reviewer should be named after agent (clean-slate), not GitHub user (btucker), got {:?}",
+        commands[0]
     );
 }

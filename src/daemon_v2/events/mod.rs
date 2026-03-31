@@ -110,6 +110,17 @@ pub enum DomainEvent {
         icon: Option<String>,
         color: Option<String>,
         parent: Option<TaskId>,
+        #[serde(default)]
+        thread_id: Option<String>,
+        #[serde(default)]
+        message_id: Option<String>,
+    },
+    TaskUpdated {
+        task_id: TaskId,
+        #[serde(default)]
+        thread_id: Option<String>,
+        #[serde(default)]
+        message_id: Option<String>,
     },
     TaskAssigned {
         task_id: TaskId,

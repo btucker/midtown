@@ -32,6 +32,8 @@ fn make_projections_with_merged_pr(
             icon: None,
             color: None,
             parent: None,
+            thread_id: None,
+            message_id: None,
         });
 
         if task_status == Some(TaskStatus::InProgress) {
@@ -331,6 +333,8 @@ fn suspends_author_with_open_pr() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: "a1".into(),
@@ -377,6 +381,8 @@ fn no_suspend_for_merged_pr() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: "a1".into(),
@@ -426,6 +432,8 @@ fn no_suspend_for_closed_pr() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::AgentCreated {
         id: "a1".into(),
@@ -517,6 +525,8 @@ fn nudge_rebase_after_merge_nudges_open_pr_workers() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 2,
@@ -606,6 +616,8 @@ fn rebase_nudge_includes_stopped_workers() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 2,
@@ -681,6 +693,8 @@ fn no_rebase_nudge_when_cooldown_active() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 2,

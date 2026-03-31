@@ -41,11 +41,29 @@ pub fn handle_status(proj: &Projections) -> Result<Value, RpcError> {
         .values()
         .filter(|a| proj.agents.running.contains(&a.id))
         .map(|a| {
+            let task_name = a
+                .task_id
+                .as_deref()
+                .and_then(|tid| proj.work.tasks.get(tid))
+                .map(|t| format!("!{} {}", t.id, t.subject));
+            let channel = a.channel.as_deref().and_then(|ch| {
+                // Map DM channels back to the task's channel for display
+                if ch.starts_with("dm-") {
+                    a.task_id
+                        .as_deref()
+                        .and_then(|tid| proj.work.tasks.get(tid))
+                        .map(|t| t.channel.as_str())
+                } else {
+                    Some(ch)
+                }
+            });
             json!({
                 "name": a.name,
                 "status": "running",
                 "coworker_type": format!("{:?}", a.kind).to_lowercase(),
-                "current_task": a.task_id,
+                "current_task": task_name,
+                "task_id": a.task_id,
+                "channel": channel,
                 "color": a.color,
                 "icon": a.icon,
             })
@@ -53,11 +71,21 @@ pub fn handle_status(proj: &Projections) -> Result<Value, RpcError> {
         .collect();
 
     // Build tasks array for kanban board
+    // Build agent_id → agent_name map for task owner resolution
+    let task_owner: std::collections::HashMap<&str, &str> = proj
+        .agents
+        .by_id
+        .values()
+        .filter_map(|a| a.task_id.as_deref().map(|tid| (tid, a.name.as_str())))
+        .collect();
+
     let tasks: Vec<Value> = proj
         .work
         .tasks
         .values()
         .map(|t| {
+            let owner = task_owner.get(t.id.as_str()).copied();
+            let updated_at = t.completed_at.unwrap_or(t.created_at).to_rfc3339();
             json!({
                 "id": t.id,
                 "subject": t.subject,
@@ -67,8 +95,14 @@ pub fn handle_status(proj: &Projections) -> Result<Value, RpcError> {
                     crate::daemon_v2::events::TaskStatus::Completed => "completed",
                 },
                 "channel": t.channel,
+                "owner": owner,
+                "thread_id": t.thread_id,
+                "message_id": t.message_id,
                 "pr_number": t.pr_number,
                 "agent_type": t.agent_type,
+                "color": t.color,
+                "icon": t.icon,
+                "updated_at": updated_at,
             })
         })
         .collect();
@@ -236,6 +270,16 @@ pub fn handle_task_create(
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    let thread_id = params
+        .get("thread_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let message_id = params
+        .get("message_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
     Ok(vec![DomainEvent::TaskCreated {
         id,
         subject,
@@ -246,6 +290,8 @@ pub fn handle_task_create(
         icon,
         color,
         parent,
+        thread_id,
+        message_id,
     }])
 }
 
@@ -616,17 +662,38 @@ pub fn handle_task_update(
     let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
     let id = params
         .get("id")
-        .and_then(|v| v.as_str())
+        .and_then(|v| {
+            v.as_str()
+                .map(String::from)
+                .or_else(|| v.as_u64().map(|n| n.to_string()))
+        })
         .ok_or_else(|| RpcError::invalid_params("missing id"))?;
 
-    if !proj.work.tasks.contains_key(id) {
+    if !proj.work.tasks.contains_key(&id) {
         return Err(RpcError {
             code: -32000,
             message: format!("task {id} not found"),
         });
     }
 
-    Ok(vec![])
+    let thread_id = params
+        .get("thread_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let message_id = params
+        .get("message_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    if thread_id.is_none() && message_id.is_none() {
+        return Ok(vec![]);
+    }
+
+    Ok(vec![DomainEvent::TaskUpdated {
+        task_id: id,
+        thread_id,
+        message_id,
+    }])
 }
 
 /// Handle `pr.list` — returns all PR data from WorkIndex.
@@ -865,10 +932,12 @@ pub fn handle_channel_read(params: Option<&Value>, channels_dir: &Path) -> Resul
 
     let thread_parent_id = params.get("thread_parent_id").and_then(|v| v.as_str());
 
+    let before = params.get("before").and_then(|v| v.as_str());
+
     let messages = if let Some(tid) = thread_parent_id {
         channel_io::read_thread_messages(channels_dir, channel, tid, limit)
     } else {
-        channel_io::read_messages(channels_dir, channel, limit)
+        channel_io::read_messages(channels_dir, channel, limit, before)
     }
     .map_err(|e| RpcError {
         code: -32000,

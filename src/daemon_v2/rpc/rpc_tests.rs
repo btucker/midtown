@@ -711,6 +711,8 @@ fn projections_with_tasks_and_prs() -> Projections {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
@@ -1044,7 +1046,8 @@ fn channel_read_with_thread_parent_id() {
 
     // Get the message ID
     let msgs =
-        crate::daemon_v2::executor::channel_io::read_messages(dir.path(), "test", None).unwrap();
+        crate::daemon_v2::executor::channel_io::read_messages(dir.path(), "test", None, None)
+            .unwrap();
     let parent_id = msgs[0]["id"].as_str().unwrap().to_string();
 
     // Post a thread reply
@@ -1102,7 +1105,8 @@ fn channel_read_excludes_thread_replies() {
     .unwrap();
 
     let msgs =
-        crate::daemon_v2::executor::channel_io::read_messages(dir.path(), "test", None).unwrap();
+        crate::daemon_v2::executor::channel_io::read_messages(dir.path(), "test", None, None)
+            .unwrap();
     let parent_id = msgs[0]["id"].as_str().unwrap().to_string();
 
     crate::daemon_v2::executor::channel_io::post_message(
@@ -1284,6 +1288,8 @@ fn task_prompt_no_agent_returns_error() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     let request = json!({
         "jsonrpc": "2.0",
@@ -1309,6 +1315,8 @@ fn task_handoff_stops_and_respawns() {
         icon: None,
         color: None,
         parent: None,
+        thread_id: None,
+        message_id: None,
     });
     let request = json!({
         "jsonrpc": "2.0",

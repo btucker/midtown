@@ -210,7 +210,8 @@ fn diff_detects_new_open_pr() {
     }];
 
     let events = diff_pr_state(&work, &open, &[]);
-    assert_eq!(events.len(), 1);
+    // PrOpened + PrReviewRequested (non-draft PR)
+    assert_eq!(events.len(), 2);
     assert!(matches!(
         &events[0],
         DomainEvent::PrOpened {
@@ -218,6 +219,10 @@ fn diff_detects_new_open_pr() {
             branch,
             author,
         } if branch == "feat/new" && author == "alice"
+    ));
+    assert!(matches!(
+        &events[1],
+        DomainEvent::PrReviewRequested { number: 10 }
     ));
 }
 
@@ -249,6 +254,7 @@ fn diff_skips_already_known_open_pr() {
             number: 10,
             branch: "feat/existing".into(),
             author: "alice".into(),
+            midtown_author: None,
             ci_status: CiStatus::Running,
             review_state: ReviewState::None,
             is_merged: false,
@@ -280,6 +286,7 @@ fn diff_skips_already_merged_pr() {
             number: 5,
             branch: "feat/done".into(),
             author: "alice".into(),
+            midtown_author: None,
             ci_status: CiStatus::Passed,
             review_state: ReviewState::Approved,
             is_merged: true,
@@ -308,6 +315,7 @@ fn diff_detects_review_requested() {
             number: 10,
             branch: "feat/review".into(),
             author: "alice".into(),
+            midtown_author: None,
             ci_status: CiStatus::Passed,
             review_state: ReviewState::None,
             is_merged: false,
@@ -354,6 +362,7 @@ fn diff_detects_ci_status_change() {
             number: 10,
             branch: "feat/ci".into(),
             author: "alice".into(),
+            midtown_author: None,
             ci_status: CiStatus::Running,
             review_state: ReviewState::None,
             is_merged: false,
@@ -442,5 +451,101 @@ fn throttle_when_nearly_exhausted() {
     assert!(
         should_throttle(&status),
         "10/5000 is well below 10% threshold"
+    );
+}
+
+// ── Spec 3.2: Polling backstop should request review for new non-draft PRs ──
+
+/// Spec 3.2: WHEN polling detects a new non-draft PR THEN PrReviewRequested SHALL be emitted
+#[test]
+fn new_non_draft_pr_emits_review_requested() {
+    let work = WorkIndex::default();
+    let open = vec![ParsedPr {
+        number: 42,
+        branch: "feat/foo".into(),
+        author: "ghost-town".into(),
+        is_draft: false,
+        ci_passed: false,
+        is_approved: false,
+        needs_review: false, // reviewDecision is null (no branch protection)
+    }];
+
+    let events = diff_pr_state(&work, &open, &[]);
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, DomainEvent::PrReviewRequested { number: 42 })),
+        "new non-draft PR should emit PrReviewRequested even without reviewDecision, got {:?}",
+        events
+    );
+}
+
+/// Spec 3.2: WHEN polling detects a new draft PR THEN PrReviewRequested SHALL NOT be emitted
+#[test]
+fn new_draft_pr_does_not_emit_review_requested() {
+    let work = WorkIndex::default();
+    let open = vec![ParsedPr {
+        number: 42,
+        branch: "feat/foo".into(),
+        author: "ghost-town".into(),
+        is_draft: true,
+        ci_passed: false,
+        is_approved: false,
+        needs_review: false,
+    }];
+
+    let events = diff_pr_state(&work, &open, &[]);
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, DomainEvent::PrReviewRequested { .. })),
+        "draft PR should NOT emit PrReviewRequested, got {:?}",
+        events
+    );
+}
+
+/// Spec 3.1: WHEN PrOpened is processed AND author matches a worker THEN PrLinkedToTask
+#[test]
+fn pr_opened_links_to_author_task() {
+    let mut work = WorkIndex::default();
+    // Create a task with an agent named "ghost-town"
+    work.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Build feature".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: Some("ghost-town".into()),
+        icon: None,
+        color: None,
+        parent: None,
+        thread_id: None,
+        message_id: None,
+    });
+    work.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "agent-1".into(),
+    });
+
+    let open = vec![ParsedPr {
+        number: 42,
+        branch: "feat/foo".into(),
+        author: "ghost-town".into(),
+        is_draft: false,
+        ci_passed: false,
+        is_approved: false,
+        needs_review: false,
+    }];
+
+    let events = diff_pr_state(&work, &open, &[]);
+
+    assert!(
+        events.iter().any(
+            |e| matches!(e, DomainEvent::PrLinkedToTask { number: 42, task_id } if task_id == "t1")
+        ),
+        "new PR from task agent should emit PrLinkedToTask, got {:?}",
+        events
     );
 }

@@ -40,6 +40,8 @@ fn respawn_dead_agent_with_task() {
             icon: None,
             color: None,
             parent: None,
+            thread_id: None,
+            message_id: None,
         },
         DomainEvent::TaskAssigned {
             task_id: "task-1".into(),
@@ -94,6 +96,8 @@ fn no_respawn_for_completed_task() {
             icon: None,
             color: None,
             parent: None,
+            thread_id: None,
+            message_id: None,
         },
         DomainEvent::TaskAssigned {
             task_id: "task-1".into(),
@@ -225,6 +229,8 @@ fn check_idle_workers_ignores_worker_with_task() {
             icon: None,
             color: None,
             parent: None,
+            thread_id: None,
+            message_id: None,
         },
         DomainEvent::TaskAssigned {
             task_id: "task-42".into(),

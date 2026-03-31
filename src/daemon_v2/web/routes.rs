@@ -38,6 +38,9 @@ pub struct ChannelHistoryParams {
     last: Option<u64>,
     #[serde(default)]
     thread_parent_id: Option<String>,
+    /// Pagination cursor: only return messages with timestamp before this ISO string.
+    #[serde(default)]
+    before: Option<String>,
 }
 
 pub async fn channel_history(
@@ -47,10 +50,13 @@ pub async fn channel_history(
     let channel = params.channel.as_deref().unwrap_or("midtown");
     let limit = params.limit.or(params.last).or(Some(100));
 
-    // Build RPC params — include thread_parent_id if specified
+    // Build RPC params — include thread_parent_id and before if specified
     let mut rpc_params = json!({"channel": channel, "limit": limit});
     if let Some(ref parent_id) = params.thread_parent_id {
         rpc_params["thread_parent_id"] = json!(parent_id);
+    }
+    if let Some(ref before) = params.before {
+        rpc_params["before"] = json!(before);
     }
 
     // Spec 8.1: channel.read only does filesystem I/O — snapshot projections briefly
@@ -383,6 +389,7 @@ pub async fn search(
             &state.channels_dir,
             &ch.name,
             Some(200),
+            None,
         ) {
             for msg in &messages {
                 if results.len() >= params.limit {
