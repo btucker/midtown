@@ -505,8 +505,8 @@ fn ensure_required_plugins() {
         .filter_map(|p| p.get("id").and_then(|id| id.as_str()).map(String::from))
         .collect();
 
-    // Find missing plugins (use canonical list from daemon)
-    let missing: Vec<_> = midtown::daemon::REQUIRED_PLUGINS
+    // Find missing plugins (use canonical list from platform_launch)
+    let missing: Vec<_> = midtown::platform_launch::REQUIRED_PLUGINS
         .iter()
         .filter(|p| !installed.contains(**p))
         .collect();
@@ -715,26 +715,15 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
         emit_startup_progress(65, "starting daemon");
         cleanup_stale_daemon();
 
-        // Start the daemon in the background using `midtown daemon` (or `daemon-v2`)
+        // Start the daemon in the background using `midtown daemon-v2`
         let exe = std::env::current_exe()
             .map_err(|e| format!("Failed to get current executable: {}", e))?;
 
-        let use_v2 = std::env::var("MIDTOWN_DAEMON_V2").is_ok_and(|v| v == "1" || v == "true");
-
         let mut cmd = Command::new(&exe);
-        if use_v2 {
-            cmd.arg("daemon-v2");
-            cmd.current_dir(&primary_repo);
-            cmd.arg("--workdir").arg(&dir_key);
-            cmd.arg("--channel").arg(&project_name);
-        } else {
-            cmd.arg("daemon");
-            cmd.current_dir(&primary_repo);
-            cmd.arg("--workdir").arg(&primary_repo);
-            if project.is_some() {
-                cmd.arg("--project").arg(&project_name);
-            }
-        }
+        cmd.arg("daemon-v2");
+        cmd.current_dir(&primary_repo);
+        cmd.arg("--workdir").arg(&dir_key);
+        cmd.arg("--channel").arg(&project_name);
 
         // Spawn detached
         cmd.stdin(Stdio::null())

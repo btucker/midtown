@@ -65,31 +65,29 @@ impl From<AuthProviderArg> for midtown::auth::AuthProvider {
 #[derive(Subcommand, Clone)]
 enum Commands {
     /// Run the daemon server (internal - use 'start' instead)
+    ///
+    /// Legacy alias for `daemon-v2`. Kept for backward compatibility.
     #[command(hide = true)]
     Daemon {
         /// Path to the Unix socket
         #[arg(short, long)]
         socket: Option<std::path::PathBuf>,
 
-        /// Working directory for coworkers
+        /// Working directory key (git repo name)
         #[arg(short, long)]
-        workdir: Option<std::path::PathBuf>,
+        workdir: Option<String>,
 
-        /// Enable verbose logging
-        #[arg(short, long)]
-        verbose: bool,
+        /// Default channel name
+        #[arg(long, default_value = "main")]
+        channel: String,
 
-        /// Port for GitHub webhook server (disabled if not set)
+        /// Port for the Axum web API server
         #[arg(long)]
-        webhook_port: Option<u16>,
+        web_port: Option<u16>,
 
         /// Run in foreground (don't daemonize) - for debugging
         #[arg(long)]
         foreground: bool,
-
-        /// Project name (overrides auto-detection)
-        #[arg(long)]
-        project: Option<String>,
     },
     /// Start midtown services (daemon + shared webserver)
     Start {
@@ -359,168 +357,53 @@ fn main() {
         repos: vec![],
     });
 
-    // Daemon command (runs the daemon server - internal use)
+    // Daemon command — legacy alias that redirects to DaemonV2
     if let Commands::Daemon {
         socket,
         workdir,
-        verbose,
-        webhook_port,
-        foreground,
-        project,
+        channel,
+        web_port,
+        foreground: _,
     } = &command
     {
-        let mut config = midtown::daemon::DaemonConfig::default();
-        if let Some(s) = socket {
-            config.socket_path = s.clone();
-        }
-        if let Some(w) = workdir {
-            config.workdir = w.clone();
-        }
-        config.verbose = *verbose;
-        // CLI flag overrides env var
-        if webhook_port.is_some() {
-            config.webhook_port = *webhook_port;
-        }
-        if let Some(p) = project {
-            config.project_name = Some(p.clone());
-        }
+        // Treat `midtown daemon` identically to `midtown daemon-v2`
+        let dir_key = workdir
+            .clone()
+            .or_else(midtown::paths::detect_repo_name)
+            .unwrap_or_else(|| "default".to_string());
 
-        // Daemonize unless --foreground is set
-        if !foreground {
-            use daemonize::Daemonize;
-            use std::os::unix::net::UnixStream;
+        let paths = midtown::paths::ProjectPaths::new(&dir_key);
 
-            // Check if daemon is already running BEFORE forking
-            // This allows us to print the error to the terminal
-            if config.socket_path.exists() && UnixStream::connect(&config.socket_path).is_ok() {
-                // Try to get the PID for a helpful message
-                let pid_msg = std::fs::read_to_string(&config.pid_file_path)
-                    .ok()
-                    .and_then(|s| s.trim().parse::<u32>().ok())
-                    .map(|pid| format!(" (PID {})", pid))
-                    .unwrap_or_default();
-                eprintln!(
-                    "Error: Daemon is already running{}. Stop it first with 'midtown stop'.",
-                    pid_msg
-                );
-                std::process::exit(1);
-            }
+        let socket_path = socket.clone().unwrap_or_else(|| paths.daemon_socket());
 
-            // Create log directory for daemon output
-            let log_dir = midtown::paths::daemon_log_dir();
-            if let Err(e) = std::fs::create_dir_all(&log_dir) {
-                eprintln!("Failed to create log directory: {}", e);
-                std::process::exit(1);
-            }
+        let events_dir = paths.base_dir().join("events");
 
-            // Open log files for stdout/stderr
-            let stdout_path = log_dir.join("daemon.out");
-            let stderr_path = log_dir.join("daemon.err");
+        let channels_dir = paths.base_dir().to_path_buf();
 
-            let stdout = match std::fs::File::options()
-                .append(true)
-                .create(true)
-                .open(&stdout_path)
-            {
-                Ok(f) => f,
-                Err(e) => {
-                    eprintln!("Failed to open stdout log: {}", e);
-                    std::process::exit(1);
-                }
-            };
-            let stderr = match std::fs::File::options()
-                .append(true)
-                .create(true)
-                .open(&stderr_path)
-            {
-                Ok(f) => f,
-                Err(e) => {
-                    eprintln!("Failed to open stderr log: {}", e);
-                    std::process::exit(1);
-                }
-            };
+        let config = midtown::daemon_v2::DaemonV2Config {
+            dir_key,
+            socket_path,
+            events_dir,
+            default_channel: channel.clone(),
+            channels_dir,
+            webhook_rx: None,
+            web_port: *web_port,
+        };
 
-            // Write startup separator to both logs so runs are distinguishable
-            use std::io::Write;
-            let separator = format!(
-                "\n=== Daemon started at {} ===\n",
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-            );
-            // Best-effort writes; if these fail, the daemon will still start
-            let _ = (&stdout).write_all(separator.as_bytes());
-            let _ = (&stderr).write_all(separator.as_bytes());
-
-            // Note: We don't use daemonize's pid_file feature because we have
-            // our own PID file with flock-based locking for singleton enforcement.
-            // The daemon::run() function handles the PID file.
-            let daemonize = Daemonize::new()
-                .working_directory(&config.workdir)
-                .stdout(stdout)
-                .stderr(stderr);
-
-            match daemonize.start() {
-                Ok(_) => {
-                    // We are now in the daemon child process
-                    // Continue to run the daemon server below
-                }
-                Err(e) => {
-                    eprintln!("Failed to daemonize: {}", e);
-                    std::process::exit(1);
-                }
-            }
-        }
-
-        // Run the daemon (this blocks until shutdown or exec-restart)
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-        match rt.block_on(midtown::daemon::run(config)) {
-            Ok(midtown::daemon::DaemonExitStatus::Shutdown) => {
-                // Normal shutdown — exit cleanly
-                return;
-            }
-            Ok(midtown::daemon::DaemonExitStatus::ExecRestart {
-                workdir,
-                project_name,
-            }) => {
-                // Drop the tokio runtime before exec to release resources
-                drop(rt);
-
-                // Re-exec the daemon binary with --foreground to avoid re-daemonizing.
-                // This preserves the original process context (PID, sandbox state),
-                // which is critical: if the original daemon was launched from an
-                // unsandboxed context, the re-exec'd daemon stays unsandboxed and
-                // can properly sandbox coworkers with sandbox-exec.
-                let exe = std::env::current_exe().unwrap_or_else(|e| {
-                    eprintln!("Failed to get current executable for exec-restart: {}", e);
-                    std::process::exit(1);
-                });
-
-                use std::os::unix::process::CommandExt;
-                let mut cmd = std::process::Command::new(&exe);
-                cmd.arg("daemon");
-                cmd.arg("--foreground");
-                cmd.arg("--workdir").arg(&workdir);
-                if let Some(ref project) = project_name {
-                    cmd.arg("--project").arg(project);
-                }
-
-                eprintln!(
-                    "\n=== Daemon exec-restart at {} ===",
-                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-                );
-
-                // exec() replaces this process — this line never returns on success
-                let err = cmd.exec();
-                eprintln!("Failed to exec daemon: {}", err);
-                std::process::exit(1);
-            }
+        let daemon = match midtown::daemon_v2::DaemonV2::new(config) {
+            Ok(d) => d,
             Err(e) => {
-                eprintln!("Daemon error: {}", e);
+                eprintln!("Failed to initialize daemon: {}", e);
                 std::process::exit(1);
             }
-        }
+        };
+
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        rt.block_on(daemon.run());
+        return;
     }
 
-    // DaemonV2 command (experimental v2 event-sourced daemon)
+    // DaemonV2 command (event-sourced daemon)
     if let Commands::DaemonV2 {
         socket,
         workdir,

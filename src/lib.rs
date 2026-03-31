@@ -39,12 +39,26 @@
 //! assert_eq!(new_messages.len(), 1);
 //! ```
 
-// Daemon server
-pub mod daemon;
+// Daemon server (v2 event-sourced daemon)
 pub mod daemon_v2;
 
-// Pure decision functions and shared types for the daemon tick loop
-pub mod rules;
+// Stream event extraction (text, tool blocks, insights)
+pub mod stream;
+
+// Model alias normalization for multi-provider support
+pub mod model;
+
+// Webhook forwarder (gh webhook forward process management)
+pub mod webhook_fwd;
+
+// Structured frontmatter parsing for GitHub PR/issue comments
+pub mod frontmatter;
+
+// Text utilities
+pub mod text;
+
+// Persistent daemon state (loaded from daemon-state.json)
+pub mod daemon_state;
 
 // RPC subsystem (furiosa)
 pub mod rpc;

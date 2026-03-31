@@ -78,7 +78,7 @@ This catches failures faster than waiting for GitHub Actions and keeps you produ
 
 ## Daemon V2 Architecture
 
-The daemon is being rewritten from a mutable-state model (v1) to event sourcing (v2). Both coexist — v2 is launched with `MIDTOWN_DAEMON_V2=1 midtown start`. See [docs/v2-architecture.md](docs/v2-architecture.md) for the full architecture and [docs/v2-spec.md](docs/v2-spec.md) for the user-facing spec.
+The daemon uses an event-sourced architecture (`src/daemon_v2/`). The v1 daemon has been removed. See [docs/v2-architecture.md](docs/v2-architecture.md) for the full architecture and [docs/v2-spec.md](docs/v2-spec.md) for the user-facing spec.
 
 ### Core pipeline
 
@@ -116,19 +116,9 @@ All nudge routing goes through `chat::route_message()`. Rules:
 - **`AgentIndex::channel_lead(channel)`** is the shared way to find a channel's lead — don't duplicate this query.
 - **`MAX_REVIEWER_RESTARTS`** is `pub(crate)` in `decisions/prs.rs` — import it in tests, don't redeclare.
 
-## V1 Conventions (legacy — still applies to `src/daemon/`)
-
-**Decision functions are pure**: Functions in `rules.rs` (and all functions called from `evaluate_tick()`) must not perform I/O, mutation, or async operations. Return `Vec<Effect>` instead. If data is needed for a decision, add it to `DaemonPersistentState` as a `tick_*` field and populate it in `prepare_tick()`. See [docs/architecture.md](docs/architecture.md) for the full pipeline.
-
-**Effect-based side effects**: Never perform I/O in decision functions. Return `Effect` variants from `rules.rs`, execute them in `effects.rs`.
-
-**Daemon module is a thin orchestrator**: `mod.rs` wires the event loop. Domain logic lives in `pr.rs`, `health.rs`, `dispatch.rs`, `chat.rs`, `rpc.rs`.
+## General Conventions
 
 **Temp-file pattern for shell arguments**: When passing long text to the `claude` CLI (system prompts, initial prompts), write to a temp file and use `$(cat file)` in the command string. This avoids shell quoting issues. See `launch.rs`.
-
-**Webhooks are primary, polling adapts**: Webhooks handle real-time GitHub events. Polling is a backstop only — never duplicate a decision a webhook already triggered. See [docs/architecture.md](docs/architecture.md) for the ownership table.
-
-**Names reflect actual responsibility**: `SessionMonitorTick` (coworker health), `TaskDispatchTick` (work assignment).
 
 ## Session Taxonomy
 

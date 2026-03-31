@@ -658,7 +658,7 @@ const COWORKER_NAMES: &[&str] = &[
 /// or `CoworkerOrSession::SessionId` for structured format.
 fn coworker_from_frontmatter(body: &str) -> Option<CoworkerOrSession> {
     // Try new structured frontmatter first
-    if let Some(fm) = crate::daemon::helpers::parse_frontmatter(body)
+    if let Some(fm) = crate::frontmatter::parse_frontmatter(body)
         && let Some(session_id) = fm.session_id
     {
         return Some(CoworkerOrSession::SessionId(session_id));
@@ -904,7 +904,7 @@ fn handle_pull_request_review(body: &[u8]) -> Result<Option<WebhookEvent>, serde
         .review
         .body
         .as_deref()
-        .and_then(crate::daemon::helpers::extract_review_author_from_body);
+        .and_then(crate::frontmatter::extract_review_author_from_body);
 
     let content = format!("{}{}", mention, action_text);
     Ok(Some(WebhookEvent {
@@ -993,7 +993,7 @@ fn handle_issue_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json:
     };
     // Extract review author from body for identity matching against assigned reviewer
     let review_author = if is_review {
-        crate::daemon::helpers::extract_review_author_from_body(&event.comment.body)
+        crate::frontmatter::extract_review_author_from_body(&event.comment.body)
     } else {
         None
     };
@@ -1092,7 +1092,7 @@ fn handle_review_comment(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json
         None
     };
     let review_author = if is_review {
-        crate::daemon::helpers::extract_review_author_from_body(&event.comment.body)
+        crate::frontmatter::extract_review_author_from_body(&event.comment.body)
     } else {
         None
     };
@@ -1308,14 +1308,14 @@ fn compute_check_duration(
 /// 1. Structured frontmatter `type:review` (new format)
 /// 2. Legacy text signatures ("Reviewed by", "Code Review" header)
 fn is_review_comment(body: &str) -> bool {
-    crate::daemon::helpers::text_contains_review_signature(body)
+    crate::frontmatter::text_contains_review_signature(body)
 }
 
 /// Check if a comment is a reviewer placeholder ("review in progress").
 ///
 /// Matches `type:review-placeholder` in structured frontmatter.
 fn is_placeholder_comment(body: &str) -> bool {
-    crate::daemon::helpers::parse_frontmatter(body).is_some_and(|fm| fm.is_placeholder())
+    crate::frontmatter::parse_frontmatter(body).is_some_and(|fm| fm.is_placeholder())
 }
 
 /// Truncate a comment for preview, handling multi-line and unicode safely

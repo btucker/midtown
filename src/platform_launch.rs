@@ -62,13 +62,24 @@ fn ensure_claude_plugins_installed_once() -> Result<(), String> {
     Ok(())
 }
 
+/// Hardcoded list of required Claude Code plugins.
+///
+/// These plugins are essential for midtown's agents to function properly.
+/// The daemon will automatically install any missing plugins on startup.
+pub const REQUIRED_PLUGINS: &[&str] = &[
+    "superpowers@claude-plugins-official",
+    "code-review@claude-plugins-official",
+    "pr-review-toolkit@claude-plugins-official",
+    "commit-commands@claude-plugins-official",
+    "feature-dev@claude-plugins-official",
+    "explanatory-output-style@claude-plugins-official",
+    "code-simplifier@claude-plugins-official",
+];
+
 fn required_claude_plugins() -> Vec<String> {
     let configured = crate::config::get_required_plugins();
     if configured.is_empty() {
-        crate::daemon::REQUIRED_PLUGINS
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect()
+        REQUIRED_PLUGINS.iter().map(|s| (*s).to_string()).collect()
     } else {
         configured
     }

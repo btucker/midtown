@@ -639,10 +639,10 @@ fn flush_auto_output(
     if events.is_empty() {
         return;
     }
-    let text = crate::daemon::stream::extract_assistant_text(events)
+    let text = crate::stream::extract_assistant_text(events)
         .trim()
         .to_string();
-    let tool_blocks = crate::daemon::stream::extract_tool_blocks(events);
+    let tool_blocks = crate::stream::extract_tool_blocks(events);
     events.clear();
 
     if text.is_empty() && tool_blocks.is_empty() {
@@ -650,7 +650,7 @@ fn flush_auto_output(
     }
     if let Some(ch) = channel {
         // Extract and post insights as standalone (non-auto-output) messages
-        for insight in crate::daemon::stream::extract_insights(&text) {
+        for insight in crate::stream::extract_insights(&text) {
             let insight_content = format!("💡 {insight}");
             match channel_io::post_message(channels_dir, ch, agent_name, &insight_content, None) {
                 Ok(id) => {

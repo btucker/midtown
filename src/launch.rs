@@ -327,7 +327,7 @@ impl LaunchConfig {
         let raw_model = crate::config::get_model_for_role(dir_key, execution_role)
             .map(|s| s.as_model_str().to_string())
             .unwrap_or_else(|| default_model.to_string());
-        let model = crate::daemon::helpers::normalize_model_for_provider_role(
+        let model = crate::model::normalize_model_for_provider_role(
             &raw_model,
             auth_provider,
             &agent_type_str,
@@ -1398,7 +1398,7 @@ mod tests {
         let raw = crate::config::get_model_for_role("myrepo", crate::config::ExecutionRole::Lead)
             .map(|s| s.as_model_str().to_string())
             .unwrap_or_else(|| "opus".to_string());
-        let expected = crate::daemon::helpers::normalize_model_for_provider_role(
+        let expected = crate::model::normalize_model_for_provider_role(
             &raw,
             config.auth_provider,
             &config.agent_type,

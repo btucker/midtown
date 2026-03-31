@@ -392,7 +392,7 @@ impl DaemonV2 {
 
             if !disabled {
                 tokio::spawn(async move {
-                    crate::daemon::webhook_fwd::webhook_forwarder_watchdog(
+                    crate::webhook_fwd::webhook_forwarder_watchdog(
                         webhook_port,
                         restart_secs,
                         webhook_shutdown_rx,
