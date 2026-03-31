@@ -109,6 +109,10 @@ export const messages = writable<Message[]>([]);
 // WebSocket connection status
 export const connected = writable<boolean>(false);
 
+// Auth error detected in agent output — triggers re-login prompt in the UI.
+// Set to the error message string when an auth error is detected, null when cleared.
+export const authError = writable<string | null>(null);
+
 // Coworker status
 export const coworkers = writable<Coworker[]>([]);
 

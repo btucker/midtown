@@ -2,6 +2,7 @@ import { get } from "svelte/store";
 import {
 	activeChannel,
 	activeProject,
+	authError,
 	authProfiles,
 	authProfilesByProvider,
 	authSwitching,
@@ -762,6 +763,16 @@ export function handleUpdate(update: Record<string, unknown>): void {
 		case "channel_message": {
 			const msg = update.data as Message;
 			const channelName = msg.channel || get(activeProject) || "midtown";
+
+			// Detect auth errors in agent output and trigger re-login prompt
+			if (
+				msg.content &&
+				(msg.content.includes("authentication_error") ||
+					msg.content.includes("OAuth token has expired") ||
+					msg.content.includes("API Error: 401"))
+			) {
+				authError.set(msg.content);
+			}
 
 			if (msg.thread_parent_id) {
 				const threadParentId = msg.thread_parent_id;

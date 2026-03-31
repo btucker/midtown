@@ -5,7 +5,7 @@ import Square from "@lucide/svelte/icons/square";
 import { onMount, tick, untrack } from "svelte";
 import { fly } from "svelte/transition";
 import Autocomplete from "./Autocomplete.svelte";
-import { cancelLead, closeThread, openTaskThread, openThread, sendMessage, uploadFile } from "./api.ts";
+import { cancelLead, closeThread, getApiBase, openTaskThread, openThread, sendMessage, uploadFile } from "./api.ts";
 import { openImageLightbox } from "./biggerPicture.ts";
 import {
 	collectToolBlocks,
@@ -25,6 +25,7 @@ import { clearMobileTextarea } from "./mobileInput.ts";
 import {
 	activeChannel,
 	activeProject,
+	authError,
 	channelSettings,
 	channels as channelsStore,
 	channelTargetMsgId,
@@ -864,6 +865,44 @@ function getToolCallStatusIcon(entry) {
 </script>
 
 <div class="flex flex-col h-full min-h-0 overflow-hidden relative">
+  {#if $authError}
+    <div class="bg-destructive/15 border-b border-destructive/30 px-[18px] py-[10px] flex items-center gap-3 text-[0.85rem] shrink-0">
+      <span class="text-destructive font-medium">Auth expired</span>
+      <span class="text-muted-foreground truncate flex-1">OAuth token needs refresh</span>
+      <button
+        class="px-3 py-1 rounded-md bg-primary text-primary-foreground text-[0.78rem] font-medium hover:opacity-90 transition-opacity"
+        onclick={async () => {
+          const base = getApiBase();
+          const resp = await fetch(`${base}/auth/login`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ provider: "claude" }),
+          });
+          const data = await resp.json();
+          if (data.ok && data.url) {
+            window.open(data.url, "_blank");
+            const code = prompt("Paste the auth code from the browser:");
+            if (code) {
+              await fetch(`${base}/auth/login/code`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ code }),
+              });
+              authError.set(null);
+            }
+          }
+        }}
+      >
+        Re-authenticate
+      </button>
+      <button
+        class="text-muted-foreground hover:text-foreground text-[0.9rem]"
+        onclick={() => authError.set(null)}
+      >
+        ×
+      </button>
+    </div>
+  {/if}
   <div
     class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain text-[1rem] leading-[1.55] px-[18px] pt-[14px] pb-[18px]"
     bind:this={scrollAreaViewport}
