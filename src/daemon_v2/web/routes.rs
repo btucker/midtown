@@ -212,7 +212,33 @@ pub async fn channel_create(
 // Return empty/default data instead of 404 so the UI doesn't break.
 
 pub async fn read_state() -> Json<Value> {
-    Json(json!({}))
+    let path = read_state_path();
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => {
+            let data: Value = serde_json::from_str(&contents).unwrap_or(json!({}));
+            Json(data)
+        }
+        Err(_) => Json(json!({})),
+    }
+}
+
+fn read_state_path() -> std::path::PathBuf {
+    crate::paths::midtown_base_dir().join("read-state.json")
+}
+
+fn load_read_state() -> Value {
+    let path = read_state_path();
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(json!({"channels": {}, "threads": {}}))
+}
+
+fn save_read_state(state: &Value) {
+    let path = read_state_path();
+    if let Ok(json) = serde_json::to_string(state) {
+        let _ = std::fs::write(&path, json);
+    }
 }
 
 pub async fn usage() -> axum::response::Response {
@@ -1056,7 +1082,27 @@ pub async fn webhook_handler(
 }
 
 pub async fn mark_read(
-    axum::extract::Path((_item_type, _id)): axum::extract::Path<(String, String)>,
+    axum::extract::Path((item_type, id)): axum::extract::Path<(String, String)>,
+    Json(body): Json<Value>,
 ) -> StatusCode {
+    let timestamp = body
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if timestamp.is_empty() {
+        return StatusCode::BAD_REQUEST;
+    }
+
+    let mut state = load_read_state();
+    let key = match item_type.as_str() {
+        "channel" => "channels",
+        "thread" => "threads",
+        _ => return StatusCode::BAD_REQUEST,
+    };
+    if let Some(obj) = state.get_mut(key).and_then(|v| v.as_object_mut()) {
+        obj.insert(id, Value::String(timestamp));
+    }
+    save_read_state(&state);
     StatusCode::NO_CONTENT
 }
