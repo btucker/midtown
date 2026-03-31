@@ -84,7 +84,7 @@ async fn handle_client_message(text: &str, state: &WebState, socket: &mut WebSoc
                 "id": 1,
             });
 
-            let (response, events, commands) = {
+            let (_response, events, commands) = {
                 let proj = state.projections.lock().await;
                 crate::daemon_v2::rpc::dispatch_request(rpc_request, &proj, &state.channels_dir)
             };
@@ -109,30 +109,9 @@ async fn handle_client_message(text: &str, state: &WebState, socket: &mut WebSoc
                 }
             }
 
-            // No explicit lead nudge needed — route_message() in channel.post
-            // already nudges the channel lead (or thread fork) on every user message.
-
-            // Send confirmation back to the WS client
-            let msg_id = response
-                .get("result")
-                .and_then(|r| r.get("id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let confirmation = json!({
-                "type": "channel_message",
-                "data": {
-                    "id": msg_id,
-                    "from": "user",
-                    "content": content,
-                    "channel": channel,
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                    "msg_type": "text",
-                    "thread_parent_id": thread_parent_id,
-                }
-            });
-            let _ = socket
-                .send(Message::Text(confirmation.to_string().into()))
-                .await;
+            // No explicit confirmation needed — the MessagePosted event broadcast
+            // (via event_tx above) already delivers the message to all WS clients,
+            // including the sender. Sending an extra confirmation would double-deliver.
         }
         "get_history" | "get_status" => {
             // These are handled via HTTP polling, ignore on WS
