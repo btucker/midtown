@@ -1632,3 +1632,57 @@ fn workflow_set_state_and_list() {
         "workflow state should appear in list: {workflows:?}"
     );
 }
+
+#[test]
+fn session_fork_resolves_channel_from_calling_session_id() {
+    let mut proj = Projections::default();
+    // Create a lead with a session_id and mark it running
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "lead-1".into(),
+        name: "web".into(),
+        kind: AgentKind::Lead,
+        agent_type: "midtown-channel-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("web".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "lead-1".into(),
+        pid: 1234,
+        session_id: Some("session-abc".into()),
+    });
+
+    // Fork request from CLI: has calling_session_id but no channel
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "session.fork",
+        "params": {
+            "thread_parent_id": "msg-123",
+            "calling_session_id": "session-abc",
+            "name": "ghost-link",
+        },
+        "id": 1,
+    });
+    let (response, _events, commands) = dispatch_request(request, &proj, test_channels_dir());
+
+    // Should succeed (not return missing channel error)
+    assert!(
+        response.get("result").is_some(),
+        "should succeed without explicit channel param: {response}"
+    );
+    // Should produce a SpawnAgent command for a fork
+    assert_eq!(commands.len(), 1, "should produce one spawn command");
+    if let Command::SpawnAgent(config) = &commands[0] {
+        assert_eq!(
+            config.channel,
+            Some("web".into()),
+            "channel should be resolved from calling session"
+        );
+        assert_eq!(config.kind, AgentKind::Fork);
+    } else {
+        panic!("expected SpawnAgent command");
+    }
+}

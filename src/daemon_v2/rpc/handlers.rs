@@ -297,10 +297,23 @@ pub fn handle_session_fork(
         .get("thread_parent_id")
         .and_then(|v| v.as_str())
         .ok_or_else(|| RpcError::invalid_params("missing thread_parent_id"))?;
+    // Channel can be explicit or resolved from the calling session's agent
     let channel = params
         .get("channel")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| RpcError::invalid_params("missing channel"))?;
+        .map(String::from)
+        .or_else(|| {
+            let session_id = params.get("calling_session_id")?.as_str()?;
+            proj.agents
+                .by_id
+                .values()
+                .find(|a| a.session_id.as_deref() == Some(session_id))
+                .and_then(|a| a.channel.clone())
+        })
+        .ok_or_else(|| {
+            RpcError::invalid_params("missing channel (and no calling_session_id to resolve it)")
+        })?;
+    let channel = channel.as_str();
 
     // Check if a running fork already exists for this thread
     if let Some(existing) = proj.agents.fork_for_thread(thread_parent_id)
