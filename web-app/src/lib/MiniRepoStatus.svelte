@@ -3,7 +3,7 @@ import { repoStatus, repoStatuses } from "./store.ts";
 
 let isMultiRepo = $derived($repoStatuses.length > 1);
 
-function ciInfo(status) {
+function ciInfo(status: string | null | undefined) {
 	switch (status) {
 		case "passed":
 			return { color: "hsl(var(--status-green))" };
@@ -17,7 +17,7 @@ function ciInfo(status) {
 	}
 }
 
-function commitUrl(fullName, hash) {
+function commitUrl(fullName: string | undefined, hash: string | undefined) {
 	if (fullName && hash) return `https://github.com/${fullName}/commit/${hash}`;
 	return null;
 }

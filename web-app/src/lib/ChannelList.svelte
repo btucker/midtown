@@ -87,12 +87,12 @@ let visitedDms = new Set<string>();
 
 // Auto-expand DM section when navigating to a DM (e.g., via sidebar DM selection)
 // and track the DM as visited so it remains visible after collapse/re-expand
-$: if ($activeChannel && dmChannels.some((ch) => ch.name === $activeChannel)) {
+$: if ($activeChannel && dmChannels.some((ch: Channel) => ch.name === $activeChannel)) {
 	dmSectionExpanded = true;
 	visitedDms.add($activeChannel);
 }
 
-$: unreadDmCount = dmChannels.filter((ch) => ch.unread > 0).length;
+$: unreadDmCount = dmChannels.filter((ch: Channel) => ch.unread > 0).length;
 $: visibleDmChannels = computeVisibleDmChannels(dmChannels, {
 	expanded: dmSectionExpanded,
 	showAll: showAllDms,
@@ -215,8 +215,8 @@ async function createChannel() {
 		activeChannel.set(name);
 		showCreateInput = false;
 		newChannelName = "";
-	} catch (error) {
-		createError = `Network error: ${error.message}`;
+	} catch (error: unknown) {
+		createError = `Network error: ${error instanceof Error ? error.message : String(error)}`;
 	} finally {
 		isCreating = false;
 	}

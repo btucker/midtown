@@ -26,7 +26,7 @@ let hasOutput = $derived(outputText !== "");
 let outputLines = $derived(outputText.split("\n"));
 
 // Detect output language based on content
-function detectOutputLanguage(output) {
+function detectOutputLanguage(output: string) {
 	// Unified diff format
 	if (output.startsWith("diff ")) {
 		return "diff";

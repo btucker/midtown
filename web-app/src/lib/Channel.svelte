@@ -53,6 +53,7 @@ import {
 } from "./store.ts";
 import ToolRunSummary from "./ToolRunSummary.svelte";
 import { groupToolRuns } from "./toolRunGrouping.ts";
+import type { Coworker, Message, Task } from "./types.ts";
 
 // Windowed rendering: only render a slice of messages near the viewport.
 // Messages outside this window are not mounted in the DOM.
@@ -62,15 +63,15 @@ const LOAD_MORE_COUNT = 50; // messages to add when scrolling up
 let inputText = $state("");
 let authWaitingForCode = $state(false);
 let authCodeValue = $state("");
-let scrollAreaViewport = $state(null);
+let scrollAreaViewport: HTMLDivElement | null = $state(null);
 let autoScroll = $state(true);
-let pendingFile = $state(null);
-let pendingFileUrl = $state(null);
+let pendingFile: File | null = $state(null);
+let pendingFileUrl: string | null = $state(null);
 let uploading = $state(false);
-let textareaElement = $state(null);
-let formWrapperElement = $state(null);
-let topSentinel = $state(null);
-let topObserver = null;
+let textareaElement: HTMLTextAreaElement | null = $state(null);
+let formWrapperElement: HTMLDivElement | null = $state(null);
+let topSentinel: HTMLDivElement | null = $state(null);
+let topObserver: IntersectionObserver | null = null;
 
 // The index into channelMessages where rendering begins.
 // Messages before this index are not in the DOM.
@@ -78,30 +79,35 @@ let renderStartIndex = $state(0);
 
 // Per-channel draft storage: saves inputText and pendingFile when switching channels
 let channelDrafts = new Map();
-let prevChannel = null;
+let prevChannel: string | null = null;
 
 // Autocomplete state
 let showAutocomplete = $state(false);
-let autocompleteType = $state(null); // '@' | '!' | '#'
+let autocompleteType: string | null = $state(null); // '@' | '!' | '#'
 let autocompleteQuery = $state("");
-let autocompleteItems = $state([]);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let autocompleteItems: Array<any> = $state([]);
 let autocompletePosition = $state({ top: 0, left: 0 });
 let autocompleteSelectedIndex = $state(0);
 let autocompleteStartPos = $state(0);
 
 // DM channel detection: use is_dm field or dm- prefix fallback
 let activeChannelMeta = $derived($channelsStore.find((ch) => ch.name === $activeChannel) ?? null);
-let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel.startsWith("dm-"));
-let dmPeerName = $derived($activeChannel.startsWith("dm-") ? $activeChannel.slice(3) : $activeChannel);
-let showFullLeadOutput = $derived($channelSettings[$activeChannel]?.showFullLeadOutput ?? true);
+let isDm = $derived(activeChannelMeta?.is_dm ?? ($activeChannel ?? "").startsWith("dm-"));
+let dmPeerName = $derived(
+	($activeChannel ?? "").startsWith("dm-") ? ($activeChannel ?? "").slice(3) : ($activeChannel ?? ""),
+);
+let showFullLeadOutput = $derived(
+	$activeChannel ? ($channelSettings[$activeChannel]?.showFullLeadOutput ?? true) : true,
+);
 // Tool data is shown inline when full lead output is enabled (or in DM channels always)
 let showInlineToolData = $derived(isDm || showFullLeadOutput);
 
 // Filter messages by active channel, optionally hiding auto-output from lead
 let channelMessages = $derived.by(() => {
-	const all = $messagesByChannel[$activeChannel] || [];
+	const all = ($activeChannel ? $messagesByChannel[$activeChannel] : null) || [];
 	if (showFullLeadOutput) return all;
-	return all.filter((msg) => !msg.auto_output);
+	return all.filter((msg: Message) => !msg.auto_output);
 });
 
 // Visible slice of messages for the DOM. Only these get rendered.
@@ -124,7 +130,7 @@ let hasMoreAbove = $derived(renderStartIndex > 0);
 // Track how many messages were present when each channel was first viewed.
 // Messages at or above this index are "new" and get the slide-up animation.
 // We use $state.raw so mutations don't trigger full reactive updates.
-let initialMessageCounts = $state.raw({});
+let initialMessageCounts: Record<string, number> = $state.raw({});
 // Synchronous shadow: prevents re-entrant effect runs from bumping the
 // snapshot count when new messages arrive before the deferred write fires.
 // Without this, queueMicrotask creates a window where the guard
@@ -136,7 +142,7 @@ let initialMessageCounts = $state.raw({});
 // counter to allow re-scheduling on channel switch), this effect uses a
 // simple synchronous guard because we only ever need the *first* snapshot
 // per channel — subsequent runs should be ignored entirely, not re-queued.
-let pendingInitialCounts = {};
+let pendingInitialCounts: Record<string, number> = {};
 
 $effect(() => {
 	// Reactive on both $activeChannel and channelMessages.length.
@@ -146,7 +152,7 @@ $effect(() => {
 	// then history loads and every message animates as "new".
 	const ch = $activeChannel;
 	const len = channelMessages.length;
-	if (!(ch in pendingInitialCounts) && len > 0) {
+	if (ch && !(ch in pendingInitialCounts) && len > 0) {
 		pendingInitialCounts[ch] = len;
 		const snapshotLen = len;
 		// Defer state write to avoid state_unsafe_mutation during derived evaluation
@@ -161,7 +167,7 @@ $effect(() => {
 // to distinguish channel switches from new-message arrivals. This avoids both:
 //  - stale counts (issue: window grows unbounded on revisit)
 //  - DOM flash (issue: renderStartIndex starts at 0 then jumps)
-let prevRenderChannel = null;
+let prevRenderChannel: string | null = null;
 let renderVersion = 0; // version counter to discard stale microtasks
 // Shadow of renderStartIndex set synchronously so the "only fires once"
 // guard works even before the deferred write executes. Also updated by the
@@ -256,7 +262,7 @@ $effect(() => {
 	};
 });
 
-function isNewMessage(channelName, index) {
+function isNewMessage(channelName: string, index: number) {
 	// If we haven't recorded the initial count yet (effect hasn't fired),
 	// treat all messages as old so they don't animate on first render.
 	const threshold = initialMessageCounts[channelName] ?? Infinity;
@@ -270,7 +276,7 @@ let allToolBlocks = $derived(collectToolBlocks(channelMessages));
 let isLeadWorking = $derived(
 	$activeChannel === $activeProject
 		? !!$daemonStatus?.lead_working
-		: !!$daemonStatus?.channel_leads_working?.[$activeChannel],
+		: !!($activeChannel && $daemonStatus?.channel_leads_working?.[$activeChannel]),
 );
 
 let hasInProgressItems = $derived(hasInProgressToolBlocks(allToolBlocks));
@@ -291,7 +297,7 @@ let mostRecentToolCallEntry = $derived.by(() => {
 });
 
 // Autocomplete filtering and data preparation
-function getAutocompleteItems(type, query) {
+function getAutocompleteItems(type: string, query: string) {
 	const lowerQuery = query.toLowerCase();
 
 	if (type === "@") {
@@ -325,13 +331,13 @@ function getAutocompleteItems(type, query) {
 	if (type === "#") {
 		// PRs from kanban data + channels
 		const prs = $kanbanData.review.map((pr) => ({
-			type: "pr",
+			type: "pr" as const,
 			number: pr.number,
 			title: pr.title,
 			status: pr.status,
 		}));
 		const channelList = $channelsStore.map((ch) => ({
-			type: "channel",
+			type: "channel" as const,
 			name: ch.name,
 		}));
 		const combined = [...prs, ...channelList];
@@ -348,7 +354,7 @@ function getAutocompleteItems(type, query) {
 	return [];
 }
 
-function getAutocompleteLabel(item) {
+function getAutocompleteLabel(item: any) {
 	if (typeof item === "object" && item !== null) {
 		if (item.type === "command") return `/${item.name}`;
 		if (item.type === "coworker" || item.type === "lead") return `@${item.name}`;
@@ -359,7 +365,7 @@ function getAutocompleteLabel(item) {
 	return String(item);
 }
 
-function getAutocompleteValue(item) {
+function getAutocompleteValue(item: any) {
 	if (typeof item === "object" && item !== null) {
 		if (item.type === "command") return `/${item.name}`;
 		if (item.type === "coworker" || item.type === "lead") return `@${item.name}`;
@@ -370,7 +376,7 @@ function getAutocompleteValue(item) {
 	return String(item);
 }
 
-function getAutocompleteDescription(item) {
+function getAutocompleteDescription(item: any) {
 	if (typeof item === "object" && item !== null) {
 		if (item.type === "command") return item.description;
 		if ((item.type === "coworker" || item.type === "lead") && item.task) return item.task;
@@ -441,7 +447,7 @@ function detectAutocompleteTrigger() {
 	}
 }
 
-function insertAutocompleteItem(item) {
+function insertAutocompleteItem(item: any) {
 	const value = getAutocompleteValue(item);
 	const beforeTrigger = inputText.slice(0, autocompleteStartPos);
 	const afterCursor = inputText.slice(textareaElement?.selectionStart || 0);
@@ -463,21 +469,21 @@ function insertAutocompleteItem(item) {
 let currentTasks = $derived(getCurrentTasks($coworkers));
 
 // Get PR status from kanban data
-function getPrStatus(prNum) {
+function getPrStatus(prNum: string) {
 	const pr = $kanbanData.review.find((p) => p.number === parseInt(prNum, 10));
 	return pr ? pr.status : null;
 }
 
-function findPr(prNum) {
+function findPr(prNum: string) {
 	return findPrUtil(prNum, $kanbanData);
 }
 
-function getPrUrl(prNum) {
+function getPrUrl(prNum: string) {
 	return getPrUrlUtil(prNum, $kanbanData, $repoStatuses, $repoStatus.fullName);
 }
 
 // Find a task by ID from the daemon status task list
-function findTask(taskId) {
+function findTask(taskId: string) {
 	const tasks = $daemonStatus?.tasks || [];
 	return tasks.find((t) => String(t.id) === String(taskId)) || null;
 }
@@ -508,38 +514,43 @@ $effect(() => {
 
 // Handle clicks on channel links, task links, PR links, and coworker links
 onMount(() => {
-	function handleLinkClick(e) {
-		const target = e.target;
+	function handleLinkClick(e: Event) {
+		const target = e.target as HTMLElement;
+		if (!target) return;
 		if (target.classList.contains("channel-link")) {
 			e.preventDefault();
-			const channelName = target.dataset.channel;
-			if ($channelsStore.some((ch) => ch.name === channelName)) {
+			const channelName = (target as HTMLElement).dataset.channel;
+			if (channelName && $channelsStore.some((ch) => ch.name === channelName)) {
 				activeChannel.set(channelName);
 			}
 		} else if (target.classList.contains("task-link")) {
 			e.preventDefault();
-			const taskId = target.dataset.task;
-			const task = findTask(taskId);
-			if (task) {
-				openTaskThread(task, task.channel || $activeChannel);
+			const taskId = (target as HTMLElement).dataset.task;
+			if (taskId) {
+				const task = findTask(taskId);
+				if (task) {
+					openTaskThread(task, task.channel || $activeChannel!);
+				}
 			}
 		} else if (target.classList.contains("pr-link")) {
 			e.preventDefault();
-			const prNum = target.dataset.pr;
-			const url = getPrUrl(prNum);
-			if (url) window.open(url, "_blank", "noopener");
+			const prNum = (target as HTMLElement).dataset.pr;
+			if (prNum) {
+				const url = getPrUrl(prNum);
+				if (url) window.open(url, "_blank", "noopener");
+			}
 		} else if (target.classList.contains("coworker-link")) {
 			// Prevent the browser from following the '#' href; no detail panel action.
 			e.preventDefault();
 		} else if (target.classList.contains("message-image")) {
 			e.preventDefault();
-			openImageLightbox(target.dataset.fullSrc || target.src);
+			openImageLightbox((target as HTMLImageElement).dataset.fullSrc || (target as HTMLImageElement).src);
 		}
 	}
 
 	if (scrollAreaViewport) {
 		scrollAreaViewport.addEventListener("click", handleLinkClick);
-		return () => scrollAreaViewport.removeEventListener("click", handleLinkClick);
+		return () => scrollAreaViewport!.removeEventListener("click", handleLinkClick);
 	}
 });
 
@@ -548,14 +559,14 @@ onMount(() => {
 // resolveMessageTapAction (mobile decision logic in channelUtils.js). handleMessageTap
 // calls stopPropagation(), so handleLinkClick never runs on mobile. They are NOT
 // redundant; they are two separate entry points for the same click on different platforms.
-function handleMessageTap(event, msg) {
+function handleMessageTap(event: MouseEvent, msg: Message) {
 	const target = event.target instanceof Element ? event.target : null;
 
 	// Image taps open the lightbox on all platforms (before mobile thread logic)
 	if (target?.classList.contains("message-image")) {
 		event.stopPropagation();
 		event.preventDefault();
-		openImageLightbox(target.dataset.fullSrc || target.src);
+		openImageLightbox((target as HTMLElement).dataset.fullSrc || (target as HTMLImageElement).src);
 		return;
 	}
 
@@ -568,17 +579,26 @@ function handleMessageTap(event, msg) {
 			}
 		: null;
 
-	const action = resolveMessageTapAction({ isWideScreen: $isWideScreen, msg, isInteractiveControl, link });
+	const action = resolveMessageTapAction({
+		isWideScreen: $isWideScreen,
+		msg,
+		isInteractiveControl,
+		link: link as Parameters<typeof resolveMessageTapAction>[0]["link"],
+	});
 	if (!action) return;
 
 	if (action.type === "open_task") {
-		const task = findTask(action.taskId);
-		if (task) openTaskThread(task, task.channel || $activeChannel);
+		if (action.taskId) {
+			const task = findTask(action.taskId);
+			if (task) openTaskThread(task, task.channel || $activeChannel!);
+		}
 	} else if (action.type === "open_pr") {
-		const url = getPrUrl(action.prNum);
-		if (url) window.open(url, "_blank", "noopener");
+		if (action.prNum) {
+			const url = getPrUrl(action.prNum);
+			if (url) window.open(url, "_blank", "noopener");
+		}
 	} else if (action.type === "open_thread") {
-		openThread(msg, $activeChannel);
+		openThread(msg, $activeChannel!);
 	}
 	// Prevent the click from also triggering the internal link handler (handleLinkClick),
 	// and prevent the browser from following href="#" which would scroll to page top.
@@ -587,8 +607,11 @@ function handleMessageTap(event, msg) {
 }
 
 // Build a map of coworker name -> { label, taskId, threadId, channel }
-function getCurrentTasks(coworkerList) {
-	const map = {};
+function getCurrentTasks(coworkerList: Coworker[]) {
+	const map: Record<
+		string,
+		{ label: string; taskId: number | null | undefined; threadId: string | null; channel: string | null }
+	> = {};
 	const tasks = $daemonStatus?.tasks || [];
 	for (const cw of coworkerList) {
 		if (cw.current_task) {
@@ -611,7 +634,7 @@ $effect(() => {
 		// effect below will handle positioning to the right message.
 		if (untrack(() => $channelTargetMsgId)) return;
 		tick().then(() => {
-			scrollAreaViewport.scrollTop = scrollAreaViewport.scrollHeight;
+			if (scrollAreaViewport) scrollAreaViewport.scrollTop = scrollAreaViewport.scrollHeight;
 		});
 	}
 });
@@ -629,11 +652,12 @@ $effect(() => {
 	if (targetIndex === -1) {
 		// The target may be hidden by the auto_output filter. If it exists in the
 		// unfiltered list, re-enable showFullLeadOutput so the message is visible.
-		const allMessages = $messagesByChannel[$activeChannel] || [];
-		if (!showFullLeadOutput && allMessages.some((m) => m.id === targetId)) {
+		const allMessages = ($activeChannel ? $messagesByChannel[$activeChannel] : null) || [];
+		if (!showFullLeadOutput && allMessages.some((m: Message) => m.id === targetId)) {
+			const ch = $activeChannel!;
 			channelSettings.update((s) => ({
 				...s,
-				[$activeChannel]: { ...s[$activeChannel], showFullLeadOutput: true },
+				[ch]: { ...s[ch], showFullLeadOutput: true },
 			}));
 			// Effect will re-fire with the filter disabled and find the target.
 			return;
@@ -687,13 +711,13 @@ $effect(() => {
 	tick().then(() => resizeTextarea());
 });
 
-async function handleSubmit(e) {
+async function handleSubmit(e: Event) {
 	e.preventDefault();
 
 	// If there's a pending file, upload it first
 	if (pendingFile && !uploading) {
 		uploading = true;
-		const result = await uploadAndSend(pendingFile, inputText, $activeChannel);
+		const result = await uploadAndSend(pendingFile, inputText, $activeChannel!);
 		uploading = false;
 
 		if (result.ok) {
@@ -717,14 +741,14 @@ async function handleSubmit(e) {
 			clearMobileTextarea(textareaElement, () => {
 				inputText = "";
 			});
-			const result = await cmd.execute();
+			const result = await cmd.execute!();
 			if (!result.ok) {
 				alert(result.error);
 			}
 			return;
 		}
 
-		sendMessage(inputText.trim(), $activeChannel);
+		sendMessage(inputText.trim(), $activeChannel!);
 		inputText = "";
 		channelDrafts.delete($activeChannel);
 		clearMobileTextarea(textareaElement, () => {
@@ -733,24 +757,25 @@ async function handleSubmit(e) {
 	}
 }
 
-function handlePaste(e) {
+function handlePaste(e: ClipboardEvent) {
 	const file = extractPastedFile(e);
 	if (file) {
 		pendingFile = file;
 		return;
 	}
+	if (!textareaElement) return;
 	const cursorPos = handleCodePaste(
 		e,
 		textareaElement,
 		() => inputText,
-		(t) => {
+		(t: string) => {
 			inputText = t;
 		},
 	);
 	if (cursorPos !== false) {
 		tick().then(() => {
-			textareaElement.selectionStart = cursorPos;
-			textareaElement.selectionEnd = cursorPos;
+			textareaElement!.selectionStart = cursorPos;
+			textareaElement!.selectionEnd = cursorPos;
 		});
 	}
 }
@@ -759,7 +784,7 @@ function clearPendingFile() {
 	pendingFile = null;
 }
 
-function handleKeyDown(e) {
+function handleKeyDown(e: KeyboardEvent) {
 	// Handle autocomplete navigation
 	if (showAutocomplete) {
 		if (e.key === "ArrowDown") {
@@ -790,7 +815,7 @@ function handleKeyDown(e) {
 	// Esc cancels an in-flight lead request (when autocomplete is not open)
 	if (e.key === "Escape" && isLeadWorking) {
 		e.preventDefault();
-		cancelLead($activeChannel);
+		cancelLead($activeChannel!);
 		return;
 	}
 
@@ -825,13 +850,13 @@ async function loadMoreMessages() {
 	// Use the unfiltered store for the cursor so hidden auto_output messages
 	// don't cause the same page to be re-fetched forever.
 	if (fetchingOlder) return;
-	const allMsgs = $messagesByChannel[$activeChannel] || [];
+	const allMsgs = ($activeChannel ? $messagesByChannel[$activeChannel] : null) || [];
 	if (allMsgs.length === 0) return;
 	const oldest = allMsgs[0];
 	if (!oldest?.timestamp) return;
 
 	fetchingOlder = true;
-	const channel = $activeChannel;
+	const channel = $activeChannel!;
 	const olderMsgs = await fetchOlderMessages(channel, oldest.timestamp);
 	fetchingOlder = false;
 
@@ -840,11 +865,11 @@ async function loadMoreMessages() {
 	// Prepend to the channel's message store
 	const prevScrollHeight = scrollAreaViewport.scrollHeight;
 	const prevScrollTop = scrollAreaViewport.scrollTop;
-	messagesByChannel.update((byChannel) => {
+	messagesByChannel.update((byChannel: Record<string, Message[]>) => {
 		const existing = byChannel[channel] || [];
 		// Deduplicate by ID
-		const existingIds = new Set(existing.map((m) => m.id));
-		const newMsgs = olderMsgs.filter((m) => !existingIds.has(m.id));
+		const existingIds = new Set(existing.map((m: Message) => m.id));
+		const newMsgs = olderMsgs.filter((m: Message) => !existingIds.has(m.id));
 		return { ...byChannel, [channel]: [...newMsgs, ...existing] };
 	});
 	// Restore scroll position after new messages are rendered
@@ -900,23 +925,23 @@ function handleInput() {
 	detectAutocompleteTrigger();
 }
 
-function describeToolCall(entry) {
+function describeToolCall(entry: { block: import("./types.ts").ToolBlock; status: string | null }) {
 	const block = entry.block;
 	// Derive a human-readable description from the tool block's input.
 	// For Bash: show the command; for file ops: show the file path; otherwise tool name.
 	if (block.tool_name === "Bash" && block.input?.command) {
-		const cmd = block.input.command;
+		const cmd = block.input.command as string;
 		return cmd.length > 60 ? `${cmd.slice(0, 57)}...` : cmd;
 	}
 	if (block.input?.file_path) {
-		const fp = block.input.file_path;
+		const fp = block.input.file_path as string;
 		const short = fp.split("/").slice(-2).join("/");
 		return `${block.tool_name.toLowerCase()} ${short}`;
 	}
 	return block.tool_name?.toLowerCase() || "?";
 }
 
-function getToolCallStatusIcon(entry) {
+function getToolCallStatusIcon(entry: { block: import("./types.ts").ToolBlock; status: string | null }) {
 	if (entry.status === "error") return "✗";
 	if (entry.status === "ok") return "✓";
 	return "›";
@@ -1023,7 +1048,7 @@ function getToolCallStatusIcon(entry) {
             <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
             <div
               data-testid="message-row"
-              in:fly={{ y: 16, duration: isNewMessage($activeChannel, globalIndex) ? 180 : 0, opacity: 0 }}
+              in:fly={{ y: 16, duration: isNewMessage($activeChannel!, globalIndex) ? 180 : 0, opacity: 0 }}
               class="group relative -mx-[18px] px-[18px] pb-[5px] rounded-sm hover:bg-accent/30"
               class:auto-output={msg.auto_output}
               class:opacity-60={msg.pending}
@@ -1034,7 +1059,7 @@ function getToolCallStatusIcon(entry) {
               <button
                 data-testid="thread-reply-button"
                 class="hidden lg:flex absolute right-6 -top-3.5 items-center gap-2 px-3.5 py-1.5 rounded-lg border border-border bg-card text-[0.85rem] font-bold text-foreground cursor-pointer opacity-0 pointer-events-none transition-all duration-150 shadow-sm group-hover:opacity-100 group-hover:pointer-events-auto focus:opacity-100 focus:pointer-events-auto hover:border-primary hover:shadow-md"
-                onclick={() => openThread(msg, $activeChannel)}
+                onclick={() => openThread(msg, $activeChannel!)}
                 aria-label="Reply in thread"
               >
                 <ReplyIcon size={16} />
@@ -1048,11 +1073,11 @@ function getToolCallStatusIcon(entry) {
               index={globalIndex}
               senderClass="mt-1"
               currentTask={currentTasks[msg.from.toLowerCase()]}
-              onTaskClick={(taskInfo) => {
+              onTaskClick={(taskInfo: { label: string; taskId: number | null | undefined; threadId: string | null; channel: string | null }) => {
                 if (taskInfo.channel) activeChannel.set(taskInfo.channel);
-                openThread({ id: taskInfo.threadId, from: '', content: '' }, taskInfo.channel || $activeChannel);
+                openThread({ id: taskInfo.threadId!, from: '', content: '', timestamp: '' }, taskInfo.channel || $activeChannel!);
               }}
-              channelName={$activeChannel}
+              channelName={$activeChannel!}
               showToolData={showInlineToolData}
             />
 
@@ -1064,14 +1089,14 @@ function getToolCallStatusIcon(entry) {
                 <button
                   data-testid="thread-summary"
                   class="flex items-center gap-1.5 text-[0.75rem] text-link-default hover:text-link-hover cursor-pointer bg-transparent border-none p-0 mt-0.5"
-                  onclick={() => openThread(msg, $activeChannel)}
+                  onclick={() => openThread(msg, $activeChannel!)}
                 >
                   {#if participants.length > 0}
                     <span class="thread-avatars">
                       {#each participants as p}
                         <span
                           class="thread-avatar-chip"
-                          style="background-color: {getSenderColor(p, undefined, $activeChannel)}"
+                          style="background-color: {getSenderColor(p, undefined, $activeChannel ?? undefined)}"
                           title={p}
                         >{p[0].toUpperCase()}</span>
                       {/each}
@@ -1117,7 +1142,7 @@ function getToolCallStatusIcon(entry) {
       {#if isLeadWorking}
         <button
           class="ml-auto flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.75rem] text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors cursor-pointer shrink-0"
-          onclick={() => cancelLead($activeChannel)}
+          onclick={() => cancelLead($activeChannel!)}
           aria-label="Cancel in-flight request (Esc)"
           title="Cancel (Esc)"
         >

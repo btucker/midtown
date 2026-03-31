@@ -2,8 +2,13 @@
 import { renderContent } from "./markdown.ts";
 import { activeChannel, activeProject } from "./store.ts";
 
-/** @type {Array<{filename: string, title: string, content: string}>} */
-let notes = $state([]);
+interface ChannelNote {
+	filename: string;
+	title: string;
+	content: string;
+}
+
+let notes: ChannelNote[] = $state([]);
 let loading = $state(false);
 let selectedIndex = $state(0);
 /** On mobile, whether we're showing the content pane (true) or the list (false). */
@@ -41,7 +46,7 @@ $effect(() => {
 	return () => controller.abort();
 });
 
-function selectNote(index) {
+function selectNote(index: number) {
 	selectedIndex = index;
 	mobileShowContent = true;
 }

@@ -3,6 +3,7 @@ import { tick } from "svelte";
 import { fetchHistory, openThread } from "./api.ts";
 import { formatTime, getPermalinkUrl, getSenderColor } from "./messageUtils.ts";
 import { activeProject, messagesByChannel } from "./store.ts";
+import type { Message } from "./types.ts";
 
 const OPS_SENDER_OVERRIDES = {
 	midtown: "#585858",
@@ -11,15 +12,15 @@ const OPS_SENDER_OVERRIDES = {
 // Read directly from the ops channel (daemon system messages are routed there)
 let opsMessages = $derived(($messagesByChannel.ops || []).slice(-100));
 
-let scrollEl = $state(null);
+let scrollEl: HTMLDivElement | null = $state(null);
 let autoScroll = $state(true);
 let collapsed = $state(false);
 
-function getSenderLabel(msg) {
+function getSenderLabel(msg: Message) {
 	return msg.from || "?";
 }
 
-function getContent(msg) {
+function getContent(msg: Message) {
 	if (msg.msg_type === "action" || msg.content?.startsWith("/me ")) {
 		return msg.content.replace(/^\/me\s*/, "");
 	}
@@ -34,7 +35,7 @@ $effect(() => {
 $effect(() => {
 	if (opsMessages.length > 0 && autoScroll && scrollEl) {
 		tick().then(() => {
-			scrollEl.scrollTop = scrollEl.scrollHeight;
+			if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
 		});
 	}
 });
@@ -67,7 +68,7 @@ function handleScroll() {
         <div class="text-muted-foreground text-center py-4">No ops messages</div>
       {:else}
         {#each opsMessages as msg}
-          {@const opsUrl = getPermalinkUrl($activeProject, 'ops', msg.thread_parent_id || msg.id)}
+          {@const opsUrl = $activeProject ? getPermalinkUrl($activeProject, 'ops', msg.thread_parent_id || msg.id) : ''}
           <div class="flex gap-1 break-words min-w-0">
             {#if opsUrl}
               <a href={opsUrl} class="text-muted-foreground/60 flex-shrink-0 w-[5.2em] text-right no-underline hover:underline" onclick={(e) => { if (!msg.thread_parent_id) { e.preventDefault(); e.stopPropagation(); openThread(msg, 'ops') } }}>{formatTime(msg.timestamp)}</a>

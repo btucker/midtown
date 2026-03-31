@@ -4,6 +4,7 @@ import { useSidebar } from "$lib/components/ui/sidebar/context.svelte.ts";
 import { dismissThread, openThread } from "./api.ts";
 import { getChannelThreads, getCompletedTaskThreadIds, getTaskThreadIds } from "./channelUtils.ts";
 import { kanbanData, messagesByChannel, threadUnreadCounts, trackedThreads } from "./store.ts";
+import type { Message } from "./types.ts";
 
 const sidebar = useSidebar();
 
@@ -31,17 +32,17 @@ $effect(() => {
 	});
 });
 
-function handleClick(thread) {
+function handleClick(thread: { id: string; subject: string }) {
 	if (sidebar.isMobile) sidebar.setOpenMobile(false);
 	// Try to find the parent message in the channel's message store
 	const channelMsgs = $messagesByChannel[channelName] || [];
-	const parentMsg = channelMsgs.find((m) => m.id === thread.id);
+	const parentMsg = channelMsgs.find((m: Message) => m.id === thread.id);
 	// Use the real message if available, otherwise a stub
-	const msg = parentMsg || { id: thread.id, from: "", content: thread.subject || "" };
+	const msg: Message = parentMsg || { id: thread.id, from: "", content: thread.subject || "", timestamp: "" };
 	openThread(msg, channelName);
 }
 
-function handleDismiss(e, threadId) {
+function handleDismiss(e: MouseEvent, threadId: string) {
 	e.stopPropagation();
 	dismissThread(threadId);
 }

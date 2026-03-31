@@ -226,11 +226,11 @@ export function computeVisibleDmChannels(
  * bound thread, so their `dm-*` mirrors are hidden.
  * @param forkNames - Set of fork agent names (values from threadForkOwners store)
  */
-export function getDisplayableDmChannels(channelList, forkNames = new Set()) {
+export function getDisplayableDmChannels(channelList: Channel[], forkNames: Set<string> = new Set()) {
 	const regularChannelNames = new Set(
-		channelList.filter((ch) => !(ch.is_dm || ch.name.startsWith("dm-"))).map((ch) => ch.name),
+		channelList.filter((ch: Channel) => !(ch.is_dm || ch.name.startsWith("dm-"))).map((ch: Channel) => ch.name),
 	);
-	return channelList.filter((ch) => {
+	return channelList.filter((ch: Channel) => {
 		if (!(ch.is_dm || ch.name.startsWith("dm-"))) return false;
 		const dmPeer = ch.name.replace(/^dm-/, "");
 		return !regularChannelNames.has(dmPeer) && !forkNames.has(dmPeer);

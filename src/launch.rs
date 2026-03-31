@@ -685,7 +685,7 @@ impl LaunchConfig {
             resume_session_id,
             session_id: None, // Set by spawn_coworker for fresh sessions
             inactivity_timeout: None,
-            settings_path: None,   // Set by caller
+            settings_path: Some(common_settings_path()),
             setting_sources: None, // Handled by platform arg builder (always project,local)
             auth_provider: self.auth_provider,
             env,
@@ -696,7 +696,24 @@ impl LaunchConfig {
             output_notify: None,
         }
     }
+}
 
+/// Return the path to the common agent settings file, creating it if needed.
+/// This file is embedded in the binary so it's always available regardless
+/// of the working directory.
+fn common_settings_path() -> String {
+    let dir = crate::paths::midtown_base_dir().join("agents");
+    let path = dir.join("common-settings.json");
+
+    // Write/update the file from the embedded content
+    let content = include_str!("../agents/common-settings.json");
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(&path, content);
+
+    path.to_string_lossy().to_string()
+}
+
+impl LaunchConfig {
     /// Build the Claude CLI argument vector.
     ///
     /// Delegates to `crate::platform::build_claude_interactive_args()` — the single

@@ -1,4 +1,20 @@
 {
   "autoUpdates": false,
-  "autoCompact": true
+  "autoCompact": true,
+  "hooks": {
+    "PostToolUse": [{
+      "matcher": "AskUserQuestion",
+      "hooks": [{
+        "type": "command",
+        "command": "{bin} agent hook ask"
+      }]
+    }],
+    "Notification": [{
+      "matcher": "idle_prompt",
+      "hooks": [{
+        "type": "command",
+        "command": "{bin} agent hook idle"
+      }]
+    }]
+  }
 }

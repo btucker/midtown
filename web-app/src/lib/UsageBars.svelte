@@ -4,7 +4,7 @@ import { estimateTimeToFull, formatResetTime, usageColor } from "./usage-utils.t
 
 let expandedAccount = $state(null);
 
-function toggleAccount(label) {
+function toggleAccount(label: string) {
 	expandedAccount = expandedAccount === label ? null : label;
 }
 </script>

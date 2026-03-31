@@ -20,17 +20,35 @@ import { untrack } from "svelte";
 import { slide } from "svelte/transition";
 import { getForkOwnerColor } from "./avenue-colors.ts";
 import { threadForkOwners } from "./store.ts";
+import type { Message, ToolBlock } from "./types.ts";
 
-let { messages = [], channelName, threadParentId = null, thinking = false, inlineMode = false } = $props();
+interface DrawerEntry {
+	block: ToolBlock;
+	status: string | null;
+}
+
+let {
+	messages = [],
+	channelName,
+	threadParentId = null,
+	thinking = false,
+	inlineMode = false,
+}: {
+	messages: Message[];
+	channelName: string;
+	threadParentId: string | null;
+	thinking: boolean;
+	inlineMode: boolean;
+} = $props();
 
 // Use the fork owner's avenue color for thinking dots instead of hardcoded lead gold.
-let dotColor = $derived(getForkOwnerColor($threadForkOwners[threadParentId]));
+let dotColor = $derived(getForkOwnerColor(threadParentId ? $threadForkOwners[threadParentId] : undefined));
 
 const AGE_OUT_MS = 3000;
 const MAX_VISIBLE = 10;
 
 let expanded = $state(false);
-let scrollContainer = $state(null);
+let scrollContainer: HTMLDivElement | null = $state(null);
 
 // Two-phase age-out:
 //   completedAt  Map<call_id, timestampMs> — when each tool completed
@@ -60,7 +78,7 @@ let merged = $derived.by(() => {
 		}
 	}
 	// Build completion status map: call_id → 'error' | 'ok'
-	const resultStatus = {};
+	const resultStatus: Record<string, string> = {};
 	for (const block of allBlocks) {
 		if (block.call_id && block.output != null) {
 			resultStatus[block.call_id] = block.error ? "error" : "ok";
@@ -69,7 +87,7 @@ let merged = $derived.by(() => {
 	// Deduplicate by call_id: keep only the first occurrence (the tool_use block)
 	// to avoid showing duplicate entries when a result block arrives later.
 	const seen = new Set();
-	const out = [];
+	const out: DrawerEntry[] = [];
 	for (const block of allBlocks) {
 		if (!block.call_id || seen.has(block.call_id)) continue;
 		seen.add(block.call_id);
@@ -172,7 +190,7 @@ function toggleExpanded() {
 	expanded = !expanded;
 }
 
-function handleKeydown(e) {
+function handleKeydown(e: KeyboardEvent) {
 	if (e.key === "Escape" && expanded) {
 		toggleExpanded();
 	} else if (e.key === "Enter" || e.key === " ") {
@@ -181,13 +199,13 @@ function handleKeydown(e) {
 	}
 }
 
-function describeBlock(block) {
+function describeBlock(block: ToolBlock) {
 	if (block.tool_name === "Bash" && block.input?.command) {
-		const cmd = block.input.command;
+		const cmd = block.input.command as string;
 		return cmd.length > 60 ? `${cmd.slice(0, 57)}...` : cmd;
 	}
 	if (block.input?.file_path) {
-		const fp = block.input.file_path;
+		const fp = block.input.file_path as string;
 		const short = fp.split("/").slice(-2).join("/");
 		return `${block.tool_name.toLowerCase()} ${short}`;
 	}

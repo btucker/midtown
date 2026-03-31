@@ -24,8 +24,8 @@ let parsedLines = $derived.by(() => {
 	const raw = typeof block.output === "string" ? block.output : JSON.stringify(block.output, null, 2);
 	const lines = raw
 		.split("\n")
-		.filter((l) => l.length > 0)
-		.map((line) => {
+		.filter((l: string) => l.length > 0)
+		.map((line: string) => {
 			const match = line.match(/^\s*(\d+)[→\t](.*)$/);
 			if (match) {
 				return { num: match[1], content: match[2] };
@@ -35,16 +35,19 @@ let parsedLines = $derived.by(() => {
 
 	// For error state, escape HTML without syntax highlighting
 	if (block.error) {
-		return lines.map((l) => ({ ...l, html: escapeHtml(l.content) }));
+		return lines.map((l: { num: string; content: string }) => ({ ...l, html: escapeHtml(l.content) }));
 	}
 
 	// Highlight the full block to preserve multi-line token context,
 	// then split back into individual lines
-	const fullText = lines.map((l) => l.content).join("\n");
+	const fullText = lines.map((l: { num: string; content: string }) => l.content).join("\n");
 	const highlightedHtml = highlightBlock(fullText, lang);
 	const highlightedLines = highlightedHtml.split("\n");
 
-	return lines.map((l, i) => ({ ...l, html: highlightedLines[i] || escapeHtml(l.content) }));
+	return lines.map((l: { num: string; content: string }, i: number) => ({
+		...l,
+		html: highlightedLines[i] || escapeHtml(l.content),
+	}));
 });
 
 let totalLines = $derived(parsedLines.length);

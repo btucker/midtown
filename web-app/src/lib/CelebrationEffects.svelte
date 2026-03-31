@@ -2,6 +2,7 @@
 import { onDestroy } from "svelte";
 import { AVENUE_COLORS } from "./avenue-colors.ts";
 import { daemonStatus, kanbanData } from "./store.ts";
+import type { MergedPullRequest } from "./types.ts";
 
 const COLOR_PALETTE = [
 	"var(--color-primary)",
@@ -21,7 +22,15 @@ const celebratedPrs = new Set();
 const timers = new Map();
 let destroyed = false;
 let hydrated = $state(false);
-let activeEffects = $state([]);
+
+interface CelebrationEffect {
+	id: string;
+	type: string;
+	// biome-ignore lint: payload shape varies by effect type — typed per-branch in template
+	payload: any;
+}
+
+let activeEffects: CelebrationEffect[] = $state([]);
 
 const EFFECT_DEFS = [
 	{ type: "confetti", duration: 4200, generator: generateConfetti },
@@ -36,7 +45,7 @@ const EFFECT_DEFS = [
 	{ type: "ripples", duration: 3000, generator: generateRipples },
 ];
 
-function prKey(pr) {
+function prKey(pr: MergedPullRequest) {
 	const repo = pr?.repo || "default";
 	return `${repo}#${pr?.number ?? "unknown"}`;
 }
@@ -50,7 +59,7 @@ function randomFraction() {
 	return Math.random();
 }
 
-function randomInRange(min, max) {
+function randomInRange(min: number, max: number) {
 	return min + (max - min) * randomFraction();
 }
 
@@ -64,20 +73,20 @@ function pickEmoji() {
 	return EMOJIS[index];
 }
 
-function triggerCelebration(_pr) {
+function triggerCelebration(_pr: MergedPullRequest) {
 	if (EFFECT_DEFS.length === 0) return;
 	const index = Math.floor(randomFraction() * EFFECT_DEFS.length);
 	const def = EFFECT_DEFS[index];
 	const payload = def.generator();
 	const idBase = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
 	const id = `${def.type}-${idBase}-${Math.round(randomFraction() * 1e6)}`;
-	const entry = { id, type: def.type, payload };
+	const entry: CelebrationEffect = { id, type: def.type, payload };
 	activeEffects = [...activeEffects, entry];
 	const timer = setTimeout(() => removeEffect(entry.id), def.duration);
 	timers.set(entry.id, timer);
 }
 
-function removeEffect(id) {
+function removeEffect(id: string) {
 	if (destroyed) return;
 	activeEffects = activeEffects.filter((effect) => effect.id !== id);
 	const timer = timers.get(id);
@@ -93,7 +102,7 @@ onDestroy(() => {
 	timers.clear();
 });
 
-function remember(pr) {
+function remember(pr: MergedPullRequest) {
 	celebratedPrs.add(prKey(pr));
 }
 

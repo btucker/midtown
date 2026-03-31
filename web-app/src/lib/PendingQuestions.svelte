@@ -2,9 +2,9 @@
 import { selectDm, sendAnswer } from "./api.ts";
 import { pendingQuestions } from "./store.ts";
 
-let answers = {};
+let answers: Record<string, string> = {};
 
-function handleAnswer(coworkerName) {
+function handleAnswer(coworkerName: string) {
 	const answer = answers[coworkerName]?.trim();
 	if (!answer) return;
 	sendAnswer(coworkerName, answer);
@@ -12,7 +12,7 @@ function handleAnswer(coworkerName) {
 	answers = { ...answers };
 }
 
-function handleKeydown(event, coworkerName) {
+function handleKeydown(event: KeyboardEvent, coworkerName: string) {
 	if (event.key === "Enter" && !event.shiftKey) {
 		event.preventDefault();
 		handleAnswer(coworkerName);

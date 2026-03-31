@@ -12,16 +12,17 @@ import {
 import { fetchHistory, openThread, searchMessages, selectDm } from "./api.ts";
 import { getSenderColor } from "./messageUtils.ts";
 import { activeChannel, channels, channelTargetMsgId, deepLinkMsgId, messagesByChannel } from "./store.ts";
+import type { SearchResult } from "./types.ts";
 
 let { open = $bindable(false) } = $props();
 
 let query = $state("");
-let results = $state([]);
+let results: SearchResult[] = $state([]);
 let loading = $state(false);
 let error = $state(false);
 // Plain `let` — timer IDs have no UI relevance and must not be reactive
 // (writing $state inside $effect re-triggers the effect infinitely).
-let debounceTimer = null;
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Debounced search: fire API call 300ms after the user stops typing.
 // Guards against stale responses: only apply results if the query hasn't
@@ -52,7 +53,9 @@ $effect(() => {
 			}
 		}
 	}, 300);
-	return () => clearTimeout(debounceTimer);
+	return () => {
+		if (debounceTimer != null) clearTimeout(debounceTimer);
+	};
 });
 
 // Reset state when dialog closes
@@ -65,7 +68,7 @@ $effect(() => {
 	}
 });
 
-function selectResult(result) {
+function selectResult(result: SearchResult) {
 	if (result.channel.startsWith("dm-")) {
 		// DM channels need selectDm() to ensure the channel appears in the sidebar
 		const coworkerName = result.channel.replace(/^dm-/, "");
@@ -87,7 +90,10 @@ function selectResult(result) {
 		// construct a minimal one — openThread will fetch the full thread from the API.
 		const channelMsgs = $messagesByChannel[result.channel] || [];
 		const parentMsg = channelMsgs.find((m) => m.id === result.thread_parent_id);
-		openThread(parentMsg || { id: result.thread_parent_id, content: "", from: "", reply_count: 0 }, result.channel);
+		openThread(
+			parentMsg || { id: result.thread_parent_id!, content: "", from: "", timestamp: "", reply_count: 0 },
+			result.channel,
+		);
 		deepLinkMsgId.set(result.id);
 	} else {
 		// Top-level message: tell Channel.svelte to scroll to and highlight it.
@@ -104,11 +110,11 @@ function selectResult(result) {
 	open = false;
 }
 
-function formatRelativeTime(timestamp) {
+function formatRelativeTime(timestamp: string) {
 	try {
 		const date = new Date(timestamp);
 		const now = new Date();
-		const diffMs = now - date;
+		const diffMs = now.getTime() - date.getTime();
 		const diffMins = Math.floor(diffMs / 60000);
 		if (diffMins < 1) return "now";
 		if (diffMins < 60) return `${diffMins}m`;
@@ -123,19 +129,19 @@ function formatRelativeTime(timestamp) {
 }
 </script>
 
-<CommandDialog bind:open shouldFilter={false} title="Search messages" description="Search across all channel messages">
-  <CommandInput placeholder="Search messages..." bind:value={query} />
+<CommandDialog bind:open shouldFilter={false} title="Search messages" description="Search across all channel messages" portalProps={{}}>
+  <CommandInput class="" placeholder="Search messages..." bind:value={query} />
   <CommandList class="max-h-[min(400px,calc(60vh-env(safe-area-inset-bottom)))]">
     {#if loading}
       <div class="py-6 text-center text-sm text-muted-foreground">Searching...</div>
     {:else if error}
       <div class="py-6 text-center text-sm text-destructive">Search failed. Try again.</div>
     {:else if query.trim() && results.length === 0}
-      <CommandEmpty>No results found.</CommandEmpty>
+      <CommandEmpty class="">No results found.</CommandEmpty>
     {:else if results.length > 0}
-      <CommandGroup>
+      <CommandGroup class="" heading="" value="">
         {#each results as result}
-          <CommandItem value={result.id} onSelect={() => selectResult(result)}>
+          <CommandItem class="" value={result.id} onSelect={() => selectResult(result)}>
             <div class="flex w-full min-w-0 items-start gap-2">
               <div class="flex shrink-0 items-center gap-1 pt-0.5">
                 {#if result.channel.startsWith('dm-')}
@@ -147,7 +153,7 @@ function formatRelativeTime(timestamp) {
               </div>
               <div class="min-w-0 flex-1">
                 <div class="flex items-baseline gap-1.5">
-                  <span class="text-xs font-medium" style="color: {getSenderColor(result.from)}">{result.from}</span>
+                  <span class="text-xs font-medium" style="color: {getSenderColor(result.from, null)}">{result.from}</span>
                   <span class="text-[0.65rem] text-muted-foreground/60">{formatRelativeTime(result.timestamp)}</span>
                 </div>
                 <p class="truncate text-xs text-muted-foreground">{result.snippet || result.content}</p>
