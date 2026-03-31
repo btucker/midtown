@@ -657,7 +657,12 @@ pub async fn upload(mut multipart: axum::extract::Multipart) -> (StatusCode, Jso
                 }
                 return (
                     StatusCode::OK,
-                    Json(json!({"ok": true, "filename": safe_name, "size": data.len()})),
+                    Json(json!({
+                        "ok": true,
+                        "filename": safe_name,
+                        "path": path.to_string_lossy(),
+                        "size": data.len(),
+                    })),
                 );
             }
             Err(e) => {

@@ -1,6 +1,10 @@
 pub mod routes;
 pub mod websocket;
 
+#[path = "upload_tests.rs"]
+#[cfg(test)]
+mod upload_tests;
+
 use axum::Router;
 use axum::routing::{get, post};
 use std::path::PathBuf;
