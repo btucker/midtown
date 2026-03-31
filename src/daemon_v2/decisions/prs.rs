@@ -105,7 +105,8 @@ fn count_stopped_reviewers(proj: &Projections, pr_num: u64) -> usize {
         Some(pr) => pr,
         None => return 0,
     };
-    let reviewer_name = format!("{}-reviewer", pr.author);
+    let author_name = pr.midtown_author.as_deref().unwrap_or(&pr.author);
+    let reviewer_name = format!("{author_name}-reviewer");
     proj.agents
         .by_id
         .values()

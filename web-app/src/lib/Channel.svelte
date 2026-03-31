@@ -814,11 +814,13 @@ async function loadMoreMessages() {
 		return;
 	}
 
-	// All in-memory messages rendered — fetch older from server
+	// All in-memory messages rendered — fetch older from server.
+	// Use the unfiltered store for the cursor so hidden auto_output messages
+	// don't cause the same page to be re-fetched forever.
 	if (fetchingOlder) return;
-	const msgs = channelMessages;
-	if (msgs.length === 0) return;
-	const oldest = msgs[0];
+	const allMsgs = $messagesByChannel[$activeChannel] || [];
+	if (allMsgs.length === 0) return;
+	const oldest = allMsgs[0];
 	if (!oldest?.timestamp) return;
 
 	fetchingOlder = true;
