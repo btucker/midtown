@@ -58,7 +58,8 @@
 
 ### 3.1 Event Sources
 - WHEN a GitHub webhook reports a PR opened THEN the system SHALL emit a PrOpened event
-- WHEN polling detects a new open PR not already tracked THEN the system SHALL emit a PrOpened event as a backstop
+- WHEN polling detects a new open PR not already tracked THEN the system SHALL emit a PrOpened event AND a PrReviewRequested event (if not draft) as a backstop
+- WHEN a PrOpened event is processed AND the author matches a running worker THEN the system SHALL emit PrLinkedToTask to associate the PR with that worker's task
 - WHEN a GitHub webhook reports CI or review state change THEN the system SHALL emit a PrUpdated event
 - WHEN polling detects a CI or review state change not already reflected THEN the system SHALL emit a PrUpdated event as a backstop
 - WHEN a GitHub webhook reports a PR merged THEN the system SHALL emit a PrMerged event
@@ -66,6 +67,7 @@
 - WHEN polling fails THEN the system SHALL log the error and return no events
 
 ### 3.2 Reviewer Spawning
+- WHEN a new non-draft PR is opened (via webhook or polling backstop) THEN the system SHALL emit PrReviewRequested
 - WHEN a PR needs review AND no reviewer is running for it THEN the system SHALL spawn a reviewer named `{author_name}-reviewer`
 - WHEN a reviewer dies THEN the system SHALL resume it
 - WHEN a reviewer cannot be resumed (no session ID) AND fewer than 3 attempts have been made THEN the system SHALL spawn a replacement reviewer

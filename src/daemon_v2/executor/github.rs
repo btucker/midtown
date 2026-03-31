@@ -147,6 +147,21 @@ pub fn diff_pr_state(
                 branch: pr.branch.clone(),
                 author: pr.author.clone(),
             });
+            // Spec 3.2: all new non-draft PRs need review (v1 approach — don't
+            // rely on reviewDecision which requires branch protection rules).
+            if !pr.is_draft {
+                events.push(DomainEvent::PrReviewRequested { number: pr.number });
+            }
+            // Spec 3.1: link PR to the author's in-progress task
+            if let Some(task) = work.tasks.values().find(|t| {
+                t.status == crate::daemon_v2::events::TaskStatus::InProgress
+                    && t.agent_name.as_deref() == Some(&pr.author)
+            }) {
+                events.push(DomainEvent::PrLinkedToTask {
+                    number: pr.number,
+                    task_id: task.id.clone(),
+                });
+            }
         }
 
         // Detect CI/review state changes for known PRs
