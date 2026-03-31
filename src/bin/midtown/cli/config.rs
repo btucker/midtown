@@ -608,7 +608,7 @@ fn parse_bool(key: &str, value: &str) -> Result<bool, String> {
 fn parse_provider(key: &str, value: &str) -> Result<midtown::auth::AuthProvider, String> {
     value.parse::<midtown::auth::AuthProvider>().map_err(|_| {
         format!(
-            "Invalid provider value '{}' for '{}'. Valid values: claude, codex, zai.",
+            "Invalid provider value '{}' for '{}'. Valid values: claude, codex.",
             value, key
         )
     })

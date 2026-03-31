@@ -73,28 +73,6 @@ fn normalize_model_for_provider_role_maps_size_aliases_for_claude() {
 }
 
 #[test]
-fn normalize_model_for_provider_role_maps_size_aliases_for_zai() {
-    let small = normalize_model_for_provider_role(
-        "small",
-        crate::auth::AuthProvider::Zai,
-        "midtown-code-author",
-    );
-    let medium = normalize_model_for_provider_role(
-        "medium",
-        crate::auth::AuthProvider::Zai,
-        "midtown-project-lead",
-    );
-    let large = normalize_model_for_provider_role(
-        "large",
-        crate::auth::AuthProvider::Zai,
-        "midtown-code-reviewer",
-    );
-    assert_eq!(small, "haiku");
-    assert_eq!(medium, "sonnet");
-    assert_eq!(large, "opus");
-}
-
-#[test]
 fn normalize_model_for_provider_role_maps_size_aliases_for_codex() {
     let small = normalize_model_for_provider_role(
         "small",

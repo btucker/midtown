@@ -5,7 +5,7 @@
 
 /// Default model alias for an agent type/provider pair.
 ///
-/// Claude/z.ai use "sonnet" for coworker/channel-lead and "opus" for lead/reviewer.
+/// Claude uses "sonnet" for coworker/channel-lead and "opus" for lead/reviewer.
 /// Codex uses "gpt-5.4" for all roles.
 pub fn default_model_for_provider_role(
     provider: crate::auth::AuthProvider,
@@ -13,7 +13,7 @@ pub fn default_model_for_provider_role(
 ) -> &'static str {
     match provider {
         crate::auth::AuthProvider::Codex => "gpt-5.4",
-        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => match agent_type {
+        crate::auth::AuthProvider::Claude => match agent_type {
             "midtown-project-lead" | "midtown-code-reviewer" => "opus",
             _ => "sonnet",
         },
@@ -45,15 +45,15 @@ pub fn normalize_model_for_provider_role(
 
     match provider {
         crate::auth::AuthProvider::Codex => {
-            // Claude/z.ai aliases are not valid in Codex.
+            // Claude aliases are not valid in Codex.
             if lower.contains("sonnet") || lower.contains("opus") || lower.contains("haiku") {
                 default_model.to_string()
             } else {
                 trimmed.to_string()
             }
         }
-        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {
-            // OpenAI/Codex model aliases are not valid in Claude/z.ai.
+        crate::auth::AuthProvider::Claude => {
+            // OpenAI/Codex model aliases are not valid in Claude.
             if is_openai_model_alias(&lower) {
                 default_model.to_string()
             } else {
@@ -75,7 +75,7 @@ fn normalize_size_alias_for_provider(
     };
 
     let normalized = match provider {
-        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => match size {
+        crate::auth::AuthProvider::Claude => match size {
             "small" => "haiku",
             "medium" => "sonnet",
             "large" => "opus",
@@ -108,7 +108,7 @@ pub fn provider_for_model_alias(model: &str) -> Option<crate::auth::AuthProvider
         return None;
     }
 
-    // Claude/z.ai model aliases
+    // Claude model aliases
     if lower.contains("sonnet") || lower.contains("opus") || lower.contains("haiku") {
         return Some(crate::auth::AuthProvider::Claude);
     }

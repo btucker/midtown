@@ -73,7 +73,6 @@ const availableProviders = $derived(Object.keys($authProfilesByProvider));
 const providerNames = {
 	claude: "Claude",
 	codex: "Codex",
-	zai: "z.ai",
 };
 </script>
 

@@ -1189,7 +1189,7 @@ export async function fetchAuthProfiles(provider: string | null = null): Promise
 // Fetch profiles for all providers and populate authProfilesByProvider.
 // Only includes providers that have at least one profile configured.
 export async function fetchAllAuthProfiles(): Promise<Record<string, AuthProfile[]>> {
-	const providers = ["claude", "codex", "zai"];
+	const providers = ["claude", "codex"];
 	const byProvider: Record<string, AuthProfile[]> = {};
 
 	for (const provider of providers) {
@@ -1250,7 +1250,7 @@ export async function submitAuthCode(code: string): Promise<{ ok: boolean; error
 // Switch to a different auth profile via the daemon RPC.
 // Parameters:
 //   - profile: Profile name to switch to (e.g., "work", "personal")
-//   - provider: Provider name ('claude', 'codex', or 'zai')
+//   - provider: Provider name ('claude' or 'codex')
 // Returns { ok: true } on success, or { ok: false, error: string } on failure.
 export async function switchAuthProfile(profile: string, provider: string): Promise<{ ok: boolean; error?: string }> {
 	authSwitching.set(true);

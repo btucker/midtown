@@ -54,7 +54,7 @@ pub struct HeadlessConfig {
     /// Whether to allow tool use.
     ///
     /// Provider mapping:
-    /// - Claude/z.ai: `--tools ""` disables all tools.
+    /// - Claude: `--tools ""` disables all tools.
     /// - Codex:
     ///   - `allow_tools=true` -> `approvalPolicy=never`, `sandbox=danger-full-access`
     ///   - `allow_tools=false` -> `approvalPolicy=never`, `sandbox=read-only`
@@ -64,7 +64,7 @@ pub struct HeadlessConfig {
     /// Whether to persist the session on disk.
     ///
     /// Provider mapping:
-    /// - Claude/z.ai: when false, passes `--no-session-persistence`.
+    /// - Claude: when false, passes `--no-session-persistence`.
     /// - Codex: no explicit non-persistent mode exists today; this setting is currently
     ///   advisory for Codex.
     ///
@@ -1728,9 +1728,7 @@ impl HeadlessSession {
 
         match config.auth_provider {
             crate::auth::AuthProvider::Codex => CodexHeadlessAdapter::spawn(config).await,
-            crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {
-                ClaudeHeadlessAdapter::spawn(config).await
-            }
+            crate::auth::AuthProvider::Claude => ClaudeHeadlessAdapter::spawn(config).await,
         }
     }
 

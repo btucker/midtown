@@ -116,7 +116,7 @@ pub struct CoworkerInfo {
     pub pr_number: Option<u64>,
     /// Health status: "green", "yellow", "red"
     pub health: String,
-    /// Auth provider (e.g., "claude", "zai")
+    /// Auth provider (e.g., "claude", "codex")
     pub provider: String,
     /// Profile name for multi-account support
     pub profile: String,

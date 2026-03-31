@@ -66,7 +66,7 @@ use toml_edit::{Item, Table};
 ///
 /// These abstract size terms are resolved to concrete model names at launch time
 /// by `normalize_size_alias_for_provider()` in `daemon/helpers.rs`:
-/// - Claude/z.ai: small → haiku, medium → sonnet, large → opus
+/// - Claude: small → haiku, medium → sonnet, large → opus
 /// - Codex: small → gpt-5.1-codex-mini, medium → gpt-5.3-codex-spark, large → gpt-5.4
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -1003,7 +1003,7 @@ impl GlobalConfig {
 # tls_key = "/path/to/key.pem"
 
 [execution]
-# Global default provider for all roles (unless overridden per-role): "claude", "codex", or "zai"
+# Global default provider for all roles (unless overridden per-role): "claude" or "codex"
 # default_provider = "claude"
 # Global default model size for all roles (unless overridden per-role): "small", "medium", or "large"
 # default_model = "medium"
@@ -2479,7 +2479,7 @@ webhook_port = 47024
         };
         let project = ExecutionSection {
             lead_provider: Some(crate::auth::AuthProvider::Codex),
-            project_lead_provider: Some(crate::auth::AuthProvider::Zai),
+            project_lead_provider: Some(crate::auth::AuthProvider::Codex),
             coworker_provider: None,
             reviewer_provider: Some(crate::auth::AuthProvider::Codex),
             review_mode: Some(ReviewMode::GithubApp),
@@ -2493,7 +2493,7 @@ webhook_port = 47024
         assert_eq!(merged.lead_provider, Some(crate::auth::AuthProvider::Codex));
         assert_eq!(
             merged.project_lead_provider,
-            Some(crate::auth::AuthProvider::Zai)
+            Some(crate::auth::AuthProvider::Codex)
         );
         assert_eq!(
             merged.coworker_provider,
@@ -2511,8 +2511,8 @@ webhook_port = 47024
         let toml = r#"
 [execution]
 lead_provider = "codex"
-project_lead_provider = "zai"
-coworker_provider = "zai"
+project_lead_provider = "codex"
+coworker_provider = "codex"
 reviewer_provider = "claude"
 review_mode = "both"
 specialized_provider = "codex"
@@ -2524,11 +2524,11 @@ specialized_provider = "codex"
         );
         assert_eq!(
             config.execution.project_lead_provider,
-            Some(crate::auth::AuthProvider::Zai)
+            Some(crate::auth::AuthProvider::Codex)
         );
         assert_eq!(
             config.execution.coworker_provider,
-            Some(crate::auth::AuthProvider::Zai)
+            Some(crate::auth::AuthProvider::Codex)
         );
         assert_eq!(
             config.execution.reviewer_provider,
@@ -2554,12 +2554,12 @@ specialized_provider = "codex"
 
         let headless_override = ExecutionSection {
             specialized_provider: Some(crate::auth::AuthProvider::Codex),
-            headless_execute_provider: Some(crate::auth::AuthProvider::Zai),
+            headless_execute_provider: Some(crate::auth::AuthProvider::Codex),
             ..ExecutionSection::default()
         };
         assert_eq!(
             resolve_execution_provider(&headless_override, ExecutionRole::HeadlessExecute),
-            crate::auth::AuthProvider::Zai
+            crate::auth::AuthProvider::Codex
         );
 
         let default_only = ExecutionSection::default();
@@ -2590,13 +2590,13 @@ specialized_provider = "codex"
     fn test_project_lead_provider_only_overrides_project_lead() {
         let execution = ExecutionSection {
             lead_provider: Some(crate::auth::AuthProvider::Claude),
-            project_lead_provider: Some(crate::auth::AuthProvider::Zai),
+            project_lead_provider: Some(crate::auth::AuthProvider::Codex),
             ..ExecutionSection::default()
         };
 
         assert_eq!(
             resolve_execution_provider(&execution, ExecutionRole::Lead),
-            crate::auth::AuthProvider::Zai
+            crate::auth::AuthProvider::Codex
         );
         assert_eq!(
             resolve_execution_provider(&execution, ExecutionRole::ChannelLead),
@@ -2608,7 +2608,7 @@ specialized_provider = "codex"
     fn test_channel_lead_provider_override_still_wins_for_channel_leads() {
         let execution = ExecutionSection {
             lead_provider: Some(crate::auth::AuthProvider::Claude),
-            channel_lead_provider: Some(crate::auth::AuthProvider::Zai),
+            channel_lead_provider: Some(crate::auth::AuthProvider::Codex),
             ..ExecutionSection::default()
         };
 
@@ -2618,7 +2618,7 @@ specialized_provider = "codex"
         );
         assert_eq!(
             resolve_execution_provider(&execution, ExecutionRole::ChannelLead),
-            crate::auth::AuthProvider::Zai
+            crate::auth::AuthProvider::Codex
         );
     }
 

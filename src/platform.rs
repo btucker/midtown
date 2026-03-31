@@ -1,7 +1,7 @@
 //! Platform abstraction for coding agent CLI argument construction.
 //!
 //! Separates two orthogonal concerns that were previously conflated:
-//! - **AuthProvider** (how you authenticate): Claude config dir, Codex home, z.ai API key
+//! - **AuthProvider** (how you authenticate): Claude config dir, Codex home
 //! - **Platform** (which binary and CLI protocol to use): `claude` vs `codex`
 //!
 //! The shared arg builders (`build_claude_common_args`, `build_claude_headless_args`,
@@ -17,9 +17,7 @@ use crate::launch::{LaunchConfig, SessionMode};
 
 /// The coding agent platform — which binary and CLI protocol to use.
 ///
-/// Separate from `AuthProvider` (which handles authentication). Multiple auth
-/// providers can map to the same platform (e.g., both `Claude` and `Zai`
-/// providers use the `Claude` platform's `claude` binary).
+/// Separate from `AuthProvider` (which handles authentication).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Platform {
     /// Claude Code CLI (`claude`).
@@ -30,11 +28,9 @@ pub enum Platform {
 
 impl Platform {
     /// Map an auth provider to its corresponding platform.
-    ///
-    /// z.ai uses Claude's binary with different auth env vars.
     pub fn from_provider(provider: AuthProvider) -> Self {
         match provider {
-            AuthProvider::Claude | AuthProvider::Zai => Platform::Claude,
+            AuthProvider::Claude => Platform::Claude,
             AuthProvider::Codex => Platform::Codex,
         }
     }

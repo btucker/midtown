@@ -226,7 +226,7 @@ fn code_review_invocation_for_platform(
         crate::auth::AuthProvider::Codex => {
             format!("use the code-review skill to review PR {pr_suffix}")
         }
-        crate::auth::AuthProvider::Claude | crate::auth::AuthProvider::Zai => {
+        crate::auth::AuthProvider::Claude => {
             format!(
                 "run /code-review:code-review {}",
                 pr_suffix.trim_start_matches('#')

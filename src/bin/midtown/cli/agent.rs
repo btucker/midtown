@@ -19,7 +19,6 @@ use crate::client::DaemonClient;
 pub enum ProviderArg {
     Claude,
     Codex,
-    Zai,
 }
 
 impl From<ProviderArg> for midtown::auth::AuthProvider {
@@ -27,7 +26,6 @@ impl From<ProviderArg> for midtown::auth::AuthProvider {
         match value {
             ProviderArg::Claude => midtown::auth::AuthProvider::Claude,
             ProviderArg::Codex => midtown::auth::AuthProvider::Codex,
-            ProviderArg::Zai => midtown::auth::AuthProvider::Zai,
         }
     }
 }
@@ -714,12 +712,6 @@ fn normalize_target_kind(kind: &str) -> Result<String, String> {
         // Provider aliases to reduce friction in manual input.
         "anthropic" | "antropic" => "claude".to_string(),
         "openai" => "codex".to_string(),
-        "zai" | "z.ai" => {
-            return Err(
-                "Invalid platform selector 'zai'. Use claude/<session_id> for z.ai sessions."
-                    .to_string(),
-            );
-        }
         _ => {
             return Err(format!(
                 "Invalid attach selector '{}'. {}",
@@ -829,7 +821,7 @@ pub(crate) fn build_attach_launch_spec(
 
     // Build provider-specific interactive CLI args.
     match provider {
-        midtown::auth::AuthProvider::Claude | midtown::auth::AuthProvider::Zai => {
+        midtown::auth::AuthProvider::Claude => {
             // Write system prompt to temp file
             let prompt_file = std::env::temp_dir().join(format!(
                 "midtown-attach-{}-{}.txt",
@@ -920,7 +912,6 @@ fn parse_provider(raw: &str) -> midtown::auth::AuthProvider {
     match raw.trim().to_ascii_lowercase().as_str() {
         "claude" | "anthropic" | "antropic" => midtown::auth::AuthProvider::Claude,
         "codex" | "openai" => midtown::auth::AuthProvider::Codex,
-        "zai" | "z.ai" => midtown::auth::AuthProvider::Zai,
         _ => midtown::auth::AuthProvider::Claude,
     }
 }
