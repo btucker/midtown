@@ -15,6 +15,6 @@ export function statusBarColor(status: string, owner: string | null, colorOverri
 	if (status === "completed") return "hsl(var(--accent-green, 145 40% 38%))";
 	if (status !== "in_progress") return "hsl(var(--muted-foreground) / 0.3)";
 	if (colorOverride) return colorOverride;
-	if (owner) return getSenderColor(owner);
+	if (owner) return getSenderColor(owner, null);
 	return "hsl(var(--accent-teal))";
 }

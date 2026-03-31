@@ -3,7 +3,15 @@ import { getApiBase } from "./api.ts";
 import MermaidDiagram from "./MermaidDiagram.svelte";
 import { activeChannel, activeProject } from "./store.ts";
 
-let data = $state(null);
+interface WorkflowData {
+	state?: { tasks?: Record<string, { phase: string }> };
+	available_workflows?: Array<{ name: string; description?: string }>;
+	assigned_workflow?: string | null;
+	lead_driven?: boolean;
+	mermaid?: string;
+}
+
+let data = $state<WorkflowData | null>(null);
 let loading = $state(false);
 let error = $state("");
 let assigning = $state(false);
@@ -52,11 +60,11 @@ $effect(() => {
 	return fetchWorkflow();
 });
 
-async function handleWorkflowChange(event) {
+async function handleWorkflowChange(event: Event | { target: { value: string } }) {
 	const channel = $activeChannel;
 	if (!channel) return;
 
-	const value = event.target.value;
+	const value = (event.target as HTMLSelectElement).value;
 	const workflow = value === "" ? null : value;
 
 	assigning = true;
@@ -74,7 +82,7 @@ async function handleWorkflowChange(event) {
 		fetchWorkflow();
 	} catch (e) {
 		console.error("Failed to assign workflow:", e);
-		error = e.message;
+		error = e instanceof Error ? e.message : String(e);
 	} finally {
 		assigning = false;
 	}
@@ -82,11 +90,11 @@ async function handleWorkflowChange(event) {
 
 let togglingLeadDriven = $state(false);
 
-async function handleLeadDrivenToggle(event) {
+async function handleLeadDrivenToggle(event: Event) {
 	const channel = $activeChannel;
 	if (!channel) return;
 
-	const enabled = event.target.checked;
+	const enabled = (event.target as HTMLInputElement).checked;
 	togglingLeadDriven = true;
 	try {
 		const res = await fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/workflow`, {
@@ -101,7 +109,7 @@ async function handleLeadDrivenToggle(event) {
 		fetchWorkflow();
 	} catch (e) {
 		console.error("Failed to toggle lead-driven:", e);
-		error = e.message;
+		error = e instanceof Error ? e.message : String(e);
 	} finally {
 		togglingLeadDriven = false;
 	}
@@ -205,7 +213,7 @@ let taskEntries = $derived(data?.state?.tasks ? Object.entries(data.state.tasks)
               <div class="task-row">
                 <span class="task-id">!{taskId}</span>
                 <span class="task-arrow">&rarr;</span>
-                <span class="task-phase">{taskState.phase}</span>
+                <span class="task-phase">{(taskState as { phase: string }).phase}</span>
               </div>
             {/each}
           </div>

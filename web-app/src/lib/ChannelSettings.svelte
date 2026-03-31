@@ -11,19 +11,23 @@ import {
 import ChannelWorkflow from "./ChannelWorkflow.svelte";
 import { activeChannel, channelSettings } from "./store.ts";
 
-let showFullLeadOutput = $derived($channelSettings[$activeChannel]?.showFullLeadOutput ?? true);
+let showFullLeadOutput = $derived(
+	$activeChannel ? ($channelSettings[$activeChannel]?.showFullLeadOutput ?? true) : true,
+);
 
 function toggleShowFullLeadOutput() {
+	if (!$activeChannel) return;
+	const channel = $activeChannel;
 	const newValue = !showFullLeadOutput;
 	channelSettings.update((s) => ({
 		...s,
-		[$activeChannel]: {
-			...s[$activeChannel],
+		[channel]: {
+			...s[channel],
 			showFullLeadOutput: newValue,
 		},
 	}));
 	// Sync to daemon API
-	putChannelSettings($activeChannel, { show_full_lead_output: newValue });
+	putChannelSettings(channel, { show_full_lead_output: newValue });
 }
 
 // Working directory editor state
@@ -41,6 +45,7 @@ async function loadDirectory() {
 	directoryLoading = true;
 	directoryError = "";
 	directorySuccess = "";
+	if (!$activeChannel) return;
 	const [data, dirs] = await Promise.all([fetchChannelDirectory($activeChannel), fetchDirectories()]);
 	directoryValue = data.directory || "";
 	directoryOriginal = data.directory || "";
@@ -49,11 +54,13 @@ async function loadDirectory() {
 }
 
 async function saveDirectory() {
+	const channel = $activeChannel;
+	if (!channel) return;
 	const trimmed = directoryValue.trim();
 	directorySaving = true;
 	directoryError = "";
 	directorySuccess = "";
-	const result = await saveChannelDirectory($activeChannel, trimmed || null);
+	const result = await saveChannelDirectory(channel, trimmed);
 	if (result.ok) {
 		directoryOriginal = trimmed;
 		directoryValue = trimmed;
@@ -87,6 +94,7 @@ async function loadAgentsMd() {
 	agentsLoading = true;
 	agentsError = "";
 	agentsSuccess = "";
+	if (!$activeChannel) return;
 	const data = await fetchChannelAgentsMd($activeChannel, agentsScope);
 	if (!data) {
 		// Request was aborted (e.g., rapid channel switch) — don't touch state
@@ -108,6 +116,7 @@ async function saveAgentsMd() {
 	agentsSaving = true;
 	agentsError = "";
 	agentsSuccess = "";
+	if (!$activeChannel) return;
 	const result = await saveChannelAgentsMd($activeChannel, agentsContent, agentsScope);
 	if (result.ok) {
 		agentsOriginal = agentsContent;
@@ -126,7 +135,7 @@ function discardAgentsMd() {
 	agentsSuccess = "";
 }
 
-function switchScope(newScope) {
+function switchScope(newScope: string) {
 	if (newScope === agentsScope) return;
 	if (agentsDirty && !confirm("You have unsaved changes. Switch scope and discard them?")) return;
 	agentsScope = newScope;
@@ -144,6 +153,7 @@ const sourceLabels = {
 // Sync showFullLeadOutput from daemon on channel load
 async function syncChannelSettings() {
 	const channel = $activeChannel;
+	if (!channel) return;
 	const remote = await fetchChannelSettings(channel);
 	if (remote && typeof remote.show_full_lead_output === "boolean") {
 		channelSettings.update((s) => ({
@@ -281,7 +291,7 @@ $effect(() => {
               <span class="agents-status success">{agentsSuccess}</span>
             {/if}
             {#if agentsSource !== "none" && !agentsError && !agentsSuccess}
-              <span class="agents-source">Source: {sourceLabels[agentsSource] || agentsSource}</span>
+              <span class="agents-source">Source: {sourceLabels[agentsSource as keyof typeof sourceLabels] || agentsSource}</span>
             {/if}
           </div>
           <div class="agents-buttons">

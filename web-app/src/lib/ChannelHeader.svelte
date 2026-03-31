@@ -2,6 +2,7 @@
 import { onDestroy } from "svelte";
 import { fade } from "svelte/transition";
 import { activeChannel, channels, daemonStatus, kanbanData, repoStatus, repoStatuses } from "./store.ts";
+import type { MergedPullRequest } from "./types.ts";
 import { formatRelativeTime } from "./utils.ts";
 
 let isMultiRepo = $derived($repoStatuses.length > 1);
@@ -11,7 +12,7 @@ let activeChannelMeta = $derived($channels.find((ch) => ch.name === $activeChann
 let isDm = $derived(activeChannelMeta?.is_dm ?? $activeChannel?.startsWith("dm-") ?? false);
 let dmPeerName = $derived($activeChannel?.startsWith("dm-") ? $activeChannel.slice(3) : $activeChannel);
 
-function ciInfo(status) {
+function ciInfo(status: string | null | undefined) {
 	switch (status) {
 		case "passed":
 			return { char: "●", color: "hsl(var(--status-green))" };
@@ -30,13 +31,18 @@ const BANNER_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 const seenPrs = new Set();
 const bannerTimers = new Map();
 let hydrated = false;
-let recentMerges = $state([]);
+interface MergeBanner {
+	key: string;
+	pr: MergedPullRequest;
+	url: string | null;
+}
+let recentMerges = $state<MergeBanner[]>([]);
 
-function prKey(pr) {
+function prKey(pr: MergedPullRequest) {
 	return `${pr?.repo || "default"}#${pr?.number ?? "unknown"}`;
 }
 
-function getPrUrl(pr) {
+function getPrUrl(pr: MergedPullRequest) {
 	if (pr.repo && $repoStatuses.length > 0) {
 		const info = $repoStatuses.find((s) => s.label === pr.repo);
 		if (info?.fullName) return `https://github.com/${info.fullName}/pull/${pr.number}`;
@@ -45,7 +51,7 @@ function getPrUrl(pr) {
 	return null;
 }
 
-function addMergeBanner(pr) {
+function addMergeBanner(pr: MergedPullRequest) {
 	const key = prKey(pr);
 	if (bannerTimers.has(key)) return;
 	const url = getPrUrl(pr);

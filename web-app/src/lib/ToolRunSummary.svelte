@@ -2,6 +2,7 @@
 import { fade, slide } from "svelte/transition";
 import MessageRow from "./MessageRow.svelte";
 import { filterChannelPosts } from "./toolRunGrouping.ts";
+import type { Message, Task } from "./types.ts";
 import { createAutoCollapse } from "./useAutoCollapse.ts";
 
 const TOOL_RUN_DELAY_MS = 10_000;
@@ -14,6 +15,14 @@ let {
 	channelName = undefined,
 	currentTasks = {},
 	showToolData = true,
+}: {
+	messages: Message[];
+	lastTimestamp: string;
+	allMessages?: Message[];
+	startIndex?: number;
+	channelName?: string;
+	currentTasks?: Record<string, Task>;
+	showToolData?: boolean;
 } = $props();
 
 let displayState = $state("collapsed");

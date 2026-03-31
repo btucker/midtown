@@ -14,11 +14,11 @@ const MIN_SWIPE_X = 50;
 const SWIPE_RATIO = 1.5;
 
 onMount(() => {
-	let startX = null;
-	let startY = null;
+	let startX: number | null = null;
+	let startY: number | null = null;
 	let tracking = false;
 
-	function onTouchStart(e) {
+	function onTouchStart(e: TouchEvent) {
 		if (!sidebar.isMobile) return;
 		const touch = e.touches[0];
 		if (touch.clientX <= EDGE_THRESHOLD) {
@@ -28,13 +28,13 @@ onMount(() => {
 		}
 	}
 
-	function onTouchEnd(e) {
+	function onTouchEnd(e: TouchEvent) {
 		if (!tracking) return;
 		tracking = false;
 
 		const touch = e.changedTouches[0];
-		const deltaX = touch.clientX - startX;
-		const deltaY = Math.abs(touch.clientY - startY);
+		const deltaX = touch.clientX - startX!;
+		const deltaY = Math.abs(touch.clientY - startY!);
 
 		if (deltaX >= MIN_SWIPE_X && deltaX >= deltaY * SWIPE_RATIO) {
 			if ($threadData) {
