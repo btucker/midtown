@@ -677,7 +677,10 @@ impl LaunchConfig {
             model: self.model.clone(),
             system_prompt,
             json_schema: None,
-            cwd: None, // Set by caller (worktree path, or subdirectory if cwd_subdir is set)
+            cwd: self
+                .working_dir
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
             project_name: Some(project_name.to_string()),
             max_budget_usd: None,
             allow_tools: true, // Coworkers need full tool access
@@ -921,6 +924,18 @@ mod tests {
         assert!(!headless.system_prompt.is_empty());
         // Model should be normalized (e.g., "large" → "opus" for Claude)
         assert_eq!(headless.model, config.model);
+    }
+
+    #[test]
+    fn test_to_headless_config_propagates_working_dir() {
+        let config = LaunchConfig::coworker("park", "myrepo", SessionMode::Fresh, None, None)
+            .with_working_dir(Some(std::path::PathBuf::from("/tmp/test-worktree")));
+        let headless = config.to_headless_config(&test_paths());
+        assert_eq!(
+            headless.cwd.as_deref(),
+            Some("/tmp/test-worktree"),
+            "working_dir should propagate to HeadlessConfig.cwd"
+        );
     }
 
     #[test]

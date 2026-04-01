@@ -760,10 +760,11 @@ pub async fn auth_switch(Json(body): Json<Value>) -> Json<Value> {
     }
 }
 
-/// Start OAuth login flow. Spawns `BROWSER=false claude auth login`, captures
-/// the OAuth URL from stdout, and holds the process for code submission.
-/// Start OAuth login flow. Uses a Python helper to allocate a PTY (the CLI
-/// requires a TTY to read the authorization code from stdin).
+/// Start OAuth login flow.
+///
+/// Spawns `claude auth login` with `BROWSER=false` to suppress browser opening,
+/// captures the manual OAuth URL from stdout, and holds the process for code
+/// submission via stdin.
 pub async fn auth_login(
     State(state): State<Arc<WebState>>,
     Json(body): Json<Value>,
@@ -774,7 +775,6 @@ pub async fn auth_login(
         .unwrap_or("claude");
     tracing::info!(%provider, "auth login requested — starting OAuth flow");
 
-    // Resolve the auth profile directory — must match what the daemon's agents use
     let auth_provider = match provider {
         "codex" => crate::auth::AuthProvider::Codex,
         _ => crate::auth::AuthProvider::Claude,
@@ -782,7 +782,6 @@ pub async fn auth_login(
     let config_dir = crate::auth::current_profile_dir_for(auth_provider);
     tracing::info!(config_dir = %config_dir.display(), "using auth profile dir");
 
-    // Spawn claude auth login with CLAUDE_CONFIG_DIR set to the profile dir
     let mut child = match tokio::process::Command::new("claude")
         .args(["auth", "login"])
         .env("BROWSER", "false")
@@ -843,7 +842,11 @@ pub async fn auth_login(
     Json(json!({"ok": true, "url": url}))
 }
 
-/// Submit the OAuth code to the waiting `claude auth login` process.
+/// Submit the OAuth code to the waiting `claude auth login` process via stdin.
+///
+/// The manual code from Claude's platform page is in format `CODE#STATE`.
+/// Writing it to the CLI's stdin triggers `handleManualAuthCodeInput`, which
+/// resolves the OAuth flow using the manual redirect_uri.
 pub async fn auth_login_code(
     State(state): State<Arc<WebState>>,
     Json(body): Json<Value>,
