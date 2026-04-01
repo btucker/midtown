@@ -121,10 +121,9 @@ pub fn stop_idle_reported_workers(proj: &Projections) -> Vec<Command> {
         .collect()
 }
 
-/// Stop workers that have been running for >10 minutes with no state changes.
-/// Catches stuck workers (auth errors on resume, model errors, etc.) that
-/// never self-report idle state. Uses started_at as the baseline since we
-/// don't yet track per-message output timestamps.
+/// Stop workers with no activity for 10+ minutes.
+/// "Activity" is the most recent of: last state report or start time.
+/// Catches stuck workers (auth errors, model errors, finished but didn't report idle).
 pub fn stop_silent_workers(proj: &Projections) -> Vec<Command> {
     let cutoff = Utc::now() - chrono::Duration::minutes(10);
     proj.agents
@@ -132,11 +131,13 @@ pub fn stop_silent_workers(proj: &Projections) -> Vec<Command> {
         .iter()
         .filter_map(|id| proj.agents.by_id.get(id))
         .filter(|a| a.kind == AgentKind::Worker)
-        .filter(|a| a.started_at.is_some_and(|t| t < cutoff))
-        // Don't stop workers that recently reported state (they're active)
         .filter(|a| {
-            a.state_reported_at
-                .is_none_or(|t| t < Utc::now() - chrono::Duration::minutes(5))
+            // Use the most recent activity timestamp as the silence baseline
+            let last_activity = [a.state_reported_at, a.started_at]
+                .into_iter()
+                .flatten()
+                .max();
+            last_activity.is_some_and(|t| t < cutoff)
         })
         .map(|a| Command::StopAgent {
             id: a.id.clone(),
