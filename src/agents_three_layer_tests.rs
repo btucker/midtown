@@ -29,7 +29,7 @@ fn test_layer1_reviewer_returns_code_reviewer_content() {
         "Reviewer Layer 1 should load midtown-code-reviewer content"
     );
     assert!(
-        content.contains("THRESHOLD OVERRIDE"),
+        content.contains("confidence threshold of 40"),
         "Reviewer Layer 1 should contain review-specific instructions"
     );
 }
@@ -90,7 +90,7 @@ fn test_layer1_agent_definitions_have_no_template_vars() {
 fn test_layer2_coworker_returns_common_only() {
     let shared = shared_prompt_for_role(AgentRole::Coworker);
     assert!(
-        shared.contains("GitHub Etiquette"),
+        shared.contains("## GitHub"),
         "Coworker shared prompt should include common.md content"
     );
     assert!(
@@ -108,7 +108,7 @@ fn test_layer2_coworker_returns_common_only() {
 fn test_layer2_reviewer_returns_common_only() {
     let shared = shared_prompt_for_role(AgentRole::Reviewer);
     assert!(
-        shared.contains("GitHub Etiquette"),
+        shared.contains("## GitHub"),
         "Reviewer shared prompt should include common.md content"
     );
     assert!(
@@ -125,7 +125,7 @@ fn test_layer2_project_lead_returns_lead_common_and_common() {
         "ProjectLead shared prompt should include lead-common.md content"
     );
     assert!(
-        shared.contains("GitHub Etiquette"),
+        shared.contains("## GitHub"),
         "ProjectLead shared prompt should include common.md content"
     );
 }
@@ -138,7 +138,7 @@ fn test_layer2_channel_lead_returns_lead_common_and_common() {
         "ChannelLead shared prompt should include lead-common.md content"
     );
     assert!(
-        shared.contains("GitHub Etiquette"),
+        shared.contains("## GitHub"),
         "ChannelLead shared prompt should include common.md content"
     );
 }
@@ -383,7 +383,7 @@ fn test_assembled_coworker_prompt_uses_agent_definition() {
     );
     // Layer 2: Common content
     assert!(
-        prompt.contains("GitHub Etiquette"),
+        prompt.contains("## GitHub"),
         "Assembled coworker prompt should contain Layer 2 common content"
     );
     // Layer 3: Runtime substitutions applied
@@ -414,7 +414,7 @@ fn test_assembled_reviewer_prompt_uses_agent_definition() {
     );
     // Layer 2: Common content (reviewers also need operational rules)
     assert!(
-        prompt.contains("GitHub Etiquette"),
+        prompt.contains("## GitHub"),
         "Assembled reviewer prompt should contain Layer 2 common content"
     );
     // Layer 3: Runtime substitutions
@@ -438,7 +438,7 @@ fn test_assembled_lead_prompt_has_all_layers() {
         "Assembled lead prompt should contain Layer 2 lead-common content"
     );
     assert!(
-        prompt.contains("GitHub Etiquette"),
+        prompt.contains("## GitHub"),
         "Assembled lead prompt should contain Layer 2 common content"
     );
     // Layer 3: Runtime substitutions
@@ -467,7 +467,7 @@ fn test_assembled_channel_lead_prompt_has_all_layers() {
         "Assembled channel lead prompt should contain Layer 2 lead-common content"
     );
     assert!(
-        prompt.contains("GitHub Etiquette"),
+        prompt.contains("## GitHub"),
         "Assembled channel lead prompt should contain Layer 2 common content"
     );
     // Layer 3: Runtime substitutions

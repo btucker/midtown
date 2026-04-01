@@ -542,3 +542,75 @@ fn ensure_channel_leads_no_action_when_running() {
         commands
     );
 }
+
+#[test]
+fn stop_silent_worker_running_too_long() {
+    let mut proj = make_projections(&[
+        DomainEvent::AgentCreated {
+            id: "stuck-1".into(),
+            name: "proving-ground".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-99".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "stuck-1".into(),
+            pid: 1234,
+            session_id: Some("sess-1".into()),
+        },
+    ]);
+
+    // Backdate started_at to 15 minutes ago
+    if let Some(agent) = proj.agents.by_id.get_mut("stuck-1") {
+        agent.started_at = Some(chrono::Utc::now() - chrono::Duration::minutes(15));
+    }
+
+    let commands = stop_silent_workers(&proj);
+    assert_eq!(
+        commands.len(),
+        1,
+        "should stop worker running 15 min with no activity"
+    );
+    assert!(matches!(&commands[0], Command::StopAgent { id, .. } if id == "stuck-1"));
+}
+
+#[test]
+fn stop_silent_worker_spares_recently_active() {
+    let mut proj = make_projections(&[
+        DomainEvent::AgentCreated {
+            id: "active-1".into(),
+            name: "busy-bee".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-100".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "active-1".into(),
+            pid: 5678,
+            session_id: Some("sess-2".into()),
+        },
+    ]);
+
+    // Started 15 min ago but reported state 2 min ago (active)
+    if let Some(agent) = proj.agents.by_id.get_mut("active-1") {
+        agent.started_at = Some(chrono::Utc::now() - chrono::Duration::minutes(15));
+        agent.reported_state = Some("working".into());
+        agent.state_reported_at = Some(chrono::Utc::now() - chrono::Duration::minutes(2));
+    }
+
+    let commands = stop_silent_workers(&proj);
+    assert!(
+        commands.is_empty(),
+        "should not stop worker that recently reported state"
+    );
+}
