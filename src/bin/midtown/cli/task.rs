@@ -1,7 +1,5 @@
 use clap::Subcommand;
 
-use midtown::json_ext::ValueExt;
-
 use super::Response;
 use super::response::TaskInfo;
 use crate::client::DaemonClient;
@@ -134,14 +132,12 @@ pub enum TaskCommand {
     },
 }
 
-/// Handle task subcommands that don't require the daemon (list, view).
+/// Handle task subcommands that don't require the daemon.
 /// Returns `Some` if handled locally, `None` if the command needs the daemon.
-pub fn handle_local(cmd: &TaskCommand) -> Option<Result<Response, String>> {
-    match cmd {
-        TaskCommand::List { all } => Some(handle_list(*all)),
-        TaskCommand::View { id } => Some(handle_view(id)),
-        _ => None,
-    }
+pub fn handle_local(_cmd: &TaskCommand) -> Option<Result<Response, String>> {
+    // All task commands now go through the daemon RPC to ensure consistency
+    // with the event-sourced projections (the single source of truth).
+    None
 }
 
 pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, String> {
@@ -216,115 +212,75 @@ pub fn handle(cmd: &TaskCommand, client: &DaemonClient) -> Result<Response, Stri
         TaskCommand::Handoff { id, agent, message } => {
             client.task_handoff(id, agent, message.as_deref())
         }
-        TaskCommand::List { all } => handle_list(*all),
-        TaskCommand::View { id } => handle_view(id),
+        TaskCommand::List { all } => handle_list_rpc(client, *all),
+        TaskCommand::View { id } => handle_view_rpc(client, id),
     }
 }
 
-/// List tasks from the shared task storage (client-side, no daemon needed).
-///
-/// Always reads from the shared `midtown-<repo>` task list, even when called by
-/// isolated coworkers. This is intentional: `midtown task list` shows the daemon's
-/// coordinated task list (assignments, ownership), not Claude Code's private tasks.
-fn handle_list(show_all: bool) -> Result<Response, String> {
-    let repo = midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
-    let tasks = midtown::task_store::TaskStore::new(
-        midtown::paths::projects_dir_for_repo(&repo).join("tasks"),
-    )
-    .load_all();
+/// List tasks by querying the daemon's event-sourced projections via RPC.
+fn handle_list_rpc(client: &DaemonClient, show_all: bool) -> Result<Response, String> {
+    let result = client.task_list_raw()?;
+    let tasks_json = result.as_array().ok_or("task.list: expected array")?;
 
-    let task_infos: Vec<TaskInfo> = tasks
-        .into_iter()
-        .filter(|t| {
-            show_all
-                || t.status == midtown::task_store::TaskStatus::Pending
-                || t.status == midtown::task_store::TaskStatus::InProgress
-        })
-        .map(|t| TaskInfo {
-            id: format!("!{}", t.id),
-            subject: t.subject,
-            status: match t.status {
-                midtown::task_store::TaskStatus::Pending => "pending".to_string(),
-                midtown::task_store::TaskStatus::InProgress => "in_progress".to_string(),
-                midtown::task_store::TaskStatus::Completed => "completed".to_string(),
-            },
-            assignee: if t.agent_name.is_empty() {
-                None
-            } else {
-                Some(t.agent_name)
-            },
+    let task_infos: Vec<TaskInfo> = tasks_json
+        .iter()
+        .filter(|t| show_all || t["status"].as_str() != Some("completed"))
+        .map(|t| {
+            let id = t["id"]
+                .as_str()
+                .map(|s| s.to_string())
+                .or_else(|| t["id"].as_u64().map(|n| n.to_string()))
+                .unwrap_or_default();
+            TaskInfo {
+                id: format!("!{}", id),
+                subject: t["subject"].as_str().unwrap_or("").to_string(),
+                status: t["status"].as_str().unwrap_or("pending").to_string(),
+                assignee: t["agent_name"].as_str().map(|s| s.to_string()),
+            }
         })
         .collect();
 
     Ok(Response::Tasks { tasks: task_infos })
 }
 
-/// View a single task's details (client-side for task data, queries daemon for metadata).
-///
-/// Reads from the shared `midtown-<repo>` task list. Task IDs in nudge messages
-/// (e.g., "midtown task view 777") reference the shared list, so this always reads
-/// from the correct location regardless of the caller's task isolation mode.
-///
-/// Queries the daemon for channel and model mappings if the daemon is running.
-fn handle_view(id: &str) -> Result<Response, String> {
+/// View a single task by querying the daemon via RPC.
+fn handle_view_rpc(client: &DaemonClient, id: &str) -> Result<Response, String> {
     let id = id
         .strip_prefix('#')
         .or_else(|| id.strip_prefix('!'))
         .unwrap_or(id);
-    let repo = midtown::paths::detect_repo_name().unwrap_or_else(|| "default".to_string());
-    let tasks = midtown::task_store::TaskStore::new(
-        midtown::paths::projects_dir_for_repo(&repo).join("tasks"),
-    )
-    .load_all();
-    let task = tasks
+
+    let result = client.task_list_raw()?;
+    let tasks_json = result.as_array().ok_or("task.list: expected array")?;
+
+    let task = tasks_json
         .iter()
-        .find(|t| t.id == id)
+        .find(|t| {
+            t["id"].as_str() == Some(id)
+                || t["id"].as_u64().map(|n| n.to_string()).as_deref() == Some(id)
+        })
         .ok_or_else(|| format!("Task !{} not found", id))?;
 
-    let status_str = match task.status {
-        midtown::task_store::TaskStatus::Pending => "pending",
-        midtown::task_store::TaskStatus::InProgress => "in_progress",
-        midtown::task_store::TaskStatus::Completed => "completed",
-    };
-
-    let mut output = format!("Task !{}\n", task.id);
+    let mut output = format!("Task !{}\n", id);
     output.push_str("─────────────────────────────\n");
-    output.push_str(&format!("Subject:  {}\n", task.subject));
-    output.push_str(&format!("Status:   {}\n", status_str));
-    if !task.agent_name.is_empty() {
-        output.push_str(&format!("Owner:    {}\n", task.agent_name));
+    output.push_str(&format!(
+        "Subject:  {}\n",
+        task["subject"].as_str().unwrap_or("")
+    ));
+    output.push_str(&format!(
+        "Status:   {}\n",
+        task["status"].as_str().unwrap_or("pending")
+    ));
+    if let Some(channel) = task["channel"].as_str() {
+        output.push_str(&format!("Channel:  {}\n", channel));
     }
-
-    // Query daemon for metadata (channel and model)
-    if let Ok(client) = crate::client::DaemonClient::connect()
-        && let Ok(result) = client.task_metadata(id)
+    if let Some(agent_type) = task["agent_type"].as_str() {
+        output.push_str(&format!("Agent:    {}\n", agent_type));
+    }
+    if let Some(pr) = task["pr_number"].as_u64()
+        && pr > 0
     {
-        if let Some(channel) = result.str_field("channel") {
-            output.push_str(&format!("Channel:  {}\n", channel));
-        }
-        if let Some(model) = result.str_field("model") {
-            output.push_str(&format!("Model:    {}\n", model));
-        }
-        if let Some(plan) = result.str_field("plan") {
-            output.push_str(&format!("Plan:     {}\n", plan));
-        }
-        if let Some(skill) = result.str_field("execution_skill") {
-            output.push_str(&format!("Skill:    {}\n", skill));
-        }
-        if let Some(parent) = result.str_field("parent") {
-            output.push_str(&format!("Parent:   !{}\n", parent));
-        }
-        if let Some(agent_type) = result.str_field("agent_type") {
-            output.push_str(&format!("Agent:    {}\n", agent_type));
-        }
-    }
-    // Silently ignore errors - daemon might not be running or metadata might not exist
-
-    if !task.blocked_by.is_empty() {
-        output.push_str(&format!("Blocked:  {}\n", task.blocked_by.join(", ")));
-    }
-    if let Some(ref desc) = task.description {
-        output.push_str(&format!("\n{}\n", desc));
+        output.push_str(&format!("PR:       #{}\n", pr));
     }
 
     Ok(Response::Message {

@@ -308,7 +308,12 @@
 - WHEN `channel.post` receives `message` instead of `content` THEN the system SHALL accept it
 - WHEN `channel.post` omits `channel` THEN the system SHALL default to the main channel
 
-### 10.6 Error Handling
+### 10.6 CLI-Daemon Consistency
+- WHEN `midtown task list` is run THEN it SHALL query the daemon via the `task.list` RPC method — NOT read from filesystem-based TaskStore files
+- WHEN `midtown task view` is run THEN it SHALL query the daemon — NOT read from filesystem-based TaskStore files
+- The daemon's event-sourced projections are the single source of truth for task state
+
+### 10.7 Error Handling
 - WHEN required params are missing THEN error -32602 SHALL be returned
 - WHEN method is unknown THEN error -32601 SHALL be returned
 - WHEN a referenced resource (task, PR, agent) is not found THEN error -32000 or -32001 SHALL be returned
@@ -693,3 +698,4 @@ Behavioral requirements for agent system prompts. Specs are organized by audienc
 | 2026-03-30 | Added: section 16 (Authentication) — profile storage under `~/.midtown/platforms/<platform>/`, CLAUDE_CONFIG_DIR resolution, auth login, auth switch with agent relaunch, auth error detection, profile pool rotation, migration from legacy layout. |
 | 2026-03-31 | Added: section 17 (Agent Behavioral Rules) — EARS-format specs for all rules in common.md, lead-common.md, and the four agent definition files. Removed duplicate insight guidance from channel lead definition. |
 | 2026-04-01 | Added: section 8.2 (Daemon Logging) — daemon-v2 must initialize file-based tracing so `midtown log` works. Found via dogfood testing: daemon-v2 never initializes a tracing subscriber, so all log output is silently discarded and `midtown log` fails. |
+| 2026-04-01 | Added: section 10.6 (CLI-Daemon Consistency) — `task list` and `task view` must query daemon via RPC, not filesystem TaskStore. Found via dogfood testing: `task list` returned empty while `status` correctly showed the task. |
