@@ -139,10 +139,12 @@ impl V2Harness {
     /// Send "shutdown" RPC then kill the process if it does not exit promptly.
     fn stop(&mut self) {
         // Best-effort shutdown RPC — ignore errors (process may already be gone).
-        if self.socket_path.exists() {
-            let _ = std::panic::catch_unwind(|| {
-                self.rpc_call("shutdown", None);
-            });
+        if self.socket_path.exists()
+            && let Ok(mut stream) = UnixStream::connect(&self.socket_path)
+        {
+            let req = serde_json::json!({"jsonrpc":"2.0","method":"shutdown","id":999});
+            let _ = stream.write_all(&serde_json::to_vec(&req).unwrap());
+            let _ = stream.shutdown(std::net::Shutdown::Write);
         }
 
         if let Some(mut child) = self.child.take() {
