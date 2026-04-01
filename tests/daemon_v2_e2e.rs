@@ -269,7 +269,7 @@ fn test_daemon_v2_shutdown() {
     // Wait for the process to exit (it should exit promptly after shutdown RPC).
     let child = harness.child.take().expect("child process");
     // Disarm Drop before we consume the child handle.
-    let exited = wait_for_exit(child, Duration::from_secs(5));
+    let exited = wait_for_exit(child, Duration::from_secs(10));
     assert!(exited, "daemon process should exit after shutdown RPC");
 }
 

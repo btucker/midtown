@@ -96,6 +96,7 @@
 - WHEN a lead or fork is spawned THEN the system SHALL use the shared lead worktree
 - WHEN a lead already has a working_dir override (channel directory) THEN the worktree manager SHALL NOT override it
 - WHEN a task already has a worktree from a previous dispatch THEN the system SHALL reuse it
+- WHEN an agent is resumed THEN the system SHALL derive and set its worktree path (same as fresh spawn)
 - WHEN an agent is spawned AND its output is not bound to a channel or thread THEN the system SHALL auto-create a DM channel `dm-{agent_name}`
 - WHEN spawning succeeds THEN AgentCreated and AgentStarted events SHALL be emitted
 - WHEN spawning fails THEN the system SHALL emit an AgentSpawnFailed event with the agent configuration and error reason
