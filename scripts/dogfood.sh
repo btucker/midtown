@@ -36,6 +36,11 @@ esac
 source "$REPO_ROOT/.dogfood-env"
 export DOGFOOD_CLONE_DIR DOGFOOD_WEB_URL
 
+# Ensure local main is up-to-date before creating worktree
+git fetch origin
+git checkout main --quiet
+git merge --ff-only origin/main --quiet
+
 # Create a worktree for the Claude Code session to work in
 BRANCH_NAME="dogfood/$(date +%Y%m%d-%H%M%S)"
 WORKTREE_DIR="$REPO_ROOT/.claude/worktrees/$BRANCH_NAME"
