@@ -49,3 +49,6 @@ tests/fixtures/snapshot/captured/
 
 # Git worktrees
 .worktrees/
+
+# Dogfood loop state
+.dogfood-env
