@@ -637,6 +637,10 @@ impl DaemonClient {
         self.send_raw("task.metadata", Some(serde_json::json!({ "id": id })))
     }
 
+    pub fn task_list_raw(&self) -> Result<serde_json::Value, String> {
+        self.send_raw("task.list", None)
+    }
+
     pub fn task_request(&self, description: &str) -> Result<Response, String> {
         // Include the caller's MIDTOWN_AGENT name so the daemon knows who's requesting
         let from = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| "unknown".to_string());
