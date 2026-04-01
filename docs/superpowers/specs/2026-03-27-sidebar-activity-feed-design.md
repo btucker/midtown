@@ -42,6 +42,11 @@ Layout per attention item:
 
 **Attention items are self-resolving.** No dismiss buttons. An item disappears when its underlying condition clears (user replies to thread, reviews the PR, task resumes progress). The attention heuristic from `needsAttention.ts` determines which items appear.
 
+**Click behavior:** Clicking any activity item navigates to the item's channel (switching the main view if needed) and opens the associated thread panel. Specifically:
+- Thread items → switch to thread's channel, open thread
+- Task items (completed, stale, or active) → switch to task's channel, open task thread
+- Items without thread or task → switch to channel only
+
 **Thread "needs attention" heuristic** (unchanged from previous spec):
 1. Last message is not from the user
 2. AND at least one of:

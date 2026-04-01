@@ -145,6 +145,11 @@ function handleActivityItemClick(item: { threadId?: string; taskId?: number; cha
 		openThread(msg, item.channel);
 		sidebar.setOpenMobile(false);
 	} else if (item.taskId) {
+		// Navigate to the task's channel first if needed
+		if ($activeChannel !== item.channel) {
+			activeChannel.set(item.channel);
+			fetchHistory(item.channel);
+		}
 		// Find the task and open its thread
 		const allTasks = [...$kanbanData.inProgress, ...$kanbanData.backlog, ...($kanbanData.completedTasks || [])];
 		const task = allTasks.find((t) => String(t.id) === String(item.taskId));
