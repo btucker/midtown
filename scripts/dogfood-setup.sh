@@ -34,15 +34,28 @@ echo "[3/4] Starting daemon in test clone..."
 cd "$CLONE_DIR"
 midtown start
 
-# Step 4: Write the clone dir to a file for the prompt to read
+# Step 4: Detect the web URL (respects external_url config for TLS/Tailscale setups)
+WEB_URL=$(cd "$CLONE_DIR" && midtown config get webserver.external_url 2>/dev/null || echo "")
+if [ -z "$WEB_URL" ]; then
+    WEB_URL="http://localhost:47022"
+fi
+# Append the project path segment
+PROJECT_NAME=$(basename "$CLONE_DIR")
+WEB_URL="${WEB_URL}/${PROJECT_NAME}"
+
+# Step 5: Write env file for the prompt to read
 ENVFILE="$REPO_ROOT/.dogfood-env"
-echo "DOGFOOD_CLONE_DIR=$CLONE_DIR" > "$ENVFILE"
+cat > "$ENVFILE" <<EOF
+DOGFOOD_CLONE_DIR=$CLONE_DIR
+DOGFOOD_WEB_URL=$WEB_URL
+EOF
 echo ""
 echo "=== Setup complete ==="
 echo "Clone dir: $CLONE_DIR"
-echo "Web UI:    http://localhost:47022"
+echo "Web UI:    $WEB_URL"
 echo "Env file:  $ENVFILE"
 echo ""
 echo "To start the loop:"
-echo "  export DOGFOOD_CLONE_DIR=$CLONE_DIR"
+echo "  source .dogfood-env"
+echo "  export DOGFOOD_CLONE_DIR DOGFOOD_WEB_URL"
 echo "  claude -p \"\$(cat scripts/dogfood-prompt.md)\" --allowedTools '*'"

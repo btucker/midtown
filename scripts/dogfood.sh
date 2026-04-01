@@ -32,9 +32,9 @@ esac
 # Setup
 "$SCRIPT_DIR/dogfood-setup.sh"
 
-# Source the env file to get DOGFOOD_CLONE_DIR
+# Source the env file to get DOGFOOD_CLONE_DIR and DOGFOOD_WEB_URL
 source "$REPO_ROOT/.dogfood-env"
-export DOGFOOD_CLONE_DIR
+export DOGFOOD_CLONE_DIR DOGFOOD_WEB_URL
 
 # Create a worktree for the Claude Code session to work in
 BRANCH_NAME="dogfood/$(date +%Y%m%d-%H%M%S)"
@@ -46,7 +46,7 @@ echo ""
 echo "=== Starting Claude Code loop ==="
 echo "Working in worktree: $WORKTREE_DIR"
 echo "Test clone:          $DOGFOOD_CLONE_DIR"
-echo "Web UI:              http://localhost:47022"
+echo "Web UI:              $DOGFOOD_WEB_URL"
 echo ""
 
 # Run the loop

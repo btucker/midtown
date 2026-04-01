@@ -13,7 +13,7 @@ You have two workspaces:
 2. **Test clone** at `DOGFOOD_CLONE_DIR` (set as an environment variable) — a separate
    clone of the Midtown repo where a Midtown daemon is running. This is the product
    you're testing. You interact with it via:
-   - **Web UI**: http://localhost:47022 (use Playwright MCP tools)
+   - **Web UI**: `DOGFOOD_WEB_URL` (set as an environment variable, use Playwright MCP tools)
    - **CLI**: Run `midtown` commands with `--project-dir $DOGFOOD_CLONE_DIR`
 
 ## Reference Material
@@ -48,7 +48,7 @@ Ideas to explore (not exhaustive — be creative):
 
 ### USE (Playwright + CLI)
 Interact with Midtown primarily through the web UI using Playwright MCP tools:
-- `browser_navigate` to http://localhost:47022
+- `browser_navigate` to $DOGFOOD_WEB_URL
 - `browser_snapshot` to see current state
 - `browser_click` to interact with elements
 - `browser_fill_form` to type messages
