@@ -230,11 +230,6 @@ impl DaemonV2 {
             health::stop_idle_reported_workers,
         );
         scheduler.register_global(
-            "stop_silent_workers",
-            Duration::from_secs(60),
-            health::stop_silent_workers,
-        );
-        scheduler.register_global(
             "detect_stale_ci",
             Duration::from_secs(60),
             decisions::prs::detect_stale_ci,

@@ -487,6 +487,14 @@ impl DaemonClient {
         self.send("coworker.report-state", Some(params))
     }
 
+    /// Report a simple state (e.g., "idle") for the named agent.
+    pub fn report_agent_state(&self, name: &str, state: &str) -> Result<Response, String> {
+        self.send(
+            "coworker.report-state",
+            Some(serde_json::json!({"name": name, "state": state})),
+        )
+    }
+
     pub fn coworker_asking(&self, name: &str, question: &str) -> Result<Response, String> {
         self.send(
             "coworker.asking",

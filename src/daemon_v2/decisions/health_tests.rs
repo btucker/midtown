@@ -544,10 +544,10 @@ fn ensure_channel_leads_no_action_when_running() {
 }
 
 #[test]
-fn stop_silent_worker_running_too_long() {
+fn stop_idle_worker_after_60s() {
     let mut proj = make_projections(&[
         DomainEvent::AgentCreated {
-            id: "stuck-1".into(),
+            id: "idle-1".into(),
             name: "proving-ground".into(),
             kind: AgentKind::Worker,
             agent_type: "midtown-code-author".into(),
@@ -559,31 +559,30 @@ fn stop_silent_worker_running_too_long() {
             color: None,
         },
         DomainEvent::AgentStarted {
-            id: "stuck-1".into(),
+            id: "idle-1".into(),
             pid: 1234,
             session_id: Some("sess-1".into()),
         },
+        DomainEvent::AgentStateReported {
+            id: "idle-1".into(),
+            state: "idle".into(),
+        },
     ]);
 
-    // Backdate started_at to 15 minutes ago
-    if let Some(agent) = proj.agents.by_id.get_mut("stuck-1") {
-        agent.started_at = Some(chrono::Utc::now() - chrono::Duration::minutes(15));
+    // Backdate the idle report to 90s ago
+    if let Some(agent) = proj.agents.by_id.get_mut("idle-1") {
+        agent.state_reported_at = Some(chrono::Utc::now() - chrono::Duration::seconds(90));
     }
 
-    let commands = stop_silent_workers(&proj);
-    assert_eq!(
-        commands.len(),
-        1,
-        "should stop worker running 15 min with no activity"
-    );
-    assert!(matches!(&commands[0], Command::StopAgent { id, .. } if id == "stuck-1"));
+    let commands = stop_idle_reported_workers(&proj);
+    assert_eq!(commands.len(), 1, "should stop worker idle for >60s");
 }
 
 #[test]
-fn stop_silent_worker_spares_recently_active() {
+fn spare_idle_worker_within_60s() {
     let mut proj = make_projections(&[
         DomainEvent::AgentCreated {
-            id: "active-1".into(),
+            id: "idle-2".into(),
             name: "busy-bee".into(),
             kind: AgentKind::Worker,
             agent_type: "midtown-code-author".into(),
@@ -595,22 +594,24 @@ fn stop_silent_worker_spares_recently_active() {
             color: None,
         },
         DomainEvent::AgentStarted {
-            id: "active-1".into(),
+            id: "idle-2".into(),
             pid: 5678,
             session_id: Some("sess-2".into()),
         },
+        DomainEvent::AgentStateReported {
+            id: "idle-2".into(),
+            state: "idle".into(),
+        },
     ]);
 
-    // Started 15 min ago but reported state 2 min ago (active)
-    if let Some(agent) = proj.agents.by_id.get_mut("active-1") {
-        agent.started_at = Some(chrono::Utc::now() - chrono::Duration::minutes(15));
-        agent.reported_state = Some("working".into());
-        agent.state_reported_at = Some(chrono::Utc::now() - chrono::Duration::minutes(2));
+    // Idle reported 30s ago — within the 60s window
+    if let Some(agent) = proj.agents.by_id.get_mut("idle-2") {
+        agent.state_reported_at = Some(chrono::Utc::now() - chrono::Duration::seconds(30));
     }
 
-    let commands = stop_silent_workers(&proj);
+    let commands = stop_idle_reported_workers(&proj);
     assert!(
         commands.is_empty(),
-        "should not stop worker that recently reported state"
+        "should not stop worker idle for only 30s"
     );
 }

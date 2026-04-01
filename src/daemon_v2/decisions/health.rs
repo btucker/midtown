@@ -104,7 +104,7 @@ pub fn nudge_stale_workers(proj: &Projections) -> Vec<Command> {
 
 /// Spec 2.2: stop workers that reported "idle" more than 2 minutes ago.
 pub fn stop_idle_reported_workers(proj: &Projections) -> Vec<Command> {
-    let cutoff = Utc::now() - chrono::Duration::minutes(2);
+    let cutoff = Utc::now() - chrono::Duration::seconds(60);
     proj.agents
         .running
         .iter()
@@ -116,32 +116,7 @@ pub fn stop_idle_reported_workers(proj: &Projections) -> Vec<Command> {
         })
         .map(|a| Command::StopAgent {
             id: a.id.clone(),
-            reason: "idle for more than 2 minutes".into(),
-        })
-        .collect()
-}
-
-/// Stop workers with no activity for 10+ minutes.
-/// "Activity" is the most recent of: last state report or start time.
-/// Catches stuck workers (auth errors, model errors, finished but didn't report idle).
-pub fn stop_silent_workers(proj: &Projections) -> Vec<Command> {
-    let cutoff = Utc::now() - chrono::Duration::minutes(10);
-    proj.agents
-        .running
-        .iter()
-        .filter_map(|id| proj.agents.by_id.get(id))
-        .filter(|a| a.kind == AgentKind::Worker)
-        .filter(|a| {
-            // Use the most recent activity timestamp as the silence baseline
-            let last_activity = [a.state_reported_at, a.started_at]
-                .into_iter()
-                .flatten()
-                .max();
-            last_activity.is_some_and(|t| t < cutoff)
-        })
-        .map(|a| Command::StopAgent {
-            id: a.id.clone(),
-            reason: "no activity for 10+ minutes".into(),
+            reason: "idle for 60s with no new message".into(),
         })
         .collect()
 }

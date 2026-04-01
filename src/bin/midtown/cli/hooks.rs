@@ -231,12 +231,17 @@ fn handle_idle_hook() -> Result<Response, String> {
     // Lead sessions don't have this set, so default to the repo name.
     let agent = std::env::var("MIDTOWN_AGENT").unwrap_or_else(|_| repo.clone());
 
-    hook_log(&repo, &format!("idle: {} posting idle status", agent));
+    hook_log(&repo, &format!("idle: {} reporting idle state", agent));
+
+    // Report idle state to the daemon so stop_idle_reported_workers can act.
+    // If no new message arrives within 60s, the daemon stops this agent.
+    if let Ok(client) = crate::client::DaemonClient::connect_for_hook() {
+        let _ = client.report_agent_state(&agent, "idle");
+    }
 
     let idle_text = midtown::daemon_messages::idle_waiting();
     let message = midtown::Message::action(&agent, &idle_text);
     if let Err(e) = channel.send(&message) {
-        // Don't fail the hook on lock contention — Claude waits for hooks synchronously
         hook_log(
             &repo,
             &format!("idle: channel send failed ({}), skipping", e),
@@ -244,7 +249,7 @@ fn handle_idle_hook() -> Result<Response, String> {
     }
 
     Ok(Response::Message {
-        message: format!("{} posted idle status", agent),
+        message: format!("{} reported idle", agent),
     })
 }
 
