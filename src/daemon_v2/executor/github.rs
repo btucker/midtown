@@ -160,15 +160,28 @@ pub fn diff_pr_state(
             if !pr.is_draft {
                 events.push(DomainEvent::PrReviewRequested { number: pr.number });
             }
-            // Spec 3.1: link PR to task via [Midtown !N] in the title
-            if let Some(task_num) = extract_task_id_from_pr_title(&pr.title) {
-                let task_id = task_num.to_string();
-                if work.tasks.contains_key(&task_id) {
-                    events.push(DomainEvent::PrLinkedToTask {
-                        number: pr.number,
-                        task_id,
-                    });
-                }
+            // Spec 3.1: link PR to task. Two strategies:
+            // 1. Explicit: [Midtown !N] in the PR title (coworkers include this)
+            // 2. Structural: branch matches task-{task_id}-{slug} (worktree convention)
+            // pr.author is the GitHub login, not the Midtown agent name, so we
+            // can't use it for matching.
+            let linked_task_id = extract_task_id_from_pr_title(&pr.title)
+                .map(|n| n.to_string())
+                .filter(|id| work.tasks.contains_key(id))
+                .or_else(|| {
+                    work.tasks
+                        .values()
+                        .find(|t| {
+                            t.status == crate::daemon_v2::events::TaskStatus::InProgress
+                                && pr.branch.starts_with(&format!("task-{}-", t.id))
+                        })
+                        .map(|t| t.id.clone())
+                });
+            if let Some(task_id) = linked_task_id {
+                events.push(DomainEvent::PrLinkedToTask {
+                    number: pr.number,
+                    task_id,
+                });
             }
         }
 

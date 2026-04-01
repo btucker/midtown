@@ -602,3 +602,48 @@ fn pr_opened_without_midtown_title_does_not_link() {
         events
     );
 }
+
+/// Spec 3.1: WHEN PrOpened AND branch matches task worktree THEN PrLinkedToTask (fallback)
+#[test]
+fn pr_opened_links_to_task_by_branch_fallback() {
+    let mut work = WorkIndex::default();
+    work.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Build feature".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: Some("ghost-town".into()),
+        icon: None,
+        color: None,
+        parent: None,
+        thread_id: None,
+        message_id: None,
+    });
+    work.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "agent-1".into(),
+    });
+
+    // No [Midtown !N] in title, but branch matches worktree convention
+    let open = vec![ParsedPr {
+        number: 42,
+        branch: "task-t1-build-feature".into(),
+        title: "feat: build feature".into(),
+        author: "btucker".into(),
+        is_draft: false,
+        ci_passed: false,
+        is_approved: false,
+        needs_review: false,
+    }];
+
+    let events = diff_pr_state(&work, &open, &[]);
+
+    assert!(
+        events.iter().any(
+            |e| matches!(e, DomainEvent::PrLinkedToTask { number: 42, task_id } if task_id == "t1")
+        ),
+        "PR with task branch should emit PrLinkedToTask as fallback when title has no [Midtown !N], got {:?}",
+        events
+    );
+}
