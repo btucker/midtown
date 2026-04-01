@@ -364,7 +364,7 @@ fn test_daemon_v2_task_done_stops_worker() {
     assert!(resp["error"].is_null());
 
     // Wait for agent to spawn
-    for _ in 0..15 {
+    for _ in 0..30 {
         std::thread::sleep(Duration::from_secs(1));
         let status = harness.rpc_call("status", None);
         if status["result"]["agents"]["running"].as_u64().unwrap_or(0) > 0 {
@@ -411,9 +411,9 @@ fn test_daemon_v2_demand_spawns_lead_on_message() {
     );
     assert!(resp["error"].is_null(), "channel.post error: {resp}");
 
-    // Wait for the demand-spawned lead to appear
+    // Wait for the demand-spawned lead to appear (longer timeout for parallel CI)
     let mut found_lead = false;
-    for _ in 0..15 {
+    for _ in 0..30 {
         std::thread::sleep(Duration::from_secs(1));
         let agents = harness.rpc_call("agent.list", None);
         let list = agents["result"].as_array().unwrap_or(&vec![]).clone();
@@ -722,7 +722,7 @@ fn test_daemon_v2_session_fork_spawns_agent() {
 
     // Wait for the fork to spawn
     let mut saw_fork = false;
-    for _ in 0..15 {
+    for _ in 0..30 {
         std::thread::sleep(Duration::from_secs(1));
         let resp = harness.rpc_call("agent.list", None);
         let agents = resp["result"].as_array().unwrap();
@@ -822,7 +822,7 @@ fn test_daemon_v2_nudge_running_agent() {
 
     // Wait for the lead to be running
     let mut lead_name = String::new();
-    for _ in 0..15 {
+    for _ in 0..30 {
         std::thread::sleep(Duration::from_secs(1));
         let resp = harness.rpc_call("agent.list", None);
         let agents = resp["result"].as_array().unwrap();
@@ -875,7 +875,7 @@ fn test_daemon_v2_nudge_stopped_agent_triggers_resume() {
     let mut agent_id = String::new();
     let mut session_id = String::new();
     let mut agent_name = String::new();
-    for _ in 0..15 {
+    for _ in 0..30 {
         std::thread::sleep(Duration::from_secs(1));
         let resp = harness.rpc_call("agent.list", None);
         let agents = resp["result"].as_array().unwrap();
@@ -931,7 +931,7 @@ fn test_daemon_v2_nudge_stopped_agent_triggers_resume() {
     // The agent should be resuming — check after a few seconds
     // (resume spawns a new process with --resume <session_id>)
     let mut resumed = false;
-    for _ in 0..15 {
+    for _ in 0..30 {
         std::thread::sleep(Duration::from_secs(2));
         let resp = harness.rpc_call("agent.list", None);
         let agents = resp["result"].as_array().unwrap();
