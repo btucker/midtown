@@ -370,20 +370,22 @@ fn test_daemon_v2_task_done_stops_worker() {
     let resp = harness.rpc_call("task.done", Some(serde_json::json!({ "id": "done-t1" })));
     assert!(resp["error"].is_null(), "task.done error: {resp}");
 
-    // Wait for stop_completed_agents to stop the worker (runs every 5s).
-    // Allow extra time for event application + scheduler cycle in CI.
-    std::thread::sleep(Duration::from_secs(12));
-
-    // Verify task is completed
-    let task_list = harness.rpc_call("task.list", None);
-    let tasks = task_list["result"].as_array().expect("tasks");
-    let task = tasks.iter().find(|t| t["id"] == "done-t1");
-    assert!(task.is_some());
-    assert_eq!(
-        task.unwrap()["status"],
-        "Completed",
-        "completed task should have Completed status"
-    );
+    // Poll for task completion — the daemon loop applies events asynchronously
+    // after the RPC response, so we need to wait for it to process.
+    let mut completed = false;
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_secs(1));
+        let task_list = harness.rpc_call("task.list", None);
+        let tasks = task_list["result"].as_array().expect("tasks");
+        if tasks
+            .iter()
+            .any(|t| t["id"] == "done-t1" && t["status"] == "Completed")
+        {
+            completed = true;
+            break;
+        }
+    }
+    assert!(completed, "task should reach Completed status within 20s");
 }
 
 /// Spec 5.1: message to a new channel demand-spawns a lead

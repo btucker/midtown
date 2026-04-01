@@ -28,7 +28,6 @@ fn make_agent(
         color: None,
         reported_state: None,
         state_reported_at: None,
-        last_output_at: None,
         gc: false,
     }
 }

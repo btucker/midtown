@@ -30,9 +30,6 @@ pub struct Agent {
     /// When the last state report was received
     #[serde(default)]
     pub state_reported_at: Option<DateTime<Utc>>,
-    /// When this agent last produced output (updated on MessagePosted from this agent)
-    #[serde(default)]
-    pub last_output_at: Option<DateTime<Utc>>,
     /// True when the agent has been garbage-collected (excluded from routing/dispatch)
     #[serde(default)]
     pub gc: bool,
@@ -80,7 +77,6 @@ impl AgentIndex {
                     color: color.clone(),
                     reported_state: None,
                     state_reported_at: None,
-                    last_output_at: None,
                     gc: false,
                 };
                 self.by_name.insert(name.clone(), id.clone());
@@ -157,14 +153,6 @@ impl AgentIndex {
                     if let Some(tid) = thread_id {
                         self.by_thread.remove(&tid);
                     }
-                }
-            }
-            DomainEvent::MessagePosted { sender, .. } => {
-                // Update last_output_at for the agent that posted
-                if let Some(id) = self.by_name.get(sender)
-                    && let Some(agent) = self.by_id.get_mut(id)
-                {
-                    agent.last_output_at = Some(Utc::now());
                 }
             }
             _ => {}
