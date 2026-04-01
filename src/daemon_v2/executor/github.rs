@@ -6,11 +6,13 @@ use serde_json::Value;
 
 use crate::daemon_v2::events::{CiStatus, DomainEvent, ReviewState};
 use crate::daemon_v2::projections::work::WorkIndex;
+use crate::task_store::extract_task_id_from_pr_title;
 
 #[derive(Debug, Clone)]
 pub struct ParsedPr {
     pub number: u64,
     pub branch: String,
+    pub title: String,
     pub author: String,
     pub is_draft: bool,
     pub ci_passed: bool,
@@ -37,6 +39,11 @@ pub fn parse_open_prs(json: &Value) -> Vec<ParsedPr> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            let title = pr
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let author = pr
                 .get("author")
                 .and_then(|v| v.get("login"))
@@ -58,6 +65,7 @@ pub fn parse_open_prs(json: &Value) -> Vec<ParsedPr> {
             Some(ParsedPr {
                 number,
                 branch,
+                title,
                 author,
                 is_draft,
                 ci_passed,
@@ -152,15 +160,15 @@ pub fn diff_pr_state(
             if !pr.is_draft {
                 events.push(DomainEvent::PrReviewRequested { number: pr.number });
             }
-            // Spec 3.1: link PR to the author's in-progress task
-            if let Some(task) = work.tasks.values().find(|t| {
-                t.status == crate::daemon_v2::events::TaskStatus::InProgress
-                    && t.agent_name.as_deref() == Some(&pr.author)
-            }) {
-                events.push(DomainEvent::PrLinkedToTask {
-                    number: pr.number,
-                    task_id: task.id.clone(),
-                });
+            // Spec 3.1: link PR to task via [Midtown !N] in the title
+            if let Some(task_num) = extract_task_id_from_pr_title(&pr.title) {
+                let task_id = task_num.to_string();
+                if work.tasks.contains_key(&task_id) {
+                    events.push(DomainEvent::PrLinkedToTask {
+                        number: pr.number,
+                        task_id,
+                    });
+                }
             }
         }
 
@@ -219,7 +227,7 @@ pub async fn fetch_open_prs() -> Result<Vec<ParsedPr>, String> {
             "--state",
             "open",
             "--json",
-            "number,headRefName,isDraft,mergeable,reviewDecision,statusCheckRollup,author",
+            "number,title,headRefName,isDraft,mergeable,reviewDecision,statusCheckRollup,author",
         ])
         .output()
         .await

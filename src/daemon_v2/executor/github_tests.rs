@@ -202,6 +202,7 @@ fn diff_detects_new_open_pr() {
     let open = vec![ParsedPr {
         number: 10,
         branch: "feat/new".into(),
+        title: "feat: new thing".into(),
         author: "alice".into(),
         is_draft: false,
         ci_passed: false,
@@ -266,6 +267,7 @@ fn diff_skips_already_known_open_pr() {
     let open = vec![ParsedPr {
         number: 10,
         branch: "feat/existing".into(),
+        title: "feat: existing".into(),
         author: "alice".into(),
         is_draft: false,
         ci_passed: false,
@@ -327,6 +329,7 @@ fn diff_detects_review_requested() {
     let open = vec![ParsedPr {
         number: 10,
         branch: "feat/review".into(),
+        title: "feat: review".into(),
         author: "alice".into(),
         is_draft: false,
         ci_passed: true,
@@ -374,6 +377,7 @@ fn diff_detects_ci_status_change() {
     let open = vec![ParsedPr {
         number: 10,
         branch: "feat/ci".into(),
+        title: "feat: ci".into(),
         author: "alice".into(),
         is_draft: false,
         ci_passed: true,
@@ -463,6 +467,7 @@ fn new_non_draft_pr_emits_review_requested() {
     let open = vec![ParsedPr {
         number: 42,
         branch: "feat/foo".into(),
+        title: "feat: foo".into(),
         author: "ghost-town".into(),
         is_draft: false,
         ci_passed: false,
@@ -488,6 +493,7 @@ fn new_draft_pr_does_not_emit_review_requested() {
     let open = vec![ParsedPr {
         number: 42,
         branch: "feat/foo".into(),
+        title: "feat: foo".into(),
         author: "ghost-town".into(),
         is_draft: true,
         ci_passed: false,
@@ -506,18 +512,19 @@ fn new_draft_pr_does_not_emit_review_requested() {
     );
 }
 
-/// Spec 3.1: WHEN PrOpened is processed AND author matches a worker THEN PrLinkedToTask
+/// Spec 3.1: WHEN PrOpened is processed AND title contains [Midtown !N] THEN PrLinkedToTask
+/// using the task ID from the title, even when the GitHub author doesn't match the agent name
 #[test]
-fn pr_opened_links_to_author_task() {
+fn pr_opened_links_to_task_via_title() {
     let mut work = WorkIndex::default();
-    // Create a task with an agent named "ghost-town"
+    // Create task !1 with agent named "proving-ground"
     work.apply(&DomainEvent::TaskCreated {
-        id: "t1".into(),
+        id: "1".into(),
         subject: "Build feature".into(),
         channel: "main".into(),
         blocked_by: vec![],
         agent_type: None,
-        agent_name: Some("ghost-town".into()),
+        agent_name: Some("proving-ground".into()),
         icon: None,
         color: None,
         parent: None,
@@ -525,14 +532,16 @@ fn pr_opened_links_to_author_task() {
         message_id: None,
     });
     work.apply(&DomainEvent::TaskAssigned {
-        task_id: "t1".into(),
+        task_id: "1".into(),
         agent_id: "agent-1".into(),
     });
 
+    // PR opened by GitHub user "btucker" (not "proving-ground"), but title contains [Midtown !1]
     let open = vec![ParsedPr {
         number: 42,
         branch: "feat/foo".into(),
-        author: "ghost-town".into(),
+        title: "feat: add auth endpoint [Midtown !1]".into(),
+        author: "btucker".into(),
         is_draft: false,
         ci_passed: false,
         is_approved: false,
@@ -543,9 +552,53 @@ fn pr_opened_links_to_author_task() {
 
     assert!(
         events.iter().any(
-            |e| matches!(e, DomainEvent::PrLinkedToTask { number: 42, task_id } if task_id == "t1")
+            |e| matches!(e, DomainEvent::PrLinkedToTask { number: 42, task_id } if task_id == "1")
         ),
-        "new PR from task agent should emit PrLinkedToTask, got {:?}",
+        "PR with [Midtown !1] in title should link to task 1 regardless of GitHub author, got {:?}",
+        events
+    );
+}
+
+/// PR title without [Midtown !N] should not link to any task
+#[test]
+fn pr_opened_without_midtown_title_does_not_link() {
+    let mut work = WorkIndex::default();
+    work.apply(&DomainEvent::TaskCreated {
+        id: "1".into(),
+        subject: "Build feature".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: Some("proving-ground".into()),
+        icon: None,
+        color: None,
+        parent: None,
+        thread_id: None,
+        message_id: None,
+    });
+    work.apply(&DomainEvent::TaskAssigned {
+        task_id: "1".into(),
+        agent_id: "agent-1".into(),
+    });
+
+    let open = vec![ParsedPr {
+        number: 42,
+        branch: "feat/foo".into(),
+        title: "feat: some unrelated PR".into(),
+        author: "btucker".into(),
+        is_draft: false,
+        ci_passed: false,
+        is_approved: false,
+        needs_review: false,
+    }];
+
+    let events = diff_pr_state(&work, &open, &[]);
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, DomainEvent::PrLinkedToTask { .. })),
+        "PR without [Midtown !N] in title should not link to any task, got {:?}",
         events
     );
 }

@@ -99,7 +99,8 @@ pub fn spawn_reviewers(proj: &Projections) -> Vec<Command> {
     commands
 }
 
-/// Count how many times a reviewer for a given PR author has been created and stopped.
+/// Count how many times a reviewer for a given PR has been created and stopped.
+/// Uses the same naming convention as `spawn_reviewers`: prefer midtown_author over GitHub login.
 fn count_stopped_reviewers(proj: &Projections, pr_num: u64) -> usize {
     let pr = match proj.work.prs.get(&pr_num) {
         Some(pr) => pr,

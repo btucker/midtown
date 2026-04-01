@@ -318,6 +318,89 @@ fn spawn_reviewers_respawns_within_limit() {
     );
 }
 
+// --- count_stopped_reviewers uses midtown_author name, not GitHub login ---
+
+/// When a PR has a midtown_author (from PrLinkedToTask), count_stopped_reviewers
+/// should match against "{midtown_author}-reviewer", not "{github_login}-reviewer".
+#[test]
+fn count_stopped_reviewers_uses_midtown_author_not_github_login() {
+    let mut proj = Projections::default();
+
+    // Task with agent_name "proving-ground"
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Build feature".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: Some("proving-ground".into()),
+        icon: None,
+        color: None,
+        parent: None,
+        thread_id: None,
+        message_id: None,
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "agent-1".into(),
+    });
+
+    // PR opened by GitHub user "btucker" but linked to task t1 (midtown_author = "proving-ground")
+    proj.apply(&DomainEvent::PrOpened {
+        number: 42,
+        branch: "feat/auth".into(),
+        author: "btucker".into(),
+    });
+    proj.apply(&DomainEvent::PrLinkedToTask {
+        number: 42,
+        task_id: "t1".into(),
+    });
+    proj.apply(&DomainEvent::PrReviewRequested { number: 42 });
+
+    // Simulate MAX_REVIEWER_RESTARTS failed reviewer attempts with correct naming
+    for i in 0..MAX_REVIEWER_RESTARTS {
+        let id = format!("proving-ground-reviewer-attempt-{i}");
+        proj.apply(&DomainEvent::AgentCreated {
+            id: id.clone(),
+            name: "proving-ground-reviewer".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-reviewer".into(),
+            provider: Provider::ClaudeCode,
+            channel: None,
+            task_id: None,
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        });
+        proj.apply(&DomainEvent::AgentStarted {
+            id: id.clone(),
+            pid: 1000 + i as u32,
+            session_id: None,
+        });
+        proj.apply(&DomainEvent::AgentStopped {
+            id,
+            reason: "exited without posting review".into(),
+        });
+    }
+
+    // spawn_reviewers should escalate (not spawn) because we hit MAX_REVIEWER_RESTARTS
+    let commands = spawn_reviewers(&proj);
+    assert!(
+        !commands.iter().any(|c| matches!(c, Command::SpawnAgent(_))),
+        "should not spawn after max restarts with midtown_author naming, got {:?}",
+        commands
+    );
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            Command::PostSystem { channel, content }
+            if channel == "ops" && content.contains("42")
+        )),
+        "expected ops escalation post when using midtown_author name, got {:?}",
+        commands
+    );
+}
+
 // --- suspend_authors_with_prs tests ---
 
 #[test]
