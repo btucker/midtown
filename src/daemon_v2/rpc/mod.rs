@@ -79,7 +79,14 @@ pub fn dispatch_request(
     match method {
         "task.create" => events_response(&id, handlers::handle_task_create(params, proj)),
         "task.done" => events_response(&id, handlers::handle_task_done(params)),
-        "task.update" => events_response(&id, handlers::handle_task_update(params, proj)),
+        "task.update" => match handlers::handle_task_update(params, proj) {
+            Ok((events, commands)) => (
+                json!({"jsonrpc":"2.0","result":{"ok":true},"id":id}),
+                events,
+                commands,
+            ),
+            Err(err) => (err.to_json(&id), vec![], vec![]),
+        },
         "channel.update" => events_response(&id, handlers::handle_channel_update(params)),
         "coworker.report-state" => {
             events_response(&id, handlers::handle_report_state(params, proj))

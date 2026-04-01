@@ -385,7 +385,7 @@ fn test_to_headless_config_reviewer_uses_agent_definition() {
 
     // The append prompt (system_prompt) should contain Layer 2 operational rules
     assert!(
-        headless.system_prompt.contains("GitHub Etiquette"),
+        headless.system_prompt.contains("## GitHub"),
         "Reviewer append prompt should contain common.md content (Layer 2)"
     );
 }
