@@ -110,7 +110,7 @@ fn code_author_contains_role_keywords() {
     let path = Path::new("midtown-code-author.md");
     let def = parse_agent_content(content, path).unwrap();
 
-    let keywords = ["coworker", "worktree", "branch", "PR", "commit"];
+    let keywords = ["coworker", "worktree", "branch", "PR"];
     for keyword in keywords {
         assert!(
             def.system_prompt.contains(keyword),

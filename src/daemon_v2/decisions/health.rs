@@ -104,7 +104,7 @@ pub fn nudge_stale_workers(proj: &Projections) -> Vec<Command> {
 
 /// Spec 2.2: stop workers that reported "idle" more than 2 minutes ago.
 pub fn stop_idle_reported_workers(proj: &Projections) -> Vec<Command> {
-    let cutoff = Utc::now() - chrono::Duration::minutes(2);
+    let cutoff = Utc::now() - chrono::Duration::seconds(60);
     proj.agents
         .running
         .iter()
@@ -116,7 +116,7 @@ pub fn stop_idle_reported_workers(proj: &Projections) -> Vec<Command> {
         })
         .map(|a| Command::StopAgent {
             id: a.id.clone(),
-            reason: "idle for more than 2 minutes".into(),
+            reason: "idle for 60s with no new message".into(),
         })
         .collect()
 }

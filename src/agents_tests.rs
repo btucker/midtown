@@ -51,9 +51,8 @@ fn test_coworker_system_prompt_channel_lead_substitutes_channel_name() {
 fn test_coworker_system_prompt_contains_required_sections() {
     let prompt = coworker_system_prompt("park", "midtown", None);
     // These sections come from the agent definition (midtown-code-author.md)
-    assert!(prompt.contains("Your Task"));
+    assert!(prompt.contains("Task Execution"));
     assert!(prompt.contains("Git Workflow"));
-    assert!(prompt.contains("Read the Channel"));
     assert!(prompt.contains("midtown channel read"));
     assert!(prompt.contains("[Midtown !"));
 }
@@ -69,7 +68,7 @@ fn test_lead_prompt_contains_commands() {
 #[test]
 fn test_lead_prompt_contains_delegation_section() {
     let prompt = main_lead_system_prompt("midtown");
-    assert!(prompt.contains("Delegation Mindset"));
+    assert!(prompt.contains("## Delegation"));
     assert!(prompt.contains("coordinator"));
 }
 
@@ -77,12 +76,12 @@ fn test_lead_prompt_contains_delegation_section() {
 fn test_common_prompt_included_in_lead() {
     let prompt = main_lead_system_prompt("midtown");
     assert!(
-        prompt.contains("CRITICAL: NEVER use @mentions in GitHub"),
+        prompt.contains("NEVER use @mentions"),
         "Lead prompt should include GitHub @mentions rule from common.md"
     );
     assert!(
-        prompt.contains("GitHub Etiquette"),
-        "Lead prompt should include GitHub Etiquette section from common.md"
+        prompt.contains("## GitHub"),
+        "Lead prompt should include GitHub section from common.md"
     );
     assert!(
         prompt.contains("Insights"),
@@ -94,12 +93,12 @@ fn test_common_prompt_included_in_lead() {
 fn test_common_prompt_included_in_coworker() {
     let prompt = coworker_system_prompt("park", "midtown", None);
     assert!(
-        prompt.contains("CRITICAL: NEVER use @mentions in GitHub"),
+        prompt.contains("NEVER use @mentions"),
         "Coworker prompt should include GitHub @mentions rule from common.md"
     );
     assert!(
-        prompt.contains("GitHub Etiquette"),
-        "Coworker prompt should include GitHub Etiquette section from common.md"
+        prompt.contains("## GitHub"),
+        "Coworker prompt should include GitHub section from common.md"
     );
     assert!(
         prompt.contains("Insights"),
@@ -179,22 +178,18 @@ fn test_reviewer_system_prompt_merges_all_sources() {
 
     // Should contain content from common.md (Layer 2)
     assert!(
-        prompt.contains("GitHub Etiquette"),
+        prompt.contains("## GitHub"),
         "Reviewer system prompt should include common.md content"
     );
 
     // Should contain reviewer-specific instructions from agent definition (Layer 1)
     assert!(
-        prompt.contains("THRESHOLD OVERRIDE"),
-        "Reviewer system prompt should include THRESHOLD OVERRIDE from agent definition"
+        prompt.contains("confidence threshold of 40"),
+        "Reviewer system prompt should include confidence threshold from agent definition"
     );
     assert!(
         prompt.contains("Channel Message Discipline"),
         "Reviewer system prompt should include Channel Message Discipline from agent definition"
-    );
-    assert!(
-        prompt.contains("TEST SUGGESTIONS"),
-        "Reviewer system prompt should include TEST SUGGESTIONS from agent definition"
     );
 
     // Agent definition should not have unreplaced template vars
@@ -316,12 +311,8 @@ fn test_channel_lead_system_prompt_contains_required_sections() {
         "Channel lead prompt should have Identity section"
     );
     assert!(
-        prompt.contains("Escalation"),
-        "Channel lead prompt should have Escalation section"
-    );
-    assert!(
-        prompt.contains("Living Documents"),
-        "Channel lead prompt should have Living Documents section"
+        prompt.contains("Domain Ownership"),
+        "Channel lead prompt should have Domain Ownership section"
     );
     assert!(
         prompt.contains("midtown channel post"),
@@ -357,23 +348,11 @@ fn test_channel_lead_notes_path_is_absolute() {
 }
 
 #[test]
-fn test_channel_lead_notes_triggers_present() {
+fn test_channel_lead_notes_path_present() {
     let prompt = channel_lead_system_prompt("daemon", "No context.", "midtown", None, false);
     assert!(
-        prompt.contains("When to Write Notes"),
-        "Channel lead prompt should have a 'When to Write Notes' section with actionable triggers"
-    );
-    assert!(
-        prompt.contains("brainstorming session concludes"),
-        "Channel lead prompt should trigger note-writing after brainstorming"
-    );
-    assert!(
-        prompt.contains("significant PR merges"),
-        "Channel lead prompt should trigger note-writing after PR merges"
-    );
-    assert!(
-        prompt.contains("coworker shares a valuable insight"),
-        "Channel lead prompt should trigger note-writing for valuable insights"
+        prompt.contains("notes/"),
+        "Channel lead prompt should reference the notes directory"
     );
 }
 
@@ -391,51 +370,34 @@ fn test_lead_notes_path_is_absolute() {
 }
 
 #[test]
-fn test_coworker_prompt_prevents_orphaned_branches() {
+fn test_coworker_prompt_contains_git_workflow() {
     let prompt = coworker_system_prompt("park", "midtown", None);
 
     assert!(
-        prompt.contains("Before pushing"),
-        "Coworker prompt should contain 'Before pushing' section"
+        prompt.contains("feature branch"),
+        "Coworker prompt should mention creating a feature branch"
     );
     assert!(
-        prompt.contains("gh pr list --search"),
-        "Coworker prompt should instruct to check for existing PRs by task number"
+        prompt.contains("NEVER checkout main"),
+        "Coworker prompt should warn against checking out main"
     );
     assert!(
-        prompt.contains("force-push"),
-        "Coworker prompt should instruct force-pushing to existing PR branch"
-    );
-    assert!(
-        prompt.contains("Never create a new branch or new PR"),
-        "Coworker prompt should warn against creating duplicate PRs"
-    );
-
-    assert!(
-        prompt.contains("lways use the existing PR branch"),
-        "Coworker prompt should instruct to use existing PR branch for feedback"
+        prompt.contains("[Midtown !"),
+        "Coworker prompt should require task number in PR title"
     );
 }
 
 #[test]
-fn test_coworker_prompt_requires_issue_comment_reviews() {
+fn test_coworker_prompt_requires_merge_checks() {
     let prompt = coworker_system_prompt("park", "midtown", None);
 
     assert!(
-        prompt.contains("Before Merging"),
-        "Coworker prompt should contain the pre-merge checklist section"
+        prompt.contains("midtown pr merge"),
+        "Coworker prompt should require using midtown pr merge"
     );
     assert!(
-        prompt.contains("<!-- midtown session:"),
-        "Coworker prompt should mention the session frontmatter signature so reviewers are detected"
-    );
-    assert!(
-        prompt.contains("merge"),
-        "Coworker prompt should mention merge gating"
-    );
-    assert!(
-        prompt.contains("all checks pass"),
-        "Coworker prompt should gate merge on all checks passing"
+        prompt.contains("human reviews"),
+        "Coworker prompt should require checking for human reviews before merging"
     );
 }
 

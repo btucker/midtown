@@ -542,3 +542,76 @@ fn ensure_channel_leads_no_action_when_running() {
         commands
     );
 }
+
+#[test]
+fn stop_idle_worker_after_60s() {
+    let mut proj = make_projections(&[
+        DomainEvent::AgentCreated {
+            id: "idle-1".into(),
+            name: "proving-ground".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-99".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "idle-1".into(),
+            pid: 1234,
+            session_id: Some("sess-1".into()),
+        },
+        DomainEvent::AgentStateReported {
+            id: "idle-1".into(),
+            state: "idle".into(),
+        },
+    ]);
+
+    // Backdate the idle report to 90s ago
+    if let Some(agent) = proj.agents.by_id.get_mut("idle-1") {
+        agent.state_reported_at = Some(chrono::Utc::now() - chrono::Duration::seconds(90));
+    }
+
+    let commands = stop_idle_reported_workers(&proj);
+    assert_eq!(commands.len(), 1, "should stop worker idle for >60s");
+}
+
+#[test]
+fn spare_idle_worker_within_60s() {
+    let mut proj = make_projections(&[
+        DomainEvent::AgentCreated {
+            id: "idle-2".into(),
+            name: "busy-bee".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-100".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "idle-2".into(),
+            pid: 5678,
+            session_id: Some("sess-2".into()),
+        },
+        DomainEvent::AgentStateReported {
+            id: "idle-2".into(),
+            state: "idle".into(),
+        },
+    ]);
+
+    // Idle reported 30s ago — within the 60s window
+    if let Some(agent) = proj.agents.by_id.get_mut("idle-2") {
+        agent.state_reported_at = Some(chrono::Utc::now() - chrono::Duration::seconds(30));
+    }
+
+    let commands = stop_idle_reported_workers(&proj);
+    assert!(
+        commands.is_empty(),
+        "should not stop worker idle for only 30s"
+    );
+}
