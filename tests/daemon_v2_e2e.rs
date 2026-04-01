@@ -4,7 +4,7 @@
 //! socket, and exercise the JSON-RPC interface.
 //!
 //! Run with:
-//!   cargo test --test daemon_v2_e2e -- --ignored --test-threads=1
+//!   cargo test --test daemon_v2_e2e -- --ignored
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -28,6 +28,7 @@ struct V2Harness {
 
 impl V2Harness {
     /// Spin up a `midtown daemon-v2` process and wait for the socket to appear.
+    /// Each harness gets a fully isolated MIDTOWN_BASE_DIR so tests can run in parallel.
     fn start() -> Self {
         let temp_dir = tempfile::TempDir::new().expect("temp dir");
         let state_dir = tempfile::TempDir::new().expect("state dir");
@@ -60,6 +61,8 @@ impl V2Harness {
             .status();
 
         let socket_path = state_dir.path().join("daemon-v2.sock");
+        // Each test gets its own MIDTOWN_BASE_DIR for full isolation.
+        let midtown_base = state_dir.path().join("midtown-home");
 
         let child = Command::new(env!("CARGO_BIN_EXE_midtown"))
             .args([
@@ -74,6 +77,7 @@ impl V2Harness {
             .current_dir(repo)
             .env("MIDTOWN_CHAT_MONITOR", "0")
             .env("MIDTOWN_WEBHOOK_PORT", "0")
+            .env("MIDTOWN_BASE_DIR", &midtown_base)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()

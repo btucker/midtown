@@ -633,11 +633,15 @@ pub fn midtown_data_dir() -> PathBuf {
 
 /// Get the base midtown directory.
 ///
-/// Returns `~/.midtown/`.
+/// Resolution: `MIDTOWN_BASE_DIR` env var → `~/.midtown/`.
 pub fn midtown_base_dir() -> PathBuf {
     #[cfg(test)]
     if let Some(override_path) = test_midtown_base_dir_override() {
         return override_path;
+    }
+
+    if let Ok(base) = std::env::var("MIDTOWN_BASE_DIR") {
+        return PathBuf::from(base);
     }
 
     dirs::home_dir()
