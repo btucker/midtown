@@ -7,14 +7,14 @@ let {
 	show = $bindable(false), // Whether dropdown is visible
 	selectedIndex = $bindable(0), // Currently highlighted item index
 	position = {}, // { top, left } positioning for dropdown
-	getLabel = (item) => String(item), // Function to get display label
-	getValue = (item) => String(item), // Function to get inserted value
-	getDescription = (_item) => null, // Function to get optional description
-	getSeparator = (_item) => false, // Function to check if a divider should render above this item
-	onSelect = () => {}, // Callback when item is selected
+	getLabel = (item: unknown) => String(item), // Function to get display label
+	getValue = (item: unknown) => String(item), // Function to get inserted value
+	getDescription = (_item: unknown): string | null => null, // Function to get optional description
+	getSeparator = (_item: unknown) => false, // Function to check if a divider should render above this item
+	onSelect = (_item: unknown) => {}, // Callback when item is selected
 } = $props();
 
-let dropdownElement = $state(null);
+let dropdownElement: HTMLDivElement | null = $state(null);
 
 // Auto-scroll the highlighted item into view when selection changes
 $effect(() => {
@@ -28,7 +28,7 @@ $effect(() => {
 	}
 });
 
-function handleItemClick(item) {
+function handleItemClick(item: unknown) {
 	onSelect(item);
 	show = false;
 }

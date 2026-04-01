@@ -131,6 +131,17 @@ pub enum AgentCommand {
     /// Register this session for task sharing with coworkers
     #[command(hide = true)]
     RegisterSession,
+    /// Hook handlers called by Claude Code hooks (ask, idle)
+    #[command(subcommand)]
+    Hook(AgentHookCommand),
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum AgentHookCommand {
+    /// Handle AskUserQuestion — notifies daemon to nudge the Lead
+    Ask,
+    /// Handle idle_prompt — post idle status to channel
+    Idle,
 }
 
 pub fn handle(cmd: &AgentCommand, client: &DaemonClient) -> Result<Response, String> {
@@ -196,6 +207,14 @@ pub fn handle(cmd: &AgentCommand, client: &DaemonClient) -> Result<Response, Str
         }
         AgentCommand::List => client.session_list(),
         AgentCommand::RegisterSession => super::handle_register_session(),
+        AgentCommand::Hook(hook_cmd) => {
+            use super::hooks::HookCommand;
+            let mapped = match hook_cmd {
+                AgentHookCommand::Ask => HookCommand::Ask,
+                AgentHookCommand::Idle => HookCommand::Idle,
+            };
+            super::handle_hook(&mapped)
+        }
     }
 }
 

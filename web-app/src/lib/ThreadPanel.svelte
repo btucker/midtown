@@ -2,8 +2,8 @@
 // Module-level draft storage persists across mount/unmount cycles.
 // ThreadPanel is conditionally rendered ({#if $threadData}), so instance-level
 // state would be lost when the thread panel closes and reopens.
-const threadDrafts = new Map();
-let prevThreadId = null;
+const threadDrafts = new Map<string, { text: string; file: File | null }>();
+let prevThreadId: string | null = null;
 </script>
 
 <script lang="ts">
@@ -22,7 +22,8 @@ let prevThreadId = null;
   import TaskRow from './TaskRow.svelte'
   import DiffView from './DiffView.svelte'
   import ToolRunSummary from './ToolRunSummary.svelte'
-  import { groupTimelineToolRuns, isToolOnly } from './toolRunGrouping.ts'
+  import { groupTimelineToolRuns, isToolOnly, type TimelineEntry } from './toolRunGrouping.ts'
+  import type { Message } from './types.ts'
   import { clearMobileTextarea } from './mobileInput.ts'
   import Autocomplete from './Autocomplete.svelte'
   import ChevronDown from '@lucide/svelte/icons/chevron-down'
@@ -51,7 +52,7 @@ let prevThreadId = null;
   let resizeStartX = 0
   let resizeStartWidth = 0
 
-  function handleResizeMouseDown(e) {
+  function handleResizeMouseDown(e: MouseEvent) {
     e.preventDefault()
     isResizing = true
     resizeStartX = e.clientX
@@ -62,7 +63,7 @@ let prevThreadId = null;
     document.body.style.userSelect = 'none'
   }
 
-  function handleResizeMouseMove(e) {
+  function handleResizeMouseMove(e: MouseEvent) {
     // Panel is on the right: drag left (negative delta) = wider
     const delta = resizeStartX - e.clientX
     const newWidth = Math.max(THREAD_PANEL_MIN_WIDTH, Math.min(THREAD_PANEL_MAX_WIDTH, resizeStartWidth + delta))
@@ -93,20 +94,27 @@ let prevThreadId = null;
   let tasksExpanded = $state(false)
 
   let replyText = $state('')
-  let pendingFile = $state(null)
-  let pendingFileUrl = $state(null)
+  let pendingFile = $state<File | null>(null)
+  let pendingFileUrl = $state<string | null>(null)
   let uploading = $state(false)
-  let desktopScrollArea = $state(null)
-  let mobileScrollArea = $state(null)
+  let desktopScrollArea = $state<HTMLDivElement | null>(null)
+  let mobileScrollArea = $state<HTMLDivElement | null>(null)
   let autoScroll = $state(true)
-  let desktopTextareaEl = $state(null)
-  let mobileTextareaEl = $state(null)
+  let desktopTextareaEl = $state<HTMLTextAreaElement | null>(null)
+  let mobileTextareaEl = $state<HTMLTextAreaElement | null>(null)
   let isDesktop = $state(typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches)
 
   // Autocomplete state
+  interface AutocompleteItem {
+    name: string;
+    type: string;
+    task?: string;
+    taskId?: number | null;
+    _separator?: boolean;
+  }
   let showAutocomplete = $state(false)
   let autocompleteQuery = $state('')
-  let autocompleteItems = $state([])
+  let autocompleteItems = $state<AutocompleteItem[]>([])
   let autocompletePosition = $state({ top: 0, left: 0 })
   let autocompleteSelectedIndex = $state(0)
   let autocompleteStartPos = $state(0)
@@ -126,7 +134,7 @@ let prevThreadId = null;
   // Optimistic thinking state: true from the moment the user sends a reply until
   // real InProgress tool items arrive (or 30s timeout).
   let thinking = $state(false)
-  let thinkingTimeout = null
+  let thinkingTimeout: ReturnType<typeof setTimeout> | null = null
 
   // Whether this thread has a dedicated (forked) session.
   // Only applicable to topic channels (not main or DM channels).
@@ -155,7 +163,7 @@ let prevThreadId = null;
       : null
   )
   let forkPending = $state(false)
-  let forkErrorCallbackId = $state(null)
+  let forkErrorCallbackId = $state<number | null>(null)
 
   // Clear forkPending and stale error callback when ownership state updates (success path).
   $effect(() => {
@@ -174,15 +182,15 @@ let prevThreadId = null;
     }
   })
 
-  let forkError = $state(null)
-  let forkTimeout = null
+  let forkError = $state<string | null>(null)
+  let forkTimeout: ReturnType<typeof setTimeout> | null = null
 
   function handleForkToggle() {
     if (!$threadData?.parentMessage?.id || !$threadData?.channelName) return
     forkPending = true
     forkError = null
     if (forkTimeout) clearTimeout(forkTimeout)
-    const onError = (msg) => {
+    const onError = (msg: string) => {
       if (!forkPending) return // Timeout already handled this request
       if (forkTimeout) { clearTimeout(forkTimeout); forkTimeout = null }
       forkPending = false
@@ -201,9 +209,9 @@ let prevThreadId = null;
       }
     }, 10000)
     if (hasDedicatedSession) {
-      forkErrorCallbackId = unforkThread($threadData.parentMessage.id, $threadData.channelName, onError)
+      forkErrorCallbackId = unforkThread($threadData.parentMessage.id, $threadData.channelName, onError) ?? null
     } else {
-      forkErrorCallbackId = forkThread($threadData.parentMessage.id, $threadData.channelName, onError)
+      forkErrorCallbackId = forkThread($threadData.parentMessage.id, $threadData.channelName, onError) ?? null
     }
   }
 
@@ -307,15 +315,24 @@ let prevThreadId = null;
   // Extract Edit/Write tool calls to render as inline diffs.
   // Shown when full lead output is enabled (or in DM channels always).
   let isDmChannel = $derived($threadData?.channelName?.startsWith('dm-') ?? false)
-  let showFullLeadOutput = $derived($channelSettings[$threadData?.channelName]?.showFullLeadOutput ?? true)
+  let showFullLeadOutput = $derived($threadData?.channelName ? ($channelSettings[$threadData.channelName]?.showFullLeadOutput ?? true) : true)
   let showInlineDiffs = $derived(isDmChannel || showFullLeadOutput)
 
-  let editDiffs = $derived.by(() => {
+  interface EditDiff {
+    type: 'edit';
+    timestamp: string;
+    itemId: string;
+    filePath: string;
+    oldString: string;
+    newString: string;
+  }
+
+  let editDiffs = $derived.by((): EditDiff[] => {
     if (!showInlineDiffs || !$threadData) return []
     // Unified path: extract Edit/Write diffs from msg.tool_data on thread messages.
     // Works identically for DM and topic channels now that both carry tool_data.
     const allMessages = [...($threadData.parentMessage ? [$threadData.parentMessage] : []), ...($threadData.messages ?? [])]
-    const diffs = []
+    const diffs: EditDiff[] = []
     for (const msg of allMessages) {
       if (!msg.tool_data?.length) continue
       for (const block of msg.tool_data) {
@@ -328,18 +345,18 @@ let prevThreadId = null;
             type: 'edit',
             timestamp: msg.timestamp,
             itemId: block.call_id || msg.id,
-            filePath: input.file_path || '',
-            oldString: input.old_string || '',
-            newString: input.new_string || '',
+            filePath: (input.file_path as string) || '',
+            oldString: (input.old_string as string) || '',
+            newString: (input.new_string as string) || '',
           })
         } else if (block.tool_name === 'Write' && input.content) {
           diffs.push({
             type: 'edit',
             timestamp: msg.timestamp,
             itemId: block.call_id || msg.id,
-            filePath: input.file_path || '',
+            filePath: (input.file_path as string) || '',
             oldString: '',
-            newString: input.content || '',
+            newString: (input.content as string) || '',
           })
         }
       }
@@ -352,11 +369,11 @@ let prevThreadId = null;
   // Each message entry gets a precomputed `msgIndex` — its position in the
   // messages-only sublist — so the template can pass it to MessageRow in O(1)
   // instead of using indexOf (which would be O(N) per call, O(N^2) total).
-  let mergedTimeline = $derived.by(() => {
+  let mergedTimeline = $derived.by((): TimelineEntry[] => {
     if (!$threadData) return []
-    const msgs = ($threadData.messages ?? []).map((m, i) => ({ type: 'message', data: m, timestamp: m.timestamp, msgIndex: i }))
+    const msgs: TimelineEntry[] = ($threadData.messages ?? []).map((m, i) => ({ type: 'message', data: m, timestamp: m.timestamp, msgIndex: i }))
     if (!showInlineDiffs || editDiffs.length === 0) return msgs
-    const edits = editDiffs.map((d) => ({ type: 'edit', data: d, timestamp: d.timestamp, msgIndex: -1 }))
+    const edits: TimelineEntry[] = editDiffs.map((d) => ({ type: 'edit', data: d as unknown as Message, timestamp: d.timestamp, msgIndex: -1 }))
     const sorted = [...msgs, ...edits].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''))
     // Recompute message indices after sort — interleaved edits shift positions
     let idx = 0
@@ -368,8 +385,21 @@ let prevThreadId = null;
 
   // Pre-compute the messages-only list from the merged timeline, for MessageRow's
   // senderChanged/timeChanged logic. Avoids recomputing in every iteration.
-  let timelineMessages = $derived(mergedTimeline.filter((e) => e.type === 'message').map((e) => e.data))
-  let groupedTimeline = $derived(groupTimelineToolRuns(mergedTimeline))
+  let timelineMessages: Message[] = $derived(mergedTimeline.filter((e) => e.type === 'message').map((e) => e.data))
+
+  // Grouped timeline entry: either a single TimelineEntry or a collapsed tool-run group.
+  // All properties are present to satisfy template access without discriminated-union narrowing.
+  // `data` uses Record<string, any> & Message so edit entries' filePath/oldString/newString
+  // are accessible alongside standard Message fields.
+  interface GroupedEntry {
+    type: string;
+    data: Message & Record<string, any>;
+    timestamp: string;
+    msgIndex: number;
+    entries: TimelineEntry[];
+    lastTimestamp: string;
+  }
+  let groupedTimeline: GroupedEntry[] = $derived(groupTimelineToolRuns(mergedTimeline) as unknown as GroupedEntry[])
 
   // Reply count excluding tool-only messages (tool runs are visual noise, not conversation)
   let visibleReplyCount = $derived(($threadData?.messages ?? []).filter(m => !isToolOnly(m)).length)
@@ -377,18 +407,19 @@ let prevThreadId = null;
   // Track viewport changes to know which panel is active
   onMount(() => {
     const mql = window.matchMedia('(min-width: 1024px)')
-    function onChange(e) { isDesktop = e.matches }
+    function onChange(e: MediaQueryListEvent) { isDesktop = e.matches }
     mql.addEventListener('change', onChange)
     return () => mql.removeEventListener('change', onChange)
   })
 
   // Handle clicks on PR links, task links, channel links in thread messages
-  function handleThreadLinkClick(e) {
+  function handleThreadLinkClick(e: Event) {
     if (e.defaultPrevented) return
-    const target = e.target
+    const target = e.target as HTMLElement
     if (target.classList.contains('pr-link')) {
       e.preventDefault()
-      const prNum = target.dataset.pr
+      const prNum = (target as HTMLElement).dataset.pr
+      if (!prNum) return
       const url = getPrUrlUtil(prNum, $kanbanData, $repoStatuses, $repoStatus.fullName)
       if (url) window.open(url, '_blank', 'noopener')
     } else if (target.classList.contains('task-link')) {
@@ -396,18 +427,18 @@ let prevThreadId = null;
       const taskId = target.dataset.task
       const tasks = $daemonStatus?.tasks || []
       const task = tasks.find((t) => String(t.id) === String(taskId))
-      if (task) openTaskThread(task, task.channel || $activeChannel)
+      if (task && (task.channel || $activeChannel)) openTaskThread(task, task.channel || $activeChannel!)
     } else if (target.classList.contains('channel-link')) {
       e.preventDefault()
       const name = target.dataset.channel
-      if ($channelsStore.some((ch) => ch.name === name)) $activeChannel = name
+      if (name && $channelsStore.some((ch) => ch.name === name)) $activeChannel = name
     } else if (target.classList.contains('coworker-link')) {
       e.preventDefault()
       const name = target.dataset.coworker
       if (name) selectDm(name)
     } else if (target.classList.contains('message-image')) {
       e.preventDefault()
-      openImageLightbox(target.dataset.fullSrc || target.src)
+      openImageLightbox(target.dataset.fullSrc || (target as HTMLImageElement).src)
     }
   }
 
@@ -432,11 +463,11 @@ let prevThreadId = null;
   // pushState: true (default) — user-initiated close should create a history entry
   // so the back button can reopen the thread.
   function handleClose() { closeThread() }
-  function handleWindowKeydown(event) {
+  function handleWindowKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape' && !event.defaultPrevented) handleClose()
   }
 
-  async function handleSubmit(e) {
+  async function handleSubmit(e: Event) {
     e.preventDefault()
     if (!$threadData) return
     const parentId = $threadData.parentMessage?.id ?? null
@@ -474,7 +505,7 @@ let prevThreadId = null;
     }, 30000)
   }
 
-  function handleTextareaKeyDown(e) {
+  function handleTextareaKeyDown(e: KeyboardEvent) {
     if (showAutocomplete) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -507,17 +538,17 @@ let prevThreadId = null;
     }
   }
 
-  function handlePaste(e) {
+  function handlePaste(e: ClipboardEvent) {
     const file = extractPastedFile(e)
     if (file) {
       pendingFile = file
       return
     }
-    const cursorPos = handleCodePaste(e, textareaEl, () => replyText, (t) => { replyText = t })
+    const cursorPos = handleCodePaste(e, textareaEl!, () => replyText, (t) => { replyText = t })
     if (cursorPos !== false) {
       tick().then(() => {
-        textareaEl.selectionStart = cursorPos
-        textareaEl.selectionEnd = cursorPos
+        textareaEl!.selectionStart = cursorPos
+        textareaEl!.selectionEnd = cursorPos
       })
     }
   }
@@ -570,13 +601,13 @@ let prevThreadId = null;
   // Focus textarea only when a *new* thread opens — not on every message append.
   // Uses currentThreadId (stable thread identity) instead of $threadData to avoid
   // re-firing when the message array grows.
-  let lastFocusedThreadId = null
+  let lastFocusedThreadId: string | null = null
   $effect(() => {
     const threadId = currentThreadId
     const lastId = lastFocusedThreadId
     if (threadId && threadId !== lastId && textareaEl) {
       lastFocusedThreadId = threadId
-      tick().then(() => { if (isDesktop) textareaEl.focus() })
+      tick().then(() => { if (isDesktop) textareaEl!.focus() })
     }
     if (!threadId) lastFocusedThreadId = null
   })
@@ -607,12 +638,12 @@ let prevThreadId = null;
   // IDs of tasks tied to this thread — used to prioritize workers
   let threadTaskIds = $derived(new Set(($threadData?.tasks ?? []).map((t) => t.id)))
 
-  function getThreadAutocompleteItems(query) {
+  function getThreadAutocompleteItems(query: string): AutocompleteItem[] {
     const lowerQuery = query.toLowerCase()
     const threadParentId = $threadData?.parentMessage?.id
 
     // Build the full list of @ mentionable people
-    const allPeople = [
+    const allPeople: AutocompleteItem[] = [
       { name: leadName, type: 'lead' },
       ...$coworkers.map((cw) => ({ name: cw.name, type: 'coworker', task: cw.current_task, taskId: cw.task_id })),
     ]
@@ -625,8 +656,8 @@ let prevThreadId = null;
 
     // No query (bare @): split into prioritized and rest
     const forkOwnerName = threadParentId ? ($threadForkOwners[threadParentId] ?? null) : null
-    const prioritized = []
-    const rest = []
+    const prioritized: AutocompleteItem[] = []
+    const rest: AutocompleteItem[] = []
 
     for (const person of filtered) {
       const isPrioritized =
@@ -690,7 +721,7 @@ let prevThreadId = null;
     showAutocomplete = false
   }
 
-  function insertAutocompleteItem(item) {
+  function insertAutocompleteItem(item: AutocompleteItem) {
     const value = getAutocompleteValue(item)
     const beforeTrigger = replyText.slice(0, autocompleteStartPos)
     const afterCursor = replyText.slice(textareaEl?.selectionStart || 0)
@@ -707,15 +738,15 @@ let prevThreadId = null;
     })
   }
 
-  function getAutocompleteLabel(item) {
+  function getAutocompleteLabel(item: AutocompleteItem) {
     return `@${item.name}`
   }
 
-  function getAutocompleteValue(item) {
+  function getAutocompleteValue(item: AutocompleteItem) {
     return `@${item.name}`
   }
 
-  function getAutocompleteDescription(item) {
+  function getAutocompleteDescription(item: AutocompleteItem) {
     if (item.task) return item.task
     return null
   }
@@ -831,7 +862,7 @@ let prevThreadId = null;
               {#each $threadData.tasks as t}
                 <span
                   class="inline-block size-[6px] rounded-full"
-                  style="background: {statusBarColor(t.status, t.owner, t.color || (t.owner ? getSenderColor(t.owner) : null))}"
+                  style="background: {statusBarColor(t.status, t.owner ?? null, t.color || (t.owner ? getSenderColor(t.owner, null) : null))}"
                   title="!{t.id} — {t.subject}"
                 ></span>
               {/each}
@@ -922,7 +953,7 @@ let prevThreadId = null;
     {/if}
 
     <!-- Activity drawer: slides up from the input when lead is working -->
-    <ThreadActivityDrawer messages={$threadData?.messages ?? []} channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} inlineMode={showInlineDiffs} />
+    <ThreadActivityDrawer messages={$threadData?.messages ?? []} channelName={$threadData?.channelName ?? ''} threadParentId={$threadData?.parentMessage?.id ?? null} {thinking} inlineMode={showInlineDiffs} />
 
     <!-- Input -->
     <div class="relative shrink-0" data-autocomplete-anchor>
@@ -934,7 +965,7 @@ let prevThreadId = null;
         getLabel={getAutocompleteLabel}
         getValue={getAutocompleteValue}
         getDescription={getAutocompleteDescription}
-        getSeparator={(item) => item._separator === true}
+        getSeparator={(item: AutocompleteItem) => item._separator === true}
         onSelect={insertAutocompleteItem}
       />
       <form class="flex flex-col gap-2 px-3 py-1.5 bg-card border-t border-border" onsubmit={handleSubmit}>
@@ -1031,7 +1062,7 @@ let prevThreadId = null;
               {#each $threadData.tasks as t}
                 <span
                   class="inline-block size-[6px] rounded-full"
-                  style="background: {statusBarColor(t.status, t.owner, t.color || (t.owner ? getSenderColor(t.owner) : null))}"
+                  style="background: {statusBarColor(t.status, t.owner ?? null, t.color || (t.owner ? getSenderColor(t.owner, null) : null))}"
                   title="!{t.id} — {t.subject}"
                 ></span>
               {/each}
@@ -1122,7 +1153,7 @@ let prevThreadId = null;
     {/if}
 
     <!-- Activity drawer: slides up from the input when lead is working -->
-    <ThreadActivityDrawer messages={$threadData?.messages ?? []} channelName={$threadData?.channelName} threadParentId={$threadData?.parentMessage?.id} {thinking} inlineMode={showInlineDiffs} />
+    <ThreadActivityDrawer messages={$threadData?.messages ?? []} channelName={$threadData?.channelName ?? ''} threadParentId={$threadData?.parentMessage?.id ?? null} {thinking} inlineMode={showInlineDiffs} />
 
     <!-- Mobile input -->
     <div class="relative shrink-0" data-autocomplete-anchor>
@@ -1134,7 +1165,7 @@ let prevThreadId = null;
         getLabel={getAutocompleteLabel}
         getValue={getAutocompleteValue}
         getDescription={getAutocompleteDescription}
-        getSeparator={(item) => item._separator === true}
+        getSeparator={(item: AutocompleteItem) => item._separator === true}
         onSelect={insertAutocompleteItem}
       />
       <form class="flex flex-col gap-2 px-3 pt-2 pb-safe-offset-2 bg-card border-t border-border" onsubmit={handleSubmit}>

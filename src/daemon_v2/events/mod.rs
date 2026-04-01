@@ -173,6 +173,8 @@ pub enum DomainEvent {
         thread_id: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         tool_data: Option<Vec<crate::message::ToolBlock>>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        auto_output: bool,
     },
     MentionRouted {
         message_id: MessageId,

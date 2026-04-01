@@ -53,6 +53,7 @@ export interface Coworker {
 	color?: string;
 	icon?: string;
 	avatar_badge?: string;
+	time_estimate?: string;
 }
 
 // ── Tasks ────────────────────────────────────────────────────────────────────
@@ -143,9 +144,9 @@ export interface UsageEntry {
 	provider: string;
 	profile: string;
 	session_util: number;
-	session_resets: number;
+	session_resets: string;
 	week_util: number;
-	week_resets: number;
+	week_resets: string;
 	account_email: string;
 }
 
@@ -239,6 +240,7 @@ export interface SearchResponse {
 // ── Daemon status (raw API response) ─────────────────────────────────────────
 
 export interface DaemonStatus {
+	daemon?: string;
 	coworkers?: Coworker[];
 	max_in_progress_tasks?: number;
 	user_display_name?: string;

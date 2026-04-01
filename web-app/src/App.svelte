@@ -61,6 +61,7 @@ import {
 } from "$lib/store.ts";
 import ThreadPanel from "$lib/ThreadPanel.svelte";
 import { theme, toggleTheme } from "$lib/theme.ts";
+import type { ChannelTab } from "$lib/types.ts";
 
 $effect(() => {
 	if ($theme === "dark") {
@@ -68,7 +69,7 @@ $effect(() => {
 	} else {
 		document.documentElement.classList.remove("dark");
 	}
-	const favicon = document.getElementById("favicon");
+	const favicon = document.getElementById("favicon") as HTMLLinkElement | null;
 	if (favicon) favicon.href = $theme === "dark" ? "/favicon-dark.png" : "/favicon-light.png";
 });
 
@@ -76,7 +77,7 @@ let activeView = $state("board"); // 'board' (channel list + chat) or 'status'
 let projectDropdownOpen = $state(false);
 let searchOpen = $state(false);
 
-function handleKeydown(e) {
+function handleKeydown(e: KeyboardEvent) {
 	if ((e.metaKey || e.ctrlKey) && e.key === "k") {
 		e.preventDefault();
 		searchOpen = !searchOpen;
@@ -94,8 +95,8 @@ function toggleProjectDropdown() {
 	projectDropdownOpen = !projectDropdownOpen;
 }
 
-function handleProjectClickOutside(event) {
-	if (projectDropdownOpen && !event.target.closest(".project-selector")) {
+function handleProjectClickOutside(event: MouseEvent) {
+	if (projectDropdownOpen && !(event.target as HTMLElement)?.closest(".project-selector")) {
 		projectDropdownOpen = false;
 	}
 }
@@ -146,7 +147,7 @@ async function navigateToDeepLink(urlStr: string) {
 		if (msg) {
 			deepLinkMsgId.set(msg);
 		}
-		openThread({ id: thread, from: "", content: "" }, channel, { pushState: false });
+		openThread({ id: thread, from: "", content: "", timestamp: "" }, channel, { pushState: false });
 	} else if (msg) {
 		channelTargetMsgId.set(msg);
 		setTimeout(() => {
@@ -159,40 +160,16 @@ async function navigateToDeepLink(urlStr: string) {
 	replaceNavState({ channel, thread: thread || undefined, msg: msg || undefined });
 }
 
-onMount(async () => {
+onMount(() => {
 	// Initialize push notification support check
 	checkPushSubscription();
 
-	// Always in multi-project mode — served from shared gateway on port 47022
-	const projectList = await fetchProjects();
-
-	// Prefer the project named in the URL path (e.g. /my-project → 'my-project')
-	const rawSegment = window.location.pathname.split("/").filter(Boolean)[0] ?? null;
-	const urlProjectName = rawSegment ? decodeURIComponent(rawSegment) : null;
-	let targetProject = null;
-	if (urlProjectName) {
-		targetProject = projectList.find((p) => p.name === urlProjectName && p.status === "running" && p.webhook_port);
-	}
-	if (!targetProject) {
-		targetProject = projectList.find((p) => p.status === "running" && p.webhook_port);
-	}
-	if (targetProject) {
-		switchProject(targetProject.name, targetProject.webhook_port);
-
-		// Deep-link from URL query params (initial page load / openWindow from SW)
-		if (window.location.search) {
-			navigateToDeepLink(window.location.href);
-		} else {
-			// Ensure the initial history entry has state so back/forward navigation
-			// works correctly (popstate handler skips entries with null state).
-			replaceNavState({ channel: targetProject.name });
-		}
-	}
 	// Set up browser back/forward navigation
 	const cleanupHistory = setupHistoryNavigation();
 
 	// Refresh project list every 30s
 	const projectInterval = setInterval(fetchProjects, 30000);
+
 	// Initialize and listen for viewport width changes
 	function updateViewportWidth() {
 		isWideScreen.set(window.innerWidth > 1024);
@@ -231,6 +208,35 @@ onMount(async () => {
 	}
 	navigator.serviceWorker?.addEventListener("message", handleSwMessage);
 
+	// Async initialization (project discovery + deep-linking)
+	(async () => {
+		// Always in multi-project mode — served from shared gateway on port 47022
+		const projectList = await fetchProjects();
+
+		// Prefer the project named in the URL path (e.g. /my-project → 'my-project')
+		const rawSegment = window.location.pathname.split("/").filter(Boolean)[0] ?? null;
+		const urlProjectName = rawSegment ? decodeURIComponent(rawSegment) : null;
+		let targetProject = null;
+		if (urlProjectName) {
+			targetProject = projectList.find((p) => p.name === urlProjectName && p.status === "running" && p.webhook_port);
+		}
+		if (!targetProject) {
+			targetProject = projectList.find((p) => p.status === "running" && p.webhook_port);
+		}
+		if (targetProject) {
+			switchProject(targetProject.name, targetProject.webhook_port);
+
+			// Deep-link from URL query params (initial page load / openWindow from SW)
+			if (window.location.search) {
+				navigateToDeepLink(window.location.href);
+			} else {
+				// Ensure the initial history entry has state so back/forward navigation
+				// works correctly (popstate handler skips entries with null state).
+				replaceNavState({ channel: targetProject.name });
+			}
+		}
+	})();
+
 	return () => {
 		cleanupHistory();
 		clearInterval(projectInterval);
@@ -240,7 +246,7 @@ onMount(async () => {
 	};
 });
 
-function selectProject(project) {
+function selectProject(project: { name: string; status: string; webhook_port: number }) {
 	if (project.status === "running" && project.webhook_port) {
 		switchProject(project.name, project.webhook_port);
 		replaceNavState({ channel: project.name });
@@ -260,9 +266,9 @@ function selectProject(project) {
   {#if $activeProject}
     <CelebrationEffects />
     <SearchPalette bind:open={searchOpen} />
-    <SidebarProvider>
+    <SidebarProvider class="" style="">
       <SwipeGestures />
-      <Sidebar>
+      <Sidebar class="">
         <SidebarHeader class="p-3 pt-safe-offset-3">
           <div class="header-left">
             <img src={$theme === 'dark' ? '/midtown-dark-logo.svg' : '/midtown-light-logo.svg'} alt="Midtown" class="header-logo hidden md:block" />
@@ -309,7 +315,7 @@ function selectProject(project) {
           </div>
         </SidebarHeader>
 
-        <SidebarContent>
+        <SidebarContent class="">
           {#if activeView === 'board'}
             <div class="sidebar-scroll">
               <ChannelList />
@@ -363,7 +369,7 @@ function selectProject(project) {
       <main class="flex-1 flex flex-col h-full overflow-hidden">
         <!-- Mobile header with sidebar trigger -->
         <header class="mobile-header flex items-center px-2 pb-2 pt-safe-offset-2 border-b border-border bg-sidebar md:hidden">
-          <SidebarTrigger />
+          <SidebarTrigger class="" onclick={() => {}} />
           <span class="ml-2 text-sm text-muted-foreground">{$activeProject}</span>
           <div class="mobile-channel active-channel-display ml-4">
             {#if isActiveDm}
@@ -409,23 +415,23 @@ function selectProject(project) {
               {#if !isActiveDm}
                 <div class="channel-tab-bar">
                   {#each [['messages', 'Messages'], ['prs', 'PRs'], ['notes', 'Notes'], ['settings', 'Settings']] as [tab, label]}
-                    {@const isActive = ($activeChannelTab[$activeChannel] || 'messages') === tab}
+                    {@const isActive = ($activeChannelTab[$activeChannel ?? ''] || 'messages') === tab}
                     <button
                       class="channel-tab"
                       class:active={isActive}
-                      onclick={() => activeChannelTab.update((t) => ({ ...t, [$activeChannel]: tab }))}
+                      onclick={() => activeChannelTab.update((t) => ({ ...t, [$activeChannel ?? '']: tab as ChannelTab }))}
                     >{label}</button>
                   {/each}
                 </div>
               {/if}
-              {#if isActiveDm || ($activeChannelTab[$activeChannel] || 'messages') === 'messages'}
+              {#if isActiveDm || ($activeChannelTab[$activeChannel ?? ''] || 'messages') === 'messages'}
                 <PendingQuestions />
                 <Channel />
-              {:else if ($activeChannelTab[$activeChannel] || 'messages') === 'prs'}
+              {:else if ($activeChannelTab[$activeChannel ?? ''] || 'messages') === 'prs'}
                 <ChannelPrList />
-              {:else if ($activeChannelTab[$activeChannel] || 'messages') === 'notes'}
+              {:else if ($activeChannelTab[$activeChannel ?? ''] || 'messages') === 'notes'}
                 <ChannelNotes />
-              {:else if ($activeChannelTab[$activeChannel] || 'messages') === 'settings'}
+              {:else if ($activeChannelTab[$activeChannel ?? ''] || 'messages') === 'settings'}
                 <ChannelSettings />
               {/if}
             </div>

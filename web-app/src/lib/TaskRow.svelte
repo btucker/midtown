@@ -20,6 +20,7 @@ import {
 	repoStatuses,
 } from "./store.ts";
 import { rolledUpStatus as computeRolledUpStatus, statusBarColor } from "./taskStatus.ts";
+import type { Coworker, Task } from "./types.ts";
 
 let {
 	task,
@@ -45,7 +46,7 @@ const effectiveCw = $derived(isCard ? (task.owner ? (cwMap?.get(task.owner) ?? n
 const effectiveReviewer = $derived(isCard ? (relatedPr?.reviewer ?? null) : reviewer);
 const effectiveReviewPosted = $derived(isCard ? relatedPr?.review_posted || false : reviewPosted);
 const hasProgress = $derived(effectiveCw?.progress != null);
-const ownerColor = $derived(task.color || effectiveCw?.color || (task.owner ? getSenderColor(task.owner) : null));
+const ownerColor = $derived(task.color || effectiveCw?.color || (task.owner ? getSenderColor(task.owner, null) : null));
 const ownerIcon = $derived(task.icon || effectiveCw?.icon);
 
 const prUrl = $derived(
@@ -53,7 +54,13 @@ const prUrl = $derived(
 );
 const descriptionHtml = $derived(isCard && task.description ? renderContent(task.description) : "");
 
-function lifecycleSegments(cwProgress, reviewer, reviewPosted, ownerColor, reviewerColor) {
+function lifecycleSegments(
+	cwProgress: number,
+	reviewer: string | null,
+	reviewPosted: boolean,
+	ownerColor: string,
+	reviewerColor: string | null,
+) {
 	const segments = [];
 	if (!reviewer) {
 		segments.push({ width: (cwProgress / 100) * 70, color: ownerColor });
@@ -67,12 +74,14 @@ function lifecycleSegments(cwProgress, reviewer, reviewPosted, ownerColor, revie
 	return segments;
 }
 
-function childSegments(children, cwMap) {
+function childSegments(children: Task[], cwMap: Map<string, Coworker> | null) {
 	const sliceWidth = 100 / children.length;
 	return children.map((child) => {
 		const childCw = child.owner ? cwMap?.get(child.owner) : null;
 		const color =
-			child.color || childCw?.color || (child.owner ? getSenderColor(child.owner) : "hsl(var(--muted-foreground))");
+			child.color ||
+			childCw?.color ||
+			(child.owner ? getSenderColor(child.owner, null) : "hsl(var(--muted-foreground))");
 		let fill = 0;
 		if (child.status === "completed") {
 			fill = 1;
@@ -85,22 +94,22 @@ function childSegments(children, cwMap) {
 	});
 }
 
-function handleDescriptionClick(e) {
-	const target = e.target;
+function handleDescriptionClick(e: MouseEvent) {
+	const target = e.target as HTMLElement;
 	if (target.classList.contains("channel-link")) {
 		e.preventDefault();
-		const name = target.dataset.channel;
-		if ($channels.some((ch) => ch.name === name)) $activeChannel = name;
+		const name = (target as HTMLElement).dataset.channel ?? null;
+		if (name && $channels.some((ch) => ch.name === name)) $activeChannel = name;
 	} else if (target.classList.contains("task-link")) {
 		e.preventDefault();
-		const taskId = target.dataset.task;
+		const taskId = (target as HTMLElement).dataset.task;
 		const tasks = $daemonStatus?.tasks || [];
 		const found = tasks.find((t) => String(t.id) === String(taskId));
-		if (found) openTaskThread(found, found.channel || $activeChannel);
+		if (found) openTaskThread(found, found.channel || $activeChannel || "");
 	} else if (target.classList.contains("pr-link")) {
 		e.preventDefault();
-		const prNum = target.dataset.pr;
-		const url = getPrUrlUtil(prNum, $kanbanData, $repoStatuses, $repoStatus.fullName);
+		const prNum = (target as HTMLElement).dataset.pr;
+		const url = getPrUrlUtil(prNum || "", $kanbanData, $repoStatuses, $repoStatus.fullName);
 		if (url) window.open(url, "_blank", "noopener");
 	} else if (target.classList.contains("coworker-link")) {
 		e.preventDefault();
@@ -146,8 +155,8 @@ function handleDescriptionClick(e) {
         </div>
         <span class="shrink-0 text-[0.6rem] text-[hsl(var(--accent-teal))] tabular-nums">{doneCount}/{children.length}</span>
       </div>
-    {:else if isActive && (hasProgress || effectiveReviewer) && task.owner}
-      {@const segments = lifecycleSegments(effectiveCw?.progress ?? 0, effectiveReviewer, effectiveReviewPosted, ownerColor || getSenderColor(task.owner), effectiveReviewer ? getSenderColor(effectiveReviewer) : null)}
+    {:else if isActive && task.owner}
+      {@const segments = lifecycleSegments(effectiveCw?.progress ?? 0, effectiveReviewer, effectiveReviewPosted, ownerColor || getSenderColor(task.owner, null), effectiveReviewer ? getSenderColor(effectiveReviewer, null) : null)}
       {@const totalPct = Math.round(segments.reduce((sum, s) => sum + s.width, 0))}
       <div class="flex items-center gap-1.5 pr-0.5">
         <div class="flex-1 h-[3px] bg-sidebar-accent rounded-sm overflow-hidden flex">
@@ -186,7 +195,7 @@ function handleDescriptionClick(e) {
             role="button"
             tabindex="0"
             class="relative shrink-0 size-4 rounded-[3px] border-none p-0 m-0 flex items-center justify-center text-[0.55rem] font-bold text-white leading-none cursor-pointer hover:opacity-85 {ownerGlow ? 'shadow-[0_0_6px_1px_var(--glow-color)]' : ''}"
-            style="background-color: {ownerColor || getSenderColor(task.owner)}; font-family: var(--font-sans){ownerGlow ? `; --glow-color: ${ownerColor || getSenderColor(task.owner)}` : ''}"
+            style="background-color: {ownerColor || getSenderColor(task.owner, null)}; font-family: var(--font-sans){ownerGlow ? `; --glow-color: ${ownerColor || getSenderColor(task.owner, null)}` : ''}"
             title="{task.owner}{effectiveCw?.phase ? ` · ${effectiveCw.phase}` : ''}"
             onclick={(e) => { e.stopPropagation(); selectDm(task.owner) }}
             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(task.owner) } }}
@@ -198,7 +207,7 @@ function handleDescriptionClick(e) {
             role="button"
             tabindex="0"
             class="relative shrink-0 size-4 rounded-[3px] border-none p-0 m-0 flex items-center justify-center text-[0.55rem] font-bold text-white leading-none cursor-pointer hover:opacity-85 {reviewerGlow ? 'shadow-[0_0_6px_1px_var(--glow-color)]' : ''}"
-            style="background-color: {getSenderColor(effectiveReviewer)}; font-family: var(--font-sans){reviewerGlow ? `; --glow-color: ${getSenderColor(effectiveReviewer)}` : ''}"
+            style="background-color: {getSenderColor(effectiveReviewer, null)}; font-family: var(--font-sans){reviewerGlow ? `; --glow-color: ${getSenderColor(effectiveReviewer, null)}` : ''}"
             title="{effectiveReviewer} · {effectiveReviewPosted ? 'reviewed' : 'reviewing'}"
             onclick={(e) => { e.stopPropagation(); selectDm(effectiveReviewer) }}
             onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); selectDm(effectiveReviewer) } }}

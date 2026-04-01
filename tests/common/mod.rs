@@ -222,19 +222,14 @@ impl DaemonTestHarness {
             .join(&repo_name)
             .join("daemon.sock");
 
-        let project_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".midtown")
-            .join("projects")
-            .join(&repo_name);
+        // Use an isolated MIDTOWN_BASE_DIR per test for full parallelism.
+        let midtown_base = temp_dir.join("midtown-home");
+        let _ = fs::create_dir_all(&midtown_base);
+
+        let project_dir = midtown_base.join("projects").join(&repo_name);
         let pid_path = project_dir.join("daemon.pid");
 
-        let tasks_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".midtown")
-            .join("projects")
-            .join(&repo_name)
-            .join("tasks");
+        let tasks_dir = project_dir.join("tasks");
 
         // Ensure parent directories exist
         if let Some(parent) = socket_path.parent() {
@@ -292,6 +287,7 @@ impl DaemonTestHarness {
         let log_err = fs::File::create(&err_path).ok();
 
         // Build daemon command (uses daemon-v2 via the `daemon` alias)
+        let midtown_base = self.temp_dir.join("midtown-home");
         let mut cmd = Command::new(&binary_path);
         cmd.arg("daemon")
             .arg("--workdir")
@@ -301,6 +297,7 @@ impl DaemonTestHarness {
             .current_dir(&self.temp_dir)
             .env("MIDTOWN_CHAT_MONITOR", "0") // Disable for tests
             .env("XDG_STATE_HOME", &self.state_dir)
+            .env("MIDTOWN_BASE_DIR", &midtown_base)
             .stdout(log_file.map(Stdio::from).unwrap_or(Stdio::null()))
             .stderr(log_err.map(Stdio::from).unwrap_or(Stdio::null()));
 
@@ -559,12 +556,7 @@ impl DaemonTestHarness {
 
     /// Get the coworkers directory for this test repo.
     pub fn coworkers_dir(&self) -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".midtown")
-            .join("projects")
-            .join(&self.repo_name)
-            .join("coworkers")
+        self.project_dir.join("coworkers")
     }
 
     /// Check if a worktree exists for a given coworker.
@@ -585,22 +577,7 @@ impl Drop for DaemonTestHarness {
         }
         let _ = fs::remove_dir_all(&self.state_dir);
 
-        // Clean up project directory
-        let _ = fs::remove_dir_all(&self.project_dir);
-
-        // Clean up worktrees directory (now nested under projects/)
-        let worktrees_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".midtown")
-            .join("projects")
-            .join(&self.repo_name)
-            .join("worktrees");
-        let _ = fs::remove_dir_all(&worktrees_dir);
-
-        // Clean up task directory
-        let _ = fs::remove_dir_all(&self.tasks_dir);
-
-        // Clean up temp directory (the fake git repo)
+        // Clean up temp directory (contains the git repo and midtown-home)
         let _ = fs::remove_dir_all(&self.temp_dir);
     }
 }

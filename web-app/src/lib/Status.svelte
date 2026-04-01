@@ -22,7 +22,7 @@ function getSpinner() {
 	return SPINNER_FRAMES[spinnerFrame];
 }
 
-function getStatusColor(status) {
+function getStatusColor(status: string | undefined) {
 	switch (status?.toLowerCase()) {
 		case "running":
 		case "active":
@@ -37,7 +37,7 @@ function getStatusColor(status) {
 	}
 }
 
-function formatDate(timestamp) {
+function formatDate(timestamp: string) {
 	try {
 		const date = new Date(timestamp);
 		return date.toLocaleString([], {
@@ -51,7 +51,7 @@ function formatDate(timestamp) {
 	}
 }
 
-function getHealthColor(health) {
+function getHealthColor(health: string | undefined) {
 	switch (health?.toLowerCase()) {
 		case "green":
 			return "hsl(var(--status-green))";

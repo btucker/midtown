@@ -4,7 +4,7 @@
 //! socket, and exercise the JSON-RPC interface.
 //!
 //! Run with:
-//!   cargo test --test daemon_v2_e2e -- --ignored --test-threads=1
+//!   cargo test --test daemon_v2_e2e -- --ignored
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -28,6 +28,7 @@ struct V2Harness {
 
 impl V2Harness {
     /// Spin up a `midtown daemon-v2` process and wait for the socket to appear.
+    /// Each harness gets a fully isolated MIDTOWN_BASE_DIR so tests can run in parallel.
     fn start() -> Self {
         let temp_dir = tempfile::TempDir::new().expect("temp dir");
         let state_dir = tempfile::TempDir::new().expect("state dir");
@@ -60,6 +61,8 @@ impl V2Harness {
             .status();
 
         let socket_path = state_dir.path().join("daemon-v2.sock");
+        // Each test gets its own MIDTOWN_BASE_DIR for full isolation.
+        let midtown_base = state_dir.path().join("midtown-home");
 
         let child = Command::new(env!("CARGO_BIN_EXE_midtown"))
             .args([
@@ -74,6 +77,7 @@ impl V2Harness {
             .current_dir(repo)
             .env("MIDTOWN_CHAT_MONITOR", "0")
             .env("MIDTOWN_WEBHOOK_PORT", "0")
+            .env("MIDTOWN_BASE_DIR", &midtown_base)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -135,10 +139,12 @@ impl V2Harness {
     /// Send "shutdown" RPC then kill the process if it does not exit promptly.
     fn stop(&mut self) {
         // Best-effort shutdown RPC — ignore errors (process may already be gone).
-        if self.socket_path.exists() {
-            let _ = std::panic::catch_unwind(|| {
-                self.rpc_call("shutdown", None);
-            });
+        if self.socket_path.exists()
+            && let Ok(mut stream) = UnixStream::connect(&self.socket_path)
+        {
+            let req = serde_json::json!({"jsonrpc":"2.0","method":"shutdown","id":999});
+            let _ = stream.write_all(&serde_json::to_vec(&req).unwrap());
+            let _ = stream.shutdown(std::net::Shutdown::Write);
         }
 
         if let Some(mut child) = self.child.take() {
@@ -358,7 +364,7 @@ fn test_daemon_v2_task_done_stops_worker() {
     assert!(resp["error"].is_null());
 
     // Wait for agent to spawn
-    for _ in 0..15 {
+    for _ in 0..30 {
         std::thread::sleep(Duration::from_secs(1));
         let status = harness.rpc_call("status", None);
         if status["result"]["agents"]["running"].as_u64().unwrap_or(0) > 0 {
@@ -370,19 +376,22 @@ fn test_daemon_v2_task_done_stops_worker() {
     let resp = harness.rpc_call("task.done", Some(serde_json::json!({ "id": "done-t1" })));
     assert!(resp["error"].is_null(), "task.done error: {resp}");
 
-    // Wait for stop_completed_agents to stop the worker (runs every 5s)
-    std::thread::sleep(Duration::from_secs(8));
-
-    // Verify task is completed
-    let task_list = harness.rpc_call("task.list", None);
-    let tasks = task_list["result"].as_array().expect("tasks");
-    let task = tasks.iter().find(|t| t["id"] == "done-t1");
-    assert!(task.is_some());
-    assert_eq!(
-        task.unwrap()["status"],
-        "Completed",
-        "completed task should have Completed status"
-    );
+    // Poll for task completion — the daemon loop applies events asynchronously
+    // after the RPC response, so we need to wait for it to process.
+    let mut completed = false;
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_secs(1));
+        let task_list = harness.rpc_call("task.list", None);
+        let tasks = task_list["result"].as_array().expect("tasks");
+        if tasks
+            .iter()
+            .any(|t| t["id"] == "done-t1" && t["status"] == "Completed")
+        {
+            completed = true;
+            break;
+        }
+    }
+    assert!(completed, "task should reach Completed status within 20s");
 }
 
 /// Spec 5.1: message to a new channel demand-spawns a lead
@@ -402,9 +411,9 @@ fn test_daemon_v2_demand_spawns_lead_on_message() {
     );
     assert!(resp["error"].is_null(), "channel.post error: {resp}");
 
-    // Wait for the demand-spawned lead to appear
+    // Wait for the demand-spawned lead to appear (longer timeout for parallel CI)
     let mut found_lead = false;
-    for _ in 0..15 {
+    for _ in 0..30 {
         std::thread::sleep(Duration::from_secs(1));
         let agents = harness.rpc_call("agent.list", None);
         let list = agents["result"].as_array().unwrap_or(&vec![]).clone();
@@ -713,7 +722,7 @@ fn test_daemon_v2_session_fork_spawns_agent() {
 
     // Wait for the fork to spawn
     let mut saw_fork = false;
-    for _ in 0..15 {
+    for _ in 0..30 {
         std::thread::sleep(Duration::from_secs(1));
         let resp = harness.rpc_call("agent.list", None);
         let agents = resp["result"].as_array().unwrap();
@@ -813,7 +822,7 @@ fn test_daemon_v2_nudge_running_agent() {
 
     // Wait for the lead to be running
     let mut lead_name = String::new();
-    for _ in 0..15 {
+    for _ in 0..30 {
         std::thread::sleep(Duration::from_secs(1));
         let resp = harness.rpc_call("agent.list", None);
         let agents = resp["result"].as_array().unwrap();
@@ -866,7 +875,7 @@ fn test_daemon_v2_nudge_stopped_agent_triggers_resume() {
     let mut agent_id = String::new();
     let mut session_id = String::new();
     let mut agent_name = String::new();
-    for _ in 0..15 {
+    for _ in 0..30 {
         std::thread::sleep(Duration::from_secs(1));
         let resp = harness.rpc_call("agent.list", None);
         let agents = resp["result"].as_array().unwrap();
@@ -922,7 +931,7 @@ fn test_daemon_v2_nudge_stopped_agent_triggers_resume() {
     // The agent should be resuming — check after a few seconds
     // (resume spawns a new process with --resume <session_id>)
     let mut resumed = false;
-    for _ in 0..15 {
+    for _ in 0..30 {
         std::thread::sleep(Duration::from_secs(2));
         let resp = harness.rpc_call("agent.list", None);
         let agents = resp["result"].as_array().unwrap();

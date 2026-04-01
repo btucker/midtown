@@ -6,12 +6,20 @@ import { onMount } from "svelte";
 
 const STORAGE_KEY = "midtown-pwa-install-dismissed";
 
+interface BeforeInstallPromptEvent extends Event {
+	prompt(): Promise<void>;
+	userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+}
+
 let showBanner = $state(false);
-let deferredPrompt = $state(null);
+let deferredPrompt: BeforeInstallPromptEvent | null = $state(null);
 let isIos = $state(false);
 
 function isStandalone() {
-	return window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+	return (
+		window.matchMedia("(display-mode: standalone)").matches ||
+		(navigator as Navigator & { standalone?: boolean }).standalone === true
+	);
 }
 
 function isDismissed() {
@@ -46,9 +54,10 @@ onMount(() => {
 
 	// Detect iOS/iPadOS Safari (not standalone, not Chrome/Firefox on iOS)
 	const ua = navigator.userAgent;
-	const isiOS = /iPhone|iPad|iPod/.test(ua) && !navigator.standalone;
+	const nav = navigator as Navigator & { standalone?: boolean };
+	const isiOS = /iPhone|iPad|iPod/.test(ua) && !nav.standalone;
 	// iPadOS 13+ reports as Macintosh — detect via touch support
-	const isIPadOS = /Macintosh/.test(ua) && navigator.maxTouchPoints > 1 && navigator.standalone !== true;
+	const isIPadOS = /Macintosh/.test(ua) && navigator.maxTouchPoints > 1 && nav.standalone !== true;
 	// Exclude non-Safari browsers on iOS (they show as CriOS, FxiOS, etc.)
 	const isSafari = (isiOS || isIPadOS) && /Safari/.test(ua) && !/CriOS|FxiOS|OPiOS|EdgiOS/.test(ua);
 
@@ -59,9 +68,9 @@ onMount(() => {
 	}
 
 	// Chromium-based browsers: listen for beforeinstallprompt
-	function handleBeforeInstall(e) {
+	function handleBeforeInstall(e: Event) {
 		e.preventDefault();
-		deferredPrompt = e;
+		deferredPrompt = e as BeforeInstallPromptEvent;
 		showBanner = true;
 	}
 

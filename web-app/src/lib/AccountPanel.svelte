@@ -1,21 +1,33 @@
 <script lang="ts">
+import type { Snippet } from "svelte";
 import { onMount } from "svelte";
 import { fetchAllAuthProfiles, startAuthLogin, submitAuthCode, switchAuthProfile } from "./api";
 import { authProfilesByProvider, authSwitching, usageData } from "./store.ts";
+import type { UsageEntry } from "./types.ts";
 import { estimateTimeToFull, formatResetTime, usageColor } from "./usage-utils.ts";
 
-let { footerLeft } = $props();
+interface AccountProfile {
+	key: string;
+	name: string;
+	displayName: string;
+	provider: string;
+	is_current: boolean;
+	has_credentials: boolean;
+	usage?: UsageEntry;
+}
+
+let { footerLeft }: { footerLeft?: Snippet } = $props();
 let listExpanded = $state(false);
-let expandedKey = $state(null);
-let switchingKey = $state(null);
-let error = $state(null);
+let expandedKey = $state<string | null>(null);
+let switchingKey = $state<string | null>(null);
+let error = $state<string | null>(null);
 let showAddHint = $state(false);
-let loginKey = $state(null);
+let loginKey = $state<string | null>(null);
 let showCodeInput = $state(false);
 let authCode = $state("");
 let submittingCode = $state(false);
 
-async function handleLogin(profileName, provider, event) {
+async function handleLogin(profileName: string, provider: string, event: MouseEvent) {
 	event.stopPropagation();
 	loginKey = profileName;
 	error = null;
@@ -110,11 +122,11 @@ function toggleList() {
 	}
 }
 
-function toggleDetail(key) {
+function toggleDetail(key: string) {
 	expandedKey = expandedKey === key ? null : key;
 }
 
-async function handleRowClick(profile) {
+async function handleRowClick(profile: AccountProfile) {
 	if (profile.is_current) {
 		toggleDetail(profile.key);
 	} else if (!profile.has_credentials) {
@@ -125,7 +137,7 @@ async function handleRowClick(profile) {
 		const result = await switchAuthProfile(profile.name, profile.provider);
 		switchingKey = null;
 		if (!result.ok) {
-			error = result.error;
+			error = result.error || null;
 			setTimeout(() => {
 				error = null;
 			}, 5000);
@@ -134,7 +146,7 @@ async function handleRowClick(profile) {
 }
 </script>
 
-{#snippet profileRow(profile)}
+{#snippet profileRow(profile: AccountProfile)}
   {@const hasUsage = profile.usage && (profile.usage.session_resets || profile.usage.week_resets)}
   {@const isSwitching = switchingKey === profile.key}
   {@const isDetailOpen = expandedKey === profile.key}
@@ -160,7 +172,7 @@ async function handleRowClick(profile) {
       {/if}
       {profile.displayName}
     </span>
-    {#if hasUsage}
+    {#if hasUsage && profile.usage}
       <span class="text-[0.65rem] tabular-nums shrink-0" style="color: {usageColor(profile.usage.session_util)}">S:{Math.round(profile.usage.session_util)}%</span>
       <span class="text-[0.65rem] tabular-nums shrink-0" style="color: {usageColor(profile.usage.week_util)}">W:{Math.round(profile.usage.week_util)}%</span>
     {:else if profile.has_credentials}
@@ -172,7 +184,7 @@ async function handleRowClick(profile) {
 
   {#if isDetailOpen}
     <div class="ml-5 mb-0.5 flex flex-col gap-0.5">
-      {#if hasUsage}
+      {#if hasUsage && profile.usage}
         {#each [
           { label: 'Session', util: profile.usage.session_util, resets: profile.usage.session_resets, isSession: true },
           { label: 'Week', util: profile.usage.week_util, resets: profile.usage.week_resets, isSession: false },

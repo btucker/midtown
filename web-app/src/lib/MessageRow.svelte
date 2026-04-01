@@ -17,6 +17,7 @@ import {
 import { activeProject, channels, coworkers, threadForkOwners } from "./store.ts";
 import ToolDataBlocks from "./ToolDataBlocks.svelte";
 import { isToolOnly } from "./toolRunGrouping.ts";
+import type { Message } from "./types.ts";
 
 const AVATAR_SIZE = "2.4rem";
 const AVATAR_GAP = "0.5rem";
@@ -30,6 +31,7 @@ let {
 	senderSpacing = "1.5em",
 	senderClass = "",
 	currentTask = undefined,
+	onTaskClick = undefined,
 	channelName = undefined,
 	threadParentId = undefined,
 	isDedicatedSession = false,
@@ -41,19 +43,19 @@ let {
 
 const TASK_DIVIDER_RE = /^─── Task !.+───$/;
 
-function isTaskDivider(msg) {
+function isTaskDivider(msg: Message) {
 	return msg.from === "midtown" && TASK_DIVIDER_RE.test((msg.content || "").trim());
 }
 
 // renderContent() wraps output in block-level <p> tags via marked.parse().
 // Strip the outer <p>...</p> so the label can sit inline within the divider flex row.
-function renderInline(text) {
+function renderInline(text: string) {
 	return renderContent(text, getApiBase())
 		.replace(/^<p>/, "")
 		.replace(/<\/p>\s*$/, "");
 }
 
-function avatarLetter(name) {
+function avatarLetter(name: string) {
 	return (name || "?")[0].toUpperCase();
 }
 
@@ -77,7 +79,7 @@ const agentNames = $derived(
 	new Set([
 		// Agents with existing displayable DM channels (covers coworkers and
 		// historical DMs that don't shadow a real channel lead or fork home).
-		...getDisplayableDmChannels($channels, forkNames).map((ch) => ch.name.slice(3)),
+		...getDisplayableDmChannels($channels, forkNames).map((ch: { name: string }) => ch.name.slice(3)),
 		// Active coworkers (selectDm creates channel on demand)
 		...$coworkers.map((cw) => cw.name),
 	]),
@@ -88,11 +90,11 @@ function handleSenderClick() {
 }
 
 let permalinkUrl = $derived(
-	channelName && msg?.id ? getPermalinkUrl($activeProject, channelName, msg.id, threadParentId) : "",
+	channelName && msg?.id && $activeProject ? getPermalinkUrl($activeProject, channelName, msg.id, threadParentId) : "",
 );
 
 let copiedTooltip = $state(false);
-let tooltipTimeout = null;
+let tooltipTimeout: ReturnType<typeof setTimeout> | null = null;
 
 // Clean up tooltip timeout when component is destroyed
 $effect(() => {
@@ -101,7 +103,7 @@ $effect(() => {
 	};
 });
 
-function handleTimestampClick(e) {
+function handleTimestampClick(e: MouseEvent) {
 	if (!permalinkUrl) return;
 	e.preventDefault();
 	e.stopPropagation();
@@ -115,11 +117,11 @@ function handleTimestampClick(e) {
 	});
 }
 
-function isAction(msg) {
+function isAction(msg: Message) {
 	return msg.msg_type === "action" || msg.content?.startsWith("/me ");
 }
 
-function getActionContent(msg) {
+function getActionContent(msg: Message) {
 	return msg.content.replace(/^\/me\s*/, "");
 }
 
@@ -201,7 +203,15 @@ let hidden = $derived(!showToolData && isToolOnly(msg));
           </span>
         {/if}
         {#if currentTask}
-          <span class="text-muted-foreground text-[0.7rem]"> — {currentTask}</span>
+          {@const taskInfo = typeof currentTask === 'object' ? currentTask : { label: currentTask }}
+          {#if taskInfo.threadId && taskInfo.channel}
+            <button
+              class="text-muted-foreground text-[0.7rem] hover:text-foreground hover:underline cursor-pointer"
+              onclick={() => onTaskClick?.(taskInfo)}
+            > — {taskInfo.label}</button>
+          {:else}
+            <span class="text-muted-foreground text-[0.7rem]"> — {taskInfo.label}</span>
+          {/if}
         {/if}
       </div>
       {#if children}

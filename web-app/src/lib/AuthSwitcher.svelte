@@ -2,9 +2,10 @@
 import { onMount } from "svelte";
 import { fetchAllAuthProfiles, switchAuthProfile } from "./api.ts";
 import { authProfilesByProvider, authSwitching, selectedAuthProvider } from "./store.ts";
+import type { AuthProfile } from "./types.ts";
 
 let open = $state(false);
-let error = $state(null);
+let error = $state<string | null>(null);
 
 onMount(() => {
 	fetchAllAuthProfiles();
@@ -17,13 +18,13 @@ function toggle() {
 	}
 }
 
-async function selectProfile(profile, provider) {
+async function selectProfile(profile: AuthProfile, provider: string) {
 	if (profile.is_current || $authSwitching) return;
 	open = false;
 	error = null;
 	const result = await switchAuthProfile(profile.name, provider);
 	if (!result.ok) {
-		error = result.error;
+		error = result.error || null;
 		setTimeout(() => {
 			error = null;
 		}, 5000);
@@ -33,12 +34,12 @@ async function selectProfile(profile, provider) {
 	}
 }
 
-function selectProvider(provider) {
+function selectProvider(provider: string) {
 	$selectedAuthProvider = provider;
 }
 
-function handleClickOutside(event) {
-	if (open && !event.target.closest(".auth-switcher")) {
+function handleClickOutside(event: MouseEvent) {
+	if (open && !(event.target as HTMLElement | null)?.closest(".auth-switcher")) {
 		open = false;
 	}
 }
@@ -70,7 +71,7 @@ const currentProfile = $derived(
 const availableProviders = $derived(Object.keys($authProfilesByProvider));
 
 // Provider display names
-const providerNames = {
+const providerNames: Record<string, string> = {
 	claude: "Claude",
 	codex: "Codex",
 };
@@ -91,7 +92,7 @@ const providerNames = {
       {:else}
         <span class="before:content-['🔑'] before:text-[0.7rem]"></span>
       {/if}
-      <span class="text-muted-foreground shrink-0">{providerNames[currentProfile?.provider] || '...'}</span>
+      <span class="text-muted-foreground shrink-0">{(currentProfile?.provider && providerNames[currentProfile.provider]) || '...'}</span>
       <span class="text-muted-foreground mx-0.5 shrink-0">/</span>
       <span class="max-w-[60px] truncate">{currentProfile?.name || '...'}</span>
     </button>

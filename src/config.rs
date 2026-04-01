@@ -1094,6 +1094,14 @@ pub fn load_full_project_config(dir_key: &str) -> Option<FullProjectConfig> {
     FullProjectConfig::load(dir_key)
 }
 
+/// Read max_in_progress_tasks from project config, defaulting to 12.
+pub fn max_in_progress_from_config() -> usize {
+    crate::paths::detect_repo_name()
+        .and_then(|dir_key| load_full_project_config(&dir_key))
+        .and_then(|c| c.default.max_in_progress_tasks())
+        .unwrap_or(12)
+}
+
 /// Get the project-specific daemon configuration, merged with global.
 ///
 /// Priority: project daemon section > global daemon section.
