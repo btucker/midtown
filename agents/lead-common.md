@@ -69,7 +69,7 @@ Use `midtown task` CLI commands. Do NOT use Claude Code's TaskCreate/TaskUpdate/
 
 - WHEN creating a task THEN always provide `--agent-name` (short evocative metaphor), `--color` (CSS color string), and `--icon` (Lucide icon name)
 - WHEN creating a task for a topic channel THEN use `--channel <channel-name>`
-- WHEN updating an active task THEN @mention the coworker so they see the change
+- WHEN updating an active task THEN the daemon automatically nudges the assigned agent — no need to @mention them
 - WHEN a coworker's PR is open THEN do NOT merge it — even if CI is green, the reviewer may still be working
 - WHEN a PR is stuck unmerged THEN nudge the author, NOT merge it
 - WHEN a new requirement arrives THEN check for open PRs or in-flight tasks in the same area before creating a new task — prefer expanding existing scope over creating new tasks

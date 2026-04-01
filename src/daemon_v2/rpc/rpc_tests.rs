@@ -788,6 +788,61 @@ fn task_update_missing_params_returns_error() {
 }
 
 #[test]
+fn task_update_nudges_assigned_agent() {
+    let mut proj = projections_with_tasks_and_prs();
+    // Assign an agent to task-1
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "agent-1".into(),
+        name: "ghost-town".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: crate::daemon_v2::events::Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: Some("task-1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "agent-1".into(),
+        pid: 100,
+        session_id: Some("sess-1".into()),
+    });
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "task.update",
+        "id": 300,
+        "params": {"id": "task-1", "subject": "Updated subject"}
+    });
+    let (response, _events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(commands.len(), 1, "should nudge the assigned agent");
+    match &commands[0] {
+        crate::daemon_v2::decisions::Command::NudgeAgent { id, message } => {
+            assert_eq!(id, "agent-1");
+            assert!(message.contains("task"), "nudge should mention task update");
+        }
+        other => panic!("expected NudgeAgent, got {:?}", other),
+    }
+}
+
+#[test]
+fn task_update_no_nudge_when_no_agent() {
+    let proj = projections_with_tasks_and_prs();
+    // No agent assigned to task-1
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "task.update",
+        "id": 301,
+        "params": {"id": "task-1", "subject": "Updated subject"}
+    });
+    let (response, _events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert!(commands.is_empty(), "no agent assigned — should not nudge");
+}
+
+#[test]
 fn pr_list_returns_prs() {
     let proj = projections_with_tasks_and_prs();
     let request = json!({"jsonrpc": "2.0", "method": "pr.list", "id": 210});

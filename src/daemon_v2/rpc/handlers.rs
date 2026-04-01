@@ -652,13 +652,14 @@ pub fn handle_task_list(proj: &Projections) -> Result<Value, RpcError> {
     Ok(json!(tasks))
 }
 
-/// Handle `task.update` — verify the task exists and return ok.
+/// Handle `task.update` — verify the task exists, nudge the assigned agent
+/// if one exists, and return events + commands.
 ///
 /// Required fields: `id`.
 pub fn handle_task_update(
     params: Option<&Value>,
     proj: &Projections,
-) -> Result<Vec<DomainEvent>, RpcError> {
+) -> Result<(Vec<DomainEvent>, Vec<Command>), RpcError> {
     let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
     let id = params
         .get("id")
@@ -676,6 +677,20 @@ pub fn handle_task_update(
         });
     }
 
+    // Auto-nudge the assigned agent so they see the update.
+    let commands: Vec<Command> = proj
+        .agents
+        .by_task
+        .get(&id)
+        .map(|agent_id| Command::NudgeAgent {
+            id: agent_id.clone(),
+            message: format!(
+                "Your task !{id} was updated — run `midtown task view {id}` to see the changes"
+            ),
+        })
+        .into_iter()
+        .collect();
+
     let thread_id = params
         .get("thread_id")
         .and_then(|v| v.as_str())
@@ -685,15 +700,17 @@ pub fn handle_task_update(
         .and_then(|v| v.as_str())
         .map(String::from);
 
-    if thread_id.is_none() && message_id.is_none() {
-        return Ok(vec![]);
-    }
+    let events = if thread_id.is_some() || message_id.is_some() {
+        vec![DomainEvent::TaskUpdated {
+            task_id: id,
+            thread_id,
+            message_id,
+        }]
+    } else {
+        vec![]
+    };
 
-    Ok(vec![DomainEvent::TaskUpdated {
-        task_id: id,
-        thread_id,
-        message_id,
-    }])
+    Ok((events, commands))
 }
 
 /// Handle `pr.list` — returns all PR data from WorkIndex.

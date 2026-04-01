@@ -51,6 +51,7 @@
 - WHEN a worker has not reported a state change for 5 minutes THEN the system SHALL nudge it
 - WHEN a running worker's task is Completed THEN the system SHALL stop the worker
 - WHEN a task declares `blocked_by` dependencies THEN the system SHALL NOT dispatch it until all blockers are completed
+- WHEN a task is updated via `task.update` AND it has an assigned agent THEN the system SHALL nudge that agent with a message describing the update
 
 ---
 
@@ -557,7 +558,7 @@ Behavioral requirements for agent system prompts. Specs are organized by audienc
 - WHEN a lead creates a task THEN it SHALL use `midtown task create` CLI commands, NOT Claude Code's TaskCreate tool
 - WHEN creating a task THEN the lead SHALL always provide `--agent-name` (short evocative metaphor), `--color` (CSS color string), and `--icon` (Lucide icon name)
 - WHEN creating a task for a topic channel THEN the lead SHALL use `--channel <channel-name>`
-- WHEN updating an active task THEN the lead SHALL @mention the coworker so they see the change
+- WHEN updating an active task THEN the daemon automatically nudges the assigned agent — no manual @mention needed
 - WHEN a coworker's PR is open THEN the lead SHALL NOT merge it — even if CI is green, the reviewer may still be working
 - WHEN a PR is stuck unmerged THEN the lead SHALL nudge the author, NOT merge it
 - WHEN a new requirement arrives THEN the lead SHALL check for open PRs or in-flight tasks in the same area before creating a new task — prefer expanding existing scope over creating new tasks
