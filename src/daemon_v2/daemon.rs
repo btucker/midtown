@@ -821,8 +821,16 @@ impl DaemonV2 {
                     proj.agents.by_id.get(&id).cloned()
                 };
                 if let Some(agent) = agent {
-                    // Derive the worktree path for resumed agents (same as fresh spawns)
+                    // Derive the worktree path for resumed agents (same as fresh spawns).
+                    // Channel directory overrides must be set first so
+                    // prepare_worktree_for_spawn doesn't overwrite them.
                     let mut config = executor::spawn_config_from_agent(&agent);
+                    if let Some(ref ch) = agent.channel {
+                        let proj = self.projections.lock().await;
+                        if let Some(dir) = proj.channels.channel_directory(ch) {
+                            config.working_dir = Some(dir.to_string());
+                        }
+                    }
                     self.prepare_worktree_for_spawn(&mut config);
                     self.lifecycle_guard.mark_pending(id.clone());
                     let working_dir = config.working_dir.clone();
@@ -906,6 +914,12 @@ impl DaemonV2 {
                 };
                 if let Some(agent) = agent {
                     let mut config = executor::spawn_config_from_agent(&agent);
+                    if let Some(ref ch) = agent.channel {
+                        let proj = self.projections.lock().await;
+                        if let Some(dir) = proj.channels.channel_directory(ch) {
+                            config.working_dir = Some(dir.to_string());
+                        }
+                    }
                     self.prepare_worktree_for_spawn(&mut config);
                     self.lifecycle_guard.mark_pending(id.to_string());
                     self.lifecycle_guard.stash_nudge(id, message.to_string());
