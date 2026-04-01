@@ -52,3 +52,4 @@ tests/fixtures/snapshot/captured/
 
 # Dogfood loop state
 .dogfood-env
+.dogfood-state
