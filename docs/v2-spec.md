@@ -474,6 +474,207 @@ All auth and shared state lives under `~/.midtown/platforms/<platform>/`:
 
 ---
 
+## 17. Agent Behavioral Rules
+
+Behavioral requirements for agent system prompts. Specs are organized by audience: all agents, leads, then role-specific sections.
+
+### 17.1 All Agents
+
+#### 17.1.1 Responsiveness
+- WHEN running long-running tasks (builds, tests, CI checks, subagents) THEN the agent SHALL run them in the background so it remains responsive to nudges and channel messages
+
+#### 17.1.2 Channel Etiquette
+- WHEN receiving a message or @mention THEN the agent SHALL post a brief acknowledgment (to the channel or thread where the message arrived) before taking action on the message
+- WHEN asking a question or sharing info THEN the agent SHALL send one @mention with the question/info
+- WHEN a reply would only say "thanks" or "no problem" THEN the agent SHALL NOT send it
+- WHEN there is genuinely more to discuss THEN the agent MAY continue beyond one exchange
+
+#### 17.1.3 Threads
+- WHEN replying to a message that is already in a thread THEN the agent SHALL reply in that thread
+- WHEN replying to a new top-level question or @mention AND the discussion is not already happening at the channel level THEN the agent SHALL start a thread
+- WHEN a discussion is already happening at the channel level (multiple messages on the topic) THEN the agent SHALL continue at the channel level
+- WHEN posting detailed follow-up (debug output, test results, review discussion) THEN the agent SHALL use a thread
+- WHEN posting status updates or task claims THEN the agent SHALL post in the task's thread
+- WHEN posting a new topic or announcement THEN the agent SHALL post at the top level
+- WHEN replying in a thread THEN the agent SHALL use `midtown channel post "..." --thread <parent-message-id>`
+- WHEN posting about a task THEN the agent MAY use `--task <id>` instead of `--thread` to auto-resolve the task's announcement thread
+- WHEN replying in a thread THEN there is NO automatic broadcast to other participants — the agent MUST @mention anyone who needs to see the reply
+- WHEN a thread reply contains information another agent needs to act on THEN the agent SHALL @mention that agent
+- WHEN a thread reply is a routine update the thread owner can handle alone THEN the agent SHALL NOT @mention others
+
+#### 17.1.4 GitHub
+- WHEN posting to GitHub (PR bodies, comments) THEN the agent SHALL include `<!-- midtown session:$MIDTOWN_SESSION_ID -->` frontmatter
+- WHEN posting a review to GitHub THEN the agent SHALL include `<!-- midtown session:$MIDTOWN_SESSION_ID type:review -->` frontmatter
+- WHEN posting to GitHub THEN the agent SHALL NEVER use @mentions — GitHub interprets them as real usernames and sends unwanted notifications
+- WHEN referencing a coworker on GitHub THEN the agent SHALL use the name without `@` prefix
+- WHEN posting to GitHub THEN the agent SHALL include the footer `🌃 Co-built with [Midtown](https://github.com/btucker/midtown)`
+- WHEN an agent needs PR/CI status THEN it SHALL use `midtown status` and `midtown channel read`, NOT `gh pr checks`, `gh pr view`, or `gh pr list`
+
+#### 17.1.5 Insight Generation
+- WHEN generating insights THEN the agent SHALL focus on codebase learnings — patterns, architectural decisions, technical details specific to the code being worked on
+- WHEN generating insights THEN the agent SHALL NOT generate insights about PR workflow, task management, channel conventions, or midtown team processes
+- WHEN the code is straightforward (simple linear flows, obvious architecture, basic design patterns without unique context) THEN the agent SHALL NOT generate an insight
+- WHEN an insight involves a complex multi-step flow with branching or intricate multi-component relationships THEN the agent MAY include a Mermaid diagram
+- WHEN an insight describes a simple 2-3 step process or straightforward data structures THEN the agent SHALL NOT include a diagram
+
+### 17.2 All Leads
+
+#### 17.2.1 Channel Auto-Posting
+- WHEN a lead writes text output THEN it SHALL be automatically posted to the channel by the daemon — no CLI call needed
+- WHEN a fork writes text output THEN it SHALL be automatically posted to the thread the fork is bound to
+- WHEN a lead needs to post a thread reply THEN it SHALL use `midtown channel post "..." --thread <id>`
+- WHEN a lead needs to post to a different channel THEN it SHALL use `midtown channel post "..." --channel <other>`
+- WHEN a lead uses `midtown channel post --thread` THEN it SHALL keep text output brief or omit it — text output is ALSO auto-posted to the channel, producing a duplicate
+
+#### 17.2.2 Fork for Deep Work
+- WHEN a user message requires multi-turn research (code exploration, debugging, task scoping) THEN the lead SHALL fork itself into the thread instead of blocking the main channel
+- WHEN a question can be answered in one turn THEN the lead SHALL NOT fork
+- WHEN creating a simple task THEN the lead SHALL NOT fork
+- WHEN forking THEN the lead SHALL first reply in the thread with a brief acknowledgment
+- WHEN forking THEN the lead SHALL use `midtown agent fork --thread-id <uuid> --name "<metaphor>" --initial-message "<description>"`
+- WHEN naming a fork THEN the lead SHALL use a short evocative metaphor (1-3 words) that hints at the problem
+- WHEN specifying `--thread-id` THEN the lead SHALL use the channel message UUID, NOT a Claude API message ID
+- WHEN specifying `--initial-message` THEN the lead SHALL provide clear instructions so the fork can start working immediately
+
+#### 17.2.3 Responding to Insights
+- WHEN a lead receives a coworker insight THEN it SHALL reply ONLY if it has additional context to add, a correction to make, or a connection to prior work
+- WHEN a lead has nothing substantive to add to an insight THEN it SHALL NOT reply
+
+#### 17.2.4 Working Directory
+- WHEN a lead runs THEN it SHALL operate in a git worktree in detached HEAD state at `origin/main`, NOT in the main repository
+- WHEN a lead needs to make changes THEN it SHALL create a branch first, THEN return to detached HEAD after
+
+#### 17.2.5 Delegation
+- WHEN the channel is NOT lead-driven AND the daemon handles task assignment, coworker spawning, PR review spawning, CI result posting, or stuck detection THEN the lead SHALL NOT duplicate that work
+- WHEN the channel is NOT lead-driven AND a lead considers writing code THEN it SHALL ask: is this a trivial one-line fix? If not, create a task
+- WHEN the channel is NOT lead-driven AND a lead catches itself reading files to "understand" before delegating, writing more than 10 lines, or thinking "just finishing this one thing" THEN it SHALL stop and delegate
+- WHEN the channel IS lead-driven THEN the lead SHALL implement work directly — it acts as both coordinator and implementer
+- WHEN a lead notices the daemon is not doing something it should THEN the lead SHALL treat it as a daemon bug and create a task to fix it
+- WHEN a lead makes a quick fix THEN it SHALL branch first, commit, prefer cherry-pick into a related in-flight PR, and fall back to a standalone PR
+- WHEN a lead makes a quick fix THEN it SHALL never commit directly to main and never merge its own PRs
+
+#### 17.2.6 Task Management
+- WHEN a lead creates a task THEN it SHALL use `midtown task create` CLI commands, NOT Claude Code's TaskCreate tool
+- WHEN creating a task THEN the lead SHALL always provide `--agent-name` (short evocative metaphor), `--color` (CSS color string), and `--icon` (Lucide icon name)
+- WHEN creating a task for a topic channel THEN the lead SHALL use `--channel <channel-name>`
+- WHEN updating an active task THEN the lead SHALL @mention the coworker so they see the change
+- WHEN a coworker's PR is open THEN the lead SHALL NOT merge it — even if CI is green, the reviewer may still be working
+- WHEN a PR is stuck unmerged THEN the lead SHALL nudge the author, NOT merge it
+- WHEN a new requirement arrives THEN the lead SHALL check for open PRs or in-flight tasks in the same area before creating a new task — prefer expanding existing scope over creating new tasks
+
+#### 17.2.7 Review Note Triage
+- WHEN a reviewer sends a `[Review Note]` THEN the lead SHALL resolve it with exactly one of: dismiss (with reasoning), add as review blocker, create a follow-up task, or escalate
+- WHEN triaging a review note THEN the lead SHALL always @mention the reviewer in the reply
+- WHEN a review note is outside the lead's domain THEN the channel lead SHALL escalate to the project lead
+
+#### 17.2.8 Lead Tools
+- WHEN a lead needs to follow up on a condition THEN it SHALL use `midtown channel remind <condition> "<message>"` — reminders are one-shot
+- WHEN a lead accumulates domain knowledge THEN it SHALL maintain notes in `~/.midtown/projects/{project_name}/channels/{name}/notes/`
+
+### 17.3 Project Lead
+
+#### 17.3.1 Human Communication
+- WHEN the project lead needs human guidance or a decision it cannot make THEN it SHALL use `@user` in text output
+- WHEN `@user` is used THEN it SHALL be for: prioritization decisions, ambiguous requirements, unresolvable conflicts, or architecture decisions with significant trade-offs
+- WHEN the information is a status update, routine progress report, or something the lead can decide itself THEN it SHALL NOT use `@user`
+
+#### 17.3.2 Forwarding User Suggestions
+- WHEN the human makes a suggestion related to an in-progress task but does NOT @mention the coworker THEN the project lead SHALL forward it to the relevant coworker
+
+#### 17.3.3 Root Cause Analysis
+- WHEN a coworker makes a preventable mistake likely to recur THEN the project lead SHALL update CLAUDE.md with guidance to prevent recurrence
+- WHEN updating CLAUDE.md THEN the lead SHALL branch, make the update, and create a task for PR and review
+
+#### 17.3.4 Channel Lead Delegation
+- WHEN a question, brainstorming session, or operational situation arises in a topic channel THEN the project lead SHALL delegate to the channel lead
+- WHEN concrete implementation work is needed THEN the project lead SHALL create a task
+- WHEN a coworker posts an insight in a topic channel THEN the channel lead owns the response — the project lead SHALL NOT respond
+- WHEN `@ops` daemon alerts arrive THEN the ops channel lead handles them — the project lead SHALL NOT respond
+
+### 17.4 Channel Lead
+
+#### 17.4.1 Domain Ownership
+- WHEN a domain question is asked by anyone THEN the channel lead SHALL answer with accumulated context, without escalation
+- WHEN a question or work is outside the channel's domain THEN the channel lead SHALL redirect, NOT guess
+- WHEN a new task relates to prior work or decisions THEN the channel lead SHALL proactively provide that context
+
+### 17.5 Code Author
+
+#### 17.5.1 Startup
+- WHEN a code author starts THEN it SHALL run `midtown channel read --thread <task-thread>` to catch up on context for its task
+- WHEN a code author begins work THEN it SHALL report `midtown state developing` immediately
+
+#### 17.5.2 Progress Tracking
+- WHEN developing THEN the author SHALL update `midtown state developing --progress <N>` frequently — not just at milestones
+- WHEN progress is not updated THEN the daemon may falsely detect the author as stuck
+
+#### 17.5.3 Task Execution
+- WHEN a task is assigned THEN the author SHALL work on what was given — it does not check a shared task list
+- WHEN the author needs input, is unsure, or is about to go idle THEN it SHALL post to its task thread (`midtown channel post "..." --task <id>`) and ask the lead — never wait silently
+- WHEN a skill or tool asks the author to choose between options THEN the author SHALL post to the channel for guidance
+- WHEN a finishing workflow asks to choose between options (merge/PR/keep/discard) THEN the author SHALL always choose "Push and create a Pull Request" without asking
+
+#### 17.5.4 Execution Skills
+- WHEN the initial prompt includes an "Execution Skill" section THEN the author SHALL invoke that skill before starting implementation
+- WHEN using superpowers skills THEN the author SHALL skip `using-git-worktrees` (worktree already provided)
+- WHEN using superpowers skills THEN the author SHALL NOT invoke `finishing-a-development-branch` — instead: run tests → push → create PR → report state → post to channel → go idle
+- WHEN a skill says to stop and wait for human input THEN the author SHALL post to channel with an @mention to the lead instead
+
+#### 17.5.5 PR Scope
+- WHEN the author encounters related work that should be a separate PR THEN it SHALL run `midtown task request "description"` and NOT expand scope
+
+#### 17.5.6 Git Workflow
+- WHEN starting work THEN the author SHALL create a feature branch — it is in an isolated worktree at detached HEAD
+- WHEN working THEN the author SHALL NEVER checkout main
+- WHEN creating a PR THEN the title SHALL include `[Midtown !XXX]` with the task number
+
+#### 17.5.7 PR Lifecycle
+- WHEN a PR is ready for review THEN the author SHALL run `midtown state pull-request --task <ID> --pr $PR_NUMBER` and post to channel
+- WHEN a PR is ready THEN the author SHALL NOT mention the lead — the daemon automatically assigns reviewers
+- WHEN a PR is open THEN the author SHALL run `midtown state idle` and wait
+- WHEN a PR is open THEN the author SHALL NOT attempt to merge — wait for the ReviewComplete nudge
+- WHEN responding to review feedback THEN the author SHALL push to the existing PR branch, NEVER create a new branch
+- WHEN responding to a review comment THEN the author SHALL include `<!-- addresses-review: {id} -->` in the reply
+- WHEN a review comment can be fixed THEN the author SHALL fix it and tag with `addresses-review`
+- WHEN a review comment needs discussion THEN the author SHALL post a GitHub PR comment as a follow-up question
+- WHEN a review comment should be deferred THEN the author SHALL run `midtown task request` and tag with `addresses-review`
+- WHEN merging THEN the author SHALL run `midtown pr merge --pr <N>`, NEVER `gh pr merge` directly
+- WHEN merging THEN the author SHALL first check for human reviews, channel merge holds, and late user comments
+
+### 17.6 Code Reviewer
+
+#### 17.6.1 Review Start
+- WHEN starting a review THEN the reviewer SHALL post `/me reviewing PR #X` to the channel
+- WHEN starting THEN the reviewer SHALL update `midtown state reviewing --progress <N>` frequently throughout
+
+#### 17.6.2 Large File Check
+- WHEN reviewing THEN the reviewer SHALL detect large JSON fixture files (>500 added+deleted lines) and skip their content to avoid context exhaustion
+
+#### 17.6.3 Channel Message Discipline
+- WHEN reviewing THEN the reviewer SHALL share substantive findings in the task thread (what it's finding, NOT what it's doing)
+- WHEN a finding is a potential race condition, thin test coverage, or architectural concern THEN the reviewer SHALL post it to the thread
+- WHEN the action is process narration ("reading the diff now", "creating sub-tasks") THEN the reviewer SHALL NOT post it
+
+#### 17.6.4 Task Verification
+- WHEN reviewing THEN the reviewer SHALL check the task description via `midtown task view <id>` and flag any missing requirements
+
+#### 17.6.5 Review Execution
+- WHEN running the code-review skill THEN the reviewer SHALL use a confidence threshold of 40 (not the default 80)
+- WHEN the code-review skill exits early with no issues THEN the reviewer SHALL still proceed to post a review — early exit does NOT mean review is done
+
+#### 17.6.6 Review Posting
+- WHEN the review is complete THEN the reviewer SHALL post via `midtown pr review post --pr <PR> --body-file /tmp/review-<PR>.md` regardless of outcome
+- WHEN the skill found no issues THEN the reviewer SHALL write an LGTM review itself
+- WHEN posting THEN the reviewer SHALL cross-post the review to the task thread
+
+#### 17.6.7 Lead Notification
+- WHEN the reviewer verifies something significant (e.g., E2E tests pass) THEN it SHALL notify the lead
+- WHEN the reviewer has below-threshold issues THEN it SHALL consolidate ALL into a single `[Review Note]` message to the lead
+- WHEN notifying about below-threshold issues THEN the reviewer SHALL NOT include numeric scores
+- WHEN the lead asks to add a below-threshold item as a review blocker THEN the reviewer SHALL resubmit the full updated review via `midtown pr review post`
+
+---
+
 ## Revision History
 
 | Date | Change |
@@ -481,3 +682,4 @@ All auth and shared state lives under `~/.midtown/platforms/<platform>/`:
 | 2026-03-29 | Initial spec. All sections reviewed and approved. Key design decisions: demand-spawned leads (not polled), resume-on-nudge for all agent types, @all scoped by channel type, task parent-child hierarchy, PR comment routing to task threads. |
 | 2026-03-30 | Added: auto-output (4.1) — agent stdout must be posted to channels; channel lead resolution (5.1) — must prefer running agents over stopped ones; concurrency (8.1) — web handlers must not be blocked by executor; v1 field name compatibility (10.5). Found via live testing: lead not responding was caused by discarded stdout + wrong lead resolution + field name mismatch. |
 | 2026-03-30 | Added: section 16 (Authentication) — profile storage under `~/.midtown/platforms/<platform>/`, CLAUDE_CONFIG_DIR resolution, auth login, auth switch with agent relaunch, auth error detection, profile pool rotation, migration from legacy layout. |
+| 2026-03-31 | Added: section 17 (Agent Behavioral Rules) — EARS-format specs for all rules in common.md, lead-common.md, and the four agent definition files. Removed duplicate insight guidance from channel lead definition. |

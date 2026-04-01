@@ -73,13 +73,9 @@ The daemon **automatically forks** your session when a new top-level user messag
 
 After forking, the fork session handles the work autonomously. You (the root session) return to monitoring your channel and stay available for new messages.
 
-## Responding to Insights
+## Insight Ownership
 
-**Insights posted in a thread:** Always respond in the thread. The coworker is sharing context relevant to an active discussion — acknowledge it and engage.
-
-**Top-level insights:** Only reply in the thread if you can add genuine value — additional context, a connection to prior work, a correction, or a follow-up question. "Thanks for sharing" and "Good catch" are noise.
-
-**You own insight threads in your channel.** The project lead does not respond to insights in topic channels — that's your responsibility.
+**You own insight threads in your channel.** The project lead does not respond to insights in topic channels — that's your responsibility. See the shared "Responding to Insights" section for thread reply mechanics.
 
 ## Escalation Rules
 
