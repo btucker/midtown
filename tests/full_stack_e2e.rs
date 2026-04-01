@@ -4,8 +4,8 @@
 //! coworker spawning, channel communication, web UI connectivity, and worktree
 //! isolation. They require a real Claude Code installation and tmux.
 //!
-//! Run with `cargo test --test full_stack_e2e -- --ignored --test-threads=1`
-//! as these spawn real processes and tmux sessions.
+//! Run with `cargo test --test full_stack_e2e -- --ignored`
+//! Each test gets an isolated MIDTOWN_BASE_DIR for parallel execution.
 
 use ntest::timeout;
 use std::fs;
@@ -79,6 +79,7 @@ fn cleanup_orphaned_test_daemons() {
 #[allow(dead_code)]
 struct FullStackFixture {
     temp_dir: PathBuf,
+    midtown_base: PathBuf,
     project_dir: PathBuf,
     repo_name: String,
     socket_path: PathBuf,
@@ -132,11 +133,11 @@ impl FullStackFixture {
             .join(&repo_name)
             .join("daemon.sock");
 
-        let project_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".midtown")
-            .join("projects")
-            .join(&repo_name);
+        // Isolated MIDTOWN_BASE_DIR per test for parallel execution
+        let midtown_base = temp_dir.join("midtown-home");
+        let _ = fs::create_dir_all(&midtown_base);
+
+        let project_dir = midtown_base.join("projects").join(&repo_name);
         let pid_path = project_dir.join("daemon.pid");
 
         if let Some(parent) = socket_path.parent() {
@@ -148,6 +149,7 @@ impl FullStackFixture {
 
         Some(Self {
             temp_dir,
+            midtown_base,
             project_dir,
             repo_name,
             socket_path,
@@ -178,6 +180,7 @@ impl FullStackFixture {
             .stderr(Stdio::null())
             .env("MIDTOWN_WEBHOOK_PORT", "0")
             .env("MIDTOWN_CHAT_MONITOR", "0")
+            .env("MIDTOWN_BASE_DIR", &self.midtown_base)
             .spawn();
 
         match child {
@@ -540,6 +543,7 @@ fn test_web_ui_connects() {
         .stderr(Stdio::null())
         .env("MIDTOWN_WEBHOOK_PORT", test_port.to_string())
         .env("MIDTOWN_CHAT_MONITOR", "0")
+        .env("MIDTOWN_BASE_DIR", &fixture.midtown_base)
         .spawn();
 
     match child {
@@ -719,12 +723,7 @@ fn test_worktree_isolation() {
 
     // Poll for any worktree to appear in the worktrees directory.
     // v2 names worktrees by task slug (e.g., "task-1-description"), not agent name.
-    let worktrees_base = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".midtown")
-        .join("projects")
-        .join(&fixture.repo_name)
-        .join("worktrees");
+    let worktrees_base = fixture.project_dir.join("worktrees");
 
     eprintln!(
         "Waiting for worktree in: {:?} (coworker: {})",
@@ -764,14 +763,6 @@ fn test_worktree_isolation() {
 
         // Debug: check what worktrees actually exist
         eprintln!("Debug: Checking for alternative worktree locations...");
-
-        let worktrees_base = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".midtown")
-            .join("projects")
-            .join(&fixture.repo_name)
-            .join("worktrees");
-
         eprintln!("Worktrees base exists: {}", worktrees_base.exists());
 
         if let Ok(entries) = fs::read_dir(&worktrees_base) {
