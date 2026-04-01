@@ -9,137 +9,66 @@
 
 ## Responsiveness
 
-Run long-running tasks (builds, tests, CI checks, Task subagents, Explore agents) in the background so you stay responsive to nudges and channel messages.
+- WHEN running long-running tasks (builds, tests, CI checks, subagents) THEN run them in the background so you remain responsive to nudges and channel messages
 
 ## Channel Etiquette
 
-Keep channel messages purposeful. Avoid pointless back-and-forth.
-
-**Note:** Role-specific guidelines (e.g., reviewer constraints) take precedence over general etiquette when they are more restrictive.
-
-- **Asking questions or sharing info**: Send one @mention with your question/info
-- **Receiving @mentions**: Reply with a brief acknowledgment if needed, then stop
-- **No thank-you chains**: Don't reply just to say "thanks!" or "no problem!"
-
-Good:
-```
-@park The auth tests are flaky, FYI
-```
-```
-@madison Got it, will check
-```
-
-Bad:
-```
-@park The auth tests are flaky, FYI
-@madison Thanks for letting me know!
-@park No problem!
-@madison 👍
-```
-
-If there's genuinely more to discuss, continue. Otherwise, one exchange is enough.
+- WHEN receiving a message or @mention THEN post a brief acknowledgment (to the channel or thread where the message arrived) before taking action on the message
+- WHEN asking a question or sharing info THEN send one @mention with your question/info
+- WHEN a reply would only say "thanks" or "no problem" THEN do NOT send it
+- WHEN there is genuinely more to discuss THEN you MAY continue beyond one exchange
 
 ## Threads
 
-Use threads for follow-up discussions on specific messages. This keeps the main channel clean.
-
-**When to use threads:**
-- Replying to a specific question or @mention
-- Multi-message back-and-forth on a topic
-- Detailed follow-up (debug output, test results, review discussion)
-
-**When NOT to use threads:**
-- Status updates and task claims — these belong in the main channel
-- New topics or announcements
-- @mentions that need team-wide visibility
+- WHEN replying to a message that is already in a thread THEN reply in that thread
+- WHEN replying to a new top-level question or @mention AND the discussion is not already happening at the channel level THEN start a thread
+- WHEN a discussion is already happening at the channel level (multiple messages on the topic) THEN continue at the channel level
+- WHEN posting detailed follow-up (debug output, test results, review discussion) THEN use a thread
+- WHEN posting status updates or task claims THEN post in the task's thread
+- WHEN posting a new topic or announcement THEN post at the top level
 
 **How to post in a thread:**
 ```bash
 midtown channel post "reply text" --thread <parent-message-id>
 ```
 
-**Task shorthand:** For task-related posts, use `--task <id>` instead of `--thread`. This automatically resolves the task's announcement message and threads your post under it:
+**Task shorthand:** Use `--task <id>` instead of `--thread` to auto-resolve the task's announcement thread:
 ```bash
 midtown channel post "found the root cause in auth.rs" --task 42
 ```
 
-In the TUI, use `/thread` to pick a message and open the thread panel.
+**Thread notifications:** There is NO automatic broadcast to other thread participants. You MUST @mention anyone who needs to see your reply. @mention agents when your reply contains information they need to act on. Do NOT @mention for routine updates the thread owner can handle alone.
 
-**Thread notifications:** Thread replies are routed to the forked lead session that owns the thread, but there is **no automatic broadcast to other thread participants**. If you want a coworker or reviewer to see your thread reply, you **must @mention them** — otherwise they won't be notified. The fork should @mention others when a reply contains information they need to act on (e.g., a question directed at them, a decision affecting their work, or context they explicitly requested). Don't @mention for routine updates the fork can handle alone.
+## GitHub
+
+Always include session frontmatter in GitHub content so events are attributed to you:
+
+1. **PR bodies and comments:**
+```
+<!-- midtown session:$MIDTOWN_SESSION_ID -->
+```
+
+2. **PR reviews** — include `type:review` so the daemon detects the review:
+```
+<!-- midtown session:$MIDTOWN_SESSION_ID type:review -->
+```
+
+**CRITICAL**: The session ID is already embedded — do NOT type `$MIDTOWN_SESSION_ID` literally.
+
+- WHEN posting to GitHub THEN NEVER use @mentions — GitHub interprets them as real usernames and sends unwanted notifications. Use coworker names without the `@` prefix
+- WHEN posting to GitHub THEN include this footer: `🌃 Co-built with [Midtown](https://github.com/btucker/midtown)`
+- WHEN you need PR/CI status THEN use `midtown status` and `midtown channel read`, NOT `gh pr checks`, `gh pr view`, or `gh pr list`
+
+## Insights
+
+- WHEN generating insights THEN focus on codebase learnings — patterns, architectural decisions, technical details specific to the code you're working on
+- WHEN generating insights THEN do NOT generate insights about PR workflow, task management, channel conventions, or midtown team processes
+- WHEN the code is straightforward (simple linear flows, obvious architecture, basic design patterns without unique context) THEN do NOT generate an insight
+- WHEN an insight involves a complex multi-step flow with branching or intricate multi-component relationships THEN you MAY include a Mermaid diagram
+- WHEN an insight describes a simple 2-3 step process or straightforward data structures THEN do NOT include a diagram
 
 ## Useful Commands
 
 ```bash
 midtown agent show <name>  # View a coworker's current terminal output
 ```
-
-Use `midtown agent show` to check on what a coworker is doing. This captures and prints the coworker's recent terminal output.
-
-## GitHub Etiquette
-
-**IMPORTANT**: Always include session frontmatter in GitHub content so events are attributed to you. Your session ID is embedded in these examples — copy them directly:
-
-1. **PR bodies and comments** - add frontmatter:
-```
-<!-- midtown session:$MIDTOWN_SESSION_ID -->
-```
-
-2. **PR reviews** - include `type:review` so the daemon detects the review:
-```
-<!-- midtown session:$MIDTOWN_SESSION_ID type:review -->
-
-## Code Review by {your name}
-...
-```
-
-**CRITICAL**: Copy the frontmatter exactly as shown above. The session ID is already embedded — do NOT type `$MIDTOWN_SESSION_ID` literally.
-
-**Review styles vary by provider.** Claude reviewers typically post comment-based reviews (with `## Code Review...`), while Codex can submit formal GitHub reviews. Treat either as valid review input, but do not merge until feedback is addressed.
-
-**GitHub footer**: When posting to GitHub (PR descriptions, PR comments, review comments), include this footer instead of the default Claude Code footer:
-```
-🌃 Co-built with [Midtown](https://github.com/btucker/midtown)
-```
-
-**CRITICAL: NEVER use @mentions in GitHub** (PR descriptions, comments, reviews). GitHub interprets `@name` as real GitHub usernames and sends unwanted notifications to strangers. This has already caused incidents. Use coworker names without the `@` prefix in all GitHub content. @mentions are ONLY for the IRC channel where the daemon routes them.
-
-- ❌ GitHub: "@park Addressed both issues" — this pings a real GitHub user named "park"
-- ✅ GitHub: "Addressed both issues (per park's feedback)"
-- ✅ Channel: "@park please check the tests"
-
-## Insights
-
-Insights are auto-posted to the task's channel and nudge the channel lead. Channel leads reply in a thread ONLY if they can add genuine value. No "thanks for sharing" replies.
-
-When generating insights (if enabled by output style settings), focus on **codebase learnings** - interesting patterns, architectural decisions, or technical details specific to the code you're working with.
-
-**Do NOT generate insights about:**
-- PR review workflow or process observations
-- Task management patterns
-- Channel communication conventions
-- General midtown team processes
-
-Insights should help users understand the *codebase*, not the *workflow*.
-
-**Be very discerning about when insights are valuable.** Only generate insights when you discover something genuinely interesting or non-obvious about the codebase:
-- A complex state machine or control flow
-- An architectural decision with interesting tradeoffs
-- A non-obvious relationship between components
-- A clever optimization or algorithm
-
-**Do NOT generate insights for:**
-- Simple linear flows or straightforward implementations
-- Obvious architecture that just restates the code structure
-- Basic design patterns (observer, factory, etc.) without unique context
-- Information that's already clear from reading the code
-
-**Mermaid Diagrams:** Be extremely selective about when insights warrant diagram generation. Most insights don't need diagrams — prose is clearer and faster to read. Only generate insights that would genuinely benefit from a diagram when:
-- The insight involves a complex multi-step flow with branching or loops
-- There are intricate relationships between multiple components that are hard to describe linearly
-- The architecture has non-obvious data flow or control flow that a diagram clarifies
-
-**Do NOT generate diagram-worthy insights for:**
-- Simple 2-3 step processes (describe in prose instead)
-- Straightforward data structures or class hierarchies (prose is clearer)
-- Linear sequences without branching (just list the steps)
-- Architecture that mirrors the obvious file/module structure

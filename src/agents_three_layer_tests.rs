@@ -357,7 +357,7 @@ fn test_reviewer_prompt_layer1_before_layer2() {
         .find("# Code Reviewer")
         .expect("Agent definition (Layer 1) content should be present");
     let layer2_pos = prompt
-        .find("GitHub Etiquette")
+        .find("## GitHub")
         .expect("common.md (Layer 2) content should be present");
     assert!(
         layer1_pos < layer2_pos,
