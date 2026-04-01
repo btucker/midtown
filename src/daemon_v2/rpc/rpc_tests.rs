@@ -768,7 +768,7 @@ fn projections_with_tasks_and_prs() -> Projections {
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix-the-thing".into(),
-        author: "ghost-town".into(),
+        github_author: "ghost-town".into(),
     });
     proj
 }

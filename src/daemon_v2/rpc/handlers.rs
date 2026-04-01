@@ -117,7 +117,7 @@ pub fn handle_status(proj: &Projections) -> Result<Value, RpcError> {
             json!({
                 "number": pr.number,
                 "title": pr.branch,
-                "author": pr.author,
+                "author": pr.github_author,
                 "status": if pr.review_state == crate::daemon_v2::events::ReviewState::Approved { "approved" } else { "open" },
                 "ci_status": format!("{:?}", pr.ci_status).to_lowercase(),
                 "needs_review": pr.needs_review,
@@ -723,7 +723,7 @@ pub fn handle_pr_list(proj: &Projections) -> Result<Value, RpcError> {
             json!({
                 "number": pr.number,
                 "branch": pr.branch,
-                "author": pr.author,
+                "author": pr.github_author,
                 "ci_status": pr.ci_status,
                 "review_state": pr.review_state,
                 "is_merged": pr.is_merged,
@@ -796,7 +796,7 @@ pub fn handle_prs_status(proj: &Projections) -> Result<Value, RpcError> {
             json!({
                 "number": pr.number,
                 "branch": pr.branch,
-                "author": pr.author,
+                "author": pr.github_author,
                 "needs_review": proj.work.needing_review.contains(&pr.number),
             })
         })

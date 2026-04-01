@@ -212,6 +212,8 @@ pub struct PrOpenedInfo {
     pub author_coworker: Option<String>,
     /// The PR title (no longer used for task completion - see PrMergedInfo)
     pub title: String,
+    /// The GitHub username of the PR author (from event.pull_request.user.login)
+    pub github_author: String,
 }
 
 /// Populated by the `pull_request` webhook handler when a PR is merged,
@@ -486,7 +488,6 @@ struct PullRequestEvent {
 #[derive(Debug, Deserialize)]
 struct PullRequest {
     title: String,
-    #[allow(dead_code)]
     user: User,
     merged: Option<bool>,
     head: Option<PullRequestHead>,
@@ -825,6 +826,7 @@ fn handle_pull_request(body: &[u8]) -> Result<Option<WebhookEvent>, serde_json::
             branch: b.to_string(),
             author_coworker: coworker.clone(),
             title: event.pull_request.title.clone(),
+            github_author: event.pull_request.user.login.clone(),
         }),
         _ => None,
     };

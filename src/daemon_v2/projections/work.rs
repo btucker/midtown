@@ -32,7 +32,8 @@ pub struct PrState {
     pub number: u64,
     pub branch: String,
     /// GitHub username of the PR author.
-    pub author: String,
+    #[serde(alias = "author")]
+    pub github_author: String,
     /// Midtown agent name that created this PR (set via PrLinkedToTask).
     pub midtown_author: Option<String>,
     pub ci_status: CiStatus,
@@ -143,12 +144,12 @@ impl WorkIndex {
             DomainEvent::PrOpened {
                 number,
                 branch,
-                author,
+                github_author,
             } => {
                 let pr = PrState {
                     number: *number,
                     branch: branch.clone(),
-                    author: author.clone(),
+                    github_author: github_author.clone(),
                     midtown_author: None,
                     ci_status: CiStatus::Pending,
                     review_state: ReviewState::None,

@@ -141,7 +141,8 @@ pub enum DomainEvent {
     PrOpened {
         number: u64,
         branch: String,
-        author: String,
+        #[serde(alias = "author")]
+        github_author: String,
     },
     PrUpdated {
         number: u64,

@@ -456,7 +456,7 @@ fn pr_linked_to_task_sets_pr_number_on_task() {
     idx.apply(&DomainEvent::PrOpened {
         number: 88,
         branch: "feat/pr-linked".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     idx.apply(&DomainEvent::PrLinkedToTask {
         number: 88,
@@ -491,7 +491,7 @@ fn pr_linked_to_task_enables_reverse_lookup() {
     idx.apply(&DomainEvent::PrOpened {
         number: 88,
         branch: "feat/pr-linked".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     idx.apply(&DomainEvent::PrLinkedToTask {
         number: 88,

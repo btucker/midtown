@@ -13,7 +13,7 @@ fn make_projections_with_merged_pr(
     proj.apply(&DomainEvent::PrOpened {
         number: pr_number,
         branch: format!("feat/pr-{pr_number}"),
-        author: "alice".into(),
+        github_author: "alice".into(),
     });
     proj.apply(&DomainEvent::PrMerged {
         number: pr_number,
@@ -97,7 +97,7 @@ fn spawns_reviewer_for_pr_needing_review() {
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrReviewRequested { number: 42 });
 
@@ -114,7 +114,7 @@ fn no_duplicate_reviewer_when_already_running() {
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrReviewRequested { number: 42 });
     // Reviewer already exists and is running
@@ -146,7 +146,7 @@ fn respawns_reviewer_when_stopped() {
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrReviewRequested { number: 42 });
     // Reviewer existed but stopped
@@ -183,7 +183,7 @@ fn no_reviewer_for_pr_not_needing_review() {
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     // No PrReviewRequested event
 
@@ -201,7 +201,7 @@ fn add_reviewer_attempt(proj: &mut Projections, pr_num: u64, attempt: usize) {
         .work
         .prs
         .get(&pr_num)
-        .map(|pr| pr.author.clone())
+        .map(|pr| pr.github_author.clone())
         .unwrap_or_else(|| "unknown".to_string());
     let id = format!("{author}-reviewer-attempt-{attempt}");
     proj.apply(&DomainEvent::AgentCreated {
@@ -233,7 +233,7 @@ fn spawn_reviewers_escalates_after_max_restarts() {
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrReviewRequested { number: 42 });
 
@@ -269,7 +269,7 @@ fn escalation_not_repeated_when_cooldown_active() {
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrReviewRequested { number: 42 });
 
@@ -299,7 +299,7 @@ fn spawn_reviewers_respawns_within_limit() {
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrReviewRequested { number: 42 });
 
@@ -349,7 +349,7 @@ fn count_stopped_reviewers_uses_midtown_author_not_github_login() {
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "feat/auth".into(),
-        author: "btucker".into(),
+        github_author: "btucker".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 42,
@@ -439,7 +439,7 @@ fn suspends_author_with_open_pr() {
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 42,
@@ -487,7 +487,7 @@ fn no_suspend_for_merged_pr() {
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 42,
@@ -538,7 +538,7 @@ fn no_suspend_for_closed_pr() {
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 42,
@@ -585,7 +585,7 @@ fn nudge_rebase_after_merge_nudges_open_pr_workers() {
     proj.apply(&DomainEvent::PrOpened {
         number: 1,
         branch: "feat-a".into(),
-        author: "dev1".into(),
+        github_author: "dev1".into(),
     });
     proj.apply(&DomainEvent::PrMerged {
         number: 1,
@@ -596,7 +596,7 @@ fn nudge_rebase_after_merge_nudges_open_pr_workers() {
     proj.apply(&DomainEvent::PrOpened {
         number: 2,
         branch: "feat-b".into(),
-        author: "dev2".into(),
+        github_author: "dev2".into(),
     });
     proj.apply(&DomainEvent::TaskCreated {
         id: "t2".into(),
@@ -657,7 +657,7 @@ fn no_rebase_nudge_when_no_merged_prs() {
     proj.apply(&DomainEvent::PrOpened {
         number: 1,
         branch: "feat".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
 
     let commands = nudge_rebase_after_merge(&proj);
@@ -676,7 +676,7 @@ fn rebase_nudge_includes_stopped_workers() {
     proj.apply(&DomainEvent::PrOpened {
         number: 1,
         branch: "feat-a".into(),
-        author: "dev1".into(),
+        github_author: "dev1".into(),
     });
     proj.apply(&DomainEvent::PrMerged {
         number: 1,
@@ -687,7 +687,7 @@ fn rebase_nudge_includes_stopped_workers() {
     proj.apply(&DomainEvent::PrOpened {
         number: 2,
         branch: "feat-b".into(),
-        author: "dev2".into(),
+        github_author: "dev2".into(),
     });
     proj.apply(&DomainEvent::TaskCreated {
         id: "t2".into(),
@@ -753,7 +753,7 @@ fn no_rebase_nudge_when_cooldown_active() {
     proj.apply(&DomainEvent::PrOpened {
         number: 1,
         branch: "feat-a".into(),
-        author: "dev1".into(),
+        github_author: "dev1".into(),
     });
     proj.apply(&DomainEvent::PrMerged {
         number: 1,
@@ -764,7 +764,7 @@ fn no_rebase_nudge_when_cooldown_active() {
     proj.apply(&DomainEvent::PrOpened {
         number: 2,
         branch: "feat-b".into(),
-        author: "dev2".into(),
+        github_author: "dev2".into(),
     });
     proj.apply(&DomainEvent::TaskCreated {
         id: "t2".into(),

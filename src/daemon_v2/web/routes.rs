@@ -964,7 +964,7 @@ pub async fn webhook_handler(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let author = pr
+            let github_author = pr
                 .get("user")
                 .and_then(|u| u.get("login"))
                 .and_then(|v| v.as_str())
@@ -976,7 +976,7 @@ pub async fn webhook_handler(
                     events.push(crate::daemon_v2::events::DomainEvent::PrOpened {
                         number,
                         branch,
-                        author,
+                        github_author,
                     });
                     events
                         .push(crate::daemon_v2::events::DomainEvent::PrReviewRequested { number });

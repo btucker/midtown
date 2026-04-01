@@ -57,7 +57,7 @@ fn spawns_reviewer_named_after_author() {
     proj.apply(&DomainEvent::PrOpened {
         number: 101,
         branch: "feature/login".into(),
-        author: "park".into(),
+        github_author: "park".into(),
     });
     proj.apply(&DomainEvent::PrReviewRequested { number: 101 });
 
@@ -82,7 +82,7 @@ fn no_duplicate_reviewer_when_already_running() {
     proj.apply(&DomainEvent::PrOpened {
         number: 101,
         branch: "feature/login".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrReviewRequested { number: 101 });
     proj.apply(&DomainEvent::AgentCreated {
@@ -120,7 +120,7 @@ fn reviewer_initial_prompt_format() {
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix/auth-bug".into(),
-        author: "alice".into(),
+        github_author: "alice".into(),
     });
     proj.apply(&DomainEvent::PrReviewRequested { number: 42 });
 
@@ -146,7 +146,7 @@ fn reviewer_uses_code_reviewer_agent_type() {
     proj.apply(&DomainEvent::PrOpened {
         number: 7,
         branch: "main".into(),
-        author: "bob".into(),
+        github_author: "bob".into(),
     });
     proj.apply(&DomainEvent::PrReviewRequested { number: 7 });
 
@@ -171,7 +171,7 @@ fn no_reviewer_for_pr_not_needing_review() {
     proj.apply(&DomainEvent::PrOpened {
         number: 99,
         branch: "docs/update".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     // No PrReviewRequested event
 
@@ -211,7 +211,7 @@ fn merged_pr_completes_linked_in_progress_task() {
     proj.apply(&DomainEvent::PrOpened {
         number: 55,
         branch: "feature/new-thing".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 55,
@@ -260,7 +260,7 @@ fn merged_pr_does_not_re_complete_already_completed_task() {
     proj.apply(&DomainEvent::PrOpened {
         number: 55,
         branch: "done/branch".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 55,
@@ -288,7 +288,7 @@ fn merged_pr_without_task_produces_no_commands() {
     proj.apply(&DomainEvent::PrOpened {
         number: 77,
         branch: "fix/typo".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrMerged {
         number: 77,
@@ -314,7 +314,7 @@ fn merged_pr_nudges_other_workers_to_rebase() {
     proj.apply(&DomainEvent::PrOpened {
         number: 10,
         branch: "feat-a".into(),
-        author: "dev-a".into(),
+        github_author: "dev-a".into(),
     });
     proj.apply(&DomainEvent::PrMerged {
         number: 10,
@@ -359,7 +359,7 @@ fn merged_pr_nudges_other_workers_to_rebase() {
     proj.apply(&DomainEvent::PrOpened {
         number: 20,
         branch: "feat-b".into(),
-        author: "dev-b".into(),
+        github_author: "dev-b".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 20,
@@ -386,7 +386,7 @@ fn worker_stopped_when_task_has_open_pr_awaiting_review() {
     proj.apply(&DomainEvent::PrOpened {
         number: 33,
         branch: "feat/thing".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 33,
@@ -415,7 +415,7 @@ fn worker_not_stopped_for_merged_pr() {
     proj.apply(&DomainEvent::PrOpened {
         number: 33,
         branch: "feat/thing".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 33,
@@ -444,7 +444,7 @@ fn worker_not_stopped_for_closed_pr() {
     proj.apply(&DomainEvent::PrOpened {
         number: 33,
         branch: "feat/thing".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 33,
@@ -545,7 +545,7 @@ fn gced_reviewer_excluded_from_restart_count_and_resume() {
     proj.apply(&DomainEvent::PrOpened {
         number: 50,
         branch: "feat/gc-test".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     proj.apply(&DomainEvent::PrReviewRequested { number: 50 });
 
@@ -609,7 +609,7 @@ fn pr_comment_posts_to_channel_and_nudges_author() {
     proj.apply(&DomainEvent::PrOpened {
         number: 50,
         branch: "feat/x".into(),
-        author: "worker-w1".into(),
+        github_author: "worker-w1".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 50,
@@ -646,7 +646,7 @@ fn pr_comment_skips_nudge_when_commenter_is_author() {
     proj.apply(&DomainEvent::PrOpened {
         number: 50,
         branch: "feat/x".into(),
-        author: "worker-w1".into(),
+        github_author: "worker-w1".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 50,
@@ -716,7 +716,7 @@ fn pr_comment_uses_agent_thread_id() {
     proj.apply(&DomainEvent::PrOpened {
         number: 60,
         branch: "feat/thread".into(),
-        author: "thread-worker".into(),
+        github_author: "thread-worker".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 60,
@@ -769,7 +769,7 @@ fn stale_ci_nudges_author() {
     proj.apply(&DomainEvent::PrOpened {
         number: 80,
         branch: "feat/stale-ci".into(),
-        author: "worker-w1".into(),
+        github_author: "worker-w1".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 80,
@@ -802,7 +802,7 @@ fn failed_ci_nudges_author() {
     proj.apply(&DomainEvent::PrOpened {
         number: 81,
         branch: "feat/failed-ci".into(),
-        author: "worker-w1".into(),
+        github_author: "worker-w1".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 81,
@@ -854,7 +854,7 @@ fn reviewer_named_after_agent_not_github_user() {
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "feat/remove-zai".into(),
-        author: "btucker".into(),
+        github_author: "btucker".into(),
     });
     proj.apply(&DomainEvent::PrLinkedToTask {
         number: 42,
