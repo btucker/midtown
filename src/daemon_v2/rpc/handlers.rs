@@ -133,7 +133,7 @@ pub fn handle_status(proj: &Projections) -> Result<Value, RpcError> {
         "coworkers": coworkers,
         "tasks": tasks,
         "pull_requests": pull_requests,
-        "max_in_progress_tasks": 12,
+        "max_in_progress_tasks": crate::config::max_in_progress_from_config(),
         "prs": {
             "open": proj.work.open_prs.len(),
         },

@@ -131,9 +131,12 @@ pub fn stop_silent_workers(proj: &Projections) -> Vec<Command> {
         .filter_map(|id| proj.agents.by_id.get(id))
         .filter(|a| a.kind == AgentKind::Worker)
         .filter(|a| {
-            // Only stop if we've seen at least one output (last_output_at is set)
-            // and it's been more than 10 minutes since the last output.
-            a.last_output_at.is_some_and(|t| t < cutoff)
+            // Stop if last output was >10 minutes ago, OR if the worker
+            // never produced output and started >10 minutes ago.
+            match a.last_output_at {
+                Some(t) => t < cutoff,
+                None => a.started_at.is_some_and(|t| t < cutoff),
+            }
         })
         .map(|a| Command::StopAgent {
             id: a.id.clone(),

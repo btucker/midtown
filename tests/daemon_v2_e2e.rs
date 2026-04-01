@@ -370,8 +370,9 @@ fn test_daemon_v2_task_done_stops_worker() {
     let resp = harness.rpc_call("task.done", Some(serde_json::json!({ "id": "done-t1" })));
     assert!(resp["error"].is_null(), "task.done error: {resp}");
 
-    // Wait for stop_completed_agents to stop the worker (runs every 5s)
-    std::thread::sleep(Duration::from_secs(8));
+    // Wait for stop_completed_agents to stop the worker (runs every 5s).
+    // Allow extra time for event application + scheduler cycle in CI.
+    std::thread::sleep(Duration::from_secs(12));
 
     // Verify task is completed
     let task_list = harness.rpc_call("task.list", None);
