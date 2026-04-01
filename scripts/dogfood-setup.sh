@@ -35,7 +35,16 @@ cd "$CLONE_DIR"
 midtown start
 
 # Step 4: Detect the web URL (respects external_url config for TLS/Tailscale setups)
-WEB_URL=$(cd "$CLONE_DIR" && midtown config get webserver.external_url 2>/dev/null || echo "")
+# Note: webserver.external_url isn't exposed via `midtown config get`, so read
+# the global config TOML directly.
+GLOBAL_CONFIG="$HOME/.midtown/config.toml"
+WEB_URL=""
+if [ -f "$GLOBAL_CONFIG" ]; then
+    WEB_URL=$(grep -A5 '^\[webserver\]' "$GLOBAL_CONFIG" \
+        | grep 'external_url' \
+        | head -1 \
+        | sed 's/.*= *"\(.*\)"/\1/' 2>/dev/null || echo "")
+fi
 if [ -z "$WEB_URL" ]; then
     WEB_URL="http://localhost:47022"
 fi
