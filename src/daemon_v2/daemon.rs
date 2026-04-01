@@ -821,7 +821,11 @@ impl DaemonV2 {
                     proj.agents.by_id.get(&id).cloned()
                 };
                 if let Some(agent) = agent {
+                    // Derive the worktree path for resumed agents (same as fresh spawns)
+                    let mut config = executor::spawn_config_from_agent(&agent);
+                    self.prepare_worktree_for_spawn(&mut config);
                     self.lifecycle_guard.mark_pending(id.clone());
+                    let working_dir = config.working_dir.clone();
                     executor::spawn_background_resume(
                         id,
                         agent,
@@ -830,6 +834,7 @@ impl DaemonV2 {
                         self.event_tx.clone(),
                         self.result_tx.clone(),
                         None, // id matches — no alias needed
+                        working_dir,
                     );
                 }
             }
@@ -900,6 +905,8 @@ impl DaemonV2 {
                     proj.agents.by_id.get(id).cloned()
                 };
                 if let Some(agent) = agent {
+                    let mut config = executor::spawn_config_from_agent(&agent);
+                    self.prepare_worktree_for_spawn(&mut config);
                     self.lifecycle_guard.mark_pending(id.to_string());
                     self.lifecycle_guard.stash_nudge(id, message.to_string());
                     executor::spawn_background_resume(
@@ -910,6 +917,7 @@ impl DaemonV2 {
                         self.event_tx.clone(),
                         self.result_tx.clone(),
                         None, // id matches — no alias needed
+                        config.working_dir,
                     );
                 }
             }

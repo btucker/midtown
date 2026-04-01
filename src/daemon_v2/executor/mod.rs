@@ -371,6 +371,7 @@ pub fn spawn_background_agent(
 }
 
 /// Resume agent in a background task.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_background_resume(
     agent_id: String,
     agent: crate::daemon_v2::projections::agents::Agent,
@@ -379,9 +380,11 @@ pub fn spawn_background_resume(
     event_tx: tokio::sync::broadcast::Sender<DomainEvent>,
     result_tx: tokio::sync::mpsc::Sender<ExecutorResult>,
     lifecycle_key: Option<String>,
+    working_dir: Option<String>,
 ) {
     tokio::spawn(async move {
-        let config = spawn_config_from_agent(&agent);
+        let mut config = spawn_config_from_agent(&agent);
+        config.working_dir = working_dir;
         let session_id = match &agent.session_id {
             Some(sid) => sid.clone(),
             None => {
@@ -545,7 +548,9 @@ pub fn spawn_background_gh_command(
 }
 
 /// Build a SpawnConfig that recreates an agent with the same configuration.
-fn spawn_config_from_agent(agent: &crate::daemon_v2::projections::agents::Agent) -> SpawnConfig {
+pub fn spawn_config_from_agent(
+    agent: &crate::daemon_v2::projections::agents::Agent,
+) -> SpawnConfig {
     SpawnConfig {
         name: agent.name.clone(),
         kind: agent.kind.clone(),
