@@ -361,13 +361,21 @@ pub fn handle_session_fork(
         })?;
     let channel = channel.as_str();
 
-    // Check if a running fork already exists for this thread
-    if let Some(existing) = proj.agents.fork_for_thread(thread_parent_id)
-        && proj.agents.running.contains(&existing.id)
-    {
+    // Check if a fork already exists for this thread (running or stopped).
+    // Running forks are returned as-is; stopped forks are resumed.
+    if let Some(existing) = proj.agents.fork_for_thread(thread_parent_id) {
+        if proj.agents.running.contains(&existing.id) {
+            return Ok((
+                json!({"ok": true, "fork_id": existing.id, "existing": true}),
+                vec![],
+            ));
+        }
+        // Stopped fork — resume it
         return Ok((
             json!({"ok": true, "fork_id": existing.id, "existing": true}),
-            vec![],
+            vec![Command::ResumeAgent {
+                id: existing.id.clone(),
+            }],
         ));
     }
 
