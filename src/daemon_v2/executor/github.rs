@@ -11,7 +11,7 @@ use crate::daemon_v2::projections::work::WorkIndex;
 pub struct ParsedPr {
     pub number: u64,
     pub branch: String,
-    pub author: String,
+    pub github_author: String,
     pub is_draft: bool,
     pub ci_passed: bool,
     pub is_approved: bool,
@@ -37,7 +37,7 @@ pub fn parse_open_prs(json: &Value) -> Vec<ParsedPr> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let author = pr
+            let github_author = pr
                 .get("author")
                 .and_then(|v| v.get("login"))
                 .and_then(|v| v.as_str())
@@ -58,7 +58,7 @@ pub fn parse_open_prs(json: &Value) -> Vec<ParsedPr> {
             Some(ParsedPr {
                 number,
                 branch,
-                author,
+                github_author,
                 is_draft,
                 ci_passed,
                 is_approved,
@@ -145,17 +145,17 @@ pub fn diff_pr_state(
             events.push(DomainEvent::PrOpened {
                 number: pr.number,
                 branch: pr.branch.clone(),
-                author: pr.author.clone(),
+                github_author: pr.github_author.clone(),
             });
             // Spec 3.2: all new non-draft PRs need review (v1 approach — don't
             // rely on reviewDecision which requires branch protection rules).
             if !pr.is_draft {
                 events.push(DomainEvent::PrReviewRequested { number: pr.number });
             }
-            // Spec 3.1: link PR to the author's in-progress task
+            // Spec 3.1: link PR to task by branch prefix (worktree convention)
             if let Some(task) = work.tasks.values().find(|t| {
                 t.status == crate::daemon_v2::events::TaskStatus::InProgress
-                    && t.agent_name.as_deref() == Some(&pr.author)
+                    && pr.branch.starts_with(&format!("task-{}-", t.id))
             }) {
                 events.push(DomainEvent::PrLinkedToTask {
                     number: pr.number,

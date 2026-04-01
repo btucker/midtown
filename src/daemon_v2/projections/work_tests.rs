@@ -201,7 +201,7 @@ fn pr_linked_to_task() {
     idx.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix-bug".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     idx.apply(&DomainEvent::PrLinkedToTask {
         number: 42,
@@ -219,7 +219,7 @@ fn pr_merged_tracked() {
     idx.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix-bug".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     idx.apply(&DomainEvent::PrMerged {
         number: 42,
@@ -237,7 +237,7 @@ fn pr_needing_review() {
     idx.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix-bug".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     idx.apply(&DomainEvent::PrReviewRequested { number: 42 });
     assert!(idx.needing_review.contains(&42));
@@ -251,7 +251,7 @@ fn pr_closed_tracked() {
     idx.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix-bug".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     idx.apply(&DomainEvent::PrReviewRequested { number: 42 });
     idx.apply(&DomainEvent::PrClosed { number: 42 });
@@ -268,7 +268,7 @@ fn pr_updated_changes_ci_and_review() {
     idx.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix-bug".into(),
-        author: "dev".into(),
+        github_author: "dev".into(),
     });
     idx.apply(&DomainEvent::PrUpdated {
         number: 42,

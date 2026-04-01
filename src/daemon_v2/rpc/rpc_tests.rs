@@ -697,6 +697,57 @@ fn v1_coworker_spawn_returns_spawn_command() {
     }
 }
 
+#[test]
+fn coworker_spawn_with_codex_provider() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "coworker.spawn",
+        "id": 113,
+        "params": {
+            "channel": "main",
+            "prompt": "codex task",
+            "provider": "codex"
+        }
+    });
+    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    assert_eq!(response["result"]["ok"], true);
+    assert!(events.is_empty());
+    assert_eq!(commands.len(), 1);
+    match &commands[0] {
+        crate::daemon_v2::decisions::Command::SpawnAgent(cfg) => {
+            assert_eq!(cfg.provider, Provider::Codex);
+            assert_eq!(cfg.kind, AgentKind::Worker);
+            assert_eq!(cfg.channel.as_deref(), Some("main"));
+            assert_eq!(cfg.initial_prompt.as_deref(), Some("codex task"));
+        }
+        other => panic!("expected SpawnAgent, got {:?}", other),
+    }
+}
+
+#[test]
+fn coworker_spawn_defaults_to_claude_provider() {
+    let proj = Projections::default();
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "coworker.spawn",
+        "id": 114,
+        "params": {
+            "channel": "main",
+            "prompt": "claude task"
+        }
+    });
+    let (_response, _events, commands) = dispatch_request(request, &proj, test_channels_dir());
+    assert_eq!(commands.len(), 1);
+    match &commands[0] {
+        crate::daemon_v2::decisions::Command::SpawnAgent(cfg) => {
+            assert_eq!(cfg.provider, Provider::ClaudeCode);
+        }
+        other => panic!("expected SpawnAgent, got {:?}", other),
+    }
+}
+
 // ── task.list / task.update / pr.list / pr.action tests ─────────────────
 
 fn projections_with_tasks_and_prs() -> Projections {
@@ -717,7 +768,7 @@ fn projections_with_tasks_and_prs() -> Projections {
     proj.apply(&DomainEvent::PrOpened {
         number: 42,
         branch: "fix-the-thing".into(),
-        author: "ghost-town".into(),
+        github_author: "ghost-town".into(),
     });
     proj
 }

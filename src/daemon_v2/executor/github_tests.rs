@@ -133,7 +133,7 @@ fn parse_open_prs_extracts_fields() {
 
     assert_eq!(prs[0].number, 42);
     assert_eq!(prs[0].branch, "feat/login");
-    assert_eq!(prs[0].author, "alice");
+    assert_eq!(prs[0].github_author, "alice");
     assert!(!prs[0].is_draft);
     assert!(prs[0].ci_passed);
     assert!(prs[0].is_approved);
@@ -202,7 +202,7 @@ fn diff_detects_new_open_pr() {
     let open = vec![ParsedPr {
         number: 10,
         branch: "feat/new".into(),
-        author: "alice".into(),
+        github_author: "alice".into(),
         is_draft: false,
         ci_passed: false,
         is_approved: false,
@@ -217,8 +217,8 @@ fn diff_detects_new_open_pr() {
         DomainEvent::PrOpened {
             number: 10,
             branch,
-            author,
-        } if branch == "feat/new" && author == "alice"
+            github_author,
+        } if branch == "feat/new" && github_author == "alice"
     ));
     assert!(matches!(
         &events[1],
@@ -253,7 +253,7 @@ fn diff_skips_already_known_open_pr() {
         PrState {
             number: 10,
             branch: "feat/existing".into(),
-            author: "alice".into(),
+            github_author: "alice".into(),
             midtown_author: None,
             ci_status: CiStatus::Running,
             review_state: ReviewState::None,
@@ -266,7 +266,7 @@ fn diff_skips_already_known_open_pr() {
     let open = vec![ParsedPr {
         number: 10,
         branch: "feat/existing".into(),
-        author: "alice".into(),
+        github_author: "alice".into(),
         is_draft: false,
         ci_passed: false,
         is_approved: false,
@@ -285,7 +285,7 @@ fn diff_skips_already_merged_pr() {
         PrState {
             number: 5,
             branch: "feat/done".into(),
-            author: "alice".into(),
+            github_author: "alice".into(),
             midtown_author: None,
             ci_status: CiStatus::Passed,
             review_state: ReviewState::Approved,
@@ -314,7 +314,7 @@ fn diff_detects_review_requested() {
         PrState {
             number: 10,
             branch: "feat/review".into(),
-            author: "alice".into(),
+            github_author: "alice".into(),
             midtown_author: None,
             ci_status: CiStatus::Passed,
             review_state: ReviewState::None,
@@ -327,7 +327,7 @@ fn diff_detects_review_requested() {
     let open = vec![ParsedPr {
         number: 10,
         branch: "feat/review".into(),
-        author: "alice".into(),
+        github_author: "alice".into(),
         is_draft: false,
         ci_passed: true,
         is_approved: false,
@@ -361,7 +361,7 @@ fn diff_detects_ci_status_change() {
         PrState {
             number: 10,
             branch: "feat/ci".into(),
-            author: "alice".into(),
+            github_author: "alice".into(),
             midtown_author: None,
             ci_status: CiStatus::Running,
             review_state: ReviewState::None,
@@ -374,7 +374,7 @@ fn diff_detects_ci_status_change() {
     let open = vec![ParsedPr {
         number: 10,
         branch: "feat/ci".into(),
-        author: "alice".into(),
+        github_author: "alice".into(),
         is_draft: false,
         ci_passed: true,
         is_approved: false,
@@ -463,7 +463,7 @@ fn new_non_draft_pr_emits_review_requested() {
     let open = vec![ParsedPr {
         number: 42,
         branch: "feat/foo".into(),
-        author: "ghost-town".into(),
+        github_author: "ghost-town".into(),
         is_draft: false,
         ci_passed: false,
         is_approved: false,
@@ -488,7 +488,7 @@ fn new_draft_pr_does_not_emit_review_requested() {
     let open = vec![ParsedPr {
         number: 42,
         branch: "feat/foo".into(),
-        author: "ghost-town".into(),
+        github_author: "ghost-town".into(),
         is_draft: true,
         ci_passed: false,
         is_approved: false,
@@ -506,11 +506,53 @@ fn new_draft_pr_does_not_emit_review_requested() {
     );
 }
 
-/// Spec 3.1: WHEN PrOpened is processed AND author matches a worker THEN PrLinkedToTask
+/// PR with non-matching branch should not link to any task
 #[test]
-fn pr_opened_links_to_author_task() {
+fn pr_opened_without_matching_branch_does_not_link() {
     let mut work = WorkIndex::default();
-    // Create a task with an agent named "ghost-town"
+    work.apply(&DomainEvent::TaskCreated {
+        id: "1".into(),
+        subject: "Build feature".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: Some("proving-ground".into()),
+        icon: None,
+        color: None,
+        parent: None,
+        thread_id: None,
+        message_id: None,
+    });
+    work.apply(&DomainEvent::TaskAssigned {
+        task_id: "1".into(),
+        agent_id: "agent-1".into(),
+    });
+
+    let open = vec![ParsedPr {
+        number: 42,
+        branch: "feat/foo".into(),
+        github_author: "btucker".into(),
+        is_draft: false,
+        ci_passed: false,
+        is_approved: false,
+        needs_review: false,
+    }];
+
+    let events = diff_pr_state(&work, &open, &[]);
+
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, DomainEvent::PrLinkedToTask { .. })),
+        "PR without matching branch should not link to any task, got {:?}",
+        events
+    );
+}
+
+/// Spec 3.1: WHEN PrOpened AND branch matches task worktree THEN PrLinkedToTask (fallback)
+#[test]
+fn pr_opened_links_to_task_by_branch_fallback() {
+    let mut work = WorkIndex::default();
     work.apply(&DomainEvent::TaskCreated {
         id: "t1".into(),
         subject: "Build feature".into(),
@@ -529,10 +571,11 @@ fn pr_opened_links_to_author_task() {
         agent_id: "agent-1".into(),
     });
 
+    // Branch matches worktree convention task-{id}-{slug}
     let open = vec![ParsedPr {
         number: 42,
-        branch: "feat/foo".into(),
-        author: "ghost-town".into(),
+        branch: "task-t1-build-feature".into(),
+        github_author: "btucker".into(),
         is_draft: false,
         ci_passed: false,
         is_approved: false,
@@ -545,7 +588,7 @@ fn pr_opened_links_to_author_task() {
         events.iter().any(
             |e| matches!(e, DomainEvent::PrLinkedToTask { number: 42, task_id } if task_id == "t1")
         ),
-        "new PR from task agent should emit PrLinkedToTask, got {:?}",
+        "PR with task branch prefix should emit PrLinkedToTask, got {:?}",
         events
     );
 }

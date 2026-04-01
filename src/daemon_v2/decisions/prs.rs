@@ -46,7 +46,7 @@ pub fn spawn_reviewers(proj: &Projections) -> Vec<Command> {
         };
         // Spec 3.2: reviewer named {author_name}-reviewer
         // Prefer the midtown agent name over the GitHub username
-        let author_name = pr.midtown_author.as_deref().unwrap_or(&pr.author);
+        let author_name = pr.midtown_author.as_deref().unwrap_or(&pr.github_author);
         let reviewer_name = format!("{author_name}-reviewer");
 
         // Skip if reviewer is already running
@@ -99,13 +99,14 @@ pub fn spawn_reviewers(proj: &Projections) -> Vec<Command> {
     commands
 }
 
-/// Count how many times a reviewer for a given PR author has been created and stopped.
+/// Count how many times a reviewer for a given PR has been created and stopped.
+/// Uses the same naming convention as `spawn_reviewers`: prefer midtown_author over GitHub login.
 fn count_stopped_reviewers(proj: &Projections, pr_num: u64) -> usize {
     let pr = match proj.work.prs.get(&pr_num) {
         Some(pr) => pr,
         None => return 0,
     };
-    let author_name = pr.midtown_author.as_deref().unwrap_or(&pr.author);
+    let author_name = pr.midtown_author.as_deref().unwrap_or(&pr.github_author);
     let reviewer_name = format!("{author_name}-reviewer");
     proj.agents
         .by_id

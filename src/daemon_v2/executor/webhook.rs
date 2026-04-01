@@ -27,10 +27,7 @@ pub fn webhook_to_events(event: &WebhookEvent) -> Vec<DomainEvent> {
         events.push(DomainEvent::PrOpened {
             number: opened.pr_number,
             branch: opened.branch.clone(),
-            author: opened
-                .author_coworker
-                .clone()
-                .unwrap_or_else(|| "unknown".to_string()),
+            github_author: opened.github_author.clone(),
         });
     }
 
@@ -100,6 +97,7 @@ mod tests {
                 branch: "lexington/my-feature".to_string(),
                 author_coworker: Some("lexington".to_string()),
                 title: "My feature".to_string(),
+                github_author: "lex-gh".to_string(),
             }),
             ..noop_event()
         };
@@ -109,9 +107,14 @@ mod tests {
             events[0],
             DomainEvent::PrOpened { number: 99, .. }
         ));
-        if let DomainEvent::PrOpened { branch, author, .. } = &events[0] {
+        if let DomainEvent::PrOpened {
+            branch,
+            github_author,
+            ..
+        } = &events[0]
+        {
             assert_eq!(branch, "lexington/my-feature");
-            assert_eq!(author, "lexington");
+            assert_eq!(github_author, "lex-gh");
         }
     }
 
@@ -126,22 +129,22 @@ mod tests {
         assert_eq!(events.len(), 2);
     }
 
-    /// Spec 12: WHEN pr_opened has author_coworker THEN it SHALL be used as
-    /// author; otherwise `unknown`
+    /// Spec 12: WHEN pr_opened has github_author THEN it SHALL be used
     #[test]
-    fn pr_opened_without_author_coworker_uses_unknown() {
+    fn pr_opened_uses_github_author() {
         let we = WebhookEvent {
             pr_opened: Some(PrOpenedInfo {
                 pr_number: 5,
                 branch: "feature/x".to_string(),
                 author_coworker: None,
                 title: "X".to_string(),
+                github_author: "octocat".to_string(),
             }),
             ..noop_event()
         };
         let events = webhook_to_events(&we);
-        if let DomainEvent::PrOpened { author, .. } = &events[0] {
-            assert_eq!(author, "unknown");
+        if let DomainEvent::PrOpened { github_author, .. } = &events[0] {
+            assert_eq!(github_author, "octocat");
         } else {
             panic!("expected PrOpened");
         }
