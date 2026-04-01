@@ -733,19 +733,26 @@ fn test_daemon_v2_session_fork_spawns_agent() {
     }
     assert!(saw_fork, "expected fork agent to be spawned");
 
-    // Forking the same thread again should return the existing fork
-    let resp = harness.rpc_call(
-        "session.fork",
-        Some(serde_json::json!({
-            "thread_parent_id": thread_id,
-            "channel": "main",
-        })),
-    );
-    assert!(resp["error"].is_null(), "second fork error: {resp}");
-    assert_eq!(
-        resp["result"]["existing"], true,
-        "should return existing fork"
-    );
+    // Forking the same thread again should return the existing fork.
+    // Poll until the daemon returns existing=true (the first fork's spawn
+    // events may still be in flight when we call session.fork again).
+    let mut saw_existing = false;
+    for _ in 0..10 {
+        let resp = harness.rpc_call(
+            "session.fork",
+            Some(serde_json::json!({
+                "thread_parent_id": thread_id,
+                "channel": "main",
+            })),
+        );
+        assert!(resp["error"].is_null(), "second fork error: {resp}");
+        if resp["result"]["existing"] == true {
+            saw_existing = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    assert!(saw_existing, "should return existing fork");
 }
 
 /// Spec 14: v1 RPC methods handled via compatibility aliases
