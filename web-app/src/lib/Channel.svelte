@@ -1179,7 +1179,7 @@ function getToolCallStatusIcon(entry: { block: import("./types.ts").ToolBlock; s
       getDescription={getAutocompleteDescription}
       onSelect={insertAutocompleteItem}
     />
-    <form class="flex flex-col gap-2 px-3 py-1.5 bg-card border-t border-border" onsubmit={handleSubmit}>
+    <form class="flex flex-col gap-2 px-3 pt-1.5 pb-safe-offset-1.5 bg-card border-t border-border" onsubmit={handleSubmit}>
       {#if pendingFile}
         <div class="relative inline-block max-w-[200px] border border-border rounded-lg p-2 bg-card" data-testid="file-preview">
           {#if pendingFile.type.startsWith('image/')}
