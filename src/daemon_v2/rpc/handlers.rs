@@ -969,7 +969,12 @@ pub fn handle_channel_read(params: Option<&Value>, channels_dir: &Path) -> Resul
 
     let before = params.get("before").and_then(|v| v.as_str());
 
-    let messages = if let Some(tid) = thread_parent_id {
+    let since = params
+        .get("since")
+        .and_then(|v| v.as_str())
+        .and_then(parse_duration_secs);
+
+    let mut messages = if let Some(tid) = thread_parent_id {
         channel_io::read_thread_messages(channels_dir, channel, tid, limit)
     } else {
         channel_io::read_messages(channels_dir, channel, limit, before)
@@ -978,6 +983,17 @@ pub fn handle_channel_read(params: Option<&Value>, channels_dir: &Path) -> Resul
         code: -32000,
         message: e,
     })?;
+
+    // Filter by --since duration if provided
+    if let Some(secs) = since {
+        let cutoff = chrono::Utc::now() - chrono::Duration::seconds(secs as i64);
+        let cutoff_str = cutoff.to_rfc3339();
+        messages.retain(|msg| {
+            msg.get("timestamp")
+                .and_then(|v| v.as_str())
+                .is_some_and(|ts| ts >= cutoff_str.as_str())
+        });
+    }
 
     Ok(json!(messages))
 }
@@ -1392,4 +1408,21 @@ pub fn handle_workflow_list(proj: &Projections) -> Result<Value, RpcError> {
         .map(|w| json!({"channel": w.channel, "key": w.key, "state": w.state}))
         .collect();
     Ok(json!(states))
+}
+
+/// Parse a human-friendly duration string (e.g., "5m", "1h", "30s") to seconds.
+fn parse_duration_secs(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (num, suffix) = s.split_at(s.len().saturating_sub(1));
+    let n: u64 = num.parse().ok()?;
+    match suffix {
+        "s" => Some(n),
+        "m" => Some(n * 60),
+        "h" => Some(n * 3600),
+        "d" => Some(n * 86400),
+        _ => None,
+    }
 }
