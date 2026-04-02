@@ -80,11 +80,11 @@ pub fn spawn_reviewers(proj: &Projections) -> Vec<Command> {
         }
 
         commands.push(Command::SpawnAgent(SpawnConfig {
-            name: reviewer_name,
+            name: reviewer_name.clone(),
             kind: AgentKind::Worker,
             agent_type: "midtown-code-reviewer".into(),
             provider: Provider::ClaudeCode,
-            channel: None,
+            channel: Some(format!("dm-{reviewer_name}")),
             task_id: None,
             initial_prompt: Some(format!("Review PR #{pr_num}: {}", pr.branch)),
             working_dir: None,
