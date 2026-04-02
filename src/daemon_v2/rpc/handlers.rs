@@ -867,6 +867,12 @@ pub fn handle_coworker_spawn(
         _ => Provider::ClaudeCode,
     };
 
+    let bound_thread_id = params
+        .get("thread")
+        .or_else(|| params.get("bound_thread_id"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
     let command = Command::SpawnAgent(SpawnConfig {
         name: name.clone(),
         kind: AgentKind::Worker,
@@ -877,7 +883,7 @@ pub fn handle_coworker_spawn(
         initial_prompt: prompt,
         working_dir: None,
         model: None,
-        bound_thread_id: None,
+        bound_thread_id,
         fork_from_session: None,
         icon,
         color: None,
