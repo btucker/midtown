@@ -592,3 +592,55 @@ fn pr_opened_links_to_task_by_branch_fallback() {
         events
     );
 }
+
+/// Stale PR detection: tracked open PR not in current open list → PrClosed
+#[test]
+fn diff_detects_closed_pr_not_in_open_list() {
+    let mut work = WorkIndex::default();
+    work.apply(&DomainEvent::PrOpened {
+        number: 99,
+        branch: "feat/abandoned".into(),
+        github_author: "alice".into(),
+    });
+
+    // Poll returns no open PRs (PR was closed on GitHub)
+    let events = diff_pr_state(&work, &[], &[]);
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, DomainEvent::PrClosed { number } if *number == 99)),
+        "closed PR should emit PrClosed event, got: {:?}",
+        events
+    );
+}
+
+/// Don't emit PrClosed for PRs that are still open
+#[test]
+fn diff_does_not_close_still_open_pr() {
+    let mut work = WorkIndex::default();
+    work.apply(&DomainEvent::PrOpened {
+        number: 42,
+        branch: "feat/active".into(),
+        github_author: "bob".into(),
+    });
+
+    let open = vec![ParsedPr {
+        number: 42,
+        branch: "feat/active".into(),
+        github_author: "bob".into(),
+        is_draft: false,
+        ci_passed: true,
+        is_approved: true,
+        needs_review: false,
+    }];
+
+    let events = diff_pr_state(&work, &open, &[]);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, DomainEvent::PrClosed { .. })),
+        "still-open PR should not be closed, got: {:?}",
+        events
+    );
+}
