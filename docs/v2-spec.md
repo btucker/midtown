@@ -300,7 +300,7 @@
 - `coworker.report-state` — agent idle/working state reporting
 - `session.detach` — stop agent by name
 - `task.prompt` — nudge task's assigned agent
-- `task.handoff` — stop agent, reset task, spawn replacement
+- `task.handoff` — stop agent, reset task, spawn replacement (params: id, agent_type or agent, message)
 - `pr.merge` — shortcut for pr.action merge
 - `oneshot.execute` — spawn one-off worker with prompt
 - `channel.create`, `channel.archive`, `channel.unarchive`, `channel.rename` — channel management
