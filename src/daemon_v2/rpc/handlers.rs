@@ -1177,6 +1177,57 @@ pub fn handle_task_prompt(
     }])
 }
 
+/// Handle `task.request` — an agent requests new work by posting to its channel.
+/// The message is formatted as a task request so the lead can review it.
+pub fn handle_task_request(
+    params: Option<&Value>,
+    proj: &Projections,
+    channels_dir: &Path,
+) -> Result<(Value, Vec<DomainEvent>, Vec<Command>), RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+
+    let message = params
+        .get("message")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: message"))?;
+
+    let from = params
+        .get("from")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    // Find the agent's channel — look up by name, fall back to main channel
+    let channel = proj
+        .agents
+        .by_name
+        .get(from)
+        .and_then(|id| proj.agents.by_id.get(id))
+        .and_then(|agent| agent.channel.as_deref())
+        .unwrap_or("midtown");
+
+    // Post the request as a formatted channel message
+    let formatted = format!("[Task Request from {from}] {message}");
+
+    let msg_id = crate::daemon_v2::executor::channel_io::post_message(
+        channels_dir,
+        channel,
+        from,
+        &formatted,
+        None,
+    )
+    .map_err(|e| RpcError {
+        code: -32000,
+        message: format!("failed to post task request: {e}"),
+    })?;
+
+    // Route to the channel lead so it gets nudged
+    let commands = crate::daemon_v2::decisions::chat::route_message(
+        proj, channel, from, &formatted, None, None,
+    );
+
+    Ok((json!({"ok": true, "id": msg_id}), vec![], commands))
+}
+
 /// Handle `task.handoff` — reassign a task from one agent to another.
 pub fn handle_task_handoff(
     params: Option<&Value>,

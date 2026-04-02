@@ -1457,6 +1457,26 @@ fn task_handoff_stops_and_respawns() {
     );
 }
 
+/// task.request posts a message and returns ok
+#[test]
+fn task_request_posts_to_channel() {
+    let proj = projections_with_agents();
+    let dir = tempfile::TempDir::new().unwrap();
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "task.request",
+        "id": 720,
+        "params": { "message": "Please create a task for fixing the login bug", "from": "worker-1" }
+    });
+    let (response, _events, _commands) = dispatch_request(request, &proj, dir.path());
+    assert!(
+        response["error"].is_null(),
+        "task.request error: {response}"
+    );
+    assert_eq!(response["result"]["ok"], true);
+}
+
 /// Spec 10.3: task.handoff respects the `agent` param (CLI sends "agent", not "agent_type")
 #[test]
 fn task_handoff_uses_agent_param_for_type() {
