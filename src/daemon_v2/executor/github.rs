@@ -208,6 +208,22 @@ pub fn diff_pr_state(
         }
     }
 
+    // Detect stale/closed PRs: tracked as open but no longer in GitHub's open list
+    let current_open: std::collections::HashSet<u64> = open.iter().map(|pr| pr.number).collect();
+    let merged_numbers: std::collections::HashSet<u64> =
+        merged.iter().map(|pr| pr.number).collect();
+    for &tracked in &work.open_prs {
+        if !current_open.contains(&tracked) && !merged_numbers.contains(&tracked) {
+            let already_handled = work
+                .prs
+                .get(&tracked)
+                .is_some_and(|pr| pr.is_merged || pr.is_closed);
+            if !already_handled {
+                events.push(DomainEvent::PrClosed { number: tracked });
+            }
+        }
+    }
+
     events
 }
 
