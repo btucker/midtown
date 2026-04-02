@@ -331,6 +331,56 @@ pub async fn workflow(Query(params): Query<HashMap<String, String>>) -> Json<Val
     }))
 }
 
+/// GET /api/channels/{channel}/workflow — per-channel workflow state
+pub async fn channel_workflow_get(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Path(channel): axum::extract::Path<String>,
+) -> Json<Value> {
+    let proj = state.projections.lock().await;
+    let lead_driven = proj.channels.is_lead_driven(&channel);
+    Json(json!({
+        "assigned": false,
+        "workflow": null,
+        "lead_driven": lead_driven,
+        "state": {}
+    }))
+}
+
+/// PUT /api/channels/{channel}/workflow — update workflow settings (lead_driven toggle)
+pub async fn channel_workflow_put(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Path(channel): axum::extract::Path<String>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    // Delegate to the same settings update path
+    let mut params = json!({"channel": channel});
+    if let Some(v) = body.get("lead_driven") {
+        params["lead_driven"] = v.clone();
+    }
+    if let Some(v) = body.get("workflow") {
+        params["workflow"] = v.clone();
+    }
+    let proj = state.projections.lock().await;
+    let (_response, events, _) = rpc::dispatch_request(
+        json!({"jsonrpc": "2.0", "method": "channel.update", "params": params, "id": 1}),
+        &proj,
+        &state.channels_dir,
+    );
+    drop(proj);
+    if !events.is_empty() {
+        {
+            let mut proj = state.projections.lock().await;
+            for event in &events {
+                proj.apply(event);
+                let _ = state.event_tx.send(event.clone());
+            }
+        }
+        let persist = crate::daemon_v2::decisions::Command::PersistEvents(events);
+        let _ = state.command_tx.send(persist).await;
+    }
+    Json(json!({"ok": true}))
+}
+
 pub async fn auth_profiles(Query(params): Query<AuthProfilesParams>) -> Json<Value> {
     let provider_str = params.provider.as_deref().unwrap_or("claude");
     let auth_provider = match provider_str {
