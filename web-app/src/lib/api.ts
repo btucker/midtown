@@ -1081,6 +1081,23 @@ export function sendMessage(
 				return { ...byChannel, [channelName]: [...channelMsgs, optimisticMsg] };
 			});
 		}
+
+		// Register error callback to remove the optimistic message if the
+		// server rejects the post (e.g., channel is archived).
+		onNextError((errorMsg: string) => {
+			if (threadParentId) {
+				threadData.update((td) => {
+					if (!td) return td;
+					return { ...td, messages: td.messages.filter((m) => m.id !== tempId) };
+				});
+			} else {
+				messagesByChannel.update((byChannel) => {
+					const channelMsgs = byChannel[channelName] || [];
+					return { ...byChannel, [channelName]: channelMsgs.filter((m) => m.id !== tempId) };
+				});
+			}
+			console.warn(`Message rejected by server: ${errorMsg}`);
+		});
 	} else {
 		console.error("WebSocket not connected");
 	}
