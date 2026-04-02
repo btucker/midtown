@@ -1435,6 +1435,10 @@ pub fn handle_workflow_list(proj: &Projections) -> Result<Value, RpcError> {
     Ok(json!(states))
 }
 
+#[path = "handlers_tests.rs"]
+#[cfg(test)]
+mod tests;
+
 /// Parse a human-friendly duration string (e.g., "5m", "1h", "30s") to seconds.
 fn parse_duration_secs(s: &str) -> Option<u64> {
     let s = s.trim();
