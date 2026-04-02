@@ -7,15 +7,36 @@ use serde::{Deserialize, Serialize};
 #[cfg(test)]
 mod tests;
 
+/// Categories of rate-limited operations in the daemon tick loop.
+///
+/// Each variant carries a fixed cooldown duration. The [`CooldownTracker`]
+/// pairs a category with a string key (typically an agent or task ID) so the
+/// same category can cool down independently for different entities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CooldownCategory {
+    /// Prevents repeated spawn attempts for agents that have no matching task (60 s).
+    /// Keyed by agent name.
     OrphanSpawn,
+    /// Global throttle on dispatching new agent sessions (30 s).
+    /// Keyed by task ID.
     AgentDispatch,
+    /// Back-off after a spawn attempt fails (120 s).
+    /// Keyed by task ID or channel name.
     SpawnFailure,
+    /// Limits how often an agent is nudged to merge or rebase its PR (1 h).
+    /// Keyed by agent ID.
     MergeRebaseNudge,
+    /// Back-off after a rebase introduces test regressions (1 h).
+    /// Keyed by agent ID.
     RebaseRegression,
+    /// Rate-limits worktree freshness checks for the lead session (5 min).
+    /// Keyed by lead identifier.
     LeadWorktreeFreshness,
+    /// Throttles periodic nudges sent to agents about their tasks (1 h).
+    /// Keyed by agent ID or a reviewer-escalation key.
     TaskNudge,
+    /// Controls how often stale-note checks fire (1 h).
+    /// Keyed by note identifier.
     NoteStaleness,
 }
 
