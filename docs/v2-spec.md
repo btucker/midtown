@@ -51,6 +51,7 @@
 - WHEN a worker has not reported a state change for 5 minutes THEN the system SHALL nudge it
 - WHEN a running worker's task is Completed THEN the system SHALL stop the worker
 - WHEN a task declares `blocked_by` dependencies THEN the system SHALL NOT dispatch it until all blockers are completed
+- WHEN a blocker task completes THEN the system SHALL remove it from the blocked_by lists of all dependent tasks — if a dependent task's blocked_by list becomes empty, it SHALL become eligible for dispatch
 - WHEN a task is updated via `task.update` AND it has an assigned agent THEN the system SHALL nudge that agent with a message describing the update
 
 ---
@@ -706,3 +707,4 @@ Behavioral requirements for agent system prompts. Specs are organized by audienc
 | 2026-04-01 | Added: section 8.2 (Daemon Logging) — daemon-v2 must initialize file-based tracing so `midtown log` works. Found via dogfood testing: daemon-v2 never initializes a tracing subscriber, so all log output is silently discarded and `midtown log` fails. |
 | 2026-04-01 | Added: section 10.6 (CLI-Daemon Consistency) — `task list` and `task view` must query daemon via RPC, not filesystem TaskStore. Found via dogfood testing: `task list` returned empty while `status` correctly showed the task. |
 | 2026-04-01 | Added: section 4.4 (Spawn Failure Cooldown) — cooldown must apply to ALL agent types, not just leads. Found via dogfood testing: worker kept getting re-dispatched every 30s in an infinite respawn loop after daemon restart. |
+| 2026-04-02 | Updated: section 2.2 (Task Lifecycle) — completing a blocker task must remove it from dependent tasks' blocked_by lists. Found via dogfood testing: blocked tasks stayed blocked forever because TaskCompleted never updated the blocked map. |
