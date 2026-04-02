@@ -962,6 +962,7 @@ pub fn handle_channel_read(params: Option<&Value>, channels_dir: &Path) -> Resul
 
     let limit = params
         .get("limit")
+        .or_else(|| params.get("last"))
         .and_then(|v| v.as_u64())
         .map(|n| n as usize);
 
