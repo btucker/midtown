@@ -965,7 +965,10 @@ pub fn handle_channel_read(params: Option<&Value>, channels_dir: &Path) -> Resul
         .and_then(|v| v.as_u64())
         .map(|n| n as usize);
 
-    let thread_parent_id = params.get("thread_parent_id").and_then(|v| v.as_str());
+    let thread_parent_id = params
+        .get("thread_parent_id")
+        .or_else(|| params.get("thread"))
+        .and_then(|v| v.as_str());
 
     let before = params.get("before").and_then(|v| v.as_str());
 
