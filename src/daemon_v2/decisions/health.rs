@@ -11,6 +11,7 @@ use chrono::Utc;
 use crate::daemon_v2::decisions::{Command, SpawnConfig};
 use crate::daemon_v2::events::{AgentKind, Provider, TaskStatus};
 use crate::daemon_v2::projections::Projections;
+use crate::daemon_v2::projections::cooldowns::CooldownCategory;
 
 /// Find workers that are stopped but have in-progress tasks.
 /// Per spec 2.2: resume the worker (not reset the task).
@@ -32,6 +33,14 @@ pub fn check_dead_workers(proj: &Projections) -> Vec<Command> {
             && let Some(agent) = proj.agents.by_id.get(agent_id)
             && !agent.gc
         {
+            // Spec 4.4: respect spawn failure cooldown for workers
+            if proj
+                .cooldowns
+                .is_active(CooldownCategory::SpawnFailure, task_id)
+            {
+                continue;
+            }
+
             if agent.session_id.is_some() {
                 // Has session_id — resume it
                 commands.push(Command::ResumeAgent {

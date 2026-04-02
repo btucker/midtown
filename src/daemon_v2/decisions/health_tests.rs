@@ -624,3 +624,65 @@ fn spare_idle_worker_within_60s() {
         "should not stop worker idle for only 30s"
     );
 }
+
+/// Spec 4.4: worker spawn failure cooldown prevents respawn loop
+#[test]
+fn no_respawn_when_worker_spawn_cooldown_active() {
+    use crate::daemon_v2::projections::cooldowns::CooldownCategory;
+
+    let events = vec![
+        DomainEvent::AgentCreated {
+            id: "a1".into(),
+            name: "worker-1".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-1".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "a1".into(),
+            pid: 100,
+            session_id: None,
+        },
+        DomainEvent::TaskCreated {
+            id: "task-1".into(),
+            subject: "Do something".into(),
+            channel: "main".into(),
+            blocked_by: vec![],
+            agent_type: None,
+            agent_name: None,
+            icon: None,
+            color: None,
+            parent: None,
+            thread_id: None,
+            message_id: None,
+        },
+        DomainEvent::TaskAssigned {
+            task_id: "task-1".into(),
+            agent_id: "a1".into(),
+        },
+        DomainEvent::AgentStopped {
+            id: "a1".into(),
+            reason: "process died".into(),
+        },
+    ];
+
+    let mut proj = make_projections(&events);
+
+    // Record a SpawnFailure cooldown for this task (simulating a worker that died quickly)
+    proj.cooldowns
+        .record(CooldownCategory::SpawnFailure, "task-1".to_string());
+
+    let commands = check_dead_workers(&proj);
+
+    // When cooldown is active, check_dead_workers should NOT respawn
+    assert!(
+        commands.is_empty(),
+        "should not respawn worker when SpawnFailure cooldown is active, got: {:?}",
+        commands
+    );
+}

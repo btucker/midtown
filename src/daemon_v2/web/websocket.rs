@@ -84,10 +84,27 @@ async fn handle_client_message(text: &str, state: &WebState, socket: &mut WebSoc
                 "id": 1,
             });
 
-            let (_response, events, commands) = {
+            let (response, events, commands) = {
                 let proj = state.projections.lock().await;
                 crate::daemon_v2::rpc::dispatch_request(rpc_request, &proj, &state.channels_dir)
             };
+
+            // Check for RPC error (e.g., channel is archived)
+            if response.get("error").is_some() {
+                let error_msg = response
+                    .get("error")
+                    .and_then(|e| e.get("message"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown error");
+                let _ = socket
+                    .send(Message::Text(
+                        json!({"type": "error", "message": error_msg})
+                            .to_string()
+                            .into(),
+                    ))
+                    .await;
+                return;
+            }
 
             // Apply events to projections + broadcast + persist via daemon
             if !events.is_empty() {

@@ -51,6 +51,7 @@
 - WHEN a worker has not reported a state change for 5 minutes THEN the system SHALL nudge it
 - WHEN a running worker's task is Completed THEN the system SHALL stop the worker
 - WHEN a task declares `blocked_by` dependencies THEN the system SHALL NOT dispatch it until all blockers are completed
+- WHEN a blocker task completes THEN the system SHALL remove it from the blocked_by lists of all dependent tasks — if a dependent task's blocked_by list becomes empty, it SHALL become eligible for dispatch
 - WHEN a task is updated via `task.update` AND it has an assigned agent THEN the system SHALL nudge that agent with a message describing the update
 
 ---
@@ -116,11 +117,17 @@
 - WHEN an agent is resumed THEN `started_at` SHALL be reset to now
 - WHEN resume fails THEN the system SHALL emit an AgentSpawnFailed event with the agent configuration and error reason
 
-### 4.4 Garbage Collection
+### 4.4 Spawn Failure Cooldown
+- WHEN any agent (lead OR worker) dies within 60 seconds of starting THEN the system SHALL record a SpawnFailure cooldown
+- WHEN a SpawnFailure cooldown is active for a worker's task THEN health checks and dispatch SHALL NOT re-spawn that worker until the cooldown expires (120 seconds)
+- WHEN a SpawnFailure cooldown is active for a channel THEN lead spawning SHALL NOT occur until the cooldown expires
+- The cooldown key for leads is the channel name; the cooldown key for workers is the task ID
+
+### 4.5 Garbage Collection
 - WHEN the number of stopped agent records exceeds a threshold THEN the system SHALL garbage-collect the oldest stopped agents (non-Lead), retaining at least 24 hours of history
 - WHEN an agent is garbage-collected THEN it SHALL be marked as GC'd AND excluded from routing, dispatch, and active queries, but its record SHALL be preserved
 
-### 4.5 Fork Sessions
+### 4.6 Fork Sessions
 - WHEN a fork session spawns THEN it SHALL be bound to a thread via `bound_thread_id`
 - WHEN a fork session stops THEN its thread binding SHALL persist AND any subsequent nudge to the thread SHALL resume the fork
 - WHEN a fork is spawned THEN it SHALL inherit the parent lead's session context by using the underlying Claude Code `--fork-session` feature
@@ -293,7 +300,7 @@
 - `coworker.report-state` — agent idle/working state reporting
 - `session.detach` — stop agent by name
 - `task.prompt` — nudge task's assigned agent
-- `task.handoff` — stop agent, reset task, spawn replacement
+- `task.handoff` — stop agent, reset task, spawn replacement (params: id, agent_type or agent, message)
 - `pr.merge` — shortcut for pr.action merge
 - `oneshot.execute` — spawn one-off worker with prompt
 - `channel.create`, `channel.archive`, `channel.unarchive`, `channel.rename` — channel management
@@ -355,7 +362,11 @@
 - WHEN client sends Ping THEN Pong SHALL be returned
 - WHEN client disconnects THEN the WebSocket loop SHALL terminate
 
-### 11.3 Response Transformations
+### 11.3 Error Propagation
+- WHEN the web API dispatches an RPC call AND the RPC returns an error THEN the web API SHALL return an HTTP error status (4xx) with the error message — NOT swallow the error and return 200 OK
+- WHEN a message is posted to an archived channel via the web API THEN the API SHALL return an error, matching the CLI behavior
+
+### 11.4 Response Transformations
 - WHEN channel history contains a `message` field THEN it SHALL be renamed to `content` for web UI compatibility
 - WHEN search results contain a `message` field THEN it SHALL be renamed to `content`
 
@@ -699,3 +710,5 @@ Behavioral requirements for agent system prompts. Specs are organized by audienc
 | 2026-03-31 | Added: section 17 (Agent Behavioral Rules) — EARS-format specs for all rules in common.md, lead-common.md, and the four agent definition files. Removed duplicate insight guidance from channel lead definition. |
 | 2026-04-01 | Added: section 8.2 (Daemon Logging) — daemon-v2 must initialize file-based tracing so `midtown log` works. Found via dogfood testing: daemon-v2 never initializes a tracing subscriber, so all log output is silently discarded and `midtown log` fails. |
 | 2026-04-01 | Added: section 10.6 (CLI-Daemon Consistency) — `task list` and `task view` must query daemon via RPC, not filesystem TaskStore. Found via dogfood testing: `task list` returned empty while `status` correctly showed the task. |
+| 2026-04-01 | Added: section 4.4 (Spawn Failure Cooldown) — cooldown must apply to ALL agent types, not just leads. Found via dogfood testing: worker kept getting re-dispatched every 30s in an infinite respawn loop after daemon restart. |
+| 2026-04-02 | Updated: section 2.2 (Task Lifecycle) — completing a blocker task must remove it from dependent tasks' blocked_by lists. Found via dogfood testing: blocked tasks stayed blocked forever because TaskCompleted never updated the blocked map. |

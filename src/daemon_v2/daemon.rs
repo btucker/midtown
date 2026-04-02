@@ -587,29 +587,32 @@ impl DaemonV2 {
             // Broadcast to WebSocket clients (ignore if no receivers).
             let _ = self.event_tx.send(event.clone());
 
-            // Record SpawnFailure cooldown when a lead dies shortly after starting.
-            // This prevents tight respawn loops when auth is broken.
-            if let DomainEvent::AgentStopped { id, .. } = event {
-                let cooldown_channel = proj.agents.by_id.get(id).and_then(|agent| {
-                    if agent.kind == crate::daemon_v2::events::AgentKind::Lead
-                        && agent
-                            .started_at
-                            .is_some_and(|t| (chrono::Utc::now() - t).num_seconds() < 60)
-                    {
-                        agent.channel.clone()
-                    } else {
-                        None
+            // Record SpawnFailure cooldown when an agent dies shortly after starting.
+            // For leads, keyed by channel. For workers, keyed by task ID.
+            // This prevents tight respawn loops.
+            if let DomainEvent::AgentStopped { id, .. } = event
+                && let Some(agent) = proj.agents.by_id.get(id)
+            {
+                let died_quickly = agent
+                    .started_at
+                    .is_some_and(|t| (chrono::Utc::now() - t).num_seconds() < 60);
+
+                if died_quickly {
+                    let cooldown_key = match agent.kind {
+                        crate::daemon_v2::events::AgentKind::Lead => agent.channel.clone(),
+                        crate::daemon_v2::events::AgentKind::Worker => agent.task_id.clone(),
+                        _ => None,
+                    };
+                    if let Some(key) = cooldown_key {
+                        tracing::warn!(
+                            %id, key = %key, kind = ?agent.kind,
+                            "agent died within 60s of start — applying spawn cooldown"
+                        );
+                        proj.cooldowns.record(
+                            crate::daemon_v2::projections::cooldowns::CooldownCategory::SpawnFailure,
+                            key,
+                        );
                     }
-                });
-                if let Some(ch) = cooldown_channel {
-                    tracing::warn!(
-                        %id, channel = %ch,
-                        "lead died within 60s of start — applying spawn cooldown"
-                    );
-                    proj.cooldowns.record(
-                        crate::daemon_v2::projections::cooldowns::CooldownCategory::SpawnFailure,
-                        ch,
-                    );
                 }
             }
         }
