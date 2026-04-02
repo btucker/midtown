@@ -88,6 +88,9 @@ pub fn dispatch_request(
             Err(err) => (err.to_json(&id), vec![], vec![]),
         },
         "channel.update" => events_response(&id, handlers::handle_channel_update(params)),
+        "channel.create" => {
+            events_response(&id, handlers::handle_channel_create(params, channels_dir))
+        }
         "channel.rename" => {
             events_response(&id, handlers::handle_channel_rename(params, channels_dir))
         }
@@ -231,13 +234,6 @@ pub fn dispatch_request(
                 "channel.list" => handlers::handle_channel_list(channels_dir),
                 "channel.read" => handlers::handle_channel_read(params, channels_dir),
                 "reminder.list" => handlers::handle_reminder_list(proj),
-                "channel.create" => handlers::handle_channel_create(params, channels_dir),
-<<<<<<< HEAD
-                "channel.archive" => handlers::handle_channel_archive(params, channels_dir),
-                "channel.unarchive" => handlers::handle_channel_unarchive(params, channels_dir),
-=======
-                "channel.rename" => handlers::handle_channel_rename(params, channels_dir),
->>>>>>> 567b60ff (fix: emit events on channel.archive/unarchive for WebSocket notification)
                 // Stubs for CLI methods that don't have full v2 implementations yet
                 "workflow.list" => handlers::handle_workflow_list(proj),
                 "pr.list-external" | "pr.allow" => Ok(json!({"ok": true, "stub": true})),

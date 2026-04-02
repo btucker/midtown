@@ -1532,14 +1532,25 @@ fn channel_create_via_rpc() {
         "id": 600,
         "params": { "name": "new-chan" }
     });
-    let (response, _, _) = dispatch_request(request, &proj, dir.path());
+    let (response, events, _) = dispatch_request(request, &proj, dir.path());
     assert!(response["error"].is_null());
     assert_eq!(response["result"]["ok"], true);
-    assert_eq!(response["result"]["channel"], "new-chan");
 
     // Verify the channel directory exists
     let ch_dir = dir.path().join("channels").join("new-chan");
     assert!(ch_dir.exists(), "channel directory should be created");
+
+    // Verify ChannelCreated event is emitted for WebSocket broadcast
+    assert!(
+        !events.is_empty(),
+        "channel.create should emit ChannelCreated event"
+    );
+    match &events[0] {
+        DomainEvent::ChannelCreated { channel } => {
+            assert_eq!(channel, "new-chan");
+        }
+        other => panic!("expected ChannelCreated, got {:?}", other),
+    }
 }
 
 /// Spec 5.2: channel.archive renames directory with .archived suffix

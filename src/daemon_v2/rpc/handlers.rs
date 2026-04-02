@@ -1034,7 +1034,7 @@ pub fn handle_channel_read(params: Option<&Value>, channels_dir: &Path) -> Resul
 pub fn handle_channel_create(
     params: Option<&Value>,
     channels_dir: &Path,
-) -> Result<Value, RpcError> {
+) -> Result<Vec<DomainEvent>, RpcError> {
     let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
     let name = params
         .get("name")
@@ -1048,7 +1048,9 @@ pub fn handle_channel_create(
             message: e,
         })?;
 
-    Ok(json!({"ok": true, "channel": name}))
+    Ok(vec![DomainEvent::ChannelCreated {
+        channel: name.to_string(),
+    }])
 }
 
 /// Handle `channel.archive` — rename channel directory with .archived suffix.

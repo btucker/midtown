@@ -86,10 +86,20 @@ impl ChannelIndex {
             DomainEvent::ChannelDirectorySet { channel, directory } => {
                 self.ensure_channel(channel).settings.directory = directory.clone();
             }
+            DomainEvent::ChannelCreated { channel } => {
+                self.ensure_channel(channel);
+            }
             DomainEvent::ChannelRenamed { old_name, new_name } => {
-                if let Some(meta) = self.channels.remove(old_name) {
+                if let Some(mut meta) = self.channels.remove(old_name) {
+                    meta.name = new_name.clone();
                     self.channels.insert(new_name.clone(), meta);
                 }
+            }
+            DomainEvent::ChannelArchived { channel } => {
+                self.ensure_channel(channel).archived = true;
+            }
+            DomainEvent::ChannelUnarchived { channel } => {
+                self.ensure_channel(channel).archived = false;
             }
             _ => {}
         }
