@@ -335,7 +335,7 @@
 - `GET /api/status` → agent/task/PR dashboard data; tasks SHALL include id, subject, status, channel, owner, thread_id, message_id, updated_at, color, icon fields for web UI rendering
 - `GET /api/channels` → channel list (with optional `include_archived`)
 - `GET /api/channels/history` → messages (params: channel, limit, thread_parent_id)
-- `POST /api/channels/create` → create channel
+- `POST /api/channels/create` → create channel (dispatches through `channel.create` RPC for event broadcast)
 - `GET /api/channels/{channel}/settings` → channel settings
 - `PUT /api/channels/{channel}/settings` → update settings
 - `GET /api/channels/{channel}/agents-md` → read AGENTS.md

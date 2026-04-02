@@ -216,18 +216,47 @@ pub async fn channel_create(
     State(state): State<Arc<WebState>>,
     Json(body): Json<CreateChannelBody>,
 ) -> (StatusCode, Json<Value>) {
-    let channels_dir = &state.channels_dir;
-    match crate::daemon_v2::executor::channel_io::post_system_message(
-        channels_dir,
-        &body.name,
-        "Channel created",
-    ) {
-        Ok(()) => (
-            StatusCode::CREATED,
-            Json(json!({"ok": true, "name": body.name})),
-        ),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e}))),
+    let rpc_request = json!({
+        "jsonrpc": "2.0",
+        "method": "channel.create",
+        "params": { "name": body.name },
+        "id": 1,
+    });
+
+    let (response, events, _commands) = {
+        let proj = state.projections.lock().await;
+        rpc::dispatch_request(rpc_request, &proj, &state.channels_dir)
+    };
+
+    if response.get("error").is_some() {
+        let msg = response
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("failed to create channel");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": msg})),
+        );
     }
+
+    // Apply events to projections + broadcast via WebSocket
+    if !events.is_empty() {
+        {
+            let mut proj = state.projections.lock().await;
+            for event in &events {
+                proj.apply(event);
+                let _ = state.event_tx.send(event.clone());
+            }
+        }
+        let persist = crate::daemon_v2::decisions::Command::PersistEvents(events);
+        let _ = state.command_tx.send(persist).await;
+    }
+
+    (
+        StatusCode::CREATED,
+        Json(json!({"ok": true, "name": body.name})),
+    )
 }
 
 // Stub routes for endpoints the web UI calls but v2 doesn't fully implement yet.
