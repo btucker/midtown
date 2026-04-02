@@ -999,6 +999,27 @@ pub fn handle_channel_read(params: Option<&Value>, channels_dir: &Path) -> Resul
         });
     }
 
+    // Handle --message <id> with optional --context N
+    let message_id = params.get("message").and_then(|v| v.as_str());
+    let context_n = params
+        .get("context")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+
+    if let Some(msg_id) = message_id {
+        // Read ALL messages (not just limited) to find the target and context
+        let all = channel_io::read_messages(channels_dir, channel, None, None).unwrap_or_default();
+        let n = context_n.unwrap_or(0);
+        if let Some(pos) = all
+            .iter()
+            .position(|m| m.get("id").and_then(|v| v.as_str()) == Some(msg_id))
+        {
+            let start = pos.saturating_sub(n);
+            let end = (pos + 1 + n).min(all.len());
+            return Ok(json!(all[start..end]));
+        }
+    }
+
     Ok(json!(messages))
 }
 
