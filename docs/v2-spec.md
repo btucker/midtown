@@ -362,7 +362,11 @@
 - WHEN client sends Ping THEN Pong SHALL be returned
 - WHEN client disconnects THEN the WebSocket loop SHALL terminate
 
-### 11.3 Response Transformations
+### 11.3 Error Propagation
+- WHEN the web API dispatches an RPC call AND the RPC returns an error THEN the web API SHALL return an HTTP error status (4xx) with the error message — NOT swallow the error and return 200 OK
+- WHEN a message is posted to an archived channel via the web API THEN the API SHALL return an error, matching the CLI behavior
+
+### 11.4 Response Transformations
 - WHEN channel history contains a `message` field THEN it SHALL be renamed to `content` for web UI compatibility
 - WHEN search results contain a `message` field THEN it SHALL be renamed to `content`
 

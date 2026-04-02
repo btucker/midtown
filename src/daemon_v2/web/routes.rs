@@ -160,6 +160,18 @@ pub async fn channel_post(
         }
     }
 
+    // Check for RPC error before returning success
+    if let Some(error) = response.get("error") {
+        let message = error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown error");
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"ok": false, "error": message})),
+        );
+    }
+
     let msg_id = response
         .get("result")
         .and_then(|r| r.get("id"))
