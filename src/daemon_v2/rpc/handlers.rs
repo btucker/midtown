@@ -1055,7 +1055,7 @@ pub fn handle_channel_create(
 pub fn handle_channel_archive(
     params: Option<&Value>,
     channels_dir: &Path,
-) -> Result<Value, RpcError> {
+) -> Result<Vec<DomainEvent>, RpcError> {
     let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
     let name = params
         .get("channel")
@@ -1075,14 +1075,16 @@ pub fn handle_channel_archive(
         })?;
     }
 
-    Ok(json!({"ok": true}))
+    Ok(vec![DomainEvent::ChannelArchived {
+        channel: name.to_string(),
+    }])
 }
 
 /// Handle `channel.unarchive` — remove .archived suffix from channel directory.
 pub fn handle_channel_unarchive(
     params: Option<&Value>,
     channels_dir: &Path,
-) -> Result<Value, RpcError> {
+) -> Result<Vec<DomainEvent>, RpcError> {
     let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
     let name = params
         .get("channel")
@@ -1102,7 +1104,9 @@ pub fn handle_channel_unarchive(
         })?;
     }
 
-    Ok(json!({"ok": true}))
+    Ok(vec![DomainEvent::ChannelUnarchived {
+        channel: name.to_string(),
+    }])
 }
 
 /// Handle `oneshot.execute` — spawn a one-off worker with a prompt.
