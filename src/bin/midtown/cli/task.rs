@@ -224,7 +224,12 @@ fn handle_list_rpc(client: &DaemonClient, show_all: bool) -> Result<Response, St
 
     let task_infos: Vec<TaskInfo> = tasks_json
         .iter()
-        .filter(|t| show_all || t["status"].as_str() != Some("completed"))
+        .filter(|t| {
+            show_all
+                || !t["status"]
+                    .as_str()
+                    .is_some_and(|s| s.eq_ignore_ascii_case("completed"))
+        })
         .map(|t| {
             let id = t["id"]
                 .as_str()

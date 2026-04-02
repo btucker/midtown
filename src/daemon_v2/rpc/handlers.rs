@@ -652,6 +652,7 @@ pub fn handle_task_list(proj: &Projections) -> Result<Value, RpcError> {
                 "status": t.status,
                 "pr_number": t.pr_number,
                 "agent_type": t.agent_type,
+                "agent_name": t.agent_name,
                 "icon": t.icon,
                 "created_at": t.created_at.to_rfc3339(),
                 "completed_at": t.completed_at.map(|d| d.to_rfc3339()),
