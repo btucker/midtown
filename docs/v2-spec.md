@@ -224,6 +224,12 @@
 - WHEN an executor command involves I/O that may take more than 1 second (PR polling, gh CLI calls) THEN it SHALL run in a background task so the event loop remains responsive
 - WHEN a user posts to a channel THEN the resulting SpawnAgent or NudgeAgent command SHALL be executed within 5 seconds, regardless of what the scheduler is doing
 
+## 8.2 Daemon Logging
+- WHEN the daemon starts THEN it SHALL create the `logs/` directory under the project directory if it does not exist
+- WHEN the daemon starts THEN it SHALL initialize a file-based tracing subscriber that writes to `<project_dir>/logs/daemon.log`
+- WHEN `midtown log` is run THEN it SHALL tail this file — the daemon MUST have created it on startup so the command succeeds while the daemon is running
+- WHEN the log file grows THEN it SHALL be rotated (implementation-defined strategy)
+
 ---
 
 ## 9. Scheduling
@@ -686,3 +692,4 @@ Behavioral requirements for agent system prompts. Specs are organized by audienc
 | 2026-03-30 | Added: auto-output (4.1) — agent stdout must be posted to channels; channel lead resolution (5.1) — must prefer running agents over stopped ones; concurrency (8.1) — web handlers must not be blocked by executor; v1 field name compatibility (10.5). Found via live testing: lead not responding was caused by discarded stdout + wrong lead resolution + field name mismatch. |
 | 2026-03-30 | Added: section 16 (Authentication) — profile storage under `~/.midtown/platforms/<platform>/`, CLAUDE_CONFIG_DIR resolution, auth login, auth switch with agent relaunch, auth error detection, profile pool rotation, migration from legacy layout. |
 | 2026-03-31 | Added: section 17 (Agent Behavioral Rules) — EARS-format specs for all rules in common.md, lead-common.md, and the four agent definition files. Removed duplicate insight guidance from channel lead definition. |
+| 2026-04-01 | Added: section 8.2 (Daemon Logging) — daemon-v2 must initialize file-based tracing so `midtown log` works. Found via dogfood testing: daemon-v2 never initializes a tracing subscriber, so all log output is silently discarded and `midtown log` fails. |

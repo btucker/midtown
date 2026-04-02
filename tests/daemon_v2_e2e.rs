@@ -22,6 +22,8 @@ struct V2Harness {
     _state_dir: tempfile::TempDir,
     /// Path to the Unix domain socket.
     socket_path: PathBuf,
+    /// The MIDTOWN_BASE_DIR used by this daemon instance.
+    midtown_base: PathBuf,
     /// The child process handle.
     child: Option<Child>,
 }
@@ -87,6 +89,7 @@ impl V2Harness {
             _temp_dir: temp_dir,
             _state_dir: state_dir,
             socket_path,
+            midtown_base: midtown_base.clone(),
             child: Some(child),
         };
 
@@ -1002,6 +1005,37 @@ fn test_daemon_v2_draining_prevents_dispatch() {
 }
 
 /// Wait up to `timeout` for `child` to exit. Returns true if it exited in time.
+/// Spec 8.2: daemon-v2 creates log file on startup so `midtown log` works
+#[test]
+#[ignore]
+fn test_daemon_v2_creates_log_file() {
+    let harness = V2Harness::start();
+
+    // Verify the daemon is responding (socket is up)
+    let resp = harness.rpc_call("status", None);
+    assert_eq!(resp["jsonrpc"], "2.0", "daemon not responding");
+
+    // The daemon should have created the log file at startup
+    let log_file = harness
+        .midtown_base
+        .join("projects")
+        .join("test-repo")
+        .join("logs")
+        .join("daemon.log");
+
+    assert!(
+        log_file.exists(),
+        "daemon should create log file at {log_file:?} on startup"
+    );
+
+    // The log file should have some content (at minimum, startup messages)
+    let metadata = std::fs::metadata(&log_file).expect("read log file metadata");
+    assert!(
+        metadata.len() > 0,
+        "log file should contain startup log entries, but is empty"
+    );
+}
+
 fn wait_for_exit(mut child: Child, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {

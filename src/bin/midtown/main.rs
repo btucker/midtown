@@ -422,6 +422,29 @@ fn main() {
 
         let channels_dir = paths.base_dir().to_path_buf();
 
+        // Set up file-based tracing so `midtown log` can tail daemon output.
+        let log_dir = paths.daemon_log_dir();
+        std::fs::create_dir_all(&log_dir).unwrap_or_else(|e| {
+            eprintln!(
+                "Failed to create log directory {}: {}",
+                log_dir.display(),
+                e
+            );
+            std::process::exit(1);
+        });
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(paths.daemon_log_file())
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to open log file: {}", e);
+                std::process::exit(1);
+            });
+        tracing_subscriber::fmt()
+            .with_writer(std::sync::Mutex::new(log_file))
+            .with_ansi(false)
+            .init();
+
         let config = midtown::daemon_v2::DaemonV2Config {
             dir_key,
             socket_path,
