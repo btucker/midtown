@@ -116,11 +116,17 @@
 - WHEN an agent is resumed THEN `started_at` SHALL be reset to now
 - WHEN resume fails THEN the system SHALL emit an AgentSpawnFailed event with the agent configuration and error reason
 
-### 4.4 Garbage Collection
+### 4.4 Spawn Failure Cooldown
+- WHEN any agent (lead OR worker) dies within 60 seconds of starting THEN the system SHALL record a SpawnFailure cooldown
+- WHEN a SpawnFailure cooldown is active for a worker's task THEN health checks and dispatch SHALL NOT re-spawn that worker until the cooldown expires (120 seconds)
+- WHEN a SpawnFailure cooldown is active for a channel THEN lead spawning SHALL NOT occur until the cooldown expires
+- The cooldown key for leads is the channel name; the cooldown key for workers is the task ID
+
+### 4.5 Garbage Collection
 - WHEN the number of stopped agent records exceeds a threshold THEN the system SHALL garbage-collect the oldest stopped agents (non-Lead), retaining at least 24 hours of history
 - WHEN an agent is garbage-collected THEN it SHALL be marked as GC'd AND excluded from routing, dispatch, and active queries, but its record SHALL be preserved
 
-### 4.5 Fork Sessions
+### 4.6 Fork Sessions
 - WHEN a fork session spawns THEN it SHALL be bound to a thread via `bound_thread_id`
 - WHEN a fork session stops THEN its thread binding SHALL persist AND any subsequent nudge to the thread SHALL resume the fork
 - WHEN a fork is spawned THEN it SHALL inherit the parent lead's session context by using the underlying Claude Code `--fork-session` feature
@@ -699,3 +705,4 @@ Behavioral requirements for agent system prompts. Specs are organized by audienc
 | 2026-03-31 | Added: section 17 (Agent Behavioral Rules) — EARS-format specs for all rules in common.md, lead-common.md, and the four agent definition files. Removed duplicate insight guidance from channel lead definition. |
 | 2026-04-01 | Added: section 8.2 (Daemon Logging) — daemon-v2 must initialize file-based tracing so `midtown log` works. Found via dogfood testing: daemon-v2 never initializes a tracing subscriber, so all log output is silently discarded and `midtown log` fails. |
 | 2026-04-01 | Added: section 10.6 (CLI-Daemon Consistency) — `task list` and `task view` must query daemon via RPC, not filesystem TaskStore. Found via dogfood testing: `task list` returned empty while `status` correctly showed the task. |
+| 2026-04-01 | Added: section 4.4 (Spawn Failure Cooldown) — cooldown must apply to ALL agent types, not just leads. Found via dogfood testing: worker kept getting re-dispatched every 30s in an infinite respawn loop after daemon restart. |
