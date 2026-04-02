@@ -238,6 +238,18 @@ pub enum DomainEvent {
         new_name: String,
     },
 
+    ChannelCreated {
+        channel: String,
+    },
+
+    ChannelArchived {
+        channel: String,
+    },
+
+    ChannelUnarchived {
+        channel: String,
+    },
+
     // Config
     ConfigUpdated {
         key: String,

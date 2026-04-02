@@ -768,6 +768,13 @@ export function handleUpdate(update: Record<string, unknown>): void {
 					auto_output: d.auto_output || d.tool_data ? true : undefined,
 				},
 			};
+		} else if (
+			key === "ChannelCreated" ||
+			key === "ChannelArchived" ||
+			key === "ChannelUnarchived" ||
+			key === "ChannelRenamed"
+		) {
+			update = { type: "channel_list_changed", data: {} };
 		} else {
 			// Other domain events (AgentCreated, PrMerged, etc.) — ignore silently
 			return;

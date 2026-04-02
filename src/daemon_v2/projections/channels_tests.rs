@@ -124,3 +124,43 @@ fn channel_directory_set() {
         "directory should be cleared"
     );
 }
+
+/// ChannelCreated adds channel to index
+#[test]
+fn channel_created_adds_to_index() {
+    let mut idx = ChannelIndex::default();
+    idx.apply(&DomainEvent::ChannelCreated {
+        channel: "new-chan".into(),
+    });
+    assert!(idx.channels.contains_key("new-chan"));
+    assert!(!idx.channels.get("new-chan").unwrap().archived);
+}
+
+/// ChannelArchived sets archived flag
+#[test]
+fn channel_archived_sets_flag() {
+    let mut idx = ChannelIndex::default();
+    idx.apply(&DomainEvent::ChannelCreated {
+        channel: "test".into(),
+    });
+    idx.apply(&DomainEvent::ChannelArchived {
+        channel: "test".into(),
+    });
+    assert!(idx.channels.get("test").unwrap().archived);
+}
+
+/// ChannelUnarchived clears archived flag
+#[test]
+fn channel_unarchived_clears_flag() {
+    let mut idx = ChannelIndex::default();
+    idx.apply(&DomainEvent::ChannelCreated {
+        channel: "test".into(),
+    });
+    idx.apply(&DomainEvent::ChannelArchived {
+        channel: "test".into(),
+    });
+    idx.apply(&DomainEvent::ChannelUnarchived {
+        channel: "test".into(),
+    });
+    assert!(!idx.channels.get("test").unwrap().archived);
+}

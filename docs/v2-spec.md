@@ -303,7 +303,8 @@
 - `task.handoff` — stop agent, reset task, spawn replacement (params: id, agent_type or agent, message)
 - `pr.merge` — shortcut for pr.action merge
 - `oneshot.execute` — spawn one-off worker with prompt
-- `channel.create`, `channel.archive`, `channel.unarchive`, `channel.rename` — channel management
+- `channel.create` — emit ChannelCreated (required: name)
+- `channel.archive`, `channel.unarchive`, `channel.rename` — channel management (emit events for WebSocket notification)
 - `daemon.set-draining` — toggle draining mode
 - `daemon.check-pending` — check draining state
 
@@ -355,6 +356,7 @@
 
 ### 11.2 WebSocket (`GET /api/ws`)
 - WHEN a domain event occurs THEN it SHALL be broadcast to all connected clients as JSON
+- WHEN a channel-related domain event is broadcast (ChannelCreated, ChannelArchived, ChannelUnarchived, ChannelRenamed) THEN the web client SHALL refresh its channel list
 - WHEN client sends `send_message` THEN message SHALL be posted and confirmation returned
 - WHEN client sends `fork_thread` THEN thread_ownership response SHALL be returned
 - WHEN client sends `answer_question` THEN answer SHALL be posted to the coworker's DM channel
