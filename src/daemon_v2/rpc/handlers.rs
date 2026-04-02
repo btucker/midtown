@@ -1440,6 +1440,60 @@ pub fn handle_workflow_list(proj: &Projections) -> Result<Value, RpcError> {
 #[cfg(test)]
 mod tests;
 
+/// Handle `pr.review-post` — post a review to a GitHub PR.
+/// The reviewer writes the review body, and this command posts it via `gh pr review`.
+pub fn handle_pr_review_post(params: Option<&Value>) -> Result<Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
+
+    let pr_number = params
+        .get("pr")
+        .or_else(|| params.get("number"))
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: pr"))?;
+
+    let body = params
+        .get("body")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError::invalid_params("missing required field: body"))?;
+
+    // Add midtown frontmatter if not already present
+    let review_body = if body.contains("<!-- midtown") {
+        body.to_string()
+    } else {
+        let from = params
+            .get("from")
+            .and_then(|v| v.as_str())
+            .unwrap_or("reviewer");
+        format!("<!-- midtown from:{from} type:review -->\n\n{body}")
+    };
+
+    // Post the review via gh CLI
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "review",
+            &pr_number.to_string(),
+            "--comment",
+            "--body",
+            &review_body,
+        ])
+        .output()
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("failed to run gh pr review: {e}"),
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(RpcError {
+            code: -32000,
+            message: format!("gh pr review failed: {stderr}"),
+        });
+    }
+
+    Ok(json!({"ok": true, "pr": pr_number}))
+}
+
 /// Parse a human-friendly duration string (e.g., "5m", "1h", "30s") to seconds.
 fn parse_duration_secs(s: &str) -> Option<u64> {
     let s = s.trim();

@@ -242,7 +242,10 @@ pub fn dispatch_request(
                         Err(err) => return (err.to_json(&id), vec![], vec![]),
                     }
                 }
-                "pr.review" => Ok(json!({"ok": true, "stub": true})),
+                "pr.review" | "pr.review-post" => match handlers::handle_pr_review_post(params) {
+                    Ok(result) => Ok(result),
+                    Err(err) => Err(err),
+                },
                 // shutdown is handled at the daemon level (RpcOutcome::Shutdown)
                 // but we also handle it here for web API dispatch
                 "shutdown" => Ok(json!({"ok": true})),
