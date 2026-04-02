@@ -233,6 +233,11 @@ pub enum DomainEvent {
         directory: Option<String>,
     },
 
+    ChannelRenamed {
+        old_name: String,
+        new_name: String,
+    },
+
     // Config
     ConfigUpdated {
         key: String,

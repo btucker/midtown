@@ -1648,6 +1648,64 @@ fn channel_rename_via_rpc() {
     assert!(new_dir.exists(), "new channel dir should exist");
 }
 
+/// channel.rename emits ChannelRenamed event that updates agent bindings.
+#[test]
+fn channel_rename_updates_agent_bindings() {
+    let mut proj = Projections::default();
+    let dir = tempfile::TempDir::new().unwrap();
+
+    // Create agent bound to "old-chan"
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "lead-1".into(),
+        name: "old-chan".into(),
+        kind: AgentKind::Lead,
+        agent_type: "midtown-channel-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("old-chan".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    assert!(proj.agents.by_channel.contains_key("old-chan"));
+
+    // Create the channel on disk
+    let create = json!({
+        "jsonrpc": "2.0", "method": "channel.create", "id": 1,
+        "params": { "name": "old-chan" }
+    });
+    dispatch_request(create, &proj, dir.path());
+
+    // Rename it
+    let rename = json!({
+        "jsonrpc": "2.0", "method": "channel.rename", "id": 2,
+        "params": { "old": "old-chan", "new": "new-chan" }
+    });
+    let (response, events, _) = dispatch_request(rename, &proj, dir.path());
+    assert!(response["error"].is_null(), "rename error: {response}");
+    assert!(
+        !events.is_empty(),
+        "rename should emit ChannelRenamed event"
+    );
+
+    // Apply events to projections
+    for event in &events {
+        proj.apply(event);
+    }
+
+    // Agent should now be bound to new-chan
+    assert!(
+        !proj.agents.by_channel.contains_key("old-chan"),
+        "old channel should be gone from agent index"
+    );
+    assert!(
+        proj.agents.by_channel.contains_key("new-chan"),
+        "new channel should exist in agent index"
+    );
+    let agent = proj.agents.by_id.get("lead-1").unwrap();
+    assert_eq!(agent.channel.as_deref(), Some("new-chan"));
+}
+
 // ── oneshot.execute ─────────────────────────────────────────────────────
 
 /// Section 15: oneshot.execute spawns a one-off worker
