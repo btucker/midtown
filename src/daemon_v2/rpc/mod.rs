@@ -227,7 +227,7 @@ pub fn dispatch_request(
                 "pr.merge" => {
                     // Transform into pr.action merge
                     let number = params
-                        .and_then(|p| p.get("number"))
+                        .and_then(|p| p.get("number").or_else(|| p.get("pr")))
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
                     let merged = json!({"action": "merge", "number": number});
