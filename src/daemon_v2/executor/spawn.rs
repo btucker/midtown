@@ -50,6 +50,10 @@ pub fn build_launch_config(config: &SpawnConfig, dir_key: &str) -> LaunchConfig 
 /// Builds a `LaunchConfig`, converts it to a `HeadlessConfig`, spawns the
 /// process, and returns the session handle along with the domain events
 /// that record the creation.
+///
+/// For worker agents, an initial `AgentStateReported` event is emitted so the
+/// sidebar shows activity immediately (e.g. "developing" or "reviewing")
+/// without waiting for the agent to call `midtown state` itself.
 pub async fn spawn_agent(
     spawn_config: &SpawnConfig,
     paths: &ProjectPaths,
@@ -91,7 +95,9 @@ pub async fn spawn_agent(
         agent_spawned_events(&agent_id, spawn_config, pid, Some(pre_assigned_session_id));
 
     // Auto-report initial state for workers so the sidebar shows activity immediately.
-    // Agents are supposed to call `midtown state` themselves, but they often skip it.
+    // Without this, there's a visible gap between spawn and the agent's first
+    // `midtown state` call (which agents sometimes skip entirely). Reviewers
+    // start as "reviewing"; all other workers start as "developing".
     if spawn_config.kind == AgentKind::Worker {
         let initial_state = if spawn_config.agent_type == "midtown-code-reviewer" {
             "reviewing"
