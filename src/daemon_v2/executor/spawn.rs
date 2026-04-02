@@ -3,7 +3,7 @@
 mod tests;
 
 use crate::daemon_v2::decisions::SpawnConfig;
-use crate::daemon_v2::events::{AgentId, DomainEvent, Provider};
+use crate::daemon_v2::events::{AgentId, AgentKind, DomainEvent, Provider};
 use crate::headless::HeadlessSession;
 use crate::launch::LaunchConfig;
 use crate::paths::ProjectPaths;
@@ -87,7 +87,22 @@ pub async fn spawn_agent(
 
     let pid = session.pid().unwrap_or(0);
     let agent_id: AgentId = uuid::Uuid::new_v4().to_string();
-    let events = agent_spawned_events(&agent_id, spawn_config, pid, Some(pre_assigned_session_id));
+    let mut events =
+        agent_spawned_events(&agent_id, spawn_config, pid, Some(pre_assigned_session_id));
+
+    // Auto-report initial state for workers so the sidebar shows activity immediately.
+    // Agents are supposed to call `midtown state` themselves, but they often skip it.
+    if spawn_config.kind == AgentKind::Worker {
+        let initial_state = if spawn_config.agent_type == "midtown-code-reviewer" {
+            "reviewing"
+        } else {
+            "developing"
+        };
+        events.push(DomainEvent::AgentStateReported {
+            id: agent_id,
+            state: initial_state.to_string(),
+        });
+    }
 
     Ok((session, events))
 }
