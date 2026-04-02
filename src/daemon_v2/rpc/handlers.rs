@@ -593,6 +593,7 @@ pub fn handle_report_state(
 
     let state = params
         .get("state")
+        .or_else(|| params.get("phase"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| RpcError::invalid_params("missing required field: state"))?;
 
