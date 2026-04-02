@@ -537,3 +537,59 @@ fn pending_unblocked_excludes_blocked_tasks() {
     assert_eq!(unblocked.len(), 1, "only one task should be unblocked");
     assert_eq!(*unblocked[0], "t1", "t1 should be the unblocked task");
 }
+
+/// Spec 2.2: completing a blocker task unblocks dependent tasks
+#[test]
+fn completing_blocker_unblocks_dependent_task() {
+    let mut idx = WorkIndex::default();
+
+    // Create t1 (no blockers) and t2 (blocked by t1)
+    idx.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Blocker".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+        thread_id: None,
+        message_id: None,
+    });
+    idx.apply(&DomainEvent::TaskCreated {
+        id: "t2".into(),
+        subject: "Blocked by t1".into(),
+        channel: "main".into(),
+        blocked_by: vec!["t1".into()],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+        thread_id: None,
+        message_id: None,
+    });
+
+    // Before: only t1 is unblocked
+    assert_eq!(idx.pending_unblocked().len(), 1);
+
+    // Assign t1 (moves to InProgress, out of pending)
+    idx.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: "a1".into(),
+    });
+
+    // Complete t1
+    idx.apply(&DomainEvent::TaskCompleted {
+        task_id: "t1".into(),
+    });
+
+    // After: t2 should now be unblocked and dispatchable
+    let unblocked = idx.pending_unblocked();
+    assert!(
+        unblocked.iter().any(|id| *id == "t2"),
+        "t2 should be unblocked after t1 completes, but pending_unblocked = {:?}",
+        unblocked
+    );
+}

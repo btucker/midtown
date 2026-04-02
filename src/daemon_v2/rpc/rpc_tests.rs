@@ -1457,6 +1457,47 @@ fn task_handoff_stops_and_respawns() {
     );
 }
 
+/// Spec 10.3: task.handoff respects the `agent` param (CLI sends "agent", not "agent_type")
+#[test]
+fn task_handoff_uses_agent_param_for_type() {
+    let mut proj = projections_with_agents();
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "task-1".into(),
+        subject: "Fix the thing".into(),
+        channel: "main".into(),
+        blocked_by: vec![],
+        agent_type: Some("midtown-code-author".into()),
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+        thread_id: None,
+        message_id: None,
+    });
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "task.handoff",
+        "id": 711,
+        "params": { "id": "task-1", "agent": "midtown-code-reviewer" }
+    });
+    let (_response, _events, commands) = dispatch_request(request, &proj, test_channels_dir());
+
+    // The spawned agent should use the requested agent type, not the original
+    let spawn = commands
+        .iter()
+        .find_map(|c| match c {
+            crate::daemon_v2::decisions::Command::SpawnAgent(cfg) => Some(cfg),
+            _ => None,
+        })
+        .expect("should have a SpawnAgent command");
+
+    assert_eq!(
+        spawn.agent_type, "midtown-code-reviewer",
+        "handoff should use the agent type from the 'agent' param, got: {}",
+        spawn.agent_type
+    );
+}
+
 // ── channel.create / channel.archive / channel.unarchive ────────────────
 
 /// Spec 5.2 + 10.1: channel.create creates a new channel via RPC

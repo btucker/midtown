@@ -128,6 +128,11 @@ impl WorkIndex {
                     task.completed_at = Some(Utc::now());
                     self.in_progress_tasks.retain(|id| id != task_id);
                 }
+                // Unblock dependent tasks: remove completed task from blocked_by lists
+                self.blocked.retain(|_dependent_id, blockers| {
+                    blockers.retain(|b| b != task_id);
+                    !blockers.is_empty()
+                });
             }
             DomainEvent::TaskReset { task_id, .. } => {
                 if let Some(task) = self.tasks.get_mut(task_id) {

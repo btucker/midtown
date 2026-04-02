@@ -1205,6 +1205,7 @@ pub fn handle_task_handoff(
 
     let agent_type = params
         .get("agent_type")
+        .or_else(|| params.get("agent"))
         .and_then(|v| v.as_str())
         .unwrap_or(task.agent_type.as_deref().unwrap_or("midtown-code-author"))
         .to_string();
