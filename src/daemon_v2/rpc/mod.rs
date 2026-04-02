@@ -92,6 +92,16 @@ pub fn dispatch_request(
             events_response(&id, handlers::handle_report_state(params, proj))
         }
         "workflow.set_state" => events_response(&id, handlers::handle_workflow_set_state(params)),
+        "workflow.set_lead_driven" => {
+            // Transform into channel.update with lead_driven param
+            let transformed = params.map(|p| {
+                json!({
+                    "channel": p.get("channel").cloned().unwrap_or(Value::Null),
+                    "lead_driven": p.get("enabled").cloned().unwrap_or(Value::Bool(false)),
+                })
+            });
+            events_response(&id, handlers::handle_channel_update(transformed.as_ref()))
+        }
         "reminder.cancel" => events_response(&id, handlers::handle_reminder_cancel(params)),
 
         "pr.action" => commands_response(&id, handlers::handle_pr_action(params, proj)),

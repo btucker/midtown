@@ -1818,6 +1818,47 @@ fn workflow_set_state_and_list() {
     );
 }
 
+/// workflow.set_lead_driven routes through channel.update to toggle lead-driven mode.
+#[test]
+fn workflow_set_lead_driven_toggles_mode() {
+    let mut proj = Projections::default();
+
+    // Enable lead-driven mode via workflow.set_lead_driven
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "workflow.set_lead_driven",
+        "id": 1200,
+        "params": { "channel": "backend", "enabled": true }
+    });
+    let (response, events, _) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(
+        response["error"].is_null(),
+        "workflow.set_lead_driven error: {response}"
+    );
+    assert!(
+        !events.is_empty(),
+        "should produce ChannelLeadDrivenSet event"
+    );
+    for event in &events {
+        proj.apply(event);
+    }
+    assert!(proj.channels.is_lead_driven("backend"));
+
+    // Disable it
+    let request = json!({
+        "jsonrpc": "2.0",
+        "method": "workflow.set_lead_driven",
+        "id": 1201,
+        "params": { "channel": "backend", "enabled": false }
+    });
+    let (response, events, _) = dispatch_request(request, &proj, test_channels_dir());
+    assert!(response["error"].is_null());
+    for event in &events {
+        proj.apply(event);
+    }
+    assert!(!proj.channels.is_lead_driven("backend"));
+}
+
 #[test]
 fn session_fork_resolves_channel_from_calling_session_id() {
     let mut proj = Projections::default();
