@@ -88,6 +88,9 @@ pub fn dispatch_request(
             Err(err) => (err.to_json(&id), vec![], vec![]),
         },
         "channel.update" => events_response(&id, handlers::handle_channel_update(params)),
+        "channel.rename" => {
+            events_response(&id, handlers::handle_channel_rename(params, channels_dir))
+        }
         "coworker.report-state" => {
             events_response(&id, handlers::handle_report_state(params, proj))
         }
@@ -214,7 +217,6 @@ pub fn dispatch_request(
                 "channel.create" => handlers::handle_channel_create(params, channels_dir),
                 "channel.archive" => handlers::handle_channel_archive(params, channels_dir),
                 "channel.unarchive" => handlers::handle_channel_unarchive(params, channels_dir),
-                "channel.rename" => handlers::handle_channel_rename(params, channels_dir),
                 // Stubs for CLI methods that don't have full v2 implementations yet
                 "workflow.list" => handlers::handle_workflow_list(proj),
                 "pr.list-external" | "pr.allow" => Ok(json!({"ok": true, "stub": true})),

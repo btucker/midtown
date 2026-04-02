@@ -1147,11 +1147,12 @@ pub fn handle_oneshot_execute(
     Ok((json!({"ok": true, "agent": name}), vec![command]))
 }
 
-/// Handle `channel.rename` — rename a channel directory.
+/// Handle `channel.rename` — rename a channel directory and emit event
+/// so projections (agent bindings, channel metadata) update in-memory.
 pub fn handle_channel_rename(
     params: Option<&Value>,
     channels_dir: &Path,
-) -> Result<Value, RpcError> {
+) -> Result<Vec<DomainEvent>, RpcError> {
     let params = params.ok_or_else(|| RpcError::invalid_params("missing params"))?;
     let old_name = params
         .get("old")
@@ -1183,7 +1184,10 @@ pub fn handle_channel_rename(
         message: format!("failed to rename: {e}"),
     })?;
 
-    Ok(json!({"ok": true}))
+    Ok(vec![DomainEvent::ChannelRenamed {
+        old_name: old_name.to_string(),
+        new_name: new_name.to_string(),
+    }])
 }
 
 /// Handle `task.prompt` — send a message to the agent working on a task.

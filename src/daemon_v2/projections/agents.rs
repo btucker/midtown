@@ -155,6 +155,18 @@ impl AgentIndex {
                     }
                 }
             }
+            DomainEvent::ChannelRenamed { old_name, new_name } => {
+                // Update by_channel index
+                if let Some(agent_ids) = self.by_channel.remove(old_name) {
+                    // Update each agent's channel field
+                    for aid in &agent_ids {
+                        if let Some(agent) = self.by_id.get_mut(aid) {
+                            agent.channel = Some(new_name.clone());
+                        }
+                    }
+                    self.by_channel.insert(new_name.clone(), agent_ids);
+                }
+            }
             _ => {}
         }
     }
