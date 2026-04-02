@@ -706,6 +706,16 @@ pub fn handle_start(project: Option<String>, repos: Vec<PathBuf>) -> Result<Resp
         project.is_some(),
     );
 
+    // Ensure a webhook port is assigned so the daemon starts its web API.
+    // Without a port, the shared gateway can't proxy to this project and the
+    // web UI silently falls through to a different project.
+    if midtown::config::load_full_project_config(&dir_key)
+        .and_then(|c| c.daemon.webhook_port)
+        .is_none()
+    {
+        midtown::config::assign_webhook_port(&dir_key);
+    }
+
     // Step 1: Start daemon if not running
     if daemon_is_running() {
         messages.push("Daemon already running".to_string());

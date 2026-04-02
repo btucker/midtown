@@ -213,6 +213,7 @@
 - WHEN a dead agent has a session ID THEN ResumeAgent SHALL be scheduled
 - WHEN the daemon starts THEN a PID file SHALL be written and exclusively locked
 - WHEN a web port is configured THEN an HTTP server SHALL be started
+- WHEN `midtown start` runs and no webhook port is configured THEN a port SHALL be auto-assigned and persisted to the project config
 - WHEN pending resumes exist THEN they SHALL be executed before entering the main loop
 
 ## 8.1 Concurrency
