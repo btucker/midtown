@@ -15,9 +15,9 @@ fn key_press(code: KeyCode) -> Event {
 #[test]
 fn test_message_appears_immediately_after_enter() {
     // After pressing Enter to post a message, the message should appear in
-    // app.messages immediately — without waiting for tailf or the 1-second timer.
+    // app.messages immediately — without waiting for the 1-second refresh timer.
     // Bug: the event handler didn't call refresh() after post_message(), so the
-    // message only appeared when the next tailf event or 1-second timer fired.
+    // message only appeared when the next refresh timer fired.
     let temp_dir = TempDir::new().unwrap();
     let channel = Channel::new(temp_dir.path(), "test-channel").unwrap();
     let mut app = test_app_with_channel(channel);
@@ -32,11 +32,11 @@ fn test_message_appears_immediately_after_enter() {
     // Press Enter to post
     handle_event(&mut app, key_press(KeyCode::Enter));
 
-    // Message should be visible immediately — no tailf wait needed
+    // Message should be visible immediately — no timer wait needed
     assert_eq!(
         app.messages.len(),
         1,
-        "Message should appear immediately after Enter, not waiting for tailf"
+        "Message should appear immediately after Enter, not waiting for refresh timer"
     );
     assert_eq!(app.messages[0].content, "hello world");
     assert!(

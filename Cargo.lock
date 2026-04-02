@@ -360,31 +360,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bon"
-version = "3.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f47dbe92550676ee653353c310dfb9cf6ba17ee70396e1f7cf0a2020ad49b2fe"
-dependencies = [
- "bon-macros",
- "rustversion",
-]
-
-[[package]]
-name = "bon-macros"
-version = "3.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "519bd3116aeeb42d5372c29d982d16d0170d3d4a5ed85fc7dd91642ffff3c67c"
-dependencies = [
- "darling 0.23.0",
- "ident_case",
- "prettyplease",
- "proc-macro2",
- "quote",
- "rustversion",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2010,7 +1985,6 @@ dependencies = [
  "sha2",
  "shell-escape",
  "syntect",
- "tailf",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -3433,16 +3407,6 @@ dependencies = [
  "thiserror 2.0.18",
  "walkdir",
  "yaml-rust",
-]
-
-[[package]]
-name = "tailf"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d8fddaad13d98a99b3579b0a3684708e5cb448a98a850755b4becb1c034e274"
-dependencies = [
- "bon",
- "tokio",
 ]
 
 [[package]]

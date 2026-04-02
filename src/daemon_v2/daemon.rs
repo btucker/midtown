@@ -408,29 +408,6 @@ impl DaemonV2 {
             }
         }
 
-        // Start the background chat monitor for @mention routing.
-        let chat_monitor_enabled = std::env::var("MIDTOWN_CHAT_MONITOR")
-            .map(|v| v != "0")
-            .unwrap_or(true);
-        // Chat monitor shutdown sender — must live as long as the daemon event loop.
-        // Dropping it closes the watch channel, causing monitors to busy-spin.
-        let _chat_shutdown_tx;
-        if chat_monitor_enabled {
-            let (tx, chat_shutdown_rx) = tokio::sync::watch::channel(false);
-            _chat_shutdown_tx = Some(tx);
-            crate::daemon_v2::chat_monitor::start_monitors(
-                &self.config.channels_dir,
-                &self.config.default_channel,
-                self.projections.clone(),
-                web_cmd_tx.clone(),
-                chat_shutdown_rx,
-            )
-            .await;
-            tracing::info!("chat monitor started");
-        } else {
-            _chat_shutdown_tx = None;
-        }
-
         // Queue pending resumes for processing during the first event loop iterations.
         // Don't block startup — the daemon needs to accept RPC connections immediately.
         let mut pending_resumes = std::mem::take(&mut self.pending_resumes);

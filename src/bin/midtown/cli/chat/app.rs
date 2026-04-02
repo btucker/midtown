@@ -302,7 +302,7 @@ pub struct App {
     ///
     /// Initialised from `set_cursor_to_end` on channel open; updated after each
     /// successful read; persisted to disk on channel switch and app exit.
-    /// Avoids two disk I/Os (cursor load + cursor save) on every `tailf` tick.
+    /// Avoids two disk I/Os (cursor load + cursor save) on every refresh tick.
     cursor_position: u64,
     /// Last message ID read from the active channel (mirrors the disk cursor's
     /// `last_message_id` but kept in memory to avoid disk reads).
@@ -1712,7 +1712,7 @@ impl App {
     ///
     /// Called on channel switch and app exit so that the cursor file reflects
     /// the current read position. This keeps unread counts accurate across
-    /// sessions without requiring a disk write on every `tailf` tick.
+    /// sessions without requiring a disk write on every refresh tick.
     pub fn save_cursor_to_disk(&self) {
         let Some(ref channel) = self.channel else {
             return;
@@ -1871,13 +1871,6 @@ impl App {
                 self.history_fully_loaded = true;
             }
         }
-    }
-
-    /// Get the channel file path for file watching
-    pub fn channel_file_path(&self) -> Option<std::path::PathBuf> {
-        self.channel
-            .as_ref()
-            .map(|c| c.channel_file_path().to_path_buf())
     }
 
     /// Post a message to the channel with fallback.

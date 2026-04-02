@@ -77,8 +77,6 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 # Syntax highlighting for code blocks
 syntect = { version = "5", default-features = false, features = ["default-themes", "default-syntaxes", "regex-fancy"] }
 
-# Async file tailing for instant message updates
-tailf = "0.1"
 futures = "0.3"
 
 # WebSocket client for HTTPS proxy (bridges webserver ↔ daemon WS)

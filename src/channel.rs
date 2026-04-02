@@ -282,8 +282,6 @@ impl Channel {
     /// Create a new channel with the specified name at the base directory
     ///
     /// Creates the directory structure and channel file if they don't exist.
-    /// The channel file is created eagerly so that file watchers (tailf) can
-    /// immediately start monitoring it.
     ///
     /// # Channel File Layout
     ///
@@ -337,9 +335,6 @@ impl Channel {
         let channel_file = history_dir.join("current.jsonl");
 
         // Create the channel file if it doesn't exist.
-        // This enables file watchers like tailf to start monitoring immediately.
-        // (tailf wraps `tail -f` which requires the file to exist)
-        //
         // Use OpenOptions with create(true) + append(true) to avoid TOCTOU race.
         // File::create() would truncate if another process created the file between
         // the exists() check and the create() call.
@@ -1122,7 +1117,7 @@ impl Channel {
     /// concurrently with writers because `O_APPEND` writes are atomic and we
     /// stop at the last complete newline, so partial lines are never returned.
     ///
-    /// This is the hot path called on every `tailf` event. No locking means no
+    /// This is the hot path called on every refresh tick. No locking means no
     /// 50 ms blocking sleep when the writer hasn't released its exclusive lock yet.
     pub fn read_messages_from_position(
         &self,

@@ -55,7 +55,7 @@ fn test_channel_creation() {
             .join("cursors")
             .exists()
     );
-    // Channel file should exist (for tailf) but be empty (no messages)
+    // Channel file should exist but be empty (no messages)
     assert!(channel.exists());
     assert_eq!(message_count_with_retry(&channel, 5).unwrap(), 0);
 }
@@ -90,16 +90,13 @@ fn test_channel_name_allows_valid_names() {
 // are no longer reserved and can be used as channel names.
 
 #[test]
-fn test_channel_file_exists_for_tailf() {
-    // The channel.jsonl file must exist after Channel::new() for tailf to work.
-    // tailf wraps `tail -f` which fails on non-existent files.
+fn test_channel_file_exists_after_creation() {
     let temp_dir = TempDir::new().unwrap();
     let channel = Channel::new(temp_dir.path(), "midtown").unwrap();
 
-    // The channel file should exist (even if empty) so tailf can watch it
     assert!(
         channel.channel_file_path().exists(),
-        "channel.jsonl must exist after Channel::new() for tailf compatibility"
+        "channel.jsonl must exist after Channel::new()"
     );
 }
 
@@ -1475,7 +1472,7 @@ fn test_rotate_writes_archive_to_history_dir() {
         archive_path
     );
 
-    // Active file should still exist (for tailf compatibility)
+    // Active file should still exist
     assert!(channel.channel_file_path().exists());
 }
 
