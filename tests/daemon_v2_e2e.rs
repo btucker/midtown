@@ -1005,6 +1005,47 @@ fn test_daemon_v2_draining_prevents_dispatch() {
 }
 
 /// Wait up to `timeout` for `child` to exit. Returns true if it exited in time.
+/// Spec 10.6: task.list returns tasks created via task.create
+/// Regression: CLI `task list` read from filesystem TaskStore (always empty)
+/// instead of querying daemon projections via RPC.
+#[test]
+#[ignore]
+fn test_daemon_v2_task_list_returns_created_tasks() {
+    let harness = V2Harness::start();
+
+    // Create a task via RPC
+    let resp = harness.rpc_call(
+        "task.create",
+        Some(serde_json::json!({
+            "id": "t1",
+            "subject": "Test task for listing",
+            "channel": "main",
+        })),
+    );
+    assert!(resp["error"].is_null(), "task.create error: {resp}");
+
+    // task.list should return the task we just created
+    let list_resp = harness.rpc_call("task.list", None);
+    assert!(list_resp["error"].is_null(), "task.list error: {list_resp}");
+
+    let tasks = list_resp["result"]
+        .as_array()
+        .expect("task.list result should be an array");
+
+    assert!(
+        !tasks.is_empty(),
+        "task.list should return the created task, but returned empty: {list_resp}"
+    );
+
+    // Verify the task has the expected fields
+    let task = tasks
+        .iter()
+        .find(|t| t["id"].as_str() == Some("t1"))
+        .expect("task t1 should be in list");
+    assert_eq!(task["subject"], "Test task for listing");
+    assert_eq!(task["channel"], "main");
+}
+
 /// Spec 8.2: daemon-v2 creates log file on startup so `midtown log` works
 #[test]
 #[ignore]
