@@ -98,7 +98,7 @@ async fn handle_client_message(text: &str, state: &WebState, socket: &mut WebSoc
                     .unwrap_or("Unknown error");
                 let _ = socket
                     .send(Message::Text(
-                        json!({"type": "error", "message": error_msg})
+                        json!({"type": "error", "data": {"message": error_msg}})
                             .to_string()
                             .into(),
                     ))
