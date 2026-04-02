@@ -46,13 +46,10 @@ Ideas to explore (not exhaustive — be creative):
 - Create dependent tasks and check dispatch order
 - Check the mobile/PWA layout for safe-area issues
 
-### USE (Playwright + CLI)
-Interact with Midtown primarily through the web UI using Playwright MCP tools:
-- `browser_navigate` to $DOGFOOD_WEB_URL
-- `browser_snapshot` to see current state
-- `browser_click` to interact with elements
-- `browser_fill_form` to type messages
-- `browser_take_screenshot` to capture evidence
+### USE (Chrome + CLI)
+Interact with Midtown primarily through the web UI using Chrome integration tools.
+Open $DOGFOOD_WEB_URL in Chrome and use the browser tools to navigate, click, type,
+and take screenshots as evidence.
 
 Use CLI for setup and diagnostics:
 - `cd $DOGFOOD_CLONE_DIR && midtown status`
@@ -128,6 +125,38 @@ After the PR is clean:
    ```
 3. Verify the fix works in the real product via the web UI
 4. Go back to EXPLORE
+
+## Journal
+
+Maintain a file called `dogfood-journal.md` in your working directory. This is your
+persistent memory across sessions.
+
+**At the start of each cycle**, read `dogfood-journal.md` (create it if it doesn't exist).
+It tells you what you've already explored, bugs you've found, PRs you've opened, and
+what to try next.
+
+**At the end of each cycle**, update the journal with:
+- What you explored this cycle
+- What worked and what broke
+- The bug you found (if any) and its PR
+- What to try next (ideas for the next cycle)
+
+Keep the journal concise — it's a log, not a novel. Example format:
+
+```markdown
+# Dogfood Journal
+
+## Cycle 1 — 2026-04-01
+- **Explored:** Started daemon, opened web UI, browsed channels
+- **Found:** Web UI shows stale channel list after creating new channel
+- **PR:** #2285 — fix: refresh channel list on WebSocket channel_created event
+- **Next:** Try posting messages, check thread routing, test @mentions
+
+## Cycle 2 — 2026-04-01
+- **Explored:** Posted messages to #midtown, tried @mentioning a coworker
+- **Found:** Everything worked as expected
+- **Next:** Create a task, watch worker dispatch, try dependent tasks
+```
 
 ## Important Rules
 
