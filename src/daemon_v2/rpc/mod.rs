@@ -100,6 +100,14 @@ pub fn dispatch_request(
         }
         "coworker.nudge" => commands_response(&id, handlers::handle_agent_nudge(params, proj)),
         "task.prompt" => commands_response(&id, handlers::handle_task_prompt(params, proj)),
+        "task.request" => match handlers::handle_task_request(params, proj, channels_dir) {
+            Ok((result, events, commands)) => (
+                json!({"jsonrpc":"2.0","result":result,"id":id}),
+                events,
+                commands,
+            ),
+            Err(err) => (err.to_json(&id), vec![], vec![]),
+        },
 
         "session.fork" => value_commands_response(&id, handlers::handle_session_fork(params, proj)),
         "coworker.spawn" => {
