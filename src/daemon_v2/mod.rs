@@ -1,4 +1,3 @@
-pub mod chat_monitor;
 pub mod daemon;
 pub mod decisions;
 pub mod events;

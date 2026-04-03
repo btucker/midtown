@@ -3,8 +3,7 @@
 //! This module provides an interactive chat interface showing team activity,
 //! coworker status, and an input bar for posting messages.
 //!
-//! Uses async I/O with the `tailf` crate for instant message updates when
-//! the channel.jsonl file changes, rather than polling.
+//! Uses a 1-second polling interval to detect new messages in channel files.
 
 mod app;
 mod mermaid;
@@ -121,17 +120,7 @@ async fn run_app_async(
     // Set up async event stream for terminal events
     let mut event_stream = EventStream::new();
 
-    // Set up file tailer for channel.jsonl if available
-    // We use num_lines=None (no -n flag) to avoid a race condition on macOS where
-    // `tail -n 0 -f` seeks to EOF before registering its kqueue file watcher,
-    // causing the first write after tailer creation to be lost forever.
-    // The actual content from tail is ignored; we only use it as a change notification.
-    let mut tailer = app
-        .channel_file_path()
-        .and_then(|path| tailf::tailf(&path, None).ok());
-
-    // Fallback timer for message/kanban/repo status refresh (1 second)
-    // This ensures responsive updates if tailf isn't triggering
+    // Refresh timer for message/kanban/repo status (1 second)
     let mut refresh_interval = interval(Duration::from_secs(1));
 
     // Auto-scroll timer (30 seconds) - brings user back to bottom if they scrolled up
@@ -166,8 +155,7 @@ async fn run_app_async(
 
         // Use tokio::select! to wait for either:
         // 1. Terminal events (keyboard/mouse)
-        // 2. File changes from tailf
-        // 3. Periodic refresh timer
+        // 2. Periodic refresh timer
         tokio::select! {
             // Handle terminal events (keyboard, mouse)
             maybe_event = event_stream.next() => {
@@ -226,20 +214,7 @@ async fn run_app_async(
                 }
             }
 
-            // Handle file changes from tailf - instant message updates
-            Some(result) = async {
-                match &mut tailer {
-                    Some(t) => Some(t.next().await),
-                    None => None,
-                }
-            } => {
-                if let Ok(Some(_)) = result {
-                    // New content in channel.jsonl - refresh messages
-                    app.refresh();
-                }
-            }
-
-            // Periodic refresh for kanban and repo status
+            // Periodic refresh
             _ = refresh_interval.tick() => {
                 app.refresh();
             }
@@ -775,7 +750,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                 app.thread_input_text.clear();
                                 app.thread_input_cursor = 0;
                                 // Refresh immediately so the reply appears without
-                                // waiting for the next tailf event or 1-second timer.
+                                // waiting for the next 1-second timer.
                                 app.refresh();
                             }
                         }
@@ -857,7 +832,7 @@ fn handle_event(app: &mut App, event: Event) -> EventResult {
                                     app.input_text.clear();
                                     app.input_cursor = 0;
                                     // Refresh immediately so the message appears without
-                                    // waiting for the next tailf event or 1-second timer.
+                                    // waiting for the next 1-second timer.
                                     app.refresh();
                                     // Set optimistic thinking state for topic channels
                                     if channel_name != app.project_name {

@@ -408,29 +408,6 @@ impl DaemonV2 {
             }
         }
 
-        // Start the background chat monitor for @mention routing.
-        let chat_monitor_enabled = std::env::var("MIDTOWN_CHAT_MONITOR")
-            .map(|v| v != "0")
-            .unwrap_or(true);
-        // Chat monitor shutdown sender — must live as long as the daemon event loop.
-        // Dropping it closes the watch channel, causing monitors to busy-spin.
-        let _chat_shutdown_tx;
-        if chat_monitor_enabled {
-            let (tx, chat_shutdown_rx) = tokio::sync::watch::channel(false);
-            _chat_shutdown_tx = Some(tx);
-            crate::daemon_v2::chat_monitor::start_monitors(
-                &self.config.channels_dir,
-                &self.config.default_channel,
-                self.projections.clone(),
-                web_cmd_tx.clone(),
-                chat_shutdown_rx,
-            )
-            .await;
-            tracing::info!("chat monitor started");
-        } else {
-            _chat_shutdown_tx = None;
-        }
-
         // Queue pending resumes for processing during the first event loop iterations.
         // Don't block startup — the daemon needs to accept RPC connections immediately.
         let mut pending_resumes = std::mem::take(&mut self.pending_resumes);
@@ -574,10 +551,26 @@ impl DaemonV2 {
     }
 
     /// Apply a batch of domain events to the event store and projections.
-    async fn apply_events(&mut self, events: &[crate::daemon_v2::events::DomainEvent]) {
+    fn apply_events<'a>(
+        &'a mut self,
+        events: &'a [crate::daemon_v2::events::DomainEvent],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            let commands = self.apply_events_core(events).await;
+            for cmd in commands {
+                self.dispatch_command(cmd).await;
+            }
+        })
+    }
+
+    async fn apply_events_core(
+        &mut self,
+        events: &[crate::daemon_v2::events::DomainEvent],
+    ) -> Vec<Command> {
         if events.is_empty() {
-            return;
+            return vec![];
         }
+        let mut deferred_commands: Vec<Command> = Vec::new();
         let mut proj = self.projections.lock().await;
         for event in events {
             if let Err(e) = self.store.append(event) {
@@ -615,7 +608,38 @@ impl DaemonV2 {
                     }
                 }
             }
+
+            // Route @mentions and !task references in auto-output messages.
+            // These bypass the channel.post RPC path (which does its own routing),
+            // so we handle them here to ensure mentions in agent output still
+            // trigger nudges. Skip "user" and "midtown" senders (already routed
+            // or system messages).
+            if let DomainEvent::MessagePosted {
+                channel,
+                sender,
+                content,
+                thread_id,
+                auto_output: true,
+                ..
+            } = event
+                && sender != "user"
+                && sender != "midtown"
+                && sender != "system"
+                && (content.contains('@') || content.contains('!'))
+            {
+                let commands = crate::daemon_v2::decisions::chat::route_message(
+                    &proj,
+                    channel,
+                    sender,
+                    content,
+                    thread_id.as_deref(),
+                    None,
+                );
+                deferred_commands.extend(commands);
+            }
         }
+        drop(proj);
+        deferred_commands
     }
 
     /// Run all currently due decisions, execute the resulting commands, and
