@@ -686,3 +686,214 @@ fn no_respawn_when_worker_spawn_cooldown_active() {
         commands
     );
 }
+
+/// Spec 2.2: WHEN a worker has failed 3 consecutive spawn attempts THEN stop retrying
+/// and post to ops channel.
+#[test]
+fn worker_gives_up_after_max_spawn_failures() {
+    let events = vec![
+        DomainEvent::AgentCreated {
+            id: "a1".into(),
+            name: "worker-1".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-1".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "a1".into(),
+            pid: 100,
+            session_id: Some("session-1".into()),
+        },
+        DomainEvent::TaskCreated {
+            id: "task-1".into(),
+            subject: "Do something".into(),
+            channel: "main".into(),
+            blocked_by: vec![],
+            agent_type: None,
+            agent_name: None,
+            icon: None,
+            color: None,
+            parent: None,
+            thread_id: None,
+            message_id: None,
+        },
+        DomainEvent::TaskAssigned {
+            task_id: "task-1".into(),
+            agent_id: "a1".into(),
+        },
+        DomainEvent::AgentStopped {
+            id: "a1".into(),
+            reason: "process died".into(),
+        },
+    ];
+
+    let mut proj = make_projections(&events);
+
+    // Simulate 3 consecutive spawn failures (cooldown expired each time)
+    for _ in 0..super::MAX_WORKER_RESTARTS {
+        proj.cooldowns
+            .record(CooldownCategory::SpawnFailure, "task-1".to_string());
+    }
+
+    // Manually expire the cooldown so check_dead_workers doesn't skip due to active cooldown
+    proj.cooldowns
+        .expire_for_test(CooldownCategory::SpawnFailure, "task-1");
+
+    let commands = check_dead_workers(&proj);
+
+    // Should NOT try to resume — max failures reached
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, Command::ResumeAgent { .. } | Command::SpawnAgent(_))),
+        "should not respawn worker after {} failures, got: {:?}",
+        super::MAX_WORKER_RESTARTS,
+        commands,
+    );
+
+    // Should post to ops channel about the failure
+    assert!(
+        commands.iter().any(|c| matches!(c, Command::PostSystem {
+            channel,
+            ..
+        } if channel == "ops")),
+        "should escalate to ops after max failures, got: {:?}",
+        commands,
+    );
+}
+
+/// Spec 2.2: Workers below the max restart limit should still be respawned
+/// after cooldown expires.
+#[test]
+fn worker_respawns_when_below_max_failures() {
+    let events = vec![
+        DomainEvent::AgentCreated {
+            id: "a1".into(),
+            name: "worker-1".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-1".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "a1".into(),
+            pid: 100,
+            session_id: Some("session-1".into()),
+        },
+        DomainEvent::TaskCreated {
+            id: "task-1".into(),
+            subject: "Do something".into(),
+            channel: "main".into(),
+            blocked_by: vec![],
+            agent_type: None,
+            agent_name: None,
+            icon: None,
+            color: None,
+            parent: None,
+            thread_id: None,
+            message_id: None,
+        },
+        DomainEvent::TaskAssigned {
+            task_id: "task-1".into(),
+            agent_id: "a1".into(),
+        },
+        DomainEvent::AgentStopped {
+            id: "a1".into(),
+            reason: "process died".into(),
+        },
+    ];
+
+    let mut proj = make_projections(&events);
+
+    // Only 2 failures (below the limit of 3)
+    for _ in 0..2 {
+        proj.cooldowns
+            .record(CooldownCategory::SpawnFailure, "task-1".to_string());
+    }
+
+    // Expire the cooldown
+    proj.cooldowns
+        .expire_for_test(CooldownCategory::SpawnFailure, "task-1");
+
+    let commands = check_dead_workers(&proj);
+
+    // Should still try to resume since we're below max
+    assert!(
+        commands
+            .iter()
+            .any(|c| matches!(c, Command::ResumeAgent { .. })),
+        "should resume worker when below max failures, got: {:?}",
+        commands,
+    );
+}
+
+/// Spec 2.2: WHEN a resumed agent's session_id is cleared (stale session)
+/// THEN check_dead_workers should spawn a fresh replacement instead of resuming.
+#[test]
+fn cleared_session_id_causes_fresh_spawn() {
+    let events = vec![
+        DomainEvent::AgentCreated {
+            id: "a1".into(),
+            name: "worker-1".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-1".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "a1".into(),
+            pid: 100,
+            session_id: Some("stale-session-id".into()),
+        },
+        DomainEvent::TaskCreated {
+            id: "task-1".into(),
+            subject: "Do something".into(),
+            channel: "main".into(),
+            blocked_by: vec![],
+            agent_type: None,
+            agent_name: None,
+            icon: None,
+            color: None,
+            parent: None,
+            thread_id: None,
+            message_id: None,
+        },
+        DomainEvent::TaskAssigned {
+            task_id: "task-1".into(),
+            agent_id: "a1".into(),
+        },
+        DomainEvent::AgentStopped {
+            id: "a1".into(),
+            reason: "process died".into(),
+        },
+    ];
+
+    let mut proj = make_projections(&events);
+
+    // Simulate the daemon clearing the stale session_id
+    // (This happens in daemon.rs when agent dies within 5s of start)
+    proj.agents.by_id.get_mut("a1").unwrap().session_id = None;
+
+    let commands = check_dead_workers(&proj);
+
+    // Should spawn fresh (SpawnAgent) instead of resume
+    assert_eq!(commands.len(), 1, "expected 1 command, got {:?}", commands);
+    assert!(
+        commands.iter().any(|c| matches!(c, Command::SpawnAgent(_))),
+        "should spawn fresh after session_id cleared, got: {:?}",
+        commands,
+    );
+}

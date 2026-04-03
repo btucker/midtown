@@ -13,9 +13,12 @@ use crate::daemon_v2::events::{AgentKind, Provider, TaskStatus};
 use crate::daemon_v2::projections::Projections;
 use crate::daemon_v2::projections::cooldowns::CooldownCategory;
 
+pub(crate) const MAX_WORKER_RESTARTS: usize = 3;
+
 /// Find workers that are stopped but have in-progress tasks.
 /// Per spec 2.2: resume the worker (not reset the task).
 /// If the worker has no session_id, spawn a replacement with the same config.
+/// After MAX_WORKER_RESTARTS consecutive spawn failures, stop retrying and escalate to ops.
 pub fn check_dead_workers(proj: &Projections) -> Vec<Command> {
     let mut commands = Vec::new();
 
@@ -38,6 +41,27 @@ pub fn check_dead_workers(proj: &Projections) -> Vec<Command> {
                 .cooldowns
                 .is_active(CooldownCategory::SpawnFailure, task_id)
             {
+                continue;
+            }
+
+            // Spec 2.2: stop retrying after MAX_WORKER_RESTARTS consecutive failures
+            let failures = proj
+                .cooldowns
+                .failure_count(CooldownCategory::SpawnFailure, task_id);
+            if failures >= MAX_WORKER_RESTARTS {
+                let escalation_key = format!("worker-escalation-{task_id}");
+                if !proj
+                    .cooldowns
+                    .is_active(CooldownCategory::TaskNudge, &escalation_key)
+                {
+                    commands.push(Command::PostSystem {
+                        channel: "ops".into(),
+                        content: format!(
+                            "Worker for task !{task_id} ({}) failed {failures} times. Manual intervention needed.",
+                            task.subject
+                        ),
+                    });
+                }
                 continue;
             }
 
