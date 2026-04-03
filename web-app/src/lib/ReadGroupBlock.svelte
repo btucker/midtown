@@ -23,7 +23,12 @@ let filePaths = $derived(
 	}),
 );
 
-let summary = $derived(`${blocks.length} files (${filePaths.join(", ")})`);
+let summary = $derived.by(() => {
+	const names = filePaths.slice(0, 5);
+	const rest = filePaths.length - names.length;
+	const label = names.join(", ") + (rest > 0 ? `, +${rest} more` : "");
+	return `${blocks.length} files (${label})`;
+});
 </script>
 
 <div class="read-group">

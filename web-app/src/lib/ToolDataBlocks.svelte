@@ -51,7 +51,7 @@ let segments: Segment[] = $derived.by(() => {
 });
 </script>
 
-{#each segments as segment, i (i)}
+{#each segments as segment (segment.kind === 'read-group' ? segment.blocks[0] : segment.block)}
   {#if segment.kind === 'read-group'}
     <ReadGroupBlock blocks={segment.blocks} />
   {:else if segment.block.tool_name === 'Bash'}
