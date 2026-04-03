@@ -583,52 +583,28 @@ impl DaemonV2 {
             // Record SpawnFailure cooldown when an agent dies shortly after starting.
             // For leads, keyed by channel. For workers, keyed by task ID.
             // This prevents tight respawn loops.
-            if let DomainEvent::AgentStopped { id, .. } = event {
-                // Extract what we need from the immutable agent reference first
-                let agent_info = proj.agents.by_id.get(id).map(|agent| {
-                    let elapsed_secs = agent
-                        .started_at
-                        .map(|t| (chrono::Utc::now() - t).num_seconds())
-                        .unwrap_or(i64::MAX);
+            if let DomainEvent::AgentStopped { id, .. } = event
+                && let Some(agent) = proj.agents.by_id.get(id)
+            {
+                let died_quickly = agent
+                    .started_at
+                    .is_some_and(|t| (chrono::Utc::now() - t).num_seconds() < 60);
+
+                if died_quickly {
                     let cooldown_key = match agent.kind {
                         crate::daemon_v2::events::AgentKind::Lead => agent.channel.clone(),
                         crate::daemon_v2::events::AgentKind::Worker => agent.task_id.clone(),
                         _ => None,
                     };
-                    (
-                        elapsed_secs,
-                        cooldown_key,
-                        agent.kind.clone(),
-                        agent.session_id.is_some(),
-                    )
-                });
-
-                if let Some((elapsed_secs, cooldown_key, kind, has_session)) = agent_info {
-                    if elapsed_secs < 60
-                        && let Some(key) = cooldown_key
-                    {
+                    if let Some(key) = cooldown_key {
                         tracing::warn!(
-                            %id, key = %key, kind = ?kind,
+                            %id, key = %key, kind = ?agent.kind,
                             "agent died within 60s of start — applying spawn cooldown"
                         );
                         proj.cooldowns.record(
                             crate::daemon_v2::projections::cooldowns::CooldownCategory::SpawnFailure,
                             key,
                         );
-                    }
-
-                    // Spec 2.2: clear stale session IDs.
-                    // If an agent dies within 5s of start and has a session_id,
-                    // the session is likely invalid (e.g. conversation was cleaned up).
-                    // Clear it so the next respawn creates a fresh session.
-                    if elapsed_secs < 5 && has_session {
-                        tracing::warn!(
-                            %id,
-                            "agent died within 5s — clearing stale session_id for fresh spawn"
-                        );
-                        if let Some(agent_mut) = proj.agents.by_id.get_mut(id) {
-                            agent_mut.session_id = None;
-                        }
                     }
                 }
             }
