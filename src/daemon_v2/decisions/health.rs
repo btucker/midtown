@@ -204,7 +204,7 @@ fn ensure_lead_for_channel(proj: &Projections, channel: &str, agent_type: &str) 
     match lead {
         // Running lead — nothing to do
         Some(agent) if proj.agents.running.contains(&agent.id) => None,
-        // Stopped lead — resume it (with cooldown to prevent respawn storms)
+        // Stopped lead — resume if it has a session_id, otherwise spawn fresh
         Some(agent) => {
             if proj
                 .cooldowns
@@ -212,9 +212,31 @@ fn ensure_lead_for_channel(proj: &Projections, channel: &str, agent_type: &str) 
             {
                 return None; // In cooldown from a recent failed spawn/resume
             }
-            Some(Command::ResumeAgent {
-                id: agent.id.clone(),
-            })
+            if agent.session_id.is_some() {
+                Some(Command::ResumeAgent {
+                    id: agent.id.clone(),
+                })
+            } else {
+                let working_dir = proj
+                    .channels
+                    .channel_directory(channel)
+                    .map(|d| d.to_string());
+                Some(Command::SpawnAgent(SpawnConfig {
+                    name: channel.to_string(),
+                    kind: AgentKind::Lead,
+                    agent_type: agent_type.to_string(),
+                    provider: Provider::ClaudeCode,
+                    channel: Some(channel.to_string()),
+                    task_id: None,
+                    initial_prompt: None,
+                    working_dir,
+                    model: None,
+                    bound_thread_id: None,
+                    fork_from_session: None,
+                    icon: None,
+                    color: None,
+                }))
+            }
         }
         // No lead at all — spawn one (with cooldown to prevent respawn storms)
         None => {
