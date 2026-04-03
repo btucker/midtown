@@ -720,9 +720,12 @@ export function connectWebSocket(): void {
 	};
 }
 
-// Reconnect if the WebSocket is not currently open (e.g., after visibility resume)
+// Reconnect if the WebSocket is not currently open or connecting.
+// Treats CONNECTING as valid to avoid a race where visibility-change
+// fires before the initial connection completes, causing a cascade of
+// close → onclose-reconnect → duplicate connections.
 export function reconnectIfNeeded(): void {
-	if (!ws || ws.readyState !== WebSocket.OPEN) {
+	if (!ws || (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING)) {
 		console.log("WebSocket not open, reconnecting");
 		connectWebSocket();
 	}
