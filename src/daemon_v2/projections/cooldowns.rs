@@ -93,6 +93,14 @@ impl CooldownTracker {
             .unwrap_or(0)
     }
 
+    /// Reset the failure count for a key. Called when an agent survives past the
+    /// quick-death threshold, proving the issue was transient rather than permanent.
+    pub fn reset_count(&mut self, category: CooldownCategory, key: &str) {
+        if let Some(entry) = self.entries.get_mut(&(category, key.to_string())) {
+            entry.count = 0;
+        }
+    }
+
     #[cfg(test)]
     pub fn expire_for_test(&mut self, category: CooldownCategory, key: &str) {
         if let Some(entry) = self.entries.get_mut(&(category, key.to_string())) {

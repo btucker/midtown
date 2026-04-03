@@ -590,22 +590,44 @@ impl DaemonV2 {
                     .started_at
                     .is_some_and(|t| (chrono::Utc::now() - t).num_seconds() < 60);
 
+                let cooldown_key = match agent.kind {
+                    crate::daemon_v2::events::AgentKind::Lead => agent.channel.clone(),
+                    crate::daemon_v2::events::AgentKind::Worker => agent.task_id.clone(),
+                    _ => None,
+                };
+
                 if died_quickly {
-                    let cooldown_key = match agent.kind {
-                        crate::daemon_v2::events::AgentKind::Lead => agent.channel.clone(),
-                        crate::daemon_v2::events::AgentKind::Worker => agent.task_id.clone(),
-                        _ => None,
-                    };
-                    if let Some(key) = cooldown_key {
+                    if let Some(ref key) = cooldown_key {
                         tracing::warn!(
                             %id, key = %key, kind = ?agent.kind,
                             "agent died within 60s of start — applying spawn cooldown"
                         );
                         proj.cooldowns.record(
                             crate::daemon_v2::projections::cooldowns::CooldownCategory::SpawnFailure,
+                            key.clone(),
+                        );
+
+                        // Record escalation cooldown once max failures reached,
+                        // preventing ops channel spam on every subsequent tick.
+                        let failures = proj.cooldowns.failure_count(
+                            crate::daemon_v2::projections::cooldowns::CooldownCategory::SpawnFailure,
                             key,
                         );
+                        if failures >= crate::daemon_v2::decisions::health::MAX_WORKER_RESTARTS {
+                            let esc_key = format!("worker-escalation-{key}");
+                            proj.cooldowns.record(
+                                crate::daemon_v2::projections::cooldowns::CooldownCategory::TaskNudge,
+                                esc_key,
+                            );
+                        }
                     }
+                } else if let Some(ref key) = cooldown_key {
+                    // Agent survived past 60s — reset failure streak so
+                    // transient issues don't accumulate into a permanent block.
+                    proj.cooldowns.reset_count(
+                        crate::daemon_v2::projections::cooldowns::CooldownCategory::SpawnFailure,
+                        key,
+                    );
                 }
             }
 
