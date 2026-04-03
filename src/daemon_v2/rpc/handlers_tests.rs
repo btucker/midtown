@@ -55,3 +55,9 @@ fn zero_value() {
     assert_eq!(parse_duration_secs("0s"), Some(0));
     assert_eq!(parse_duration_secs("0m"), Some(0));
 }
+
+#[test]
+fn weeks() {
+    assert_eq!(parse_duration_secs("1w"), Some(604800));
+    assert_eq!(parse_duration_secs("2w"), Some(1209600));
+}
