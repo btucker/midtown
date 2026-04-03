@@ -1084,7 +1084,8 @@ export function sendMessage(
 
 		// Register error callback to remove the optimistic message if the
 		// server rejects the post (e.g., channel is archived).
-		onNextError((errorMsg: string) => {
+		// Auto-clear after 5s to prevent stale callback accumulation.
+		const errorCallbackId = onNextError((errorMsg: string) => {
 			if (threadParentId) {
 				threadData.update((td) => {
 					if (!td) return td;
@@ -1098,6 +1099,7 @@ export function sendMessage(
 			}
 			console.warn(`Message rejected by server: ${errorMsg}`);
 		});
+		setTimeout(() => clearErrorCallback(errorCallbackId), 5000);
 	} else {
 		console.error("WebSocket not connected");
 	}
