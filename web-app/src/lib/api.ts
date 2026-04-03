@@ -678,6 +678,10 @@ export function connectWebSocket(): void {
 			}
 		}, STALE_CONNECTION_MS);
 
+		// Re-fetch read state so unread badges reflect the server's truth
+		// (covers daemon restart, where the file persists but the client
+		// would otherwise rely on a stale localStorage snapshot).
+		fetchReadState();
 		// Fetch history for all channels (main bulk load) to catch up on missed messages.
 		fetchHistory();
 		// Also fetch the currently active channel specifically, so it refreshes
