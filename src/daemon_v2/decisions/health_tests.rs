@@ -835,3 +835,65 @@ fn worker_respawns_when_below_max_failures() {
         commands,
     );
 }
+
+/// Spec 2.2: WHEN a resumed agent's session_id is cleared (stale session)
+/// THEN check_dead_workers should spawn a fresh replacement instead of resuming.
+#[test]
+fn cleared_session_id_causes_fresh_spawn() {
+    let events = vec![
+        DomainEvent::AgentCreated {
+            id: "a1".into(),
+            name: "worker-1".into(),
+            kind: AgentKind::Worker,
+            agent_type: "midtown-code-author".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: Some("task-1".into()),
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "a1".into(),
+            pid: 100,
+            session_id: Some("stale-session-id".into()),
+        },
+        DomainEvent::TaskCreated {
+            id: "task-1".into(),
+            subject: "Do something".into(),
+            channel: "main".into(),
+            blocked_by: vec![],
+            agent_type: None,
+            agent_name: None,
+            icon: None,
+            color: None,
+            parent: None,
+            thread_id: None,
+            message_id: None,
+        },
+        DomainEvent::TaskAssigned {
+            task_id: "task-1".into(),
+            agent_id: "a1".into(),
+        },
+        DomainEvent::AgentStopped {
+            id: "a1".into(),
+            reason: "process died".into(),
+        },
+    ];
+
+    let mut proj = make_projections(&events);
+
+    // Simulate the daemon clearing the stale session_id
+    // (This happens in daemon.rs when agent dies within 5s of start)
+    proj.agents.by_id.get_mut("a1").unwrap().session_id = None;
+
+    let commands = check_dead_workers(&proj);
+
+    // Should spawn fresh (SpawnAgent) instead of resume
+    assert_eq!(commands.len(), 1, "expected 1 command, got {:?}", commands);
+    assert!(
+        commands.iter().any(|c| matches!(c, Command::SpawnAgent(_))),
+        "should spawn fresh after session_id cleared, got: {:?}",
+        commands,
+    );
+}
