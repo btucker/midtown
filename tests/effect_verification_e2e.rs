@@ -433,7 +433,7 @@ fn test_effect_spawn_coworker_creates_window() {
     );
 
     // Verify coworker appears in coworker.list
-    let list_response = fixture.rpc_call("coworker.list", None);
+    let list_response = fixture.rpc_call("agent.list", None);
     assert!(
         list_response.is_some(),
         "Should receive response from coworker.list"
@@ -663,7 +663,7 @@ fn test_effect_shutdown_coworker_removes_window() {
     thread::sleep(Duration::from_secs(3));
 
     // Verify coworker appears in list
-    let list_before = fixture.rpc_call("coworker.list", None).unwrap();
+    let list_before = fixture.rpc_call("agent.list", None).unwrap();
     let coworkers_before = list_before["result"]["coworkers"]
         .as_array()
         .expect("coworkers should be an array");
@@ -713,7 +713,7 @@ fn test_effect_shutdown_coworker_removes_window() {
     thread::sleep(Duration::from_secs(1));
 
     // Verify coworker no longer appears in list
-    let list_after = fixture.rpc_call("coworker.list", None).unwrap();
+    let list_after = fixture.rpc_call("agent.list", None).unwrap();
     let coworkers_after = list_after["result"]["coworkers"]
         .as_array()
         .expect("coworkers should be an array");
@@ -763,7 +763,7 @@ fn test_effect_coworker_full_lifecycle() {
     }
 
     // Initially there should be no coworkers
-    let initial_list = fixture.rpc_call("coworker.list", None).unwrap();
+    let initial_list = fixture.rpc_call("agent.list", None).unwrap();
     let initial_coworkers = initial_list["result"]["coworkers"]
         .as_array()
         .expect("coworkers should be an array");
@@ -793,7 +793,7 @@ fn test_effect_coworker_full_lifecycle() {
     thread::sleep(Duration::from_secs(3));
 
     // Phase 2: Verify spawned
-    let mid_list = fixture.rpc_call("coworker.list", None).unwrap();
+    let mid_list = fixture.rpc_call("agent.list", None).unwrap();
     let mid_coworkers = mid_list["result"]["coworkers"]
         .as_array()
         .expect("coworkers should be an array");
@@ -825,7 +825,7 @@ fn test_effect_coworker_full_lifecycle() {
     thread::sleep(Duration::from_secs(1));
 
     // Phase 4: Verify shutdown
-    let final_list = fixture.rpc_call("coworker.list", None).unwrap();
+    let final_list = fixture.rpc_call("agent.list", None).unwrap();
     let final_coworkers = final_list["result"]["coworkers"]
         .as_array()
         .expect("coworkers should be an array");
@@ -976,7 +976,7 @@ fn test_effect_spawn_multiple_coworkers() {
     thread::sleep(Duration::from_secs(4));
 
     // Verify both appear in coworker list
-    let list_response = fixture.rpc_call("coworker.list", None).unwrap();
+    let list_response = fixture.rpc_call("agent.list", None).unwrap();
     let coworkers = list_response["result"]["coworkers"]
         .as_array()
         .expect("coworkers should be an array");
@@ -1056,7 +1056,7 @@ fn test_effect_shutdown_one_preserves_others() {
     thread::sleep(Duration::from_secs(4));
 
     // Verify both are spawned
-    let list_before = fixture.rpc_call("coworker.list", None).unwrap();
+    let list_before = fixture.rpc_call("agent.list", None).unwrap();
     let coworkers_before = list_before["result"]["coworkers"]
         .as_array()
         .expect("coworkers should be an array");
@@ -1080,7 +1080,7 @@ fn test_effect_shutdown_one_preserves_others() {
     thread::sleep(Duration::from_secs(1));
 
     // Verify only one remains
-    let list_after = fixture.rpc_call("coworker.list", None).unwrap();
+    let list_after = fixture.rpc_call("agent.list", None).unwrap();
     let coworkers_after = list_after["result"]["coworkers"]
         .as_array()
         .expect("coworkers should be an array");

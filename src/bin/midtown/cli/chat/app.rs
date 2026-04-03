@@ -86,7 +86,7 @@ pub struct ToolActivityEntry {
 
 /// Data fetched from background thread for coworker status refresh.
 ///
-/// Polled via `coworkers.status` RPC at a faster interval than PR data.
+/// Polled via `agent.list` RPC at a faster interval than PR data.
 /// No GraphQL involved — always reflects current daemon state.
 struct CoworkerStatusData {
     /// Active coworkers with their current status
@@ -446,7 +446,7 @@ pub struct App {
     spinner_frame: usize,
     /// Last time the spinner frame was advanced (for time-based animation)
     spinner_last_tick: Instant,
-    /// Names of active channel leads (e.g. "auth", "tui"), populated from coworkers.status.
+    /// Names of active channel leads (e.g. "auth", "tui"), populated from agent.list.
     /// Used to color their messages LightYellow like the main lead.
     pub channel_lead_names: Vec<String>,
     /// List of all available channels (including empty ones)
@@ -1060,7 +1060,7 @@ impl App {
         self.tasks = fetch_tasks();
     }
 
-    /// Refresh PR board data (PRs via prs.status RPC).
+    /// Refresh PR board data (PRs via pr.list RPC).
     ///
     /// Tasks are refreshed separately by `refresh_tasks`.
     /// Coworker status is refreshed separately by `refresh_coworker_status`.
@@ -1081,7 +1081,7 @@ impl App {
         });
     }
 
-    /// Refresh coworker status via the `coworkers.status` RPC.
+    /// Refresh coworker status via the `agent.list` RPC.
     ///
     /// Runs in a background thread to avoid blocking the TUI. The result is
     /// received in `refresh()` via `coworker_status_receiver`.
@@ -3454,7 +3454,7 @@ fn fetch_merged_prs() -> Vec<MergedPr> {
 
 type KanbanRpcResult = Option<(Vec<KanbanPr>, Vec<MergedPr>, Vec<(String, String)>)>;
 
-/// Fetch PR data from the daemon via the `prs.status` RPC.
+/// Fetch PR data from the daemon via the `pr.list` RPC.
 ///
 /// Returns `None` if the daemon is not available, allowing fallback to direct gh CLI.
 /// Coworker data is fetched separately via `fetch_coworker_status_via_rpc`.
@@ -3553,7 +3553,7 @@ fn fetch_kanban_data_via_rpc() -> KanbanRpcResult {
     Some((prs, merged_prs, repos))
 }
 
-/// Fetch live coworker status from the daemon via the `coworkers.status` RPC.
+/// Fetch live coworker status from the daemon via the `agent.list` RPC.
 ///
 /// Also fetches pending questions via `coworker.questions`. Returns `None` if
 /// the daemon is unreachable so the caller can use a default empty value.

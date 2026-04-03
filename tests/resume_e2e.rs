@@ -56,7 +56,7 @@ fn find_session_in_snapshot(
     fixture: &DaemonTestHarness,
     name_substr: &str,
 ) -> Option<(String, bool, Option<u32>)> {
-    let response = fixture.rpc_call("snapshot", None)?;
+    let response = fixture.rpc_call("status", None)?;
     let sessions = response["result"]["sessions"].as_object()?;
     for (_key, record) in sessions {
         let session_name = record["name"].as_str().unwrap_or("");
@@ -200,7 +200,7 @@ fn test_basic_session_resume() {
                 eprintln!("Resumed session never reached running state");
 
                 // Diagnostic: dump snapshot
-                if let Some(snap) = fixture.rpc_call("snapshot", None) {
+                if let Some(snap) = fixture.rpc_call("status", None) {
                     eprintln!(
                         "Snapshot after failed resume: {}",
                         serde_json::to_string_pretty(&snap).unwrap_or_default()
@@ -288,7 +288,7 @@ fn test_resume_fallback_on_invalid_session_id() {
         }
         None => {
             // Dump diagnostic state
-            if let Some(snap) = fixture.rpc_call("snapshot", None) {
+            if let Some(snap) = fixture.rpc_call("status", None) {
                 eprintln!(
                     "Snapshot: {}",
                     serde_json::to_string_pretty(&snap).unwrap_or_default()
@@ -394,7 +394,7 @@ fn test_rapid_resume_after_short_session() {
     }
 
     // Check final state
-    if let Some(snap) = fixture.rpc_call("snapshot", None)
+    if let Some(snap) = fixture.rpc_call("status", None)
         && let Some(sessions) = snap["result"]["sessions"].as_object()
     {
         for (key, record) in sessions {
@@ -424,7 +424,7 @@ fn test_rapid_resume_after_short_session() {
     }
 
     // Check for crash-loop: count distinct session records
-    if let Some(snap) = fixture.rpc_call("snapshot", None)
+    if let Some(snap) = fixture.rpc_call("status", None)
         && let Some(sessions) = snap["result"]["sessions"].as_object()
     {
         let worker_count = sessions
@@ -511,7 +511,7 @@ fn test_daemon_restart_resumes_sessions() {
         }
         None => {
             // Diagnostic dump
-            if let Some(snap) = fixture.rpc_call("snapshot", None) {
+            if let Some(snap) = fixture.rpc_call("status", None) {
                 eprintln!(
                     "Snapshot after restart: {}",
                     serde_json::to_string_pretty(&snap).unwrap_or_default()
@@ -536,7 +536,7 @@ fn test_daemon_restart_resumes_sessions() {
             eprintln!("Resumed session died after {}s post-restart", age);
 
             // Dump full snapshot for debugging
-            if let Some(snap) = fixture.rpc_call("snapshot", None) {
+            if let Some(snap) = fixture.rpc_call("status", None) {
                 eprintln!(
                     "Snapshot after session death:\n{}",
                     serde_json::to_string_pretty(&snap).unwrap_or_default()
@@ -652,7 +652,7 @@ fn test_resume_and_context_check() {
         }
         None => {
             eprintln!("Resume failed — session did not start");
-            if let Some(snap) = fixture.rpc_call("snapshot", None) {
+            if let Some(snap) = fixture.rpc_call("status", None) {
                 eprintln!(
                     "Snapshot: {}",
                     serde_json::to_string_pretty(&snap).unwrap_or_default()

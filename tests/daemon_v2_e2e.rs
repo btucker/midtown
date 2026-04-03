@@ -752,10 +752,10 @@ fn test_daemon_v2_session_fork_spawns_agent() {
 }
 
 /// Spec 14: v1 RPC methods handled via compatibility aliases
-/// Spec 10.2: ping → pong, version → info, snapshot → status
+/// Core RPC methods: ping, version, status, agent.list, task.done
 #[test]
 #[ignore]
-fn test_daemon_v2_v1_rpc_compatibility() {
+fn test_daemon_v2_core_rpc_methods() {
     let harness = V2Harness::start();
 
     // ping
@@ -771,49 +771,51 @@ fn test_daemon_v2_v1_rpc_compatibility() {
     assert!(resp["result"]["version"].is_string());
     assert_eq!(resp["result"]["daemon"], "v2");
 
-    // lead.spawn (should succeed — lead is auto-managed by scheduler)
-    let resp = harness.rpc_call(
-        "lead.spawn",
-        Some(serde_json::json!({"provider": "claude"})),
-    );
-    assert!(resp["error"].is_null(), "lead.spawn error: {resp}");
-    assert_eq!(resp["result"]["ok"], true);
-
-    // snapshot (alias for status)
-    let resp = harness.rpc_call("snapshot", None);
-    assert!(resp["error"].is_null(), "snapshot error: {resp}");
+    // status
+    let resp = harness.rpc_call("status", None);
+    assert!(resp["error"].is_null(), "status error: {resp}");
     assert!(resp["result"]["agents"]["total"].is_number());
 
-    // coworker.list (alias for agent.list)
-    let resp = harness.rpc_call("coworker.list", None);
-    assert!(resp["error"].is_null(), "coworker.list error: {resp}");
+    // agent.list
+    let resp = harness.rpc_call("agent.list", None);
+    assert!(resp["error"].is_null(), "agent.list error: {resp}");
     assert!(resp["result"].is_array());
 
-    // coworkers.status (alias for agent.list)
-    let resp = harness.rpc_call("coworkers.status", None);
-    assert!(resp["error"].is_null(), "coworkers.status error: {resp}");
-    assert!(resp["result"].is_array());
-
-    // prs.status
-    let resp = harness.rpc_call("prs.status", None);
-    assert!(resp["error"].is_null(), "prs.status error: {resp}");
+    // pr.list
+    let resp = harness.rpc_call("pr.list", None);
+    assert!(resp["error"].is_null(), "pr.list error: {resp}");
     assert!(resp["result"]["prs"].is_array());
 
     // task.done
-    // First create a task, then complete it
     let resp = harness.rpc_call(
         "task.create",
         Some(serde_json::json!({
-            "id": "compat-t1",
-            "subject": "compat test task",
+            "id": "core-t1",
+            "subject": "core rpc test task",
             "channel": "main",
         })),
     );
     assert!(resp["error"].is_null(), "task.create error: {resp}");
 
-    let resp = harness.rpc_call("task.done", Some(serde_json::json!({"id": "compat-t1"})));
+    let resp = harness.rpc_call("task.done", Some(serde_json::json!({"id": "core-t1"})));
     assert!(resp["error"].is_null(), "task.done error: {resp}");
     assert_eq!(resp["result"]["ok"], true);
+
+    // Removed v1 aliases should return method-not-found
+    for method in &[
+        "snapshot",
+        "coworker.list",
+        "coworkers.status",
+        "lead.spawn",
+        "prs.status",
+    ] {
+        let resp = harness.rpc_call(method, None);
+        assert_eq!(
+            resp["error"]["code"], -32601,
+            "{} should return method-not-found, got: {}",
+            method, resp
+        );
+    }
 }
 
 /// Spec 1.4: nudge running agent delivers message

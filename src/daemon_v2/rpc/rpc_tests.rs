@@ -392,12 +392,10 @@ fn session_fork_missing_params_returns_error() {
     assert!(commands.is_empty());
 }
 
-// ── Spec 14: v1 compatibility alias tests ───────────────────────────────
+// ── Read-only method tests ────────────────────────────────────────────────
 
-/// Spec 14: WHEN v1 RPC methods are called THEN the system SHALL handle them
-/// via compatibility aliases
 #[test]
-fn v1_ping_returns_pong() {
+fn ping_returns_pong() {
     let proj = Projections::default();
     let request = json!({"jsonrpc": "2.0", "method": "ping", "id": 100});
     let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
@@ -406,9 +404,8 @@ fn v1_ping_returns_pong() {
     assert!(events.is_empty());
 }
 
-/// Spec 14: v1 version alias
 #[test]
-fn v1_version_returns_info() {
+fn version_returns_info() {
     let proj = Projections::default();
     let request = json!({"jsonrpc": "2.0", "method": "version", "id": 101});
     let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
@@ -420,19 +417,9 @@ fn v1_version_returns_info() {
 }
 
 #[test]
-fn v1_snapshot_aliases_to_status() {
+fn agent_list_returns_agents() {
     let proj = projections_with_agents();
-    let request = json!({"jsonrpc": "2.0", "method": "snapshot", "id": 102});
-    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
-    assert!(response["error"].is_null());
-    assert!(response["result"]["agents"]["total"].is_number());
-    assert!(events.is_empty());
-}
-
-#[test]
-fn v1_coworker_list_aliases_to_agent_list() {
-    let proj = projections_with_agents();
-    let request = json!({"jsonrpc": "2.0", "method": "coworker.list", "id": 103});
+    let request = json!({"jsonrpc": "2.0", "method": "agent.list", "id": 103});
     let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
     assert!(response["error"].is_null());
     assert!(response["result"].is_array());
@@ -441,33 +428,32 @@ fn v1_coworker_list_aliases_to_agent_list() {
 }
 
 #[test]
-fn v1_coworkers_status_aliases_to_agent_list() {
-    let proj = projections_with_agents();
-    let request = json!({"jsonrpc": "2.0", "method": "coworkers.status", "id": 104});
-    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
-    assert!(response["error"].is_null());
-    assert!(response["result"].is_array());
-    assert!(events.is_empty());
-}
-
-#[test]
-fn v1_lead_spawn_returns_ok() {
+fn removed_v1_aliases_return_method_not_found() {
     let proj = Projections::default();
-    let request = json!({
-        "jsonrpc": "2.0",
-        "method": "lead.spawn",
-        "id": 105,
-        "params": {"provider": "claude"}
-    });
-    let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
-    assert!(response["error"].is_null());
-    assert_eq!(response["result"]["ok"], true);
-    assert!(events.is_empty());
-    assert!(commands.is_empty());
+    for method in &[
+        "snapshot",
+        "coworker.list",
+        "coworkers.status",
+        "session.list",
+        "lead.spawn",
+        "prs.status",
+        "pr.list-external",
+        "pr.allow",
+        "daemon.check-pending",
+        "pr.merge",
+    ] {
+        let request = json!({"jsonrpc": "2.0", "method": method, "id": 1});
+        let (response, _, _) = dispatch_request(request, &proj, test_channels_dir());
+        assert_eq!(
+            response["error"]["code"], -32601,
+            "{} should return method-not-found, got: {}",
+            method, response
+        );
+    }
 }
 
 #[test]
-fn v1_coworker_break_stops_agent() {
+fn coworker_break_stops_agent() {
     let proj = projections_with_agents();
     let request = json!({
         "jsonrpc": "2.0",
@@ -489,7 +475,7 @@ fn v1_coworker_break_stops_agent() {
 }
 
 #[test]
-fn v1_coworker_break_unknown_agent_returns_error() {
+fn coworker_break_unknown_agent_returns_error() {
     let proj = projections_with_agents();
     let request = json!({
         "jsonrpc": "2.0",
@@ -503,7 +489,7 @@ fn v1_coworker_break_unknown_agent_returns_error() {
 }
 
 #[test]
-fn v1_coworker_nudge_nudges_agent() {
+fn coworker_nudge_nudges_agent() {
     let proj = projections_with_agents();
     let request = json!({
         "jsonrpc": "2.0",
@@ -526,7 +512,7 @@ fn v1_coworker_nudge_nudges_agent() {
 }
 
 #[test]
-fn v1_task_done_completes_task() {
+fn task_done_completes_task() {
     let proj = Projections::default();
     let request = json!({
         "jsonrpc": "2.0",
@@ -622,22 +608,11 @@ fn channel_post_generates_routing_commands() {
     );
 }
 
-// Spec 10.2: ping → "pong" (tested in v1_ping_returns_pong)
-// Spec 10.2: version → name, version, daemon: "v2" (tested in v1_version_returns_info)
-// Spec 10.2: snapshot → aliases to status (tested in v1_snapshot_aliases_to_status)
+// Spec 10.2: ping → "pong" (tested in ping_returns_pong)
+// Spec 10.2: version → name, version, daemon: "v2" (tested in version_returns_info)
 // Spec 10.4: unknown method → -32601 (tested in dispatch_unknown_method_returns_error)
 // Spec 10.4: missing params → -32602 (tested in task_create_missing_params_returns_error, etc.)
 // Spec 10.4: resource not found → -32000/-32001 (tested in task_update_returns_error_for_missing_task, etc.)
-
-#[test]
-fn v1_prs_status_returns_prs() {
-    let proj = Projections::default();
-    let request = json!({"jsonrpc": "2.0", "method": "prs.status", "id": 110});
-    let (response, events, _commands) = dispatch_request(request, &proj, test_channels_dir());
-    assert!(response["error"].is_null());
-    assert!(response["result"]["prs"].is_array());
-    assert!(events.is_empty());
-}
 
 /// Spec 13: coworker.spawn without name generates adjective-noun name
 #[test]
@@ -671,7 +646,7 @@ fn coworker_spawn_generates_adjective_noun_name() {
 }
 
 #[test]
-fn v1_coworker_spawn_returns_spawn_command() {
+fn coworker_spawn_returns_spawn_command() {
     let proj = Projections::default();
     let request = json!({
         "jsonrpc": "2.0",
@@ -899,11 +874,12 @@ fn pr_list_returns_prs() {
     let request = json!({"jsonrpc": "2.0", "method": "pr.list", "id": 210});
     let (response, events, commands) = dispatch_request(request, &proj, test_channels_dir());
     assert!(response["error"].is_null());
-    let prs = response["result"].as_array().unwrap();
+    let prs = response["result"]["prs"].as_array().unwrap();
     assert_eq!(prs.len(), 1);
     assert_eq!(prs[0]["number"], 42);
     assert_eq!(prs[0]["branch"], "fix-the-thing");
     assert_eq!(prs[0]["author"], "ghost-town");
+    assert!(response["result"]["merged_prs"].is_array());
     assert!(events.is_empty());
     assert!(commands.is_empty());
 }
@@ -914,7 +890,7 @@ fn pr_list_empty_when_no_prs() {
     let request = json!({"jsonrpc": "2.0", "method": "pr.list", "id": 211});
     let (response, events, _) = dispatch_request(request, &proj, test_channels_dir());
     assert!(response["error"].is_null());
-    let prs = response["result"].as_array().unwrap();
+    let prs = response["result"]["prs"].as_array().unwrap();
     assert!(prs.is_empty());
     assert!(events.is_empty());
 }
@@ -1032,33 +1008,6 @@ fn session_fork_missing_channel_returns_error() {
 }
 
 #[test]
-fn channel_post_accepts_v1_params() {
-    // v1 CLI sends "from" and "message", v2 expects "sender" and "content"
-    let proj = Projections::default();
-    let dir = tempfile::tempdir().unwrap();
-    let channels_dir = dir.path();
-
-    let request = json!({
-        "jsonrpc": "2.0",
-        "method": "channel.post",
-        "id": 99,
-        "params": {
-            "from": "user",
-            "message": "hello from v1 CLI",
-            "channel": "main"
-        }
-    });
-
-    let (response, events, _commands) = dispatch_request(request, &proj, channels_dir);
-    assert!(
-        response.get("error").is_none(),
-        "v1-style params should not produce an error, got: {:?}",
-        response
-    );
-    assert_eq!(events.len(), 1, "should produce MessagePosted event");
-}
-
-#[test]
 fn channel_post_defaults_channel_when_missing() {
     let proj = Projections::default();
     let dir = tempfile::tempdir().unwrap();
@@ -1069,8 +1018,8 @@ fn channel_post_defaults_channel_when_missing() {
         "method": "channel.post",
         "id": 100,
         "params": {
-            "from": "user",
-            "message": "hello"
+            "sender": "user",
+            "content": "hello"
         }
     });
 
@@ -1750,16 +1699,19 @@ fn oneshot_execute_spawns_worker() {
 
 /// pr.merge is a shortcut for pr.action with action=merge
 #[test]
-fn pr_merge_shortcut() {
+fn pr_merge_via_pr_action() {
     let proj = projections_with_tasks_and_prs();
     let request = json!({
         "jsonrpc": "2.0",
-        "method": "pr.merge",
+        "method": "pr.action",
         "id": 950,
-        "params": { "number": 42 }
+        "params": { "action": "merge", "number": 42 }
     });
     let (response, _, commands) = dispatch_request(request, &proj, test_channels_dir());
-    assert!(response["error"].is_null(), "pr.merge error: {response}");
+    assert!(
+        response["error"].is_null(),
+        "pr.action merge error: {response}"
+    );
     assert_eq!(commands.len(), 1);
     assert!(
         matches!(
