@@ -323,6 +323,7 @@ pub fn spawn_background_agent(
                     config.bound_thread_id.as_deref(),
                     &channels_dir,
                     &event_tx,
+                    None,
                 );
                 let id = events
                     .iter()
@@ -415,6 +416,7 @@ pub fn spawn_background_resume(
                     agent.bound_thread_id.as_deref(),
                     &channels_dir,
                     &event_tx,
+                    Some(result_tx.clone()),
                 );
                 let _ = result_tx
                     .send(ExecutorResult::SessionReady {
@@ -578,6 +580,7 @@ fn drain_session_output(
     bound_thread_id: Option<&str>,
     channels_dir: &Path,
     event_tx: &tokio::sync::broadcast::Sender<DomainEvent>,
+    result_tx: Option<tokio::sync::mpsc::Sender<ExecutorResult>>,
 ) {
     if let Some((mut stdout_rx, mut stderr_rx)) = session.take_receivers() {
         let name = agent_name.to_string();
@@ -585,6 +588,7 @@ fn drain_session_output(
         let thread_id = bound_thread_id.map(|s| s.to_string());
         let channels_dir = channels_dir.to_path_buf();
         let event_tx = event_tx.clone();
+        let result_tx_opt = result_tx;
         tokio::spawn(async move {
             use crate::headless::StreamEvent;
 
@@ -599,6 +603,32 @@ fn drain_session_output(
                     msg = stdout_rx.recv() => {
                         match msg {
                             Some(event) => {
+                                // Log error results so session failures appear in daemon.log
+                                if let StreamEvent::Result { is_error: true, ref extra, .. } = event {
+                                    let errors = extra.get("errors");
+                                    tracing::warn!(agent = %name, ?errors, "session exited with error");
+
+                                    // Detect "No conversation found" so the daemon clears the
+                                    // stale session_id and spawns fresh on next retry.
+                                    if let Some(arr) = errors.and_then(|e| e.as_array()) {
+                                        let is_not_found = arr.iter().any(|e| {
+                                            e.as_str()
+                                                .is_some_and(|s| s.contains("No conversation found"))
+                                        });
+                                        if is_not_found && let Some(ref tx) = result_tx_opt {
+                                            let _ = tx
+                                                .send(ExecutorResult::Events {
+                                                    events: vec![
+                                                        DomainEvent::AgentSessionNotFound {
+                                                            name: name.clone(),
+                                                        },
+                                                    ],
+                                                    lifecycle_key: None,
+                                                })
+                                                .await;
+                                        }
+                                    }
+                                }
                                 // Flush immediately on turn completion (Result event)
                                 let is_turn_end = matches!(&event, StreamEvent::Result { .. });
                                 pending_events.push(event);

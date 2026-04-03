@@ -89,6 +89,9 @@ pub enum DomainEvent {
         id: AgentId,
         state: String,
     },
+    AgentSessionNotFound {
+        name: String,
+    },
     AgentSpawnFailed {
         name: String,
         agent_type: String,

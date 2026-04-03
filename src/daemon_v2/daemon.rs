@@ -631,6 +631,21 @@ impl DaemonV2 {
                 }
             }
 
+            // Clear session_id when a resume fails because the session doesn't
+            // exist in the current project directory (cwd mismatch between original
+            // spawn and resume). The next health check will spawn fresh instead of
+            // retrying the invalid resume.
+            if let DomainEvent::AgentSessionNotFound { name } = event
+                && let Some(agent_id) = proj.agents.by_name.get(name).cloned()
+                && let Some(agent) = proj.agents.by_id.get_mut(&agent_id)
+            {
+                tracing::warn!(
+                    %agent_id, %name,
+                    "clearing session_id — conversation not found in project dir"
+                );
+                agent.session_id = None;
+            }
+
             // Route @mentions and !task references in auto-output messages.
             // These bypass the channel.post RPC path (which does its own routing),
             // so we handle them here to ensure mentions in agent output still
