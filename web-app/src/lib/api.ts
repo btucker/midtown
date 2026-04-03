@@ -774,6 +774,15 @@ export function handleUpdate(update: Record<string, unknown>): void {
 			key === "ChannelUnarchived" ||
 			key === "ChannelRenamed"
 		) {
+			// If the active channel was renamed, update the active channel store
+			if (key === "ChannelRenamed") {
+				const d = update[key] as Record<string, unknown>;
+				const oldName = d.old_name as string | undefined;
+				const newName = d.new_name as string | undefined;
+				if (oldName && newName && get(activeChannel) === oldName) {
+					activeChannel.set(newName);
+				}
+			}
 			update = { type: "channel_list_changed", data: {} };
 		} else {
 			// Other domain events (AgentCreated, PrMerged, etc.) — ignore silently
