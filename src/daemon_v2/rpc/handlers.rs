@@ -1025,6 +1025,8 @@ pub fn handle_channel_read(params: Option<&Value>, channels_dir: &Path) -> Resul
             let end = (pos + 1 + n).min(all.len());
             return Ok(json!(all[start..end]));
         }
+        // Message not found — return empty array
+        return Ok(json!([]));
     }
 
     Ok(json!(messages))
