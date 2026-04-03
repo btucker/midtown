@@ -30,7 +30,7 @@ function fetchWorkflow() {
 	data = null;
 	error = "";
 
-	fetch(`${getApiBase()}/workflow?channel=${encodeURIComponent(channel)}`, {
+	fetch(`${getApiBase()}/channels/${encodeURIComponent(channel)}/workflow`, {
 		signal: controller.signal,
 	})
 		.then((res) => {
