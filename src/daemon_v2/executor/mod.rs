@@ -616,7 +616,7 @@ fn drain_session_output(
                     msg = stderr_rx.recv() => {
                         match msg {
                             Some(line) if !line.trim().is_empty() => {
-                                tracing::debug!(agent = %name, "stderr: {line}");
+                                tracing::warn!(agent = %name, "stderr: {line}");
                             }
                             None => break,
                             _ => {}
