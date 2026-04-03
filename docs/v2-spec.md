@@ -302,7 +302,7 @@
 - `task.prompt` — nudge task's assigned agent
 - `task.handoff` — stop agent, reset task, spawn replacement (params: id, agent_type or agent, message)
 - `pr.merge` — shortcut for pr.action merge
-- `oneshot.execute` — spawn one-off worker with prompt
+- `oneshot.execute` — spawn one-off worker with prompt (returns `{ok, agent}`, execution is asynchronous)
 - `channel.create` — emit ChannelCreated (required: name)
 - `channel.archive`, `channel.unarchive`, `channel.rename` — channel management (emit events for WebSocket notification)
 - `daemon.set-draining` — toggle draining mode

@@ -256,23 +256,19 @@ pub fn handle_oneshot(
         allow_tools,
     )?;
 
-    // Extract the result text for display
-    let success = result.bool_or("success", false);
-    let result_text = result.str_or("result", "");
-    let cost = result.f64_field("cost_usd");
-    let duration = result.u64_field("duration_ms");
+    // The RPC spawns the agent asynchronously and returns {"ok": true, "agent": "<name>"}.
+    let ok = result.bool_or("ok", false);
+    let agent_name = result.str_or("agent", "");
 
-    if success {
-        let mut message = result_text.to_string();
-        if let Some(c) = cost {
-            message.push_str(&format!("\n\n(cost: ${:.4}", c));
-            if let Some(d) = duration {
-                message.push_str(&format!(", duration: {}ms", d));
-            }
-            message.push(')');
-        }
-        Ok(Response::Message { message })
+    if ok {
+        Ok(Response::Message {
+            message: format!(
+                "One-shot agent '{}' spawned. Check DM output: midtown channel read --channel dm-{} --text",
+                agent_name, agent_name
+            ),
+        })
     } else {
-        Err(format!("One-shot execution failed: {}", result_text))
+        let error = result.str_or("error", "unknown error");
+        Err(format!("One-shot execution failed: {}", error))
     }
 }
