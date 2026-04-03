@@ -1099,12 +1099,17 @@ pub fn handle_channel_unarchive(
         .join(format!("{name}.archived"));
     let ch_dir = channels_dir.join("channels").join(name);
 
-    if archived_dir.exists() {
-        std::fs::rename(&archived_dir, &ch_dir).map_err(|e| RpcError {
+    if !archived_dir.exists() {
+        return Err(RpcError {
             code: -32000,
-            message: format!("failed to unarchive: {e}"),
-        })?;
+            message: format!("channel '{name}' is not archived"),
+        });
     }
+
+    std::fs::rename(&archived_dir, &ch_dir).map_err(|e| RpcError {
+        code: -32000,
+        message: format!("failed to unarchive: {e}"),
+    })?;
 
     Ok(vec![DomainEvent::ChannelUnarchived {
         channel: name.to_string(),
