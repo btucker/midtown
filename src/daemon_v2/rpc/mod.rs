@@ -77,7 +77,10 @@ pub fn dispatch_request(
 
     // Mutating methods return events alongside the result.
     match method {
-        "task.create" => events_response(&id, handlers::handle_task_create(params, proj)),
+        "task.create" => events_response(
+            &id,
+            handlers::handle_task_create(params, proj, channels_dir),
+        ),
         "task.done" => events_response(&id, handlers::handle_task_done(params)),
         "task.update" => match handlers::handle_task_update(params, proj) {
             Ok((events, commands)) => (

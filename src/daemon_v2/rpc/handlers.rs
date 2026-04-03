@@ -191,6 +191,7 @@ pub fn handle_agent_list(
 pub fn handle_task_create(
     params: Option<&Value>,
     proj: &crate::daemon_v2::Projections,
+    channels_dir: &Path,
 ) -> Result<Vec<DomainEvent>, RpcError> {
     let params = params.ok_or_else(|| RpcError {
         code: -32602,
@@ -270,15 +271,26 @@ pub fn handle_task_create(
         .and_then(|v| v.as_str())
         .map(String::from);
 
-    let thread_id = params
+    let explicit_thread_id = params
         .get("thread_id")
         .and_then(|v| v.as_str())
         .map(String::from);
 
-    let message_id = params
+    let explicit_message_id = params
         .get("message_id")
         .and_then(|v| v.as_str())
         .map(String::from);
+
+    // If no thread_id provided, post an announcement and use it as thread anchor
+    let (thread_id, message_id) = if let Some(tid) = explicit_thread_id {
+        (Some(tid), explicit_message_id)
+    } else {
+        let announcement = format!("📋 Task created: **{}**", subject);
+        match channel_io::post_message(channels_dir, &channel, "midtown", &announcement, None) {
+            Ok(msg_id) => (Some(msg_id.clone()), Some(msg_id)),
+            Err(_) => (None, None),
+        }
+    };
 
     Ok(vec![DomainEvent::TaskCreated {
         id,
