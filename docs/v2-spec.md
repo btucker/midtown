@@ -46,6 +46,7 @@
 ### 2.2 Task Lifecycle
 - WHEN a worker dies while its task is InProgress THEN the system SHALL resume the worker
 - WHEN a worker cannot be resumed (no session ID) THEN the system SHALL spawn a replacement worker with the same task configuration
+- WHEN a worker has failed 3 consecutive spawn attempts (died within 60s of start) THEN the system SHALL stop retrying AND post to the ops channel
 - WHEN two agents are assigned to the same task THEN the system SHALL stop the newer one
 - WHEN a worker reports its state as idle via `midtown state` THEN the system SHALL stop it after 2 minutes if it remains idle
 - WHEN a worker has not reported a state change for 5 minutes THEN the system SHALL nudge it

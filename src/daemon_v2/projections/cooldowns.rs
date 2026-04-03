@@ -55,21 +55,49 @@ impl CooldownCategory {
     }
 }
 
+#[derive(Debug, Clone)]
+struct CooldownEntry {
+    recorded_at: Instant,
+    count: usize,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CooldownTracker {
-    entries: HashMap<(CooldownCategory, String), Instant>,
+    entries: HashMap<(CooldownCategory, String), CooldownEntry>,
 }
 
 impl CooldownTracker {
     pub fn is_active(&self, category: CooldownCategory, key: &str) -> bool {
         self.entries
             .get(&(category, key.to_string()))
-            .map(|t| t.elapsed() < category.duration())
+            .map(|e| e.recorded_at.elapsed() < category.duration())
             .unwrap_or(false)
     }
 
     pub fn record(&mut self, category: CooldownCategory, key: String) {
-        self.entries.insert((category, key), Instant::now());
+        let entry = self
+            .entries
+            .entry((category, key))
+            .or_insert(CooldownEntry {
+                recorded_at: Instant::now(),
+                count: 0,
+            });
+        entry.recorded_at = Instant::now();
+        entry.count += 1;
+    }
+
+    pub fn failure_count(&self, category: CooldownCategory, key: &str) -> usize {
+        self.entries
+            .get(&(category, key.to_string()))
+            .map(|e| e.count)
+            .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub fn expire_for_test(&mut self, category: CooldownCategory, key: &str) {
+        if let Some(entry) = self.entries.get_mut(&(category, key.to_string())) {
+            entry.recorded_at = Instant::now() - category.duration() - Duration::from_secs(1);
+        }
     }
 }
 
