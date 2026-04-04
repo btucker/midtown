@@ -1513,10 +1513,10 @@ fn parse_duration_secs(s: &str) -> Option<u64> {
     let n: u64 = num.parse().ok()?;
     match suffix {
         "s" => Some(n),
-        "m" => Some(n * 60),
-        "h" => Some(n * 3600),
-        "d" => Some(n * 86400),
-        "w" => Some(n * 604800),
+        "m" => n.checked_mul(60),
+        "h" => n.checked_mul(3600),
+        "d" => n.checked_mul(86400),
+        "w" => n.checked_mul(604800),
         _ => None,
     }
 }
