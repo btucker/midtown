@@ -1,7 +1,7 @@
 <script lang="ts">
 import type { Snippet } from "svelte";
 import { onMount } from "svelte";
-import { fetchAllAuthProfiles, startAuthLogin, submitAuthCode, switchAuthProfile } from "./api";
+import { fetchAllAuthProfiles, startAuthLogin, switchAuthProfile } from "./api";
 import { authProfilesByProvider, authSwitching, usageData } from "./store.ts";
 import type { UsageEntry } from "./types.ts";
 import { estimateTimeToFull, formatResetTime, usageColor } from "./usage-utils.ts";
@@ -23,40 +23,16 @@ let switchingKey = $state<string | null>(null);
 let error = $state<string | null>(null);
 let showAddHint = $state(false);
 let loginKey = $state<string | null>(null);
-let showCodeInput = $state(false);
-let authCode = $state("");
-let submittingCode = $state(false);
-
 async function handleLogin(profileName: string, provider: string, event: MouseEvent) {
 	event.stopPropagation();
 	loginKey = profileName;
 	error = null;
-	const result = await startAuthLogin(profileName, provider);
-	if (result.ok && result.url) {
-		window.open(result.url, "_blank");
-		showCodeInput = true;
-		loginKey = null;
-	} else {
-		loginKey = null;
-		error = result.error || "Failed to start login";
-		setTimeout(() => {
-			error = null;
-		}, 5000);
-	}
-}
-
-async function handleCodeSubmit() {
-	if (!authCode.trim()) return;
-	submittingCode = true;
-	error = null;
-	const result = await submitAuthCode(authCode.trim());
-	submittingCode = false;
-	showCodeInput = false;
-	authCode = "";
+	const result = await startAuthLogin(provider);
+	loginKey = null;
 	if (result.ok) {
 		setTimeout(() => fetchAllAuthProfiles(), 1000);
 	} else {
-		error = result.error || "Code submission failed";
+		error = result.error || "Failed to start login";
 		setTimeout(() => {
 			error = null;
 		}, 5000);
@@ -274,30 +250,3 @@ async function handleRowClick(profile: AccountProfile) {
   </div>
 {/if}
 
-{#if showCodeInput}
-  <div class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onclick={() => { showCodeInput = false; authCode = ""; }}>
-    <div class="bg-popover border border-border rounded-lg p-4 w-full max-w-sm shadow-lg" onclick={(e) => e.stopPropagation()}>
-      <h3 class="text-sm font-medium mb-2">Paste Authorization Code</h3>
-      <p class="text-xs text-muted-foreground mb-3">Complete sign-in in the browser window, copy the code from the page, and paste it here.</p>
-      <input
-        type="text"
-        bind:value={authCode}
-        placeholder="Paste code here..."
-        class="w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:ring-1 focus:ring-ring"
-        onkeydown={(e) => { if (e.key === "Enter") handleCodeSubmit(); }}
-        autofocus
-      />
-      <div class="flex gap-2 mt-3 justify-end">
-        <button
-          class="px-3 py-1 text-xs rounded border border-border hover:bg-muted"
-          onclick={() => { showCodeInput = false; authCode = ""; }}
-        >Cancel</button>
-        <button
-          class="px-3 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-          disabled={submittingCode || !authCode.trim()}
-          onclick={handleCodeSubmit}
-        >{submittingCode ? "Submitting..." : "Submit"}</button>
-      </div>
-    </div>
-  </div>
-{/if}
