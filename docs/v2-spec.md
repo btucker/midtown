@@ -123,6 +123,7 @@
 - WHEN any agent (lead OR worker) dies within 60 seconds of starting THEN the system SHALL record a SpawnFailure cooldown
 - WHEN a SpawnFailure cooldown is active for a worker's task THEN health checks and dispatch SHALL NOT re-spawn that worker until the cooldown expires (120 seconds)
 - WHEN a SpawnFailure cooldown is active for a channel THEN lead spawning SHALL NOT occur until the cooldown expires
+- WHEN a lead has failed 3 consecutive spawn attempts (died within 60s of start) THEN the system SHALL stop retrying AND post to the ops channel
 - The cooldown key for leads is the channel name; the cooldown key for workers is the task ID
 
 ### 4.5 Garbage Collection

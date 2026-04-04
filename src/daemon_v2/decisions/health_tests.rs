@@ -897,3 +897,96 @@ fn cleared_session_id_causes_fresh_spawn() {
         commands,
     );
 }
+
+/// Spec 4.4: WHEN a lead has failed 3 consecutive spawn attempts THEN stop
+/// retrying AND post to ops channel (mirrors worker behavior from Spec 2.2).
+#[test]
+fn lead_gives_up_after_max_spawn_failures() {
+    let events = vec![
+        // Main channel lead (running — not the subject of this test)
+        DomainEvent::AgentCreated {
+            id: "lead-main".into(),
+            name: "main".into(),
+            kind: AgentKind::Lead,
+            agent_type: "midtown-project-lead".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("main".into()),
+            task_id: None,
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "lead-main".into(),
+            pid: 50,
+            session_id: Some("session-main".into()),
+        },
+        // daemon-core lead (stopped — subject of this test)
+        DomainEvent::AgentCreated {
+            id: "lead-1".into(),
+            name: "daemon-core".into(),
+            kind: AgentKind::Lead,
+            agent_type: "midtown-channel-lead".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("daemon-core".into()),
+            task_id: None,
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "lead-1".into(),
+            pid: 100,
+            session_id: Some("session-1".into()),
+        },
+        DomainEvent::AgentStopped {
+            id: "lead-1".into(),
+            reason: "process died".into(),
+        },
+    ];
+
+    let mut proj = make_projections(&events);
+
+    // Ensure the channel exists in the projection
+    proj.apply(&DomainEvent::MessagePosted {
+        id: "msg-1".into(),
+        channel: "daemon-core".into(),
+        sender: "user".into(),
+        content: "hello".into(),
+        thread_id: None,
+        tool_data: None,
+        auto_output: false,
+    });
+
+    // Simulate 3 consecutive spawn failures
+    for _ in 0..super::MAX_LEAD_RESTARTS {
+        proj.cooldowns
+            .record(CooldownCategory::SpawnFailure, "daemon-core".to_string());
+    }
+
+    // Expire the cooldown timer so ensure_channel_leads_alive doesn't skip
+    proj.cooldowns
+        .expire_for_test(CooldownCategory::SpawnFailure, "daemon-core");
+
+    let commands = ensure_channel_leads_alive(&proj, "main");
+
+    // Should NOT try to resume/spawn — max failures reached
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, Command::ResumeAgent { .. } | Command::SpawnAgent(_))),
+        "should not respawn lead after {} failures, got: {:?}",
+        super::MAX_LEAD_RESTARTS,
+        commands,
+    );
+
+    // Should post to ops channel about the failure
+    assert!(
+        commands.iter().any(|c| matches!(c, Command::PostSystem {
+            channel,
+            ..
+        } if channel == "ops")),
+        "should escalate to ops after max lead failures, got: {:?}",
+        commands,
+    );
+}

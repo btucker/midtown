@@ -14,6 +14,7 @@ use crate::daemon_v2::projections::Projections;
 use crate::daemon_v2::projections::cooldowns::CooldownCategory;
 
 pub(crate) const MAX_WORKER_RESTARTS: usize = 3;
+pub(crate) const MAX_LEAD_RESTARTS: usize = 3;
 
 /// Find workers that are stopped but have in-progress tasks.
 /// Per spec 2.2: resume the worker (not reset the task).
@@ -200,6 +201,26 @@ fn ensure_lead_for_channel(proj: &Projections, channel: &str, agent_type: &str) 
     use crate::daemon_v2::projections::cooldowns::CooldownCategory;
 
     let lead = proj.agents.channel_lead(channel);
+
+    // Spec 4.4: stop retrying after MAX_LEAD_RESTARTS consecutive failures
+    let failures = proj
+        .cooldowns
+        .failure_count(CooldownCategory::SpawnFailure, channel);
+    if failures >= MAX_LEAD_RESTARTS {
+        let esc_key = format!("lead-escalation-{channel}");
+        if !proj
+            .cooldowns
+            .is_active(CooldownCategory::TaskNudge, &esc_key)
+        {
+            return Some(Command::PostSystem {
+                channel: "ops".into(),
+                content: format!(
+                    "Lead for #{channel} failed {failures} consecutive spawns. Manual intervention needed (check auth, run /login).",
+                ),
+            });
+        }
+        return None;
+    }
 
     match lead {
         // Running lead — nothing to do
