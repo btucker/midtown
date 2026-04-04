@@ -14,7 +14,6 @@ import {
 	openThread,
 	sendMessage,
 	startAuthLogin,
-	submitAuthCode,
 	uploadFile,
 } from "./api.ts";
 import { openImageLightbox } from "./biggerPicture.ts";
@@ -61,13 +60,12 @@ const INITIAL_WINDOW_SIZE = 100; // messages to render on first load
 const LOAD_MORE_COUNT = 50; // messages to add when scrolling up
 
 let inputText = $state("");
-let authWaitingForCode = $state(false);
-let authCodeValue = $state("");
 let scrollAreaViewport: HTMLDivElement | null = $state(null);
 let autoScroll = $state(true);
 let pendingFile: File | null = $state(null);
 let pendingFileUrl: string | null = $state(null);
 let uploading = $state(false);
+let authLoggingIn = $state(false);
 let textareaElement: HTMLTextAreaElement | null = $state(null);
 let formWrapperElement: HTMLDivElement | null = $state(null);
 let topSentinel: HTMLDivElement | null = $state(null);
@@ -550,7 +548,7 @@ onMount(() => {
 
 	if (scrollAreaViewport) {
 		scrollAreaViewport.addEventListener("click", handleLinkClick);
-		return () => scrollAreaViewport!.removeEventListener("click", handleLinkClick);
+		return () => scrollAreaViewport?.removeEventListener("click", handleLinkClick);
 	}
 });
 
@@ -741,7 +739,7 @@ async function handleSubmit(e: Event) {
 			clearMobileTextarea(textareaElement, () => {
 				inputText = "";
 			});
-			const result = await cmd.execute!();
+			const result = await cmd.execute?.();
 			if (!result.ok) {
 				alert(result.error);
 			}
@@ -952,57 +950,27 @@ function getToolCallStatusIcon(entry: { block: import("./types.ts").ToolBlock; s
   {#if $authError}
     <div class="bg-destructive/15 border-b border-destructive/30 px-[18px] py-[10px] flex items-center gap-3 text-[0.85rem] shrink-0 flex-wrap">
       <span class="text-destructive font-medium">Auth expired</span>
-      {#if !authWaitingForCode}
+      {#if authLoggingIn}
+        <span class="text-muted-foreground truncate flex-1">Logging in &mdash; complete authentication in the browser window that opened on the server</span>
+      {:else}
         <span class="text-muted-foreground truncate flex-1">OAuth token needs refresh</span>
         <button
           class="px-3 py-1 rounded-md bg-primary text-primary-foreground text-[0.78rem] font-medium hover:opacity-90 transition-opacity"
           onclick={async () => {
-            const result = await startAuthLogin("", "claude");
-            if (result.ok && result.url) {
-              window.open(result.url, "_blank");
-              authWaitingForCode = true;
+            authLoggingIn = true;
+            const result = await startAuthLogin("claude");
+            if (result.ok) {
+              authError.set(null);
             }
+            authLoggingIn = false;
           }}
         >
-          Re-authenticate
-        </button>
-      {:else}
-        <span class="text-muted-foreground">Paste the code from the browser:</span>
-        <input
-          type="text"
-          class="px-2 py-1 rounded-md border border-border bg-background text-foreground text-[0.82rem] w-[200px]"
-          placeholder="Paste code here"
-          bind:value={authCodeValue}
-          onkeydown={async (e) => {
-            if (e.key === "Enter" && authCodeValue.trim()) {
-              const result = await submitAuthCode(authCodeValue.trim());
-              if (result.ok) {
-                authError.set(null);
-                authWaitingForCode = false;
-                authCodeValue = "";
-              }
-            }
-          }}
-        />
-        <button
-          class="px-3 py-1 rounded-md bg-primary text-primary-foreground text-[0.78rem] font-medium hover:opacity-90 transition-opacity"
-          onclick={async () => {
-            if (authCodeValue.trim()) {
-              const result = await submitAuthCode(authCodeValue.trim());
-              if (result.ok) {
-                authError.set(null);
-                authWaitingForCode = false;
-                authCodeValue = "";
-              }
-            }
-          }}
-        >
-          Submit
+          Login
         </button>
       {/if}
       <button
         class="text-muted-foreground hover:text-foreground text-[0.9rem]"
-        onclick={() => { authError.set(null); authWaitingForCode = false; authCodeValue = ""; }}
+        onclick={() => { authError.set(null); authLoggingIn = false; }}
       >
         ×
       </button>

@@ -49,7 +49,7 @@ describe("debouncedSaveToLocalStorage", () => {
 	it("writes to localStorage after the debounce delay", () => {
 		debouncedSaveToLocalStorage("test_key", { count: 1 });
 		vi.advanceTimersByTime(500);
-		expect(JSON.parse(localStorage.getItem("test_key")!)).toEqual({ count: 1 });
+		expect(JSON.parse(localStorage.getItem("test_key") ?? "")).toEqual({ count: 1 });
 	});
 
 	it("coalesces rapid writes — only the last value is persisted", () => {
@@ -59,7 +59,7 @@ describe("debouncedSaveToLocalStorage", () => {
 
 		vi.advanceTimersByTime(500);
 
-		expect(JSON.parse(localStorage.getItem("test_key")!)).toEqual({ count: 3 });
+		expect(JSON.parse(localStorage.getItem("test_key") ?? "")).toEqual({ count: 3 });
 	});
 
 	it("handles different keys independently", () => {
@@ -68,15 +68,15 @@ describe("debouncedSaveToLocalStorage", () => {
 
 		vi.advanceTimersByTime(500);
 
-		expect(JSON.parse(localStorage.getItem("key_a")!)).toBe("value_a");
-		expect(JSON.parse(localStorage.getItem("key_b")!)).toBe("value_b");
+		expect(JSON.parse(localStorage.getItem("key_a") ?? "")).toBe("value_a");
+		expect(JSON.parse(localStorage.getItem("key_b") ?? "")).toBe("value_b");
 	});
 
 	it("flushDebouncedSaves writes all pending values immediately", () => {
 		debouncedSaveToLocalStorage("flush_key", { flushed: true });
 		flushDebouncedSaves();
 
-		expect(JSON.parse(localStorage.getItem("flush_key")!)).toEqual({ flushed: true });
+		expect(JSON.parse(localStorage.getItem("flush_key") ?? "")).toEqual({ flushed: true });
 	});
 
 	it("registers a beforeunload handler that flushes pending writes", () => {
@@ -87,6 +87,6 @@ describe("debouncedSaveToLocalStorage", () => {
 		// Simulate tab close by calling the registered beforeunload handler
 		beforeUnloadHandlers.forEach((handler) => handler({} as BeforeUnloadEvent));
 
-		expect(JSON.parse(localStorage.getItem("unload_key")!)).toEqual({ saved: true });
+		expect(JSON.parse(localStorage.getItem("unload_key") ?? "")).toEqual({ saved: true });
 	});
 });

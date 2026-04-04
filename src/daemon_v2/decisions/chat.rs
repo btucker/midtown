@@ -178,7 +178,11 @@ fn route_refs(
                 }
             } else {
                 // Topic channel @all: nudge channel lead + in-progress task agents
-                // in THIS channel only
+                // in THIS channel only.
+                //
+                // Workers live in dm-{name} channels (not the task channel), so
+                // by_channel alone misses them. We also scan all agents for those
+                // whose task belongs to this channel.
                 if let Some(agents) = proj.agents.by_channel.get(channel) {
                     for agent_id in agents {
                         if let Some(agent) = proj.agents.by_id.get(agent_id) {
@@ -192,6 +196,18 @@ fn route_refs(
                             if is_lead || has_in_progress_task {
                                 nudge(agent, sender, nudge_msg, nudged, commands);
                             }
+                        }
+                    }
+                }
+                // Also find workers whose task is in this channel but who are
+                // indexed under a different channel (dm-{name}).
+                for agent in proj.agents.by_id.values().filter(|a| !a.gc) {
+                    if let Some(tid) = &agent.task_id {
+                        let task_in_channel = proj.work.tasks.get(tid).is_some_and(|t| {
+                            t.channel == channel && t.status == TaskStatus::InProgress
+                        });
+                        if task_in_channel {
+                            nudge(agent, sender, nudge_msg, nudged, commands);
                         }
                     }
                 }

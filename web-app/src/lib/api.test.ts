@@ -418,7 +418,7 @@ describe("handleUpdate — optimistic message deduplication", () => {
 			},
 		});
 
-		const td = get(threadData)!;
+		const td = get(threadData);
 		expect(td.messages).toHaveLength(1);
 		expect(td.messages[0].id).toBe("real-reply-1");
 		expect(td.messages[0].pending).toBeUndefined();
@@ -448,7 +448,7 @@ describe("handleUpdate — optimistic message deduplication", () => {
 			},
 		});
 
-		const td = get(threadData)!;
+		const td = get(threadData);
 		// First pending removed, second preserved, real appended
 		expect(td.messages).toHaveLength(2);
 		expect(td.messages[0].id).toBe("pending-t2");
@@ -501,7 +501,7 @@ describe("handleUpdate — optimistic message deduplication", () => {
 			},
 		});
 
-		const td = get(threadData)!;
+		const td = get(threadData);
 		// Panel is for otherParentId — should be untouched
 		expect(td.messages).toHaveLength(1);
 		expect(td.messages[0].id).toBe("pending-reply-2");

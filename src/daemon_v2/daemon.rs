@@ -365,7 +365,6 @@ impl DaemonV2 {
                 channels_dir: self.config.channels_dir.clone(),
                 event_tx: self.event_tx.clone(),
                 command_tx: web_cmd_tx.clone(),
-                pending_auth_login: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
                 repo_name: self.config.dir_key.clone(),
                 repo_full_name,
             });
@@ -590,7 +589,8 @@ impl DaemonV2 {
                     .started_at
                     .is_some_and(|t| (chrono::Utc::now() - t).num_seconds() < 60);
 
-                let cooldown_key = match agent.kind {
+                let agent_kind = agent.kind.clone();
+                let cooldown_key = match agent_kind {
                     crate::daemon_v2::events::AgentKind::Lead => agent.channel.clone(),
                     crate::daemon_v2::events::AgentKind::Worker => agent.task_id.clone(),
                     _ => None,
@@ -599,7 +599,7 @@ impl DaemonV2 {
                 if died_quickly {
                     if let Some(ref key) = cooldown_key {
                         tracing::warn!(
-                            %id, key = %key, kind = ?agent.kind,
+                            %id, key = %key, kind = ?agent_kind,
                             "agent died within 60s of start — applying spawn cooldown"
                         );
                         proj.cooldowns.record(
@@ -613,8 +613,19 @@ impl DaemonV2 {
                             crate::daemon_v2::projections::cooldowns::CooldownCategory::SpawnFailure,
                             key,
                         );
-                        if failures >= crate::daemon_v2::decisions::health::MAX_WORKER_RESTARTS {
-                            let esc_key = format!("worker-escalation-{key}");
+                        let max_restarts = match agent_kind {
+                            crate::daemon_v2::events::AgentKind::Lead => {
+                                crate::daemon_v2::decisions::health::MAX_LEAD_RESTARTS
+                            }
+                            _ => crate::daemon_v2::decisions::health::MAX_WORKER_RESTARTS,
+                        };
+                        if failures >= max_restarts {
+                            let esc_key = match agent_kind {
+                                crate::daemon_v2::events::AgentKind::Lead => {
+                                    format!("lead-escalation-{key}")
+                                }
+                                _ => format!("worker-escalation-{key}"),
+                            };
                             proj.cooldowns.record(
                                 crate::daemon_v2::projections::cooldowns::CooldownCategory::TaskNudge,
                                 esc_key,

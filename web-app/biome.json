@@ -27,7 +27,8 @@
 				"rules": {
 					"style": {
 						"useConst": "off",
-						"useImportType": "off"
+						"useImportType": "off",
+						"noNonNullAssertion": "warn"
 					},
 					"correctness": {
 						"noUnusedVariables": "off",

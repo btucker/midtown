@@ -29,6 +29,7 @@
 - WHEN multiple routing rules match the same agent for the same message THEN the system SHALL nudge it exactly once
 - WHEN the nudge target is stopped AND has a session ID THEN the system SHALL resume the agent before delivering the message
 - WHEN the nudge target is stopped AND has no session ID THEN the system SHALL spawn a new agent with the same configuration (kind, agent_type, channel, task_id, bound_thread_id) and deliver the nudge to it
+- WHEN the nudge target is stopped AND a SpawnFailure cooldown is active for that agent THEN the system SHALL drop the nudge
 - WHEN the nudge target is unknown THEN the system SHALL drop the nudge
 
 ---
@@ -104,6 +105,7 @@
 - WHEN spawning fails THEN the system SHALL emit an AgentSpawnFailed event with the agent configuration and error reason
 - WHEN a session is spawned THEN stdout/stderr SHALL be drained in a background task
 - WHEN an agent produces assistant text on stdout THEN the system SHALL auto-post it to the agent's bound channel
+- WHEN a session exits with an error (is_error: true) THEN the system SHALL suppress auto-posting the final output to the channel — errors are logged to daemon.log only
 - WHEN an agent has no bound channel THEN stdout text SHALL be posted to the agent's DM channel
 - WHEN multiple stdout events accumulate THEN the system SHALL flush and post at most every 2 seconds
 
@@ -122,6 +124,7 @@
 - WHEN any agent (lead OR worker) dies within 60 seconds of starting THEN the system SHALL record a SpawnFailure cooldown
 - WHEN a SpawnFailure cooldown is active for a worker's task THEN health checks and dispatch SHALL NOT re-spawn that worker until the cooldown expires (120 seconds)
 - WHEN a SpawnFailure cooldown is active for a channel THEN lead spawning SHALL NOT occur until the cooldown expires
+- WHEN a lead has failed 3 consecutive spawn attempts (died within 60s of start) THEN the system SHALL stop retrying AND post to the ops channel
 - The cooldown key for leads is the channel name; the cooldown key for workers is the task ID
 
 ### 4.5 Garbage Collection

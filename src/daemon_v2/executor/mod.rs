@@ -11,6 +11,10 @@ mod nudge_tests;
 #[cfg(test)]
 mod dispatch_tests;
 
+#[path = "auto_output_tests.rs"]
+#[cfg(test)]
+mod auto_output_tests;
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -35,20 +39,43 @@ pub enum NudgeAction {
 
 /// Determine the nudge strategy for a given agent.
 /// Per spec 1.4: stopped agents are resumed (with session_id) or respawned (without).
+/// Respawns respect the SpawnFailure cooldown to prevent rapid restart loops.
 pub fn resolve_nudge_action(agent_id: &str, proj: &Projections) -> NudgeAction {
+    use crate::daemon_v2::events::AgentKind;
+    use crate::daemon_v2::projections::cooldowns::CooldownCategory;
+
     let agent = match proj.agents.by_id.get(agent_id) {
         Some(a) => a,
         None => return NudgeAction::Drop,
     };
     if proj.agents.running.contains(agent_id) {
         NudgeAction::Deliver
-    } else if let Some(ref session_id) = agent.session_id {
-        NudgeAction::ResumeAndDeliver {
-            session_id: session_id.clone(),
-        }
     } else {
-        NudgeAction::RespawnAndDeliver {
-            config: Box::new(spawn_config_from_agent(agent)),
+        // Check spawn failure cooldown before attempting resume or respawn.
+        // Leads are keyed by channel, workers by task_id.
+        // This applies to BOTH ResumeAndDeliver and RespawnAndDeliver —
+        // auth errors preserve session_id but the agent still can't start.
+        let cooldown_key = match agent.kind {
+            AgentKind::Lead => agent.channel.as_deref(),
+            AgentKind::Worker => agent.task_id.as_deref(),
+            _ => None,
+        };
+        if let Some(key) = cooldown_key
+            && proj
+                .cooldowns
+                .is_active(CooldownCategory::SpawnFailure, key)
+        {
+            return NudgeAction::Drop;
+        }
+
+        if let Some(ref session_id) = agent.session_id {
+            NudgeAction::ResumeAndDeliver {
+                session_id: session_id.clone(),
+            }
+        } else {
+            NudgeAction::RespawnAndDeliver {
+                config: Box::new(spawn_config_from_agent(agent)),
+            }
         }
     }
 }
@@ -597,6 +624,10 @@ fn drain_session_output(
             // with a 2-second fallback timer for long-running turns.
             let mut flush_interval = tokio::time::interval(std::time::Duration::from_secs(2));
             flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Once a session errors, suppress all further auto-output (timer
+            // flushes and stream-end flush). This prevents error text from
+            // leaking via the 2-second timer before the Result event arrives.
+            let mut session_errored = false;
 
             loop {
                 tokio::select! {
@@ -607,6 +638,7 @@ fn drain_session_output(
                                 if let StreamEvent::Result { is_error: true, ref extra, .. } = event {
                                     let errors = extra.get("errors");
                                     tracing::warn!(agent = %name, ?errors, "session exited with error");
+                                    session_errored = true;
 
                                     // Detect "No conversation found" so the daemon clears the
                                     // stale session_id and spawns fresh on next retry.
@@ -633,12 +665,20 @@ fn drain_session_output(
                                 let is_turn_end = matches!(&event, StreamEvent::Result { .. });
                                 pending_events.push(event);
                                 if is_turn_end {
-                                    flush_auto_output(&name, &channel, thread_id.as_deref(), &channels_dir, &mut pending_events, &event_tx);
+                                    if session_errored {
+                                        pending_events.clear();
+                                    } else {
+                                        flush_auto_output(&name, &channel, thread_id.as_deref(), &channels_dir, &mut pending_events, &event_tx);
+                                    }
                                 }
                             }
                             None => {
-                                // Stream ended — flush remaining
-                                flush_auto_output(&name, &channel, thread_id.as_deref(), &channels_dir, &mut pending_events, &event_tx);
+                                // Stream ended — flush remaining (unless errored)
+                                if session_errored {
+                                    pending_events.clear();
+                                } else {
+                                    flush_auto_output(&name, &channel, thread_id.as_deref(), &channels_dir, &mut pending_events, &event_tx);
+                                }
                                 break;
                             }
                         }
@@ -653,7 +693,9 @@ fn drain_session_output(
                         }
                     }
                     _ = flush_interval.tick() => {
-                        flush_auto_output(&name, &channel, thread_id.as_deref(), &channels_dir, &mut pending_events, &event_tx);
+                        if !session_errored {
+                            flush_auto_output(&name, &channel, thread_id.as_deref(), &channels_dir, &mut pending_events, &event_tx);
+                        }
                     }
                 }
             }
@@ -677,6 +719,7 @@ fn flush_auto_output(
     if events.is_empty() {
         return;
     }
+
     let text = crate::stream::extract_assistant_text(events)
         .trim()
         .to_string();
