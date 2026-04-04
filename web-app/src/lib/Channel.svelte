@@ -548,7 +548,7 @@ onMount(() => {
 
 	if (scrollAreaViewport) {
 		scrollAreaViewport.addEventListener("click", handleLinkClick);
-		return () => scrollAreaViewport!.removeEventListener("click", handleLinkClick);
+		return () => scrollAreaViewport?.removeEventListener("click", handleLinkClick);
 	}
 });
 

@@ -1280,9 +1280,7 @@ export async function fetchAllAuthProfiles(): Promise<Record<string, AuthProfile
 // Start a login flow by running `claude auth login` on the server.
 // Opens the default browser for OAuth. The backend waits for completion
 // in the background and restarts agents when auth succeeds.
-export async function startAuthLogin(
-	provider = "claude",
-): Promise<{ ok: boolean; error?: string }> {
+export async function startAuthLogin(provider = "claude"): Promise<{ ok: boolean; error?: string }> {
 	try {
 		const res = await fetch(`${getApiBase()}/auth/login`, {
 			method: "POST",
