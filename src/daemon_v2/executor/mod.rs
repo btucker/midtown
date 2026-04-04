@@ -39,7 +39,11 @@ pub enum NudgeAction {
 
 /// Determine the nudge strategy for a given agent.
 /// Per spec 1.4: stopped agents are resumed (with session_id) or respawned (without).
+/// Respawns respect the SpawnFailure cooldown to prevent rapid restart loops.
 pub fn resolve_nudge_action(agent_id: &str, proj: &Projections) -> NudgeAction {
+    use crate::daemon_v2::events::AgentKind;
+    use crate::daemon_v2::projections::cooldowns::CooldownCategory;
+
     let agent = match proj.agents.by_id.get(agent_id) {
         Some(a) => a,
         None => return NudgeAction::Drop,
@@ -51,6 +55,20 @@ pub fn resolve_nudge_action(agent_id: &str, proj: &Projections) -> NudgeAction {
             session_id: session_id.clone(),
         }
     } else {
+        // Check spawn failure cooldown before attempting respawn.
+        // Leads are keyed by channel, workers by task_id.
+        let cooldown_key = match agent.kind {
+            AgentKind::Lead => agent.channel.as_deref(),
+            AgentKind::Worker => agent.task_id.as_deref(),
+            _ => None,
+        };
+        if let Some(key) = cooldown_key
+            && proj
+                .cooldowns
+                .is_active(CooldownCategory::SpawnFailure, key)
+        {
+            return NudgeAction::Drop;
+        }
         NudgeAction::RespawnAndDeliver {
             config: Box::new(spawn_config_from_agent(agent)),
         }

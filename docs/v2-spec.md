@@ -29,6 +29,7 @@
 - WHEN multiple routing rules match the same agent for the same message THEN the system SHALL nudge it exactly once
 - WHEN the nudge target is stopped AND has a session ID THEN the system SHALL resume the agent before delivering the message
 - WHEN the nudge target is stopped AND has no session ID THEN the system SHALL spawn a new agent with the same configuration (kind, agent_type, channel, task_id, bound_thread_id) and deliver the nudge to it
+- WHEN the nudge target is stopped AND a SpawnFailure cooldown is active for that agent THEN the system SHALL drop the nudge
 - WHEN the nudge target is unknown THEN the system SHALL drop the nudge
 
 ---
