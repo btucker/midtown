@@ -631,6 +631,18 @@ impl DaemonV2 {
                 }
             }
 
+            // Log when a resume fails because the session doesn't exist in the
+            // current project directory. The actual session_id clearing happens in
+            // AgentIndex::apply() so it works during both live processing AND replay.
+            if let DomainEvent::AgentSessionNotFound { name } = event
+                && let Some(agent_id) = proj.agents.by_name.get(name)
+            {
+                tracing::warn!(
+                    %agent_id, %name,
+                    "clearing session_id — conversation not found in project dir"
+                );
+            }
+
             // Route @mentions and !task references in auto-output messages.
             // These bypass the channel.post RPC path (which does its own routing),
             // so we handle them here to ensure mentions in agent output still
