@@ -49,7 +49,7 @@ describe("debouncedSaveToLocalStorage", () => {
 	it("writes to localStorage after the debounce delay", () => {
 		debouncedSaveToLocalStorage("test_key", { count: 1 });
 		vi.advanceTimersByTime(500);
-		expect(JSON.parse(localStorage.getItem("test_key")!)).toEqual({ count: 1 });
+		expect(JSON.parse(localStorage.getItem("test_key") ?? "")).toEqual({ count: 1 });
 	});
 
 	it("coalesces rapid writes — only the last value is persisted", () => {
@@ -59,7 +59,7 @@ describe("debouncedSaveToLocalStorage", () => {
 
 		vi.advanceTimersByTime(500);
 
-		expect(JSON.parse(localStorage.getItem("test_key")!)).toEqual({ count: 3 });
+		expect(JSON.parse(localStorage.getItem("test_key") ?? "")).toEqual({ count: 3 });
 	});
 
 	it("handles different keys independently", () => {
