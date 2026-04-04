@@ -203,3 +203,56 @@ fn stopped_worker_with_active_cooldown_resolves_to_drop() {
         action
     );
 }
+
+/// Spec 1.4: resume should also respect SpawnFailure cooldown.
+/// A stopped agent WITH session_id but active cooldown should Drop, not ResumeAndDeliver.
+/// This happens when auth errors preserve the session_id but the agent keeps dying.
+#[test]
+fn stopped_lead_with_session_id_and_active_cooldown_resolves_to_drop() {
+    let events = vec![
+        DomainEvent::AgentCreated {
+            id: "lead-1".into(),
+            name: "midtown".into(),
+            kind: AgentKind::Lead,
+            agent_type: "midtown-project-lead".into(),
+            provider: Provider::ClaudeCode,
+            channel: Some("midtown".into()),
+            task_id: None,
+            bound_thread_id: None,
+            icon: None,
+            color: None,
+        },
+        DomainEvent::AgentStarted {
+            id: "lead-1".into(),
+            pid: 100,
+            session_id: Some("sess-expired".into()),
+        },
+        DomainEvent::AgentStopped {
+            id: "lead-1".into(),
+            reason: "auth expired".into(),
+        },
+    ];
+    let mut proj = make_projections(&events);
+
+    // Agent still has session_id (auth errors don't clear it)
+    assert!(
+        proj.agents
+            .by_id
+            .get("lead-1")
+            .unwrap()
+            .session_id
+            .is_some(),
+        "setup: agent should retain session_id after auth error stop"
+    );
+
+    // Record a spawn failure cooldown
+    proj.cooldowns
+        .record(CooldownCategory::SpawnFailure, "midtown".to_string());
+
+    let action = resolve_nudge_action("lead-1", &proj);
+    assert!(
+        matches!(action, NudgeAction::Drop),
+        "stopped lead with session_id AND active cooldown should Drop, got {:?}",
+        action
+    );
+}

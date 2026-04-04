@@ -50,13 +50,11 @@ pub fn resolve_nudge_action(agent_id: &str, proj: &Projections) -> NudgeAction {
     };
     if proj.agents.running.contains(agent_id) {
         NudgeAction::Deliver
-    } else if let Some(ref session_id) = agent.session_id {
-        NudgeAction::ResumeAndDeliver {
-            session_id: session_id.clone(),
-        }
     } else {
-        // Check spawn failure cooldown before attempting respawn.
+        // Check spawn failure cooldown before attempting resume or respawn.
         // Leads are keyed by channel, workers by task_id.
+        // This applies to BOTH ResumeAndDeliver and RespawnAndDeliver —
+        // auth errors preserve session_id but the agent still can't start.
         let cooldown_key = match agent.kind {
             AgentKind::Lead => agent.channel.as_deref(),
             AgentKind::Worker => agent.task_id.as_deref(),
@@ -69,8 +67,15 @@ pub fn resolve_nudge_action(agent_id: &str, proj: &Projections) -> NudgeAction {
         {
             return NudgeAction::Drop;
         }
-        NudgeAction::RespawnAndDeliver {
-            config: Box::new(spawn_config_from_agent(agent)),
+
+        if let Some(ref session_id) = agent.session_id {
+            NudgeAction::ResumeAndDeliver {
+                session_id: session_id.clone(),
+            }
+        } else {
+            NudgeAction::RespawnAndDeliver {
+                config: Box::new(spawn_config_from_agent(agent)),
+            }
         }
     }
 }
