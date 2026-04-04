@@ -624,6 +624,10 @@ fn drain_session_output(
             // with a 2-second fallback timer for long-running turns.
             let mut flush_interval = tokio::time::interval(std::time::Duration::from_secs(2));
             flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Once a session errors, suppress all further auto-output (timer
+            // flushes and stream-end flush). This prevents error text from
+            // leaking via the 2-second timer before the Result event arrives.
+            let mut session_errored = false;
 
             loop {
                 tokio::select! {
@@ -634,6 +638,7 @@ fn drain_session_output(
                                 if let StreamEvent::Result { is_error: true, ref extra, .. } = event {
                                     let errors = extra.get("errors");
                                     tracing::warn!(agent = %name, ?errors, "session exited with error");
+                                    session_errored = true;
 
                                     // Detect "No conversation found" so the daemon clears the
                                     // stale session_id and spawns fresh on next retry.
@@ -660,12 +665,20 @@ fn drain_session_output(
                                 let is_turn_end = matches!(&event, StreamEvent::Result { .. });
                                 pending_events.push(event);
                                 if is_turn_end {
-                                    flush_auto_output(&name, &channel, thread_id.as_deref(), &channels_dir, &mut pending_events, &event_tx);
+                                    if session_errored {
+                                        pending_events.clear();
+                                    } else {
+                                        flush_auto_output(&name, &channel, thread_id.as_deref(), &channels_dir, &mut pending_events, &event_tx);
+                                    }
                                 }
                             }
                             None => {
-                                // Stream ended — flush remaining
-                                flush_auto_output(&name, &channel, thread_id.as_deref(), &channels_dir, &mut pending_events, &event_tx);
+                                // Stream ended — flush remaining (unless errored)
+                                if session_errored {
+                                    pending_events.clear();
+                                } else {
+                                    flush_auto_output(&name, &channel, thread_id.as_deref(), &channels_dir, &mut pending_events, &event_tx);
+                                }
                                 break;
                             }
                         }
@@ -680,7 +693,9 @@ fn drain_session_output(
                         }
                     }
                     _ = flush_interval.tick() => {
-                        flush_auto_output(&name, &channel, thread_id.as_deref(), &channels_dir, &mut pending_events, &event_tx);
+                        if !session_errored {
+                            flush_auto_output(&name, &channel, thread_id.as_deref(), &channels_dir, &mut pending_events, &event_tx);
+                        }
                     }
                 }
             }
@@ -702,20 +717,6 @@ fn flush_auto_output(
     event_tx: &tokio::sync::broadcast::Sender<DomainEvent>,
 ) {
     if events.is_empty() {
-        return;
-    }
-
-    // Suppress auto-output when the session exited with an error (e.g. expired
-    // OAuth token, auth failure).  The error is already logged in
-    // drain_session_output — posting raw API errors to the channel is confusing.
-    let has_error_result = events.iter().any(|e| {
-        matches!(
-            e,
-            crate::headless::StreamEvent::Result { is_error: true, .. }
-        )
-    });
-    if has_error_result {
-        events.clear();
         return;
     }
 
