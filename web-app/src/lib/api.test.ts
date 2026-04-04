@@ -6,6 +6,7 @@ import {
 	fetchChannelAgentsMd,
 	fetchChannels,
 	fetchHistory,
+	fetchReadState,
 	forkThread,
 	handleUpdate,
 	onNextError,
@@ -17,9 +18,12 @@ import {
 import {
 	activeChannel,
 	activeProject,
+	channelReadState,
 	channels,
 	messagesByChannel,
+	readStateLoaded,
 	threadData,
+	threadReadState,
 	trackedThreads,
 	userSenderName,
 } from "./store.ts";
@@ -1320,5 +1324,50 @@ describe("handleUpdate — heartbeat messages", () => {
 		handleUpdate({ type: "heartbeat" });
 		expect(logSpy).not.toHaveBeenCalledWith("Unknown update type:", "heartbeat");
 		logSpy.mockRestore();
+	});
+});
+
+describe("fetchReadState — server sync on reconnect", () => {
+	let originalFetch: typeof globalThis.fetch;
+
+	beforeEach(() => {
+		originalFetch = globalThis.fetch;
+		// Start with stale client-side state
+		threadReadState.set({ "thread-old": "2026-01-01T00:00:00Z" });
+		channelReadState.set({ "chan-old": "2026-01-01T00:00:00Z" });
+		readStateLoaded.set(false);
+	});
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		threadReadState.set({});
+		channelReadState.set({});
+		readStateLoaded.set(false);
+	});
+
+	it("replaces client read state with server data", async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: async () => ({
+				threads: { "thread-1": "2026-04-01T12:00:00Z" },
+				channels: { web: "2026-04-01T10:00:00Z" },
+			}),
+		});
+
+		await fetchReadState();
+
+		// Server data replaces stale client data
+		expect(get(threadReadState)).toEqual({ "thread-1": "2026-04-01T12:00:00Z" });
+		expect(get(channelReadState)).toEqual({ web: "2026-04-01T10:00:00Z" });
+		expect(get(readStateLoaded)).toBe(true);
+	});
+
+	it("sets readStateLoaded even when fetch fails", async () => {
+		globalThis.fetch = vi.fn().mockRejectedValue(new Error("network error"));
+
+		await fetchReadState();
+
+		// readStateLoaded should be true so badges degrade gracefully
+		expect(get(readStateLoaded)).toBe(true);
 	});
 });
