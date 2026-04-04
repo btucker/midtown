@@ -411,7 +411,7 @@ Channel reads span all `.jsonl` files in the history directory — date-named ar
 - **Inactive/background channels:** If no agent polls a channel between rotation and the next `refresh_unread_counts()`, all disk cursors have `last_message_id: None`. The unread-count path falls through to "all messages are unread," causing a transient spike until the next `read_since_cursor()` or `set_cursor_to_end()` rebuilds the cursor on disk.
 
 **Channel RPC methods** (handled by `src/daemon/rpc_channel.rs`):
-- `channel.post` — Append a message to a channel; handles `/me` actions, @mention routing, review note deduplication, thread parent ID validation (rejects posts with a `thread_parent_id` that doesn't match any existing message, preventing invisible "black hole" messages)
+- `channel.post` — Append a message to a channel; handles `/me` actions, @mention routing, review note deduplication, thread ID validation (rejects posts with a `thread_id` that doesn't match any existing message, preventing invisible "black hole" messages). Params: `sender`, `content`, `thread_id` (optional), `channel` (defaults to "midtown").
 - `channel.read` — Read messages from a channel (supports `all`, `last`, `since`, `thread`, `message`, `context`, and per-channel filtering)
 - `channel.create` — Create a new channel directory; idempotent (no-op if channel already exists)
 - `channel.archive` — Rename `channels/<name>/` to `channels/<name>.archived/`; returns an error if the channel does not exist or if archiving the project's main channel

@@ -285,12 +285,12 @@ impl DaemonClient {
         channel: Option<&str>,
         thread_parent_id: Option<&str>,
     ) -> Result<Response, String> {
-        let mut params = serde_json::json!({ "message": message, "from": from });
+        let mut params = serde_json::json!({ "content": message, "sender": from });
         if let Some(ch) = channel {
             params["channel"] = serde_json::Value::String(ch.to_string());
         }
         if let Some(tpi) = thread_parent_id {
-            params["thread_parent_id"] = serde_json::Value::String(tpi.to_string());
+            params["thread_id"] = serde_json::Value::String(tpi.to_string());
         }
         self.send("channel.post", Some(params))
     }

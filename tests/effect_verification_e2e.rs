@@ -432,11 +432,11 @@ fn test_effect_spawn_coworker_creates_window() {
         windows
     );
 
-    // Verify coworker appears in coworker.list
+    // Verify coworker appears in agent.list
     let list_response = fixture.rpc_call("agent.list", None);
     assert!(
         list_response.is_some(),
-        "Should receive response from coworker.list"
+        "Should receive response from agent.list"
     );
 
     let list_response = list_response.unwrap();
@@ -449,7 +449,7 @@ fn test_effect_spawn_coworker_creates_window() {
         .any(|c| c["name"].as_str() == Some(coworker_name));
     assert!(
         found,
-        "Coworker '{}' should appear in coworker.list. Got: {:?}",
+        "Coworker '{}' should appear in agent.list. Got: {:?}",
         coworker_name, coworkers
     );
 }
