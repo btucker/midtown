@@ -104,6 +104,7 @@
 - WHEN spawning fails THEN the system SHALL emit an AgentSpawnFailed event with the agent configuration and error reason
 - WHEN a session is spawned THEN stdout/stderr SHALL be drained in a background task
 - WHEN an agent produces assistant text on stdout THEN the system SHALL auto-post it to the agent's bound channel
+- WHEN a session exits with an error (is_error: true) THEN the system SHALL suppress auto-posting the final output to the channel — errors are logged to daemon.log only
 - WHEN an agent has no bound channel THEN stdout text SHALL be posted to the agent's DM channel
 - WHEN multiple stdout events accumulate THEN the system SHALL flush and post at most every 2 seconds
 

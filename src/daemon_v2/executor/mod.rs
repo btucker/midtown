@@ -11,6 +11,10 @@ mod nudge_tests;
 #[cfg(test)]
 mod dispatch_tests;
 
+#[path = "auto_output_tests.rs"]
+#[cfg(test)]
+mod auto_output_tests;
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -677,6 +681,21 @@ fn flush_auto_output(
     if events.is_empty() {
         return;
     }
+
+    // Suppress auto-output when the session exited with an error (e.g. expired
+    // OAuth token, auth failure).  The error is already logged in
+    // drain_session_output — posting raw API errors to the channel is confusing.
+    let has_error_result = events.iter().any(|e| {
+        matches!(
+            e,
+            crate::headless::StreamEvent::Result { is_error: true, .. }
+        )
+    });
+    if has_error_result {
+        events.clear();
+        return;
+    }
+
     let text = crate::stream::extract_assistant_text(events)
         .trim()
         .to_string();
