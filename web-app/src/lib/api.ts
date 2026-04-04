@@ -167,12 +167,20 @@ export async function fetchProjects(): Promise<Project[]> {
 
 // Fetch the read state for all threads and channels.
 // Retries once on failure so flaky mobile networks don't leave badges stuck.
+// Generation counter prevents stale responses from overwriting newer data
+// (e.g., when rapid WebSocket reconnects trigger overlapping requests).
+let readStateGeneration = 0;
 export async function fetchReadState(): Promise<void> {
+	const myGeneration = ++readStateGeneration;
 	for (let attempt = 0; attempt < 2; attempt++) {
 		try {
 			const res = await fetch(`${getApiBase()}/read-state`);
 			if (res.ok) {
 				const data = await res.json();
+				if (myGeneration !== readStateGeneration) {
+					// A newer fetchReadState was initiated; discard this stale response.
+					return;
+				}
 				threadReadState.set(data.threads || {});
 				channelReadState.set(data.channels || {});
 				readStateLoaded.set(true);
@@ -184,12 +192,15 @@ export async function fetchReadState(): Promise<void> {
 		}
 		// Wait 2s before retry
 		if (attempt === 0) {
+			if (myGeneration !== readStateGeneration) return;
 			await new Promise((r) => setTimeout(r, 2000));
 		}
 	}
 	// Both attempts failed — set loaded anyway so badges degrade to
 	// "show everything unread" rather than being permanently suppressed.
-	readStateLoaded.set(true);
+	if (myGeneration === readStateGeneration) {
+		readStateLoaded.set(true);
+	}
 }
 
 export async function markRead(type: "thread" | "channel", id: string): Promise<void> {
