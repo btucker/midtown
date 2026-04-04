@@ -77,7 +77,7 @@ impl WorktreeTestFixture {
 
     /// List active coworkers via daemon RPC.
     fn list_coworkers(&self) -> Vec<String> {
-        let response = self.harness.rpc_call("coworker.list", None);
+        let response = self.harness.rpc_call("agent.list", None);
         match response {
             Some(resp) => resp["result"]["coworkers"]
                 .as_array()
@@ -153,7 +153,7 @@ fn test_worktree_registry_integration_end_to_end() {
     thread::sleep(Duration::from_secs(2));
 
     // The daemon should spawn a coworker for the pending task.
-    // Poll coworker.list RPC to detect when a coworker appears.
+    // Poll agent.list RPC to detect when a coworker appears.
     let mut spawned_coworker = None;
     for _ in 0..30 {
         thread::sleep(Duration::from_secs(1));
@@ -252,11 +252,11 @@ fn test_worktree_registry_integration_end_to_end() {
         found_worktree
     );
 
-    // ASSERTION 3: Verify coworker appears in coworker.list
-    let list_response = fixture.rpc_call("coworker.list", None);
+    // ASSERTION 3: Verify coworker appears in agent.list
+    let list_response = fixture.rpc_call("agent.list", None);
     assert!(
         list_response.is_some(),
-        "Should receive response from coworker.list"
+        "Should receive response from agent.list"
     );
 
     let list_response = list_response.unwrap();
@@ -269,7 +269,7 @@ fn test_worktree_registry_integration_end_to_end() {
         .any(|c| c["name"].as_str() == Some(&coworker_name));
     assert!(
         found,
-        "Coworker '{}' should appear in coworker.list. Got: {:?}",
+        "Coworker '{}' should appear in agent.list. Got: {:?}",
         coworker_name, coworkers
     );
 

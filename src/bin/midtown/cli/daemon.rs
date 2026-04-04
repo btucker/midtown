@@ -1132,7 +1132,7 @@ const REVIEWER_BREAK_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::fr
 /// Poll interval while waiting for review coworkers to drain.
 const REVIEWER_BREAK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Extract coworker names that are currently in review phase from `coworkers.status` RPC payload.
+/// Extract coworker names that are currently in review phase from `agent.list` RPC payload.
 fn extract_review_phase_names(
     coworkers_status: &serde_json::Value,
 ) -> std::collections::HashSet<String> {
@@ -1150,7 +1150,7 @@ fn extract_review_phase_names(
         .collect()
 }
 
-/// Extract assigned reviewers for open PRs that still need review from `prs.status` payload.
+/// Extract assigned reviewers for open PRs that still need review from `pr.list` payload.
 fn extract_unreviewed_assigned_reviewer_names(
     prs_status: &serde_json::Value,
 ) -> std::collections::HashSet<String> {
@@ -1170,7 +1170,7 @@ fn extract_unreviewed_assigned_reviewer_names(
         .collect()
 }
 
-/// Get currently running coworker names from `coworker.list`.
+/// Get currently running coworker names from `agent.list`.
 fn running_coworker_names(
     client: &DaemonClient,
 ) -> Result<std::collections::HashSet<String>, String> {
@@ -1181,7 +1181,7 @@ fn running_coworker_names(
             .filter(|cw| !cw.is_channel_lead)
             .map(|cw| cw.name)
             .collect()),
-        _ => Err("Unexpected response from coworker.list".to_string()),
+        _ => Err("Unexpected response from agent.list".to_string()),
     }
 }
 
@@ -1198,13 +1198,13 @@ fn active_review_coworkers(client: &DaemonClient) -> Result<Vec<String>, String>
         Ok(raw) => {
             names.extend(extract_review_phase_names(&raw));
         }
-        Err(e) => detection_errors.push(format!("coworkers.status failed: {}", e)),
+        Err(e) => detection_errors.push(format!("agent.list failed: {}", e)),
     }
 
     let running = match running_coworker_names(client) {
         Ok(names) => Some(names),
         Err(e) => {
-            detection_errors.push(format!("coworker.list failed: {}", e));
+            detection_errors.push(format!("agent.list failed: {}", e));
             None
         }
     };
@@ -1217,7 +1217,7 @@ fn active_review_coworkers(client: &DaemonClient) -> Result<Vec<String>, String>
                 }
             }
         }
-        (Err(e), _) => detection_errors.push(format!("prs.status failed: {}", e)),
+        (Err(e), _) => detection_errors.push(format!("pr.list failed: {}", e)),
         (Ok(_), None) => {}
     }
 

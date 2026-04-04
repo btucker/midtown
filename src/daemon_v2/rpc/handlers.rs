@@ -503,7 +503,6 @@ pub fn handle_channel_post(
         message: "Missing params".into(),
     })?;
 
-    // Accept both v2 ("channel"/"sender"/"content") and v1 ("channel"/"from"/"message") field names
     let channel = params
         .get("channel")
         .and_then(|v| v.as_str())
@@ -511,26 +510,21 @@ pub fn handle_channel_post(
 
     let sender = params
         .get("sender")
-        .or_else(|| params.get("from"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| RpcError {
             code: -32602,
-            message: "Missing required field: sender (or from)".into(),
+            message: "Missing required field: sender".into(),
         })?;
 
     let content = params
         .get("content")
-        .or_else(|| params.get("message"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| RpcError {
             code: -32602,
-            message: "Missing required field: content (or message)".into(),
+            message: "Missing required field: content".into(),
         })?;
 
-    let thread_id = params
-        .get("thread_id")
-        .or_else(|| params.get("thread_parent_id"))
-        .and_then(|v| v.as_str());
+    let thread_id = params.get("thread_id").and_then(|v| v.as_str());
 
     let msg_id = channel_io::post_message(channels_dir, channel, sender, content, thread_id)
         .map_err(|e| RpcError {
@@ -625,9 +619,7 @@ pub fn handle_report_state(
     }])
 }
 
-// ── v1 compatibility handlers ───────────────────────────────────────────
-
-/// Handle `task.done` (v1 alias) — marks a task as completed.
+/// Handle `task.done` — marks a task as completed.
 ///
 /// Required fields: `id` (task ID string).
 pub fn handle_task_done(params: Option<&Value>) -> Result<Vec<DomainEvent>, RpcError> {
@@ -635,12 +627,9 @@ pub fn handle_task_done(params: Option<&Value>) -> Result<Vec<DomainEvent>, RpcE
     let id = params
         .get("id")
         .and_then(|v| v.as_str())
-        .or_else(|| {
-            // Also accept numeric id (v1 sends {"id": 42})
-            params.get("id").and_then(|v| v.as_u64()).and(None)
-        })
         .map(String::from)
         .or_else(|| {
+            // Accept numeric id (e.g. {"id": 42} → "42")
             params
                 .get("id")
                 .and_then(|v| v.as_u64())
@@ -737,24 +726,26 @@ pub fn handle_task_update(
 
 /// Handle `pr.list` — returns all PR data from WorkIndex.
 pub fn handle_pr_list(proj: &Projections) -> Result<Value, RpcError> {
-    let prs: Vec<Value> = proj
-        .work
-        .prs
-        .values()
-        .map(|pr| {
-            json!({
-                "number": pr.number,
-                "branch": pr.branch,
-                "author": pr.github_author,
-                "ci_status": pr.ci_status,
-                "review_state": pr.review_state,
-                "is_merged": pr.is_merged,
-                "is_closed": pr.is_closed,
-                "needs_review": pr.needs_review,
-            })
-        })
-        .collect();
-    Ok(json!(prs))
+    let mut open = Vec::new();
+    let mut merged = Vec::new();
+    for pr in proj.work.prs.values() {
+        let entry = json!({
+            "number": pr.number,
+            "branch": pr.branch,
+            "author": pr.github_author,
+            "ci_status": pr.ci_status,
+            "review_state": pr.review_state,
+            "is_merged": pr.is_merged,
+            "is_closed": pr.is_closed,
+            "needs_review": pr.needs_review,
+        });
+        if pr.is_merged {
+            merged.push(entry);
+        } else {
+            open.push(entry);
+        }
+    }
+    Ok(json!({ "prs": open, "merged_prs": merged }))
 }
 
 /// Handle `pr.action` — merge, comment, or rerun CI for a PR.
@@ -808,27 +799,7 @@ pub fn handle_pr_action(
     }
 }
 
-/// Handle `prs.status` (v1 alias) — returns open PR info from WorkIndex.
-pub fn handle_prs_status(proj: &Projections) -> Result<Value, RpcError> {
-    let prs: Vec<Value> = proj
-        .work
-        .prs
-        .values()
-        .map(|pr| {
-            json!({
-                "number": pr.number,
-                "branch": pr.branch,
-                "author": pr.github_author,
-                "needs_review": proj.work.needing_review.contains(&pr.number),
-            })
-        })
-        .collect();
-    Ok(json!({ "prs": prs }))
-}
-
-/// Handle `coworker.spawn` (v1 alias) — spawns a worker agent.
-///
-/// Accepts v1 params: `prompt`, `agent` (agent_type), `channel`, `task_id`.
+/// Handle `coworker.spawn` — spawns a worker agent.
 pub fn handle_coworker_spawn(
     params: Option<&Value>,
     proj: &Projections,
@@ -904,7 +875,7 @@ pub fn handle_coworker_spawn(
     Ok((json!({"ok": true, "name": name}), vec![command]))
 }
 
-/// Handle `coworker.break` (v1 alias) — stop an agent by name.
+/// Handle `coworker.break` / `session.detach` — stop an agent by name.
 pub fn handle_agent_stop(
     params: Option<&Value>,
     proj: &Projections,
@@ -931,7 +902,7 @@ pub fn handle_agent_stop(
     }])
 }
 
-/// Handle `coworker.nudge` (v1 alias) — nudge an agent by name.
+/// Handle `coworker.nudge` — nudge an agent by name.
 pub fn handle_agent_nudge(
     params: Option<&Value>,
     proj: &Projections,

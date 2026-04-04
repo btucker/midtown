@@ -285,12 +285,12 @@ impl DaemonClient {
         channel: Option<&str>,
         thread_parent_id: Option<&str>,
     ) -> Result<Response, String> {
-        let mut params = serde_json::json!({ "message": message, "from": from });
+        let mut params = serde_json::json!({ "content": message, "sender": from });
         if let Some(ch) = channel {
             params["channel"] = serde_json::Value::String(ch.to_string());
         }
         if let Some(tpi) = thread_parent_id {
-            params["thread_parent_id"] = serde_json::Value::String(tpi.to_string());
+            params["thread_id"] = serde_json::Value::String(tpi.to_string());
         }
         self.send("channel.post", Some(params))
     }
@@ -432,9 +432,12 @@ impl DaemonClient {
         self.send("coworker.spawn", Some(params))
     }
 
-    pub fn lead_spawn(&self, provider: midtown::auth::AuthProvider) -> Result<Response, String> {
-        let params = serde_json::json!({ "provider": provider.as_str() });
-        self.send("lead.spawn", Some(params))
+    /// Lead sessions are auto-spawned by the daemon scheduler — this is a
+    /// no-op that confirms the daemon is reachable and ready.
+    pub fn lead_spawn(&self, _provider: midtown::auth::AuthProvider) -> Result<Response, String> {
+        // lead.spawn was a v1 RPC method; leads are now auto-spawned.
+        // Just ping the daemon to confirm it's alive.
+        self.send("ping", None)
     }
 
     pub fn coworker_break(&self, name: &str) -> Result<Response, String> {
@@ -442,7 +445,7 @@ impl DaemonClient {
     }
 
     pub fn coworker_list(&self) -> Result<Response, String> {
-        self.send("coworker.list", None)
+        self.send("agent.list", None)
     }
 
     /// Uses `send_raw()` instead of `send()` because the RPC response format
@@ -719,7 +722,7 @@ impl DaemonClient {
 
     /// List all agents and attachable sessions.
     pub fn session_list(&self) -> Result<Response, String> {
-        self.send("session.list", None)
+        self.send("agent.list", None)
     }
 
     /// Clear a session: stop it and relaunch as fresh with the same initial prompt.
@@ -798,19 +801,10 @@ impl DaemonClient {
     }
 
     pub fn pr_merge(&self, pr_number: u64) -> Result<Response, String> {
-        self.send("pr.merge", Some(serde_json::json!({ "pr": pr_number })))
-    }
-
-    pub fn pr_list_external(&self) -> Result<Response, String> {
-        self.send("pr.list-external", None)
-    }
-
-    pub fn pr_allow(&self, pr_number: u64) -> Result<Response, String> {
-        self.send("pr.allow", Some(serde_json::json!({ "pr": pr_number })))
-    }
-
-    pub fn pr_allow_repo(&self, repo: &str) -> Result<Response, String> {
-        self.send("pr.allow", Some(serde_json::json!({ "repo": repo })))
+        self.send(
+            "pr.action",
+            Some(serde_json::json!({ "action": "merge", "number": pr_number })),
+        )
     }
 
     // Workflow commands
@@ -859,8 +853,12 @@ impl DaemonClient {
 
     // Daemon commands
 
+    /// Notify the daemon that new tasks are available for scheduling.
+    ///
+    /// This was previously `daemon.check-pending` — now handled automatically
+    /// by the daemon's tick loop. Kept as a no-op for callers that still invoke it.
     pub fn check_pending(&self) -> Result<Response, String> {
-        self.send("daemon.check-pending", None)
+        Ok(Response::message("ok".to_string()))
     }
 
     /// Signal the daemon to stop assigning new tasks (draining mode).
@@ -917,20 +915,20 @@ impl DaemonClient {
         )
     }
 
-    /// Fetch live coworker state via `coworkers.status` RPC.
+    /// Fetch live agent state via `agent.list` RPC.
     ///
-    /// Returns coworker phase, health, task assignments, lead activity, and
+    /// Returns agent phase, health, task assignments, lead activity, and
     /// tool call activity. No GraphQL — intended for fast 1-2s polling.
     pub fn coworkers_status(&self) -> Result<Value, String> {
-        self.send_raw("coworkers.status", None)
+        self.send_raw("agent.list", None)
     }
 
-    /// Fetch PR data via `prs.status` RPC.
+    /// Fetch PR data via `pr.list` RPC.
     ///
     /// Returns open and recently merged PRs with CI status. Backed by a 60s
     /// server-side cache — intended for slower 30s polling.
     pub fn prs_status(&self) -> Result<Value, String> {
-        self.send_raw("prs.status", None)
+        self.send_raw("pr.list", None)
     }
 
     // One-shot execution

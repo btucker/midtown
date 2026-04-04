@@ -281,19 +281,14 @@
 - `session.fork` — spawn or return existing fork for a thread
 - `pr.list` — return all PR data
 - `pr.action` — merge, comment, or rerun CI
-- `prs.status` — return PRs with needs_review flag
 - `shutdown` — graceful daemon shutdown
 
 ### 10.2 V1 Compatibility Aliases
 - `ping` → "pong"
 - `version` → name, version, daemon: "v2"
-- `snapshot` → aliases to status
 - `coworker.spawn` → SpawnAgent with Worker kind
 - `coworker.break` → StopAgent by name
 - `coworker.nudge` → NudgeAgent by name
-- `coworker.list` → agent.list
-- `coworkers.status` → agent.list (running only)
-- `lead.spawn` → ok (leads demand-spawned via nudge system)
 
 ### 10.3 Additional Implemented Methods
 - `reminder.create`, `reminder.list`, `reminder.cancel` — reminder CRUD
@@ -401,7 +396,7 @@
 - WHEN `midtown status` is called THEN the system SHALL CONTINUE TO return status via the same RPC protocol
 - WHEN `midtown channel post` is called THEN the system SHALL CONTINUE TO write to channel JSONL files
 - WHEN `midtown task create` is called THEN the system SHALL CONTINUE TO accept the same parameters
-- WHEN v1 RPC methods are called THEN the system SHALL CONTINUE TO handle them via compatibility aliases
+- WHEN remaining v1 RPC aliases are called (`coworker.spawn`, `coworker.break`, `coworker.nudge`) THEN the system SHALL CONTINUE TO handle them via compatibility aliases
 
 ---
 

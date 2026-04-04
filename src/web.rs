@@ -975,22 +975,21 @@ fn daemon_rpc(repo: &str, method: &str) -> Option<serde_json::Value> {
     resp.get("result").cloned()
 }
 
-/// Fetch PR data (open PRs + recently merged) from the daemon via `prs.status` RPC.
+/// Fetch PR data (open PRs + recently merged) from the daemon via `pr.list` RPC.
 ///
 /// Returns `None` if the daemon is unreachable or the response is unexpected.
 fn fetch_prs_via_rpc(repo: &str) -> Option<(Vec<serde_json::Value>, Vec<serde_json::Value>)> {
-    let result = daemon_rpc(repo, "prs.status")?;
+    let result = daemon_rpc(repo, "pr.list")?;
     let prs = result.get("prs")?.as_array()?.clone();
     let merged = result.get("merged_prs")?.as_array()?.clone();
     Some((prs, merged))
 }
 
-/// Fetch live coworker state from the daemon via `coworkers.status` RPC.
+/// Fetch live agent state from the daemon via `agent.list` RPC.
 ///
-/// Returns the full RPC result so callers can extract `coworkers`,
-/// `lead_working`, `channel_leads_working`, etc.
+/// Returns the full RPC result so callers can extract agent data.
 fn fetch_coworkers_via_rpc(repo: &str) -> Option<serde_json::Value> {
-    daemon_rpc(repo, "coworkers.status")
+    daemon_rpc(repo, "agent.list")
 }
 
 /// Fetch repository status via gh CLI
@@ -1076,8 +1075,8 @@ fn fetch_repo_status(default_branch: &str) -> RepoStatus {
 
 /// Get daemon/coworker status including tasks and PRs for kanban board.
 ///
-/// PR data comes from the daemon's `prs.status` RPC (60s server-side cache).
-/// Coworker state comes from `coworkers.status` (live, no cache).
+/// PR data comes from the daemon's `pr.list` RPC (60s server-side cache).
+/// Agent state comes from `agent.list` (live, no cache).
 /// Both fall back to cached gh CLI calls if the daemon is unreachable.
 async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoResponse, StatusCode> {
     // Load persistent state to get reviewer assignments, thread IDs, etc. (local file, cheap)
@@ -1115,8 +1114,8 @@ async fn api_status(State(state): State<Arc<WebState>>) -> Result<impl IntoRespo
         .cloned()
         .collect();
 
-    // --- PR data: prefer prs.status RPC (60s server-side cache), fall back to gh CLI ---
-    // --- Coworker data: prefer coworkers.status RPC (live, no cache) ---
+    // --- PR data: prefer pr.list RPC (60s server-side cache), fall back to gh CLI ---
+    // --- Agent data: prefer agent.list RPC (live, no cache) ---
     let repo_name = state.config.dir_key.clone();
     let (pull_requests, merged_prs, rpc_coworkers, lead_working, channel_leads_working) =
         tokio::task::spawn_blocking(move || {

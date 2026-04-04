@@ -159,12 +159,6 @@ pub fn dispatch_request(
             ),
             Err(err) => (err.to_json(&id), vec![], vec![]),
         },
-        // v1 alias: lead.spawn — lead is auto-spawned by scheduler, return success
-        "lead.spawn" => (
-            json!({"jsonrpc":"2.0","result":{"ok":true},"id":id}),
-            vec![],
-            vec![],
-        ),
         // reminder.create returns the new reminder ID in the response
         "reminder.create" => match handlers::handle_reminder_create(params) {
             Ok(events) => {
@@ -219,55 +213,27 @@ pub fn dispatch_request(
         _ => {
             // Read-only methods — no events produced.
             let result = match method {
-                // v1 compatibility aliases (read-only)
                 "ping" => Ok(json!("pong")),
                 "version" => Ok(json!({
                     "name": "midtown",
                     "version": env!("CARGO_PKG_VERSION"),
                     "daemon": "v2",
                 })),
-                "status" | "snapshot" => handlers::handle_status(proj),
-                "agent.list" | "coworker.list" | "coworkers.status" | "session.list" => {
+                "status" => handlers::handle_status(proj),
+                "agent.list" => {
                     let filter = AgentFilter::from_params(params);
                     handlers::handle_agent_list(proj, filter)
                 }
                 "task.list" => handlers::handle_task_list(proj),
                 "pr.list" => handlers::handle_pr_list(proj),
-                "prs.status" => handlers::handle_prs_status(proj),
                 "channel.list" => handlers::handle_channel_list(channels_dir),
                 "channel.read" => handlers::handle_channel_read(params, channels_dir),
                 "reminder.list" => handlers::handle_reminder_list(proj),
-                // Stubs for CLI methods that don't have full v2 implementations yet
                 "workflow.list" => handlers::handle_workflow_list(proj),
-                "pr.list-external" | "pr.allow" => Ok(json!({"ok": true, "stub": true})),
-                // daemon.set-draining and daemon.check-pending return info
-                // about draining state (actual flag managed by the daemon loop)
-                "daemon.set-draining" | "daemon.check-pending" => {
-                    Ok(json!({"ok": true, "draining": false}))
-                }
-                // pr.merge and pr.review are shortcuts for pr.action
-                "pr.merge" => {
-                    // Transform into pr.action merge
-                    let number = params
-                        .and_then(|p| p.get("number").or_else(|| p.get("pr")))
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let merged = json!({"action": "merge", "number": number});
-                    match handlers::handle_pr_action(Some(&merged), proj) {
-                        Ok(commands) => {
-                            return (
-                                json!({ "jsonrpc": "2.0", "result": { "ok": true }, "id": id }),
-                                vec![],
-                                commands,
-                            );
-                        }
-                        Err(err) => return (err.to_json(&id), vec![], vec![]),
-                    }
-                }
-                "pr.review" | "pr.review-post" => match handlers::handle_pr_review_post(params) {
-                    Ok(result) => Ok(result),
-                    Err(err) => Err(err),
-                },
+                // daemon.set-draining is handled at the daemon level before
+                // dispatch — this fallback is for web API dispatch only
+                "daemon.set-draining" => Ok(json!({"ok": true, "draining": false})),
+                "pr.review" | "pr.review-post" => handlers::handle_pr_review_post(params),
                 // shutdown is handled at the daemon level (RpcOutcome::Shutdown)
                 // but we also handle it here for web API dispatch
                 "shutdown" => Ok(json!({"ok": true})),

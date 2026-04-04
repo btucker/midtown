@@ -162,7 +162,7 @@ fn handle_capture(label: Option<&str>) -> Result<(), String> {
     // Make RPC call to get snapshot
     let request = serde_json::json!({
         "jsonrpc": "2.0",
-        "method": "snapshot",
+        "method": "status",
         "id": 1
     });
     let request_line = format!("{}\n", request);

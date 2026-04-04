@@ -22,14 +22,9 @@ pub struct RpcCache {
 /// Methods that are safe to cache (read-only, no side effects).
 const CACHEABLE_METHODS: &[&str] = &[
     "status",
-    "snapshot",
     "agent.list",
-    "coworker.list",
-    "coworkers.status",
-    "session.list",
     "task.list",
     "pr.list",
-    "prs.status",
     "channel.list",
     "ping",
     "version",

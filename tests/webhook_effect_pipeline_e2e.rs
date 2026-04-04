@@ -325,7 +325,7 @@ impl WebhookEffectFixture {
     /// List coworkers via RPC.
     #[allow(dead_code)]
     fn list_coworkers(&self) -> Vec<String> {
-        let response = self.rpc_call("coworker.list", None);
+        let response = self.rpc_call("agent.list", None);
 
         if let Some(response) = response
             && let Some(coworkers) = response["result"]["coworkers"].as_array()
