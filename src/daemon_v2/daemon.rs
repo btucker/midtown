@@ -365,7 +365,6 @@ impl DaemonV2 {
                 channels_dir: self.config.channels_dir.clone(),
                 event_tx: self.event_tx.clone(),
                 command_tx: web_cmd_tx.clone(),
-                pending_auth_login: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
                 repo_name: self.config.dir_key.clone(),
                 repo_full_name,
             });

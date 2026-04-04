@@ -851,11 +851,10 @@ pub async fn auth_switch(Json(body): Json<Value>) -> Json<Value> {
     }
 }
 
-/// Start OAuth login flow.
+/// Run `claude auth login` directly on the server.
 ///
-/// Spawns `claude auth login` with `BROWSER=false` to suppress browser opening,
-/// captures the manual OAuth URL from stdout, and holds the process for code
-/// submission via stdin.
+/// Opens the default browser for OAuth. Waits for the process to complete
+/// (up to 5 minutes), then restarts all agents so they pick up the new token.
 pub async fn auth_login(
     State(state): State<Arc<WebState>>,
     Json(body): Json<Value>,
@@ -864,22 +863,20 @@ pub async fn auth_login(
         .get("provider")
         .and_then(|v| v.as_str())
         .unwrap_or("claude");
-    tracing::info!(%provider, "auth login requested — starting OAuth flow");
+    tracing::info!(%provider, "auth login requested — running claude auth login");
 
     let auth_provider = match provider {
         "codex" => crate::auth::AuthProvider::Codex,
         _ => crate::auth::AuthProvider::Claude,
     };
     let config_dir = crate::auth::current_profile_dir_for(auth_provider);
-    tracing::info!(config_dir = %config_dir.display(), "using auth profile dir");
 
     let mut child = match tokio::process::Command::new("claude")
         .args(["auth", "login"])
-        .env("BROWSER", "false")
         .env(auth_provider.env_var(), &config_dir)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
     {
         Ok(c) => c,
@@ -888,99 +885,10 @@ pub async fn auth_login(
         }
     };
 
-    // Read stdout to find the OAuth URL
-    let mut output = String::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        use tokio::io::AsyncReadExt;
-        let read_fut = async {
-            let mut buf = [0u8; 4096];
-            loop {
-                match stdout.read(&mut buf).await {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        output.push_str(&String::from_utf8_lossy(&buf[..n]));
-                        if output.contains("visit:") {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        };
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), read_fut).await;
-    }
-
-    let url = output
-        .lines()
-        .find(|l| l.contains("visit:"))
-        .and_then(|l| l.split("visit:").nth(1))
-        .map(|u| u.trim().to_string());
-
-    let Some(url) = url else {
-        let _ = child.kill().await;
-        return Json(
-            json!({"ok": false, "error": "Failed to get OAuth URL from claude auth login"}),
-        );
-    };
-
-    // Hold the child process (with stdin) for code submission
-    let stdin = child.stdin.take();
-    {
-        let mut pending = state.pending_auth_login.lock().await;
-        *pending = Some(AuthLoginProcess { child, stdin });
-    }
-
-    Json(json!({"ok": true, "url": url}))
-}
-
-/// Submit the OAuth code to the waiting `claude auth login` process via stdin.
-///
-/// The manual code from Claude's platform page is in format `CODE#STATE`.
-/// Writing it to the CLI's stdin triggers `handleManualAuthCodeInput`, which
-/// resolves the OAuth flow using the manual redirect_uri.
-pub async fn auth_login_code(
-    State(state): State<Arc<WebState>>,
-    Json(body): Json<Value>,
-) -> Json<Value> {
-    let code = match body.get("code").and_then(|v| v.as_str()) {
-        Some(c) if !c.trim().is_empty() => c.trim().to_string(),
-        _ => return Json(json!({"ok": false, "error": "Missing code"})),
-    };
-
-    let mut pending = state.pending_auth_login.lock().await;
-    let Some(mut process) = pending.take() else {
-        return Json(json!({"ok": false, "error": "No pending auth login"}));
-    };
-
-    // Write code to stdin and close it
-    if let Some(mut stdin) = process.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        let write_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            stdin.write_all(format!("{code}\n").as_bytes()).await?;
-            stdin.flush().await?;
-            drop(stdin); // Close stdin to signal EOF
-            Ok::<(), std::io::Error>(())
-        })
-        .await;
-
-        match write_result {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                return Json(json!({"ok": false, "error": format!("Failed to send code: {e}")}));
-            }
-            Err(_) => {
-                return Json(json!({"ok": false, "error": "Timed out writing code to stdin"}));
-            }
-        }
-    }
-
-    // Wait for process to complete — auth code submission should be fast
-    let mut child = process.child;
-    let auth_ok = match tokio::time::timeout(std::time::Duration::from_secs(30), child.wait()).await
-    {
+    // Wait for the user to complete authentication in their browser (up to 5 min)
+    match tokio::time::timeout(std::time::Duration::from_secs(300), child.wait()).await {
         Ok(Ok(status)) if status.success() => {
             tracing::info!("auth login completed successfully");
-            true
         }
         Ok(Ok(status)) => {
             return Json(json!({"ok": false, "error": format!("auth login exited with {status}")}));
@@ -990,34 +898,26 @@ pub async fn auth_login_code(
         }
         Err(_) => {
             let _ = child.kill().await;
-            return Json(json!({"ok": false, "error": "auth login timed out after 30s"}));
+            return Json(json!({"ok": false, "error": "auth login timed out after 5 minutes"}));
         }
-    };
-
-    // After successful auth, restart all running agents so they pick up the new token.
-    // Stop them — the scheduler will respawn leads, and task dispatch will respawn workers.
-    if auth_ok {
-        let proj = state.projections.lock().await;
-        let running: Vec<String> = proj.agents.running.iter().cloned().collect();
-        drop(proj);
-        for agent_id in running {
-            let cmd = crate::daemon_v2::decisions::Command::StopAgent {
-                id: agent_id,
-                reason: "restarting after auth refresh".into(),
-            };
-            if let Err(e) = state.command_tx.send(cmd).await {
-                tracing::warn!(%e, "failed to send stop command after auth refresh");
-            }
-        }
-        tracing::info!("stopped all running agents for auth refresh — scheduler will respawn");
     }
 
-    Json(json!({"ok": true}))
-}
+    // After successful auth, restart all running agents so they pick up the new token.
+    let proj = state.projections.lock().await;
+    let running: Vec<String> = proj.agents.running.iter().cloned().collect();
+    drop(proj);
+    for agent_id in running {
+        let cmd = crate::daemon_v2::decisions::Command::StopAgent {
+            id: agent_id,
+            reason: "restarting after auth refresh".into(),
+        };
+        if let Err(e) = state.command_tx.send(cmd).await {
+            tracing::warn!(%e, "failed to send stop command after auth refresh");
+        }
+    }
+    tracing::info!("stopped all running agents for auth refresh — scheduler will respawn");
 
-pub struct AuthLoginProcess {
-    pub child: tokio::process::Child,
-    pub stdin: Option<tokio::process::ChildStdin>,
+    Json(json!({"ok": true}))
 }
 
 pub async fn webhook_handler(
