@@ -275,3 +275,32 @@ fn channel_lead_returns_running_lead_not_stopped_one() {
         lead.id
     );
 }
+
+#[test]
+fn session_not_found_clears_session_id_on_replay() {
+    let mut idx = AgentIndex::default();
+    idx.apply(&created_event("a1", "ghost-town", AgentKind::Worker));
+    idx.apply(&DomainEvent::AgentStarted {
+        id: "a1".into(),
+        pid: 1234,
+        session_id: Some("sess-stale".into()),
+    });
+
+    // session_id is set
+    assert_eq!(
+        idx.by_id.get("a1").unwrap().session_id,
+        Some("sess-stale".into())
+    );
+
+    // Replay an AgentSessionNotFound event (as would happen on daemon restart)
+    idx.apply(&DomainEvent::AgentSessionNotFound {
+        name: "ghost-town".into(),
+    });
+
+    // session_id should be cleared
+    assert_eq!(
+        idx.by_id.get("a1").unwrap().session_id,
+        None,
+        "AgentSessionNotFound must clear session_id during projection replay"
+    );
+}

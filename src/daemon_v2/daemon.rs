@@ -631,19 +631,16 @@ impl DaemonV2 {
                 }
             }
 
-            // Clear session_id when a resume fails because the session doesn't
-            // exist in the current project directory (cwd mismatch between original
-            // spawn and resume). The next health check will spawn fresh instead of
-            // retrying the invalid resume.
+            // Log when a resume fails because the session doesn't exist in the
+            // current project directory. The actual session_id clearing happens in
+            // AgentIndex::apply() so it works during both live processing AND replay.
             if let DomainEvent::AgentSessionNotFound { name } = event
-                && let Some(agent_id) = proj.agents.by_name.get(name).cloned()
-                && let Some(agent) = proj.agents.by_id.get_mut(&agent_id)
+                && let Some(agent_id) = proj.agents.by_name.get(name)
             {
                 tracing::warn!(
                     %agent_id, %name,
                     "clearing session_id — conversation not found in project dir"
                 );
-                agent.session_id = None;
             }
 
             // Route @mentions and !task references in auto-output messages.

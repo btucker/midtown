@@ -155,6 +155,13 @@ impl AgentIndex {
                     }
                 }
             }
+            DomainEvent::AgentSessionNotFound { name } => {
+                if let Some(agent_id) = self.by_name.get(name).cloned()
+                    && let Some(agent) = self.by_id.get_mut(&agent_id)
+                {
+                    agent.session_id = None;
+                }
+            }
             DomainEvent::ChannelRenamed { old_name, new_name } => {
                 // Update by_channel index
                 if let Some(agent_ids) = self.by_channel.remove(old_name) {
