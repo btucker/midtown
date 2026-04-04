@@ -778,3 +778,65 @@ fn stopped_fork_still_targeted_by_thread_reply() {
         targets
     );
 }
+
+/// Spec 1.2: @all in topic channel should find workers even when they are
+/// indexed under their DM channel (dm-{name}), not the task's channel.
+/// In production, dispatch assigns `channel: dm-{name}` to workers.
+#[test]
+fn at_all_in_topic_finds_workers_in_dm_channels() {
+    let mut proj = Projections::default();
+    let _main_lead_id = make_lead(&mut proj, "main-lead", "main");
+    let web_lead_id = make_channel_lead(&mut proj, "web-lead", "web");
+
+    // Create a worker with dm-channel (matching production behavior)
+    let worker_id = "worker-park".to_string();
+    proj.apply(&DomainEvent::AgentCreated {
+        id: worker_id.clone(),
+        name: "park".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("dm-park".into()), // Production uses dm-{name}
+        task_id: Some("t1".into()),
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: worker_id.clone(),
+        pid: 2000,
+        session_id: Some("sess-w".into()),
+    });
+    proj.apply(&DomainEvent::TaskCreated {
+        id: "t1".into(),
+        subject: "Fix bug".into(),
+        channel: "web".into(), // Task belongs to #web
+        blocked_by: vec![],
+        agent_type: None,
+        agent_name: None,
+        icon: None,
+        color: None,
+        parent: None,
+        thread_id: None,
+        message_id: None,
+    });
+    proj.apply(&DomainEvent::TaskAssigned {
+        task_id: "t1".into(),
+        agent_id: worker_id.clone(),
+    });
+
+    // @all in #web should still find the worker despite it being in dm-park
+    let cmds = route_message(&proj, "web", "user", "@all update please", None, None);
+    let targets = nudge_targets(&cmds);
+
+    assert!(
+        targets.contains(&web_lead_id),
+        "@all in topic should nudge topic lead"
+    );
+    assert!(
+        targets.contains(&worker_id),
+        "@all in topic should nudge worker whose task is in this channel, \
+         even though worker.channel is dm-park, got: {:?}",
+        targets
+    );
+}
