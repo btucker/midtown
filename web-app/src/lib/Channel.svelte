@@ -739,7 +739,7 @@ async function handleSubmit(e: Event) {
 			clearMobileTextarea(textareaElement, () => {
 				inputText = "";
 			});
-			const result = await cmd.execute!();
+			const result = await cmd.execute?.();
 			if (!result.ok) {
 				alert(result.error);
 			}
