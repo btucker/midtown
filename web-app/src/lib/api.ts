@@ -429,7 +429,7 @@ export async function fetchHistory(channelName: string | null = null): Promise<v
 		const url = channelName
 			? `${getApiBase()}/channels/history?channel=${encodeURIComponent(channelName)}`
 			: `${getApiBase()}/channels/history`;
-		const res = await fetch(url, { signal: controller.signal });
+		const res = await fetch(url, { signal: controller.signal, cache: "no-store" as RequestCache });
 		if (res.ok) {
 			const data = await res.json();
 
@@ -1667,7 +1667,7 @@ export async function fetchChannelAgentsMd(
 	try {
 		let url = `${getApiBase()}/channels/${encodeURIComponent(channel)}/agents-md`;
 		if (scope) url += `?scope=${encodeURIComponent(scope)}`;
-		const res = await fetch(url, { signal: controller.signal });
+		const res = await fetch(url, { signal: controller.signal, cache: "no-store" as RequestCache });
 		if (res.ok) {
 			const data = await res.json();
 			return { ...data, error: null };
