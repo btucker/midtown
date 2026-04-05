@@ -1500,19 +1500,10 @@ pub fn handle_pr_review_post(params: Option<&Value>) -> Result<Value, RpcError> 
     Ok(json!({"ok": true, "pr": pr_number}))
 }
 
-/// Parse a human-friendly duration string into seconds.
+/// Parse a human-friendly duration string (e.g., "5m", "1h", "30s", "2w") to seconds.
 ///
-/// Accepts a numeric value followed by a single-character suffix:
-/// - `s` — seconds (e.g., `"30s"` → 30)
-/// - `m` — minutes (e.g., `"5m"` → 300)
-/// - `h` — hours (e.g., `"1h"` → 3600)
-/// - `d` — days (e.g., `"2d"` → 172800)
-///
-/// Returns `None` if the input is empty, the numeric part is not a valid `u64`,
-/// or the suffix is unrecognized. Leading/trailing whitespace is trimmed.
-///
-/// Used by the `channel.read` RPC to convert the `since` parameter (a relative
-/// duration like `"5m"`) into a seconds offset for filtering messages.
+/// Returns `None` if the input is empty, has an unknown suffix, a non-numeric
+/// prefix, or if the resulting value would overflow `u64`.
 fn parse_duration_secs(s: &str) -> Option<u64> {
     let s = s.trim();
     if s.is_empty() {
@@ -1522,9 +1513,10 @@ fn parse_duration_secs(s: &str) -> Option<u64> {
     let n: u64 = num.parse().ok()?;
     match suffix {
         "s" => Some(n),
-        "m" => Some(n * 60),
-        "h" => Some(n * 3600),
-        "d" => Some(n * 86400),
+        "m" => n.checked_mul(60),
+        "h" => n.checked_mul(3600),
+        "d" => n.checked_mul(86400),
+        "w" => n.checked_mul(604800),
         _ => None,
     }
 }

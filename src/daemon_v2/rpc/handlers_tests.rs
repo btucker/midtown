@@ -55,3 +55,25 @@ fn zero_value() {
     assert_eq!(parse_duration_secs("0s"), Some(0));
     assert_eq!(parse_duration_secs("0m"), Some(0));
 }
+
+#[test]
+fn weeks() {
+    assert_eq!(parse_duration_secs("1w"), Some(604800));
+    assert_eq!(parse_duration_secs("2w"), Some(1209600));
+}
+
+#[test]
+fn overflow_returns_none() {
+    // Values just above the u64 overflow threshold for each multiplier
+    assert_eq!(parse_duration_secs("30500568904944w"), None); // 30500568904944 * 604800 > u64::MAX
+    assert_eq!(parse_duration_secs("213503982334602d"), None); // 213503982334602 * 86400 > u64::MAX
+    assert_eq!(parse_duration_secs("5124095576030432h"), None); // 5124095576030432 * 3600 > u64::MAX
+    assert_eq!(parse_duration_secs("307445734561825861m"), None); // 307445734561825861 * 60 > u64::MAX
+    // Seconds don't multiply, so u64::MAX itself is valid
+    assert_eq!(parse_duration_secs("18446744073709551615s"), Some(u64::MAX));
+    // Values just below the threshold still work
+    assert_eq!(
+        parse_duration_secs("30500568904943w"),
+        Some(30500568904943 * 604800)
+    );
+}
