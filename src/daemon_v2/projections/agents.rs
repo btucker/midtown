@@ -160,6 +160,9 @@ impl AgentIndex {
                     && let Some(agent) = self.by_id.get_mut(&agent_id)
                 {
                     agent.session_id = None;
+                    // Also mark as not running — the session is gone, so the
+                    // agent can't be interacted with until respawned.
+                    self.running.remove(&agent_id);
                 }
             }
             DomainEvent::ChannelRenamed { old_name, new_name } => {
