@@ -6,10 +6,12 @@ pub mod websocket;
 mod upload_tests;
 
 use axum::Router;
+use axum::http::header;
 use axum::routing::{get, post};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast};
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::daemon_v2::events::DomainEvent;
 use crate::daemon_v2::projections::Projections;
@@ -81,5 +83,11 @@ pub fn create_router(state: Arc<WebState>) -> Router {
         .route("/api/push/unsubscribe", post(routes::push_unsubscribe))
         .route("/webhook", post(routes::webhook_handler))
         .route("/api/ws", get(websocket::ws_handler))
+        // Prevent mobile Safari (PWA) from caching API responses. Without
+        // this, returning from background can show stale channel history.
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            header::HeaderValue::from_static("no-store"),
+        ))
         .with_state(state)
 }
