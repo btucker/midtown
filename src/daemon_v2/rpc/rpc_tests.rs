@@ -1933,3 +1933,103 @@ fn session_fork_resolves_channel_from_calling_session_id() {
         panic!("expected SpawnAgent command");
     }
 }
+
+/// Regression: `midtown status` displays leads (project lead, channel leads) in
+/// the Coworkers section because `handle_status` does not emit `is_channel_lead`
+/// on each coworker entry. The CLI's `Response::Coworkers` deserializer reads
+/// `is_channel_lead` to filter leads out of the user-facing list, but the field
+/// defaults to `false` when missing — so leads are never filtered.
+///
+/// Discovered via dogfood: `midtown status` showed `midtown` (project lead) and
+/// `ops` (channel lead) alongside actual workers.
+#[test]
+fn handle_status_marks_lead_coworkers_as_channel_leads() {
+    let mut proj = Projections::default();
+
+    // A running worker — should appear in coworkers as a non-lead.
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "w1".into(),
+        name: "ghost-town".into(),
+        kind: AgentKind::Worker,
+        agent_type: "midtown-code-author".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "w1".into(),
+        pid: 1001,
+        session_id: None,
+    });
+
+    // A running project lead — must be marked as a channel lead so the CLI
+    // filters it out of the Coworkers list.
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "l1".into(),
+        name: "main-lead".into(),
+        kind: AgentKind::Lead,
+        agent_type: "midtown-project-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("main".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "l1".into(),
+        pid: 1002,
+        session_id: None,
+    });
+
+    // A running topic-channel lead.
+    proj.apply(&DomainEvent::AgentCreated {
+        id: "l2".into(),
+        name: "ops-lead".into(),
+        kind: AgentKind::Lead,
+        agent_type: "midtown-channel-lead".into(),
+        provider: Provider::ClaudeCode,
+        channel: Some("ops".into()),
+        task_id: None,
+        bound_thread_id: None,
+        icon: None,
+        color: None,
+    });
+    proj.apply(&DomainEvent::AgentStarted {
+        id: "l2".into(),
+        pid: 1003,
+        session_id: None,
+    });
+
+    let result = handlers::handle_status(&proj).unwrap();
+    let coworkers = result["coworkers"]
+        .as_array()
+        .expect("status response has coworkers array");
+    assert_eq!(coworkers.len(), 3, "all three running agents are reported");
+
+    let by_name: std::collections::HashMap<&str, &Value> = coworkers
+        .iter()
+        .map(|cw| (cw["name"].as_str().unwrap(), cw))
+        .collect();
+
+    let worker = by_name["ghost-town"];
+    assert_eq!(
+        worker["is_channel_lead"], false,
+        "actual workers must not be marked as channel leads"
+    );
+
+    let project_lead = by_name["main-lead"];
+    assert_eq!(
+        project_lead["is_channel_lead"], true,
+        "project lead must be marked is_channel_lead so the CLI filters it out of `midtown status`"
+    );
+
+    let channel_lead = by_name["ops-lead"];
+    assert_eq!(
+        channel_lead["is_channel_lead"], true,
+        "topic-channel lead must be marked is_channel_lead so the CLI filters it out of `midtown status`"
+    );
+}
