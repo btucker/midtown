@@ -5,7 +5,7 @@ mod tests;
 use crate::daemon_v2::decisions::SpawnConfig;
 use crate::daemon_v2::events::{AgentId, AgentKind, DomainEvent, Provider};
 use crate::headless::HeadlessSession;
-use crate::launch::LaunchConfig;
+use crate::launch::{LaunchConfig, expand_session_id_in_prompt};
 use crate::paths::ProjectPaths;
 
 /// Convert a daemon_v2 `Provider` to the auth `AuthProvider`.
@@ -65,6 +65,12 @@ pub async fn spawn_agent(
     let pre_assigned_session_id = uuid::Uuid::new_v4().to_string();
     headless_config.session_id = Some(pre_assigned_session_id.clone());
 
+    // Expand $MIDTOWN_SESSION_ID in the system prompt so the AI sees the real UUID
+    // and can include it verbatim in GitHub PR/comment frontmatter.
+    // (Single-quoted heredocs prevent shell expansion, so we do it here in Rust.)
+    headless_config.system_prompt =
+        expand_session_id_in_prompt(&headless_config.system_prompt, &pre_assigned_session_id);
+
     if let Some(thread_id) = &spawn_config.bound_thread_id {
         headless_config
             .env
@@ -83,10 +89,12 @@ pub async fn spawn_agent(
 
     // Deliver the initial prompt via stdin (send_message).
     // The -p flag tells Claude to wait for stdin input — we must actually send it.
-    if let Some(ref prompt) = spawn_config.initial_prompt
-        && let Err(e) = session.send_message(prompt).await
-    {
-        tracing::error!(name = %spawn_config.name, %e, "failed to send initial prompt");
+    // Expand $MIDTOWN_SESSION_ID so task prompts also carry the real UUID.
+    if let Some(ref prompt) = spawn_config.initial_prompt {
+        let expanded = expand_session_id_in_prompt(prompt, &pre_assigned_session_id);
+        if let Err(e) = session.send_message(&expanded).await {
+            tracing::error!(name = %spawn_config.name, %e, "failed to send initial prompt");
+        }
     }
 
     let pid = session.pid().unwrap_or(0);
