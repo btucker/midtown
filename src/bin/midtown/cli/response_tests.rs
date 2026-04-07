@@ -1,3 +1,5 @@
+use midtown::ToolBlock;
+
 use super::*;
 
 #[test]
@@ -989,4 +991,96 @@ fn test_json_passthrough_to_json_does_not_double_wrap() {
         "Should have top-level 'messages' key, got: {}",
         json_output
     );
+}
+
+#[test]
+fn test_messages_pretty_shows_tool_summary_for_tool_only_message() {
+    // A message with empty text but tool_data should show [ToolName, ...] in --text output.
+    let response = Response::Messages {
+        messages: vec![ChannelMessage {
+            from: "worker".to_string(),
+            message: String::new(),
+            timestamp: "12:00".to_string(),
+            tool_data: Some(vec![
+                ToolBlock {
+                    tool_name: "Bash".to_string(),
+                    input: serde_json::json!({"command": "ls"}),
+                    output: None,
+                    error: false,
+                    call_id: None,
+                    parent_tool_use_id: None,
+                },
+                ToolBlock {
+                    tool_name: "Read".to_string(),
+                    input: serde_json::json!({"file_path": "/foo"}),
+                    output: None,
+                    error: false,
+                    call_id: None,
+                    parent_tool_use_id: None,
+                },
+            ]),
+        }],
+    };
+
+    let pretty = response.to_pretty();
+    assert!(
+        pretty.contains("[Bash, Read]"),
+        "Tool-only message should show '[Bash, Read]' summary, got: {}",
+        pretty
+    );
+}
+
+#[test]
+fn test_messages_pretty_shows_text_when_message_is_present() {
+    // A message with text content should show the text, not a tool summary.
+    let response = Response::Messages {
+        messages: vec![ChannelMessage {
+            from: "worker".to_string(),
+            message: "hello world".to_string(),
+            timestamp: "12:00".to_string(),
+            tool_data: Some(vec![ToolBlock {
+                tool_name: "Bash".to_string(),
+                input: serde_json::json!({}),
+                output: None,
+                error: false,
+                call_id: None,
+                parent_tool_use_id: None,
+            }]),
+        }],
+    };
+
+    let pretty = response.to_pretty();
+    assert!(
+        pretty.contains("hello world"),
+        "Message with text should show the text, got: {}",
+        pretty
+    );
+    assert!(
+        !pretty.contains("[Bash]"),
+        "Message with text should not show tool summary, got: {}",
+        pretty
+    );
+}
+
+#[test]
+fn test_channel_message_deserializes_tool_data_from_json() {
+    // The daemon returns tool_data in the JSON — verify ChannelMessage captures it.
+    let messages_json = r#"{"messages": [
+        {"from": "worker", "message": "", "timestamp": "12:00",
+         "tool_data": [{"tool_name": "Edit", "input": {}, "error": false}]}
+    ]}"#;
+    let response: Response = serde_json::from_str(messages_json).unwrap();
+
+    match response {
+        Response::Messages { messages } => {
+            assert_eq!(messages.len(), 1);
+            let tool_data = messages[0]
+                .tool_data
+                .as_ref()
+                .expect("tool_data should be present");
+            assert_eq!(tool_data.len(), 1);
+            assert_eq!(tool_data[0].tool_name, "Edit");
+        }
+        other => panic!("Expected Messages, got {:?}", other),
+    }
 }
