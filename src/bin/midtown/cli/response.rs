@@ -1,3 +1,4 @@
+use midtown::ToolBlock;
 use serde::{Deserialize, Serialize};
 
 /// Response wrapper for CLI output formatting
@@ -110,6 +111,8 @@ pub struct ChannelMessage {
     pub from: String,
     pub message: String,
     pub timestamp: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_data: Option<Vec<ToolBlock>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -395,10 +398,27 @@ impl Response {
                 }
                 let mut out = String::new();
                 for msg in messages {
-                    out.push_str(&format!(
-                        "[{}] {}: {}\n",
-                        msg.timestamp, msg.from, msg.message
-                    ));
+                    let text = if msg.message.is_empty() {
+                        if let Some(ref blocks) = msg.tool_data {
+                            if !blocks.is_empty() {
+                                format!(
+                                    "[{}]",
+                                    blocks
+                                        .iter()
+                                        .map(|b| b.tool_name.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                )
+                            } else {
+                                msg.message.clone()
+                            }
+                        } else {
+                            msg.message.clone()
+                        }
+                    } else {
+                        msg.message.clone()
+                    };
+                    out.push_str(&format!("[{}] {}: {}\n", msg.timestamp, msg.from, text));
                 }
                 out.trim_end().to_string()
             }
