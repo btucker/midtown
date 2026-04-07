@@ -688,7 +688,11 @@ impl LaunchConfig {
             resume_session_id,
             session_id: None, // Set by spawn_coworker for fresh sessions
             inactivity_timeout: None,
-            settings_path: Some(common_settings_path()),
+            settings_path: Some(if self.agent_type == "midtown-code-reviewer" {
+                crate::settings::reviewer_settings_path()
+            } else {
+                common_settings_path()
+            }),
             setting_sources: None, // Handled by platform arg builder (always project,local)
             auth_provider: self.auth_provider,
             env,

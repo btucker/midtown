@@ -854,6 +854,9 @@ pub(crate) fn build_attach_launch_spec(
             let settings_file = if agent_type == "midtown-project-lead" {
                 midtown::settings::write_lead_settings_file()
                     .map_err(|e| format!("Failed to write lead settings file: {}", e))?
+            } else if agent_type == "midtown-code-reviewer" {
+                midtown::settings::write_reviewer_settings_file()
+                    .map_err(|e| format!("Failed to write reviewer settings file: {}", e))?
             } else {
                 midtown::settings::write_coworker_settings_file()
                     .map_err(|e| format!("Failed to write coworker settings file: {}", e))?

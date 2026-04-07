@@ -17,6 +17,9 @@ const DEFAULT_LEAD_SETTINGS: &str = include_str!("../agents/lead-settings.json")
 /// Embedded settings specific to coworker Claude Code sessions (merged on top of common).
 const DEFAULT_COWORKER_SETTINGS: &str = include_str!("../agents/coworker-settings.json");
 
+/// Embedded settings specific to reviewer Claude Code sessions (standalone — not merged with common).
+const DEFAULT_REVIEWER_SETTINGS: &str = include_str!("../agents/reviewer-settings.json");
+
 /// Get the state directory for midtown.
 fn state_dir() -> PathBuf {
     let state_dir = std::env::var("XDG_STATE_HOME")
@@ -90,6 +93,48 @@ pub fn write_coworker_settings_file() -> crate::Result<PathBuf> {
     std::fs::write(&path, settings.to_string()).map_err(Error::Io)?;
 
     Ok(path)
+}
+
+/// Build reviewer settings from agents/reviewer-settings.json (standalone — not merged with common).
+///
+/// Reviewer settings include all hooks the reviewer needs (PostToolUse, Notification, and the
+/// PreToolUse Bash hook that blocks direct `gh pr review` calls).
+fn reviewer_settings_json() -> serde_json::Value {
+    let bin_command = crate::config::get_bin_command();
+    let raw = DEFAULT_REVIEWER_SETTINGS.replace("{bin}", &bin_command);
+    let mut settings: serde_json::Value =
+        serde_json::from_str(&raw).expect("invalid reviewer-settings.json");
+
+    // Add user's plugins from ~/.claude/settings.json
+    let user_plugins = read_user_plugins().unwrap_or_default();
+    settings["enabledPlugins"] = user_plugins;
+
+    settings
+}
+
+/// Write reviewer settings to a shared file and return the path.
+pub fn write_reviewer_settings_file() -> crate::Result<PathBuf> {
+    let dir = state_dir();
+    std::fs::create_dir_all(&dir).map_err(Error::Io)?;
+
+    let path = dir.join("reviewer-settings.json");
+    let settings = reviewer_settings_json();
+    std::fs::write(&path, settings.to_string()).map_err(Error::Io)?;
+
+    Ok(path)
+}
+
+/// Return the path to the reviewer settings file, creating it if needed.
+///
+/// Used by headless (daemon-launched) reviewer sessions. Writes the merged settings
+/// to the midtown agents directory so it's available regardless of working directory.
+pub fn reviewer_settings_path() -> String {
+    let dir = crate::paths::midtown_base_dir().join("agents");
+    let path = dir.join("reviewer-settings.json");
+    let settings = reviewer_settings_json();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(&path, settings.to_string());
+    path.to_string_lossy().to_string()
 }
 
 /// Build lead settings from agents/common-settings.json + agents/lead-settings.json.
@@ -290,6 +335,46 @@ mod tests {
             settings["hooks"]["PostToolUse"].is_null(),
             "Lead should have no PostToolUse hooks (insight capture disabled)"
         );
+
+        // Verify {bin} placeholders were replaced
+        let serialized = settings.to_string();
+        assert!(
+            !serialized.contains("{bin}"),
+            "settings should not contain unreplaced {{bin}} placeholders"
+        );
+    }
+
+    #[test]
+    fn test_reviewer_settings_json_is_valid() {
+        let settings = reviewer_settings_json();
+
+        // Verify base settings
+        assert_eq!(settings["autoUpdates"], false);
+        assert_eq!(settings["editorMode"], "normal");
+
+        // Verify PreToolUse hook blocks gh pr review
+        let pre_tool_hooks = &settings["hooks"]["PreToolUse"];
+        assert!(pre_tool_hooks.is_array());
+        assert_eq!(pre_tool_hooks.as_array().unwrap().len(), 1);
+        assert_eq!(pre_tool_hooks[0]["matcher"], "Bash");
+        let pre_cmd = pre_tool_hooks[0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(
+            pre_cmd.ends_with("hook block-gh-pr-review"),
+            "PreToolUse hook should call block-gh-pr-review, got: {pre_cmd}"
+        );
+
+        // Verify PostToolUse hooks
+        let post_tool_hooks = &settings["hooks"]["PostToolUse"];
+        assert!(post_tool_hooks.is_array());
+        assert_eq!(post_tool_hooks.as_array().unwrap().len(), 3);
+        assert_eq!(post_tool_hooks[0]["matcher"], "TaskUpdate");
+        assert_eq!(post_tool_hooks[1]["matcher"], "TaskCreate");
+        assert_eq!(post_tool_hooks[2]["matcher"], "AskUserQuestion");
+
+        // Verify Notification hook
+        let notification_hooks = &settings["hooks"]["Notification"];
+        assert!(notification_hooks.is_array());
+        assert_eq!(notification_hooks[0]["matcher"], "idle_prompt");
 
         // Verify {bin} placeholders were replaced
         let serialized = settings.to_string();
