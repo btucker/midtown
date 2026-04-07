@@ -5,7 +5,7 @@ mod tests;
 use crate::daemon_v2::decisions::SpawnConfig;
 use crate::daemon_v2::events::{AgentId, AgentKind, DomainEvent, Provider};
 use crate::headless::HeadlessSession;
-use crate::launch::{expand_session_id_in_prompt, LaunchConfig};
+use crate::launch::{LaunchConfig, expand_session_id_in_prompt};
 use crate::paths::ProjectPaths;
 
 /// Convert a daemon_v2 `Provider` to the auth `AuthProvider`.
