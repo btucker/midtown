@@ -61,6 +61,14 @@ pub fn handle_status(proj: &Projections) -> Result<Value, RpcError> {
                 "name": a.name,
                 "status": "running",
                 "coworker_type": format!("{:?}", a.kind).to_lowercase(),
+                // The CLI's `Response::Coworkers` deserializer reads
+                // `is_channel_lead` to filter Lead sessions out of
+                // `midtown status`'s Coworkers list. Without this field, it
+                // defaults to false and leads are shown alongside workers.
+                "is_channel_lead": matches!(
+                    a.kind,
+                    crate::daemon_v2::events::AgentKind::Lead
+                ),
                 "current_task": task_name,
                 "task_id": a.task_id,
                 "channel": channel,
