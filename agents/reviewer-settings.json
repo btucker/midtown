@@ -1,0 +1,40 @@
+{
+  "autoUpdates": false,
+  "autoCompact": true,
+  "editorMode": "normal",
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Bash",
+      "hooks": [{
+        "type": "command",
+        "command": "{bin} hook block-gh-pr-review"
+      }]
+    }],
+    "PostToolUse": [{
+      "matcher": "TaskUpdate",
+      "hooks": [{
+        "type": "command",
+        "command": "{bin} hook task"
+      }]
+    }, {
+      "matcher": "TaskCreate",
+      "hooks": [{
+        "type": "command",
+        "command": "{bin} hook task"
+      }]
+    }, {
+      "matcher": "AskUserQuestion",
+      "hooks": [{
+        "type": "command",
+        "command": "{bin} hook ask"
+      }]
+    }],
+    "Notification": [{
+      "matcher": "idle_prompt",
+      "hooks": [{
+        "type": "command",
+        "command": "{bin} hook idle"
+      }]
+    }]
+  }
+}

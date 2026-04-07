@@ -41,6 +41,9 @@ pub enum HookCommand {
     Task,
     /// Handle PostToolUse hook for AskUserQuestion - notifies daemon to nudge Lead
     Ask,
+    /// PreToolUse hook: block `gh pr review` — reviewers must use `midtown pr review post`
+    #[command(name = "block-gh-pr-review")]
+    BlockGhPrReview,
 }
 
 /// Input structure for hooks (from Claude Code via stdin)
@@ -61,7 +64,36 @@ pub fn handle(cmd: &HookCommand) -> Result<Response, String> {
         HookCommand::LeadStop => handle_lead_stop_hook(),
         HookCommand::Task => handle_task_hook(),
         HookCommand::Ask => handle_ask_hook(),
+        HookCommand::BlockGhPrReview => handle_block_gh_pr_review(),
     }
+}
+
+/// PreToolUse hook: block `gh pr review` so reviewers always use `midtown pr review post`.
+///
+/// Exits with code 2 (Claude Code's "block tool call" signal) if the Bash command
+/// contains `gh pr review`. The message printed to stdout is shown to Claude as the
+/// reason for the block.
+fn handle_block_gh_pr_review() -> ! {
+    let mut input = String::new();
+    let _ = std::io::stdin().read_to_string(&mut input);
+
+    let data: serde_json::Value = serde_json::from_str(&input).unwrap_or_default();
+    let bash_cmd = data
+        .get("tool_input")
+        .and_then(|v| v.get("command"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if bash_cmd.contains("gh pr review") {
+        println!(
+            "Blocked: use 'midtown pr review post --pr <N> --body-file <file>' instead of \
+             'gh pr review'. Direct gh pr review calls bypass frontmatter processing and \
+             channel cross-posting."
+        );
+        std::process::exit(2);
+    }
+
+    std::process::exit(0);
 }
 
 /// Handle the Lead stop hook - read channel messages for the Lead.
