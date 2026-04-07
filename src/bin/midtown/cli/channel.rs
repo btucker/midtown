@@ -98,6 +98,12 @@ pub enum ChannelCommand {
         /// New channel name
         new: String,
     },
+    /// List all channels
+    List {
+        /// Include archived channels
+        #[arg(long)]
+        include_archived: bool,
+    },
     /// Manage reminders (condition-based notifications)
     Remind {
         #[command(subcommand)]
@@ -165,6 +171,7 @@ pub fn handle(cmd: &ChannelCommand, client: &DaemonClient) -> Result<Response, S
         ChannelCommand::Archive { name } => client.channel_archive(name),
         ChannelCommand::Unarchive { name } => client.channel_unarchive(name),
         ChannelCommand::Rename { old, new } => client.channel_rename(old, new),
+        ChannelCommand::List { include_archived } => client.channel_list(*include_archived),
         ChannelCommand::Remind { command } => handle_remind(command, client),
     }
 }
