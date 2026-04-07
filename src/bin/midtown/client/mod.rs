@@ -1073,6 +1073,14 @@ fn parse_daemon_response(value: Value) -> Result<Response, String> {
         }
     }
 
+    // channel.list returns a plain array of channels — wrap it
+    if value.is_array()
+        && let Ok(parsed) =
+            serde_json::from_value::<Response>(serde_json::json!({ "channels": value.clone() }))
+    {
+        return Ok(parsed);
+    }
+
     // channel.read returns a plain array of messages — wrap it
     if value.is_array()
         && let Ok(parsed) =

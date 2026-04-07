@@ -19,6 +19,8 @@ pub enum Response {
     PullRequests { pull_requests: Vec<PrInfo> },
     /// List of headless sessions that can be attached
     Sessions { sessions: Vec<SessionInfo> },
+    /// List of channels
+    Channels { channels: Vec<ChannelInfo> },
     /// Raw JSON value passthrough
     Json { value: serde_json::Value },
 }
@@ -142,6 +144,15 @@ pub struct SessionInfo {
     pub last_active: Option<String>,
     #[serde(default)]
     pub task: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelInfo {
+    pub name: String,
+    #[serde(default)]
+    pub is_archived: bool,
+    #[serde(default)]
+    pub is_dm: bool,
 }
 
 /// Format a token count with k/M suffix for compact display.
@@ -455,6 +466,23 @@ impl Response {
             }
             Response::Json { value } => serde_json::to_string_pretty(value)
                 .unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e)),
+            Response::Channels { channels } => {
+                if channels.is_empty() {
+                    return "No channels".to_string();
+                }
+                let mut out = String::from("Channels\n─────────────────────────────\n");
+                for ch in channels {
+                    let suffix = if ch.is_archived {
+                        " [archived]"
+                    } else if ch.is_dm {
+                        " [dm]"
+                    } else {
+                        ""
+                    };
+                    out.push_str(&format!("  #{}{}\n", ch.name, suffix));
+                }
+                out.trim_end().to_string()
+            }
             Response::PullRequests { pull_requests } => {
                 if pull_requests.is_empty() {
                     return "No pull requests".to_string();
