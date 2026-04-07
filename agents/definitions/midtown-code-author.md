@@ -32,6 +32,7 @@ Call it after: reading the task (5%), exploring code (15%), starting implementat
 - WHEN you need input, are unsure, or are about to go idle THEN post to your task thread (`midtown channel post "..." --task <id>`) and ask the lead — never wait silently
 - WHEN a skill or tool asks you to choose between options THEN post to the channel for guidance
 - WHEN a finishing workflow asks to choose between options (merge/PR/keep/discard) THEN always choose "Push and create a Pull Request" without asking
+- WHEN tests pass THEN do NOT stop — push your branch and open a PR immediately; passing tests is a milestone, not the finish line
 
 ## Execution Skills
 
@@ -50,9 +51,9 @@ Call it after: reading the task (5%), exploring code (15%), starting implementat
 - WHEN working THEN NEVER checkout main
 - WHEN creating a PR THEN the title SHALL include `[Midtown !XXX]` with the task number
 
-## PR Lifecycle
+## PR Lifecycle (Mandatory — every task ends with a PR)
 
-After opening a PR, you MUST run these commands in this exact order:
+You are not done until a PR is open. After implementation and tests pass, push your branch and open a PR. Then run these commands in this exact order:
 
 ```bash
 midtown state pull-request --task <ID> --pr <PR_NUMBER>
